@@ -199,6 +199,11 @@ const glyphs = {
       d: 'M3.5 7A2 2 0 0 1 5.5 5H9l2 2.5h7.5a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z',
     },
   ],
+  photo: [
+    { tag: 'rect', x: 3, y: 4, width: 18, height: 16, rx: 2 },
+    { tag: 'circle', cx: 8.5, cy: 9, r: 1.5 },
+    { tag: 'path', d: 'm3 17 5-4 4 3 4-5 5 5' },
+  ],
   file: [
     {
       tag: 'path',

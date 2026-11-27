@@ -56,6 +56,9 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+#[path = "ios_shell_behaviors/attachments.rs"]
+mod attachments;
+
 fn package(id: &str, host: Value) -> Package {
     Package::new(BTreeMap::from([(
         "maka.extension.json".into(),
@@ -66,6 +69,11 @@ fn package(id: &str, host: Value) -> Package {
 }
 
 async fn logs_host() -> (tempfile::TempDir, Arc<Host>) {
+    let (dir, host, _) = test_host(false).await;
+    (dir, host)
+}
+
+async fn test_host(with_agent: bool) -> (tempfile::TempDir, Arc<Host>, Arc<RootStore>) {
     let dir = tempfile::tempdir().unwrap();
     private_directory(dir.path()).unwrap();
     let root = Arc::new(
@@ -78,7 +86,11 @@ async fn logs_host() -> (tempfile::TempDir, Arc<Host>) {
         )
         .unwrap(),
     );
-    let store = Arc::new(RootStore::open(root, ROOT_MIGRATIONS).await.unwrap());
+    let mut migrations = ROOT_MIGRATIONS.to_vec();
+    if with_agent {
+        migrations.extend_from_slice(maka_agent_state::MIGRATIONS);
+    }
+    let store = Arc::new(RootStore::open(root, &migrations).await.unwrap());
     let contract = logs::contract();
     let logs = package(
         "test.logs",
@@ -97,38 +109,94 @@ async fn logs_host() -> (tempfile::TempDir, Arc<Host>) {
             "exports":{(maka_web_api::EXPORT):{"contract":web_contract,"availability":"required"}}
         }),
     );
+    let mut imports = json!({
+        "hostLogs":{"contract":contract,"cardinality":{"kind":"one"}},
+        "web":{"contract":web_contract,"cardinality":{"kind":"one"}},
+    });
+    let consumer = Uuid::new_v4();
+    let deployment = Uuid::new_v4();
+    let mut endpoints = json!({
+        "hostLogs":{"consumer":[consumer],"import":"hostLogs","grant":{"methods":["read","watch"],"recovery":false}},
+        "web":{"consumer":[consumer],"import":"web","grant":{"methods":["snapshot","save","saveKey"],"recovery":false}},
+    });
+    let mut bindings = json!({
+        "hostLogs":[{"kind":"instance","path":["logs"],"export":"HostLogs"}],
+        "web":[{"kind":"instance","path":["web"],"export":maka_web_api::EXPORT}],
+    });
+    let mut instances = json!({
+        "logs":{"key":Uuid::new_v4(),"package":{"source":"pinned","package":logs.application_ref()},"usePackage":"host"},
+        "web":{"key":Uuid::new_v4(),"package":{"source":"pinned","package":web.application_ref()},"usePackage":"host",
+            "configuration":{"values":{"network":"denied"}}},
+    });
+    let mut packages = vec![logs, web];
+    let mut native = NativeRegistry::default();
+    maka_web::provide(&mut native).unwrap();
+    if with_agent {
+        let workspace = dir.path().canonicalize().unwrap().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        let contract = maka_agent_api::contract();
+        let agent = package(
+            "test.agent",
+            json!({
+                "implementation":{"kind":"native","implementation":maka_agent_api::IMPLEMENTATION},
+                "configuration":maka_agent_api::configuration_schema(),"imports":{},
+                "exports":{(maka_agent_api::EXPORT):{"contract":contract,"availability":"required"}},
+            }),
+        );
+        imports["agent"] = json!({"contract":contract,"cardinality":{"kind":"one"}});
+        endpoints["agent"] = json!({"consumer":[consumer],"import":"agent","grant":{
+            "methods":["create","list","catalog","projects","models","observe","history","watch","send",
+                "uploadAttachment","markRead","pendingInteractions","queue","fork"],
+            "recovery":true,
+        }});
+        bindings["agent"] =
+            json!([{"kind":"instance","path":["agent"],"export":maka_agent_api::EXPORT}]);
+        instances["agent"] = json!({
+            "key":Uuid::new_v4(),"package":{"source":"pinned","package":agent.application_ref()},
+            "usePackage":"host","configuration":{"values":{
+                "permissions":{"access":"read_only","requestPermissions":false},
+                "workspaceRoots":[{"label":"Fixture","path":workspace}],"tools":[],
+            }},
+        });
+        packages.push(agent);
+        let data = store.data_writer().unwrap();
+        let domain = maka_agent_state::DriverDomain::new(data.clone()).unwrap();
+        let state = maka_agent_state::Store::new(data, domain).unwrap();
+        let catalog = maka_providers::catalog::Catalog::new(
+            maka_providers::catalog::Snapshot::bundled().unwrap(),
+        );
+        maka_agent_native::provide(
+            &mut native,
+            Arc::new(catalog),
+            state,
+            std::env::current_exe().unwrap(),
+        )
+        .unwrap();
+    }
     let gateway = package(
         "test.gateway",
         json!({
             "implementation":{"kind":"native","implementation":GATEWAY},
-            "configuration":{"type":"object"},"exports":{},
-            "imports":{
-                "hostLogs":{"contract":contract,"cardinality":{"kind":"one"}},
-                "web":{"contract":web_contract,"cardinality":{"kind":"one"}}
-            }
+            "configuration":{"type":"object"},"exports":{},"imports":imports,
         }),
     );
-    let consumer = Uuid::new_v4();
-    let deployment = Uuid::new_v4();
-    let source = store.commit_application(
-        deployment, 0,
-        serde_json::from_value(json!({"instances":{
-            "logs":{"key":Uuid::new_v4(),"package":{"source":"pinned","package":logs.application_ref()},"usePackage":"host"},
-            "web":{"key":Uuid::new_v4(),"package":{"source":"pinned","package":web.application_ref()},"usePackage":"host",
-                "configuration":{"values":{"network":"denied"}}},
-            "gateway":{"key":consumer,"package":{"source":"pinned","package":gateway.application_ref()},"usePackage":"host",
-                "bindings":{
-                "hostLogs":[{"kind":"instance","path":["logs"],"export":"HostLogs"}],
-                "web":[{"kind":"instance","path":["web"],"export":maka_web_api::EXPORT}]
-            }}
-        }})).unwrap(),
-        vec![], vec![logs, web, gateway],
-    ).await.unwrap();
+    instances["gateway"] = json!({
+        "key":consumer,"package":{"source":"pinned","package":gateway.application_ref()},
+        "usePackage":"host","bindings":bindings,
+    });
+    packages.push(gateway);
+    let source = store
+        .commit_application(
+            deployment,
+            0,
+            serde_json::from_value(json!({"instances":instances})).unwrap(),
+            vec![],
+            packages,
+        )
+        .await
+        .unwrap();
     let configuration = Configuration::PublicHost {
-        endpoints: serde_json::from_value(json!({
-            "hostLogs":{"consumer":[consumer],"import":"hostLogs","grant":{"methods":["read","watch"],"recovery":false}},
-            "web":{"consumer":[consumer],"import":"web","grant":{"methods":["snapshot","save","saveKey"],"recovery":false}}
-        })).unwrap(),
+        endpoints: serde_json::from_value(endpoints).unwrap(),
         native: Default::default(),
         product_methods: Default::default(),
     };
@@ -136,8 +204,6 @@ async fn logs_host() -> (tempfile::TempDir, Arc<Host>) {
         .select_committed_application_launch(source, serde_json::to_value(&configuration).unwrap())
         .await
         .unwrap();
-    let mut native = NativeRegistry::default();
-    maka_web::provide(&mut native).unwrap();
     let host = Host::open_with_options(
         store.clone(),
         deployment,
@@ -152,7 +218,7 @@ async fn logs_host() -> (tempfile::TempDir, Arc<Host>) {
     .await
     .unwrap();
 
-    (dir, host)
+    (dir, host, store)
 }
 
 const RELAY_TOKEN: &str = "test-ephemeral-relay-bearer";
@@ -187,7 +253,14 @@ struct Live {
 
 impl Live {
     async fn start(config: &Relay, name: &str) -> Self {
-        let (root, host) = logs_host().await;
+        Self::start_host(config, name, logs_host().await).await
+    }
+
+    async fn start_host(
+        config: &Relay,
+        name: &str,
+        (root, host): (tempfile::TempDir, Arc<Host>),
+    ) -> Self {
         let transport = HostPeerTransport::bind(&host, std::slice::from_ref(config), false)
             .await
             .unwrap();
@@ -311,7 +384,8 @@ async fn signed_invite_is_confirmed_on_the_live_connection_and_revocation_is_vis
     let (_, sas) = second.sas().await;
     app.wait_for(&format!("text:{sas}")).unwrap();
     app.press("label:Confirm & Connect").unwrap();
-    app.wait_for("text:Second test Host").unwrap();
+    app.wait_for_gone("text:Confirm Computer", Duration::from_secs(10))
+        .unwrap();
 
     app.press("label:Settings").unwrap();
     app.wait_for("label:Computer: Travel Mac").unwrap();
@@ -3007,6 +3081,17 @@ impl ComposerDockFixture {
         anchor: bool,
         room: bool,
     ) -> Self {
+        Self::start_configured(run, backend, queue, anchor, room, |_| {}).await
+    }
+
+    async fn start_configured(
+        run: Value,
+        backend: Value,
+        queue: Value,
+        anchor: bool,
+        room: bool,
+        configure: impl FnOnce(&mut EngineConfig),
+    ) -> Self {
         let channel = HostChannel::new();
         channel.handle("ios.bootstrap", |call| call.resolve(dock_host(1)));
         let run = Arc::new(std::sync::Mutex::new(run));
@@ -3032,7 +3117,8 @@ impl ComposerDockFixture {
         let (history_tx, mut history_reads) = mpsc::unbounded_channel();
         channel.handle("ios.hostQuery", move |mut call| {
             let data = call.take_data();
-            let session = json!({"id":"chat","kind":if room { "room" } else { "agent" },"title":"Dock Chat","revision":1,
+            let title = if data["rootId"] == "other" { "Other Dock Chat" } else { "Dock Chat" };
+            let session = json!({"id":"chat","kind":if room { "room" } else { "agent" },"title":title,"revision":1,
                 "workspace":{"path":"/work"},"backend":backend,"updatedAt":1,"activity":"working"});
             let value = match data["method"].as_str().unwrap() {
                 "list" if data["input"]["scope"]["kind"] == "side_questions" =>
@@ -3091,7 +3177,7 @@ impl ComposerDockFixture {
         let (side_tx, mut side_watch) = mpsc::unbounded_channel();
         channel.handle("ios.subscribe", move |mut call| {
             let data = call.take_data();
-            let handle = json!({"subscriptionId":data["subscriptionId"],"rootId":"root",
+            let handle = json!({"subscriptionId":data["subscriptionId"],"rootId":data["rootId"],
                 "generation":data["generation"].as_u64().unwrap()+10});
             call.resolve(handle.clone());
             if data["method"] == "watch" {
@@ -3110,6 +3196,7 @@ impl ComposerDockFixture {
             reduce_motion: true,
             ..Environment::default()
         };
+        configure(&mut config);
         let mut app = Headless::start(config).unwrap();
         app.wait_for("label:Conversation: Dock Chat").unwrap();
         app.press("label:Conversation: Dock Chat").unwrap();
@@ -6126,7 +6213,7 @@ fn side_chat_fixture_with_history(
             }
             "history" if input["sessionId"] == "room" => json!({
                 "kind":"room","page":{"items":[{
-                    "id":"message","sequence":1, "content":{"text":"Room message"},
+                    "id":"message","sequence":1, "content":{"text":"Room message","attachments":[]},
                     "author":{"kind":"human"}, "createdAt":0
                 }],"through":1,"before":null,"after":null}
             }),
@@ -6237,6 +6324,7 @@ async fn side_chat_uses_transcript_order_and_keeps_the_main_draft() {
     );
     fx.app.press("label:Ask Side Question").unwrap();
     fx.app.wait_for("text:Side Question").unwrap();
+    assert!(!fx.app.shows("id:chat-add-attachments"));
     fx.app
         .type_text("label:Message composer", "Compare these\nanswers?")
         .unwrap();
@@ -6326,6 +6414,17 @@ async fn side_chat_cancel_and_unicode_whitespace_do_not_mutate() {
     fx.app
         .type_text("label:Message composer", "Should not send")
         .unwrap();
+    fx.app.submit("label:Message composer").unwrap();
+    fx.app
+        .type_text("label:Message composer", "Next line")
+        .unwrap();
+    assert_eq!(
+        fx.app
+            .screen()
+            .input_text("label:Message composer")
+            .unwrap(),
+        Some("\u{0085}\u{2003}Should not send\nNext line")
+    );
     assert!(fx.app.screen().enabled("label:Send message").unwrap());
     fx.app.press("label:Cancel").unwrap();
     assert_eq!(
@@ -9199,7 +9298,9 @@ async fn room_watch_keeps_the_boundary_and_ignores_pagination_from_an_old_connec
     app.type_text("label:Message composer", "Hi Room").unwrap();
     app.press("label:Send message").unwrap();
     let input = send_rx.try_recv().unwrap();
-    assert!(input["backend"].is_null());
+    let wire = input.as_object().unwrap();
+    assert!(!wire.contains_key("backend"));
+    assert!(!wire.contains_key("expectedRunId"));
     assert_eq!(input["message"], "Hi Room");
     assert!(input.get("quotes").is_none());
     app.wait_for("text:Initial room message").unwrap();

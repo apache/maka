@@ -17,6 +17,7 @@
  * under the License.
  */
 
+mod attachments;
 pub mod bridge;
 mod identity;
 #[cfg(any(target_os = "ios", test))]
@@ -29,6 +30,7 @@ pub const IOS_SHELL_JS: &str = include_str!(concat!(env!("OUT_DIR"), "/ios-shell
 pub fn ios_bundle() -> Bundle {
     let mut caps = Capabilities::default();
     caps.clipboard = true;
+    caps.picker = true;
     caps.status_bar = true;
     let mut open_url = nsh_core::access::OpenUrlGrant::default();
     open_url.schemes.push("https".into());
@@ -45,15 +47,34 @@ pub fn ios_bundle() -> Bundle {
         })
 }
 
-fn ui_sets() -> Vec<nsh_core::element::Registry> {
-    vec![nsh_base::registry()]
+fn ui_sets(bridge: Option<&bridge::HostBridge>) -> Vec<nsh_core::element::Registry> {
+    vec![
+        nsh_base::registry(),
+        attachments::registry(bridge.map(bridge::HostBridge::attachment_host)),
+    ]
 }
 
 pub fn engine_config(host: HostChannel, runtime: tokio::runtime::Handle) -> EngineConfig {
+    shell_config(host, runtime, None)
+}
+
+pub fn engine_config_with_bridge(
+    host: HostChannel,
+    runtime: tokio::runtime::Handle,
+    bridge: &bridge::HostBridge,
+) -> EngineConfig {
+    shell_config(host, runtime, Some(bridge))
+}
+
+fn shell_config(
+    host: HostChannel,
+    runtime: tokio::runtime::Handle,
+    bridge: Option<&bridge::HostBridge>,
+) -> EngineConfig {
     EngineConfig {
         header_heights: nsh_core::NO_NATIVE_HEADER,
         limits: Limits::standalone(),
-        ui_sets: ui_sets(),
+        ui_sets: ui_sets(bridge),
         runtime: Some(runtime),
         host,
         ..EngineConfig::new(ios_bundle())
@@ -82,7 +103,7 @@ pub fn run() {
     if let Ok(uri) = std::env::var("MAKA_IOS_PAIR_URI") {
         bridge.queue_pairing_uri(uri);
     }
-    nsh_platform_ios::set_ui_sets(ui_sets());
+    nsh_platform_ios::set_ui_sets(ui_sets(Some(&bridge)));
     nsh_platform_ios::set_components(scanner::register);
     run_app(
         AppSource::Bundle(ios_bundle()),

@@ -59,8 +59,7 @@ impl Blob {
         self.end - self.start
     }
 
-    /// The blob's bytes for an image source: shared with the blob, not
-    /// copied, so revoking its URL or collecting it leaves the image whole.
+    /// The shared blob bytes outlive the URL and JS object.
     pub(crate) fn image_data(&self) -> nsh_core::ImageData {
         if self.start == 0 && self.end == self.bytes.len() {
             return self.bytes.clone();
@@ -369,6 +368,10 @@ fn blob_urls<'a>(cx: Ctx) -> &'a mut BlobUrls {
 /// The blob `url` names (`blob:…`), if registered.
 pub(crate) fn resolve_blob_url(cx: Ctx, url: &str) -> Option<Blob> {
     find_blob_url(cx, url).map(|e| e.blob.clone())
+}
+
+pub(crate) fn resolve_blob_bytes(cx: Ctx, url: &str) -> Option<nsh_core::ImageData> {
+    Some(find_blob_url(cx, url)?.blob.image_data())
 }
 
 /// Gives the image source of `prop` its blob's bytes when it is a `blob:`
@@ -925,3 +928,40 @@ interface BlobPropertyBag {
 
 type FormDataEntryValue = File | string;
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn file_blob_bytes_share_storage_without_deriving_an_image_key() {
+        let host = crate::Host::new().unwrap();
+        let other = crate::Host::new().unwrap();
+        for size in [2, 16 * 1024 * 1024] {
+            host.eval_source(&format!(
+                "const bytes = new Uint8Array({size});
+                 bytes[bytes.length - 1] = 255;
+                 globalThis.fileUrl = URL.createObjectURL(new File([bytes], 'raw.bin',
+                   {{ type: 'application/octet-stream' }}));"
+            ))
+            .unwrap();
+            let (url, bytes) = host.with_raw(|cx| {
+                let url = blob_urls(cx).map.last().unwrap().url.clone();
+                let bytes = resolve_blob_bytes(cx, &url).unwrap();
+                let entry = find_blob_url(cx, &url).unwrap();
+                assert!(
+                    entry.image.is_none(),
+                    "file reads must not derive image cache keys"
+                );
+                assert_eq!(bytes.bytes().as_ptr(), entry.blob.bytes().as_ptr());
+                (url, bytes)
+            });
+            other.with_raw(|cx| assert!(resolve_blob_bytes(cx, &url).is_none()));
+            host.eval_source("URL.revokeObjectURL(fileUrl);").unwrap();
+            host.with_raw(|cx| assert!(resolve_blob_bytes(cx, &url).is_none()));
+            assert_eq!(bytes.bytes().len(), size);
+            assert_eq!(bytes.bytes()[0], 0);
+            assert_eq!(bytes.bytes()[size - 1], 255);
+        }
+    }
+}

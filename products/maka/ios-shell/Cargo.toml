@@ -28,6 +28,8 @@ name = "maka-ios-shell"
 path = "src/main.rs"
 
 [dependencies]
+bytes = "1.11.1"
+hex.workspace = true
 log = "0.4.34"
 maka-operation-id.workspace = true
 maka-remote-client.workspace = true
@@ -36,6 +38,7 @@ nsh-core.workspace = true
 nsh-engine = { workspace = true, features = ["js-core"] }
 serde = { workspace = true, features = ["rc"] }
 serde_json.workspace = true
+sha2.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time"] }
 
 tokio-util.workspace = true
@@ -68,6 +71,10 @@ nsh-testing = { path = "../../../third-party/nsh/crates/nsh-testing" }
 tempfile.workspace = true
 maka-agent-api.workspace = true
 maka-agent-facts.workspace = true
+maka-agent-native.workspace = true
+maka-agent-state.workspace = true
+maka-providers.workspace = true
+rusqlite.workspace = true
 maka-event-log.workspace = true
 maka-host-runtime.workspace = true
 maka-packages.workspace = true
@@ -75,7 +82,6 @@ maka-web.workspace = true
 maka-web-api.workspace = true
 maka-remote-transport = { workspace = true, features = ["host", "relay-server"] }
 uuid.workspace = true
-hex.workspace = true
 maka-remote-pairing.workspace = true
 futures-util.workspace = true
 tokio-tungstenite.workspace = true

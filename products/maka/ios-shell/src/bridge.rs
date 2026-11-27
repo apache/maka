@@ -44,6 +44,8 @@ use tokio_util::sync::CancellationToken;
 const PAIR_SCHEME: &str = "maka://pair/v1?payload=";
 const PROGRESS_WINDOW: u64 = 8;
 const SEND_TIMEOUT: Duration = Duration::from_secs(30);
+const RECEIPT_QUERY_TIMEOUT: Duration = Duration::from_secs(5);
+const UPLOAD_RECEIPT_TIMEOUT: Duration = Duration::from_secs(15);
 const PROGRESS_ACK_STALL_TIMEOUT: Duration = Duration::from_secs(30);
 pub const ALLOWED_HOST_CALLS: &[&str] = &[
     "ios.bootstrap",
@@ -215,6 +217,110 @@ struct ReceiptScope {
     host_peer_id: String,
 }
 
+struct UncertainOperation {
+    reference: Value,
+    upload: Option<UploadReceipt>,
+}
+
+struct UploadReceipt {
+    reply: oneshot::Sender<Option<Value>>,
+    cancel: CancellationToken,
+}
+
+#[derive(Clone)]
+pub(crate) struct AttachmentHost(Bridge);
+
+pub(crate) struct AttachmentConnection {
+    calls: RemoteCallHandle,
+    retired: CancellationToken,
+    receipt_scope: Option<ReceiptScope>,
+}
+
+impl AttachmentHost {
+    pub(crate) fn runtime(&self) -> &Handle {
+        &self.0.runtime
+    }
+
+    pub(crate) fn upload_started(&self, attempt_id: &str) {
+        self.0.emit(
+            "ios.attachmentProgress",
+            json!({"attemptId": attempt_id, "phase": "uploading"}),
+        );
+    }
+
+    pub(crate) async fn connection(
+        &self,
+        root: &str,
+        generation: u64,
+    ) -> Option<AttachmentConnection> {
+        let state = self.0.state.lock().await;
+        let active = state.current(root, generation)?;
+        Some(AttachmentConnection {
+            calls: active.calls.clone(),
+            retired: active.retired.clone(),
+            receipt_scope: active.receipt_scope.clone(),
+        })
+    }
+
+    pub(crate) async fn receipt(
+        &self,
+        connection: AttachmentConnection,
+        generation: u64,
+        attempt_id: &str,
+        reference: Value,
+        cancel: &CancellationToken,
+    ) -> Option<Value> {
+        let scope = connection.receipt_scope?;
+        if cancel.is_cancelled() {
+            return None;
+        }
+        self.0.emit(
+            "ios.attachmentProgress",
+            json!({"attemptId": attempt_id, "phase": "confirming"}),
+        );
+        let (reply, receive) = oneshot::channel();
+        let cancel = cancel.child_token();
+        self.0
+            .register_uncertain_operation(
+                generation,
+                scope.clone(),
+                reference.clone(),
+                Some(UploadReceipt {
+                    reply,
+                    cancel: cancel.clone(),
+                }),
+            )
+            .await;
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => {}
+            _ = self.0.shutdown.cancelled() => {}
+            reply = receive => return reply.ok().flatten(),
+            _ = tokio::time::sleep(UPLOAD_RECEIPT_TIMEOUT) => {}
+        }
+        cancel.cancel();
+        let mut state = self.0.state.lock().await;
+        if let Some(operations) = state.uncertain.get_mut(&scope) {
+            operations
+                .retain(|operation| operation.upload.is_none() || operation.reference != reference);
+            if operations.is_empty() {
+                state.uncertain.remove(&scope);
+            }
+        }
+        None
+    }
+}
+
+impl AttachmentConnection {
+    pub(crate) fn calls(&self) -> &RemoteCallHandle {
+        &self.calls
+    }
+
+    pub(crate) fn retired(&self) -> &CancellationToken {
+        &self.retired
+    }
+}
+
 struct ProgressWindow {
     sent: u64,
     acknowledged: watch::Sender<u64>,
@@ -241,7 +347,7 @@ struct State {
     profiles: BTreeMap<RootId, HostProfile>,
     credentials: BTreeMap<RootId, Arc<RelayCredential>>,
     filter: Option<RootId>,
-    uncertain: BTreeMap<ReceiptScope, Vec<Value>>,
+    uncertain: BTreeMap<ReceiptScope, Vec<UncertainOperation>>,
 }
 
 impl State {
@@ -477,6 +583,10 @@ impl HostBridge {
             });
         }
         Ok(Self { bridge })
+    }
+
+    pub(crate) fn attachment_host(&self) -> AttachmentHost {
+        AttachmentHost(self.bridge.clone())
     }
 
     pub fn queue_pairing_uri(&self, uri: String) {
@@ -1368,12 +1478,25 @@ impl Bridge {
                 } else {
                     None
                 };
+            // A replacement binding without this receipt scope cannot settle
+            // the upload. Send recovery keeps its existing journal references.
+            state.uncertain.retain(|scope, operations| {
+                if scope.root == root && Some(scope) != receipt_scope.as_ref() {
+                    operations.retain(|operation| operation.upload.is_none());
+                }
+                !operations.is_empty()
+            });
             let reconcile = receipt_scope.as_ref().and_then(|scope| {
-                Some((
-                    scope.clone(),
-                    state.uncertain.get(scope)?.clone(),
-                    connection.call_handle(),
-                ))
+                let mut references = Vec::new();
+                let mut uploads = Vec::new();
+                for operation in state.uncertain.get(scope)? {
+                    if operation.upload.is_some() {
+                        uploads.push(operation.reference.clone());
+                    } else {
+                        references.push(operation.reference.clone());
+                    }
+                }
+                Some((scope.clone(), references, uploads, connection.call_handle()))
             });
             let info = json!({
                 "rootId": connection.root_id(), "epoch": connection.epoch(),
@@ -1397,18 +1520,41 @@ impl Bridge {
         self.runtime.spawn(async move {
             bridge.monitor(id, connection, retired).await;
         });
-        if let Some((scope, references, calls)) = reconcile {
-            let bridge = self.clone();
-            self.runtime.spawn(async move {
-                bridge.reconcile(id, scope, references, calls).await;
-            });
+        if let Some((scope, references, uploads, calls)) = reconcile {
+            // A live attachment waiter has its own deadline, independent of journal recovery.
+            for reference in uploads {
+                self.spawn_reconcile(id, scope.clone(), vec![reference], calls.clone());
+            }
+            if !references.is_empty() {
+                self.spawn_reconcile(id, scope, references, calls);
+            }
         }
         Ok(snapshot)
     }
 
     async fn register_uncertain(&self, id: u64, scope: ReceiptScope, reference: Value) {
+        self.register_uncertain_operation(id, scope, reference, None)
+            .await;
+    }
+
+    async fn register_uncertain_operation(
+        &self,
+        id: u64,
+        scope: ReceiptScope,
+        reference: Value,
+        upload: Option<UploadReceipt>,
+    ) {
+        let is_upload = upload.is_some();
         let late = {
             let mut state = self.state.lock().await;
+            if is_upload
+                && state
+                    .connections
+                    .get(&scope.root)
+                    .is_some_and(|active| active.receipt_scope.as_ref() != Some(&scope))
+            {
+                return;
+            }
             if state
                 .profiles
                 .get(&scope.root)
@@ -1418,12 +1564,16 @@ impl Bridge {
                     .uncertain
                     .entry(scope.clone())
                     .or_default()
-                    .push(reference.clone());
+                    .push(UncertainOperation {
+                        reference: reference.clone(),
+                        upload,
+                    });
                 state
                     .connections
                     .get(&scope.root)
                     .filter(|active| {
-                        active.id != id && active.receipt_scope.as_ref() == Some(&scope)
+                        (is_upload || active.id != id)
+                            && active.receipt_scope.as_ref() == Some(&scope)
                     })
                     .map(|active| (active.id, active.calls.clone()))
             } else {
@@ -1431,13 +1581,21 @@ impl Bridge {
             }
         };
         if let Some((active, calls)) = late {
-            let bridge = self.clone();
-            self.runtime.spawn(async move {
-                bridge
-                    .reconcile(active, scope, vec![reference], calls)
-                    .await;
-            });
+            self.spawn_reconcile(active, scope, vec![reference], calls);
         }
+    }
+
+    fn spawn_reconcile(
+        &self,
+        id: u64,
+        scope: ReceiptScope,
+        references: Vec<Value>,
+        calls: RemoteCallHandle,
+    ) {
+        let bridge = self.clone();
+        self.runtime.spawn(async move {
+            bridge.reconcile(id, scope, references, calls).await;
+        });
     }
 
     async fn reconcile(
@@ -1449,23 +1607,67 @@ impl Bridge {
     ) {
         let mut settled = 0;
         for reference in references {
-            if self.check_active(&scope.root, id).await.is_err() {
-                return;
-            }
-            match calls.query("receipts", "read", reference.clone()).await {
-                Ok(reply) if terminal_receipt(&reference, &reply) => {
-                    settled += 1;
-                    let mut state = self.state.lock().await;
-                    if let Some(refs) = state.uncertain.get_mut(&scope) {
-                        refs.retain(|item| *item != reference);
-                        if refs.is_empty() {
-                            state.uncertain.remove(&scope);
-                        }
-                    }
+            let (retired, cancelled) =
+                {
+                    let state = self.state.lock().await;
+                    let Some(active) = state.current(&scope.root, id) else {
+                        return;
+                    };
+                    let Some(operation) = state.uncertain.get(&scope).and_then(|operations| {
+                        operations.iter().find(|op| op.reference == reference)
+                    }) else {
+                        continue;
+                    };
+                    (
+                        active.retired.clone(),
+                        operation
+                            .upload
+                            .as_ref()
+                            .map(|upload| upload.cancel.clone()),
+                    )
+                };
+            let cancelled = async {
+                match cancelled {
+                    Some(cancel) => cancel.cancelled().await,
+                    None => std::future::pending().await,
                 }
-                Ok(_) => {}
+            };
+            // Retirement leaves the original reference for the successor.
+            let reply = tokio::select! {
+                biased;
+                _ = retired.cancelled() => return,
+                _ = cancelled => continue,
+                result = tokio::time::timeout(RECEIPT_QUERY_TIMEOUT, calls.query("receipts", "read", reference.clone())) => result,
+            };
+            let reply = match reply {
+                Ok(Ok(reply)) => Some(reply),
+                Ok(Err(err)) => {
+                    log::warn!("read remote operation receipt: {err}");
+                    None
+                }
                 Err(err) => {
                     log::warn!("read remote operation receipt: {err}");
+                    None
+                }
+            };
+            let returned = reply.filter(|reply| terminal_receipt(&reference, reply));
+            let terminal = returned.is_some();
+            let mut state = self.state.lock().await;
+            if state.current(&scope.root, id).is_none() {
+                return;
+            }
+            if let Some(refs) = state.uncertain.get_mut(&scope) {
+                if let Some(index) = refs.iter().position(|item| {
+                    item.reference == reference && (terminal || item.upload.is_some())
+                }) {
+                    let operation = refs.remove(index);
+                    settled += usize::from(terminal);
+                    if let Some(upload) = operation.upload {
+                        let _ = upload.reply.send(returned);
+                    }
+                }
+                if refs.is_empty() {
+                    state.uncertain.remove(&scope);
                 }
             }
         }
@@ -2653,12 +2855,328 @@ mod tests {
         .unwrap();
     }
 
-    async fn answer_receipt(
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn attachment_cancel_before_prepare_closes_without_confirm() {
+        let dir = tempfile::tempdir().unwrap();
+        let channel = HostChannel::new();
+        let attached =
+            HostBridge::attach(channel.clone(), dir.path().into(), Handle::current()).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let (generation, session, _anchor) =
+            progress_host(&attached.bridge, &listener, "root").await;
+        let (_app, mut events) = attachment_driver(&attached, &channel);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            channel
+                .send("test.upload", json!({"generation": generation}))
+                .unwrap();
+            let mut call = accept_upload(&listener, session).await;
+            channel.send("test.leaveUpload", json!("attempt")).unwrap();
+            assert_eq!(events.recv().await.unwrap(), json!({"left":"attempt"}));
+            assert_eq!(events.recv().await.unwrap()["kind"], "cancelled");
+            assert!(matches!(
+                call.next().await,
+                None | Some(Err(_)) | Some(Ok(Message::Close(_)))
+            ));
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn reconnect_recovers_confirmed_upload_ahead_of_stalled_journal_receipts() {
+        let dir = tempfile::tempdir().unwrap();
+        let channel = HostChannel::new();
+        let attached =
+            HostBridge::attach(channel.clone(), dir.path().into(), Handle::current()).unwrap();
+        let bridge = &attached.bridge;
+        save_upload_test_host(bridge).await;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let (generation, session, _anchor) = upload_receipt_connection(bridge, &listener).await;
+        let (_app, mut events) = attachment_driver(&attached, &channel);
+        let scope = ReceiptScope {
+            root: "root".into(),
+            host_peer_id: bridge.peer_id.to_string(),
+        };
+        let journal: Vec<_> = (0..3)
+            .map(|_| json!({"operation":Uuid::new_v4()}))
+            .collect();
+        for reference in &journal {
+            bridge
+                .register_uncertain(generation, scope.clone(), reference.clone())
+                .await;
+        }
+        tokio::time::timeout(Duration::from_secs(5), async {
+            channel
+                .send("test.upload", json!({"generation": generation}))
+                .unwrap();
+            let mut upload = accept_upload(&listener, session).await;
+            let reference = prepare_mutation(&mut upload).await;
+            channel.send("test.leaveUpload", json!("attempt")).unwrap();
+            assert_eq!(events.recv().await.unwrap(), json!({"left":"attempt"}));
+            drop(upload);
+            assert_eq!(
+                events.recv().await.unwrap(),
+                json!({"attemptId":"attempt","phase":"confirming"})
+            );
+            let _old_receipt = accept_receipt(&listener, session, &reference).await;
+            bridge.state.lock().await.remove_connection("root");
+            let (_, reconnected, _new_anchor) = upload_receipt_connection(bridge, &listener).await;
+            let restored = json!({"kind":"uploaded","attachment":{
+                "sessionId":"conversation","id":"original-id","bytes":2,
+                "name":"raw.bin","mimeType":"application/octet-stream",
+            }});
+            // Accept both streams in whichever order they start. The journal
+            // never replies, and all three entries precede the upload.
+            let (first, first_stream) = open_receipt(&listener, reconnected).await;
+            let (second, second_stream) = open_receipt(&listener, reconnected).await;
+            let (mut receipt, _stalled) = if first == reference {
+                assert!(journal.contains(&second));
+                (first_stream, second_stream)
+            } else {
+                assert!(journal.contains(&first));
+                assert_eq!(second, reference);
+                (second_stream, first_stream)
+            };
+            finish_receipt(
+                &mut receipt,
+                &reference,
+                json!({
+                    "kind":"recorded","outcome":{"kind":"returned",
+                        "result":{"kind":"success","value":restored}},
+                }),
+            )
+            .await;
+            assert_eq!(events.recv().await.unwrap(), restored);
+            assert!(
+                tokio::time::timeout(Duration::from_millis(100), listener.accept())
+                    .await
+                    .is_err()
+            );
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn leaving_chat_cancels_queued_upload_without_waiting_for_the_slot() {
+        let dir = tempfile::tempdir().unwrap();
+        let channel = HostChannel::new();
+        let attached =
+            HostBridge::attach(channel.clone(), dir.path().into(), Handle::current()).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let (generation, session, _anchor) =
+            progress_host(&attached.bridge, &listener, "root").await;
+        let (_app, mut events) = attachment_driver(&attached, &channel);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            channel
+                .send("test.upload", json!({"generation":generation}))
+                .unwrap();
+            let mut first = accept_upload(&listener, session).await;
+            let reference = prepare_mutation(&mut first).await;
+            channel
+                .send(
+                    "test.upload",
+                    json!({"generation":generation,"attempt":"queued"}),
+                )
+                .unwrap();
+            channel.send("test.leaveUpload", json!("queued")).unwrap();
+            assert_eq!(events.recv().await.unwrap(), json!({"left":"queued"}));
+            assert_eq!(events.recv().await.unwrap(), json!({"kind":"cancelled"}));
+            assert!(
+                tokio::time::timeout(Duration::from_millis(100), listener.accept())
+                    .await
+                    .is_err()
+            );
+            finish_mutation(&mut first, reference).await;
+            assert_eq!(events.recv().await.unwrap(), "done");
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn upload_receipt_stream_failure_timeout_and_cancel_settle_without_reupload() {
+        enum ReceiptStream {
+            Disconnect,
+            Stall,
+            Cancel,
+        }
+        for fault in [
+            ReceiptStream::Disconnect,
+            ReceiptStream::Stall,
+            ReceiptStream::Cancel,
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let channel = HostChannel::new();
+            let attached =
+                HostBridge::attach(channel.clone(), dir.path().into(), Handle::current()).unwrap();
+            let bridge = &attached.bridge;
+            save_upload_test_host(bridge).await;
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let (generation, session, _anchor) = upload_receipt_connection(bridge, &listener).await;
+            let (_app, mut events) = attachment_driver(&attached, &channel);
+            tokio::time::timeout(Duration::from_secs(10), async {
+                channel
+                    .send("test.upload", json!({"generation": generation}))
+                    .unwrap();
+                let mut upload = accept_upload(&listener, session).await;
+                let reference = prepare_mutation(&mut upload).await;
+                drop(upload);
+                assert_eq!(
+                    events.recv().await.unwrap(),
+                    json!({"attemptId":"attempt","phase":"confirming"})
+                );
+                let receipt = accept_receipt(&listener, session, &reference).await;
+                let (_stalled, deadline) = match fault {
+                    ReceiptStream::Disconnect => {
+                        drop(receipt);
+                        (None, Duration::from_secs(2))
+                    }
+                    ReceiptStream::Stall => (
+                        Some(receipt),
+                        RECEIPT_QUERY_TIMEOUT + Duration::from_secs(2),
+                    ),
+                    ReceiptStream::Cancel => {
+                        channel.send("test.cancelUpload", json!(null)).unwrap();
+                        (Some(receipt), Duration::from_secs(2))
+                    }
+                };
+                let result = tokio::time::timeout(deadline, events.recv())
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(result["kind"], "unconfirmed");
+                assert!(
+                    bridge
+                        .state
+                        .lock()
+                        .await
+                        .current("root", generation)
+                        .is_some()
+                );
+                assert!(
+                    tokio::time::timeout(Duration::from_millis(100), listener.accept())
+                        .await
+                        .is_err(),
+                    "a failed receipt lookup must not start another upload"
+                );
+            })
+            .await
+            .unwrap();
+        }
+    }
+
+    async fn save_upload_test_host(bridge: &Bridge) {
+        bridge.state.lock().await.profiles.insert(
+            "root".into(),
+            serde_json::from_value(json!({
+                "rootId":"root","hostName":"test","hostPeerId":bridge.peer_id.to_string(),
+                "relays":[],"directEndpoints":[],
+            }))
+            .unwrap(),
+        );
+    }
+
+    fn attachment_driver(
+        attached: &HostBridge,
+        channel: &HostChannel,
+    ) -> (
+        nsh_testing::Headless,
+        tokio::sync::mpsc::UnboundedReceiver<Value>,
+    ) {
+        let (send, receive) = tokio::sync::mpsc::unbounded_channel();
+        channel.handle("test.uploadEvent", move |mut call| {
+            send.send(call.take_data()).unwrap();
+        });
+        let mut config =
+            crate::engine_config_with_bridge(channel.clone(), Handle::current(), attached);
+        config.app = nsh_engine::Bundle::source(
+            r#"
+            import { host } from 'nsh';
+            import { iosAttachments } from 'maka/host';
+            host.on('ios.attachmentProgress', event => {
+                if (event.phase === 'confirming') host.post('test.uploadEvent', event);
+            });
+            host.on('test.upload', async ({generation, attempt = 'attempt'}) => {
+                const url = URL.createObjectURL(new File([new Uint8Array([0, 255])], 'raw.bin'));
+                try {
+                    const result = await iosAttachments.upload('root', generation, 'conversation',
+                        attempt, 'raw.bin', url);
+                    host.post('test.uploadEvent', result);
+                } catch (err) {
+                    host.post('test.uploadEvent', {error: String(err)});
+                } finally {
+                    URL.revokeObjectURL(url);
+                }
+            });
+            host.on('test.cancelUpload', () => iosAttachments.cancel('attempt'));
+            host.on('test.leaveUpload', attempt => {
+                iosAttachments.cancelBeforeConfirm(attempt);
+                host.post('test.uploadEvent', {left: attempt});
+            });
+        "#
+            .into(),
+        )
+        .with_capabilities_json(Some(r#"{"host":true}"#))
+        .unwrap()
+        .into();
+        (nsh_testing::Headless::start(config).unwrap(), receive)
+    }
+
+    async fn upload_receipt_connection(
+        bridge: &Bridge,
+        listener: &TcpListener,
+    ) -> (
+        u64,
+        Uuid,
+        tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
+    ) {
+        let generation = bridge
+            .state
+            .lock()
+            .await
+            .start_admission("root", CancellationToken::new());
+        let session = Uuid::new_v4();
+        let endpoint = format!("ws://{}/runtime-host", listener.local_addr().unwrap());
+        let (snapshot, anchor) =
+            tokio::join!(
+                async {
+                    let connection = RemoteHostConnection::connect_websocket(
+                        &endpoint,
+                        TlsTrust::System,
+                        "fixture".into(),
+                        "root",
+                        "test".into(),
+                    )
+                    .await
+                    .unwrap();
+                    bridge
+                        .install(generation, connection, "quic", None)
+                        .await
+                        .unwrap()
+                },
+                async {
+                    let mut anchor = open_anchor(listener).await;
+                    send_frame(&mut anchor, json!({"kind":"connected","value":{
+                    "version":1,"epoch":Uuid::new_v4(),"session":session,
+                    "source":{"stateDomain":"root","deployment":Uuid::new_v4(),"revision":1},
+                    "consumers":{"agent":[Uuid::new_v4()], "receipts":[Uuid::new_v4()]},
+                    "catalogue":{"endpoints":{
+                        "agent":{"registration_epoch":Uuid::new_v4()},
+                        "receipts":{"registration_epoch":Uuid::new_v4()},
+                    }},
+                }})).await;
+                    anchor
+                },
+            );
+        assert_eq!(snapshot["active"]["generation"], generation);
+        (generation, session, anchor)
+    }
+
+    async fn accept_upload(
         listener: &TcpListener,
         session: Uuid,
-        reference: &Value,
-        receipt: Value,
-    ) {
+    ) -> tokio_tungstenite::WebSocketStream<tokio::net::TcpStream> {
         let (socket, _) = listener.accept().await.unwrap();
         let mut ws = accept_async(socket).await.unwrap();
         assert_eq!(
@@ -2667,18 +3185,77 @@ mod tests {
         );
         send_frame(&mut ws, json!({"kind":"accepted"})).await;
         let call = read_frame(&mut ws).await;
-        assert_eq!(call["endpoint"], "receipts");
-        assert_eq!(call["method"], "read");
-        assert_eq!(&call["input"], reference);
-        let _descriptors = read_frame(&mut ws).await;
+        assert_eq!(call["endpoint"], "agent");
+        assert_eq!(call["method"], "uploadAttachment");
+        assert_eq!(call["input"]["bytes"], 2);
+        let resource = read_frame(&mut ws).await;
+        assert_eq!(resource["file"]["encoding"], "bytes");
         send_frame(&mut ws, json!({"kind":"ready"})).await;
+        let mut bytes = Vec::new();
+        while bytes.len() < 6 {
+            let Message::Binary(part) = ws.next().await.unwrap().unwrap() else {
+                panic!("expected binary resource")
+            };
+            bytes.extend_from_slice(&part);
+        }
+        assert_eq!(bytes, [0, 0, 0, 2, 0, 255]);
+        ws
+    }
+
+    async fn answer_receipt(
+        listener: &TcpListener,
+        session: Uuid,
+        reference: &Value,
+        receipt: Value,
+    ) {
+        let mut ws = accept_receipt(listener, session, reference).await;
+        finish_receipt(&mut ws, reference, receipt).await;
+    }
+
+    async fn finish_receipt(
+        ws: &mut tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
+        reference: &Value,
+        receipt: Value,
+    ) {
         send_frame(
-            &mut ws,
+            ws,
             json!({"kind":"finished",
                 "result":{"Ok":{"reference":reference,"receipt":receipt}},
                 "cleanup":{"Ok":null}
             }),
         )
         .await;
+    }
+
+    async fn accept_receipt(
+        listener: &TcpListener,
+        session: Uuid,
+        reference: &Value,
+    ) -> tokio_tungstenite::WebSocketStream<tokio::net::TcpStream> {
+        let (request, ws) = open_receipt(listener, session).await;
+        assert_eq!(&request, reference);
+        ws
+    }
+
+    async fn open_receipt(
+        listener: &TcpListener,
+        session: Uuid,
+    ) -> (
+        Value,
+        tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
+    ) {
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut ws = accept_async(socket).await.unwrap();
+        assert_eq!(
+            read_frame(&mut ws).await["request"]["session"],
+            session.to_string()
+        );
+        send_frame(&mut ws, json!({"kind":"accepted"})).await;
+        let mut call = read_frame(&mut ws).await;
+        assert_eq!(call["endpoint"], "receipts");
+        assert_eq!(call["method"], "read");
+        let _descriptors = read_frame(&mut ws).await;
+        send_frame(&mut ws, json!({"kind":"ready"})).await;
+        (call["input"].take(), ws)
     }
 }

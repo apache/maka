@@ -18,9 +18,11 @@
  */
 
 import {
+  cleanup,
   computed,
   effect,
   keyboardFrame,
+  keymap,
   List,
   openUrl,
   reduceMotion,
@@ -112,6 +114,15 @@ import {
   StatusDot,
 } from '../../ui';
 
+import { createAttachmentComposer } from '../../state/attachments';
+import {
+  AttachmentMenu,
+  AttachmentMenuGlyph,
+  AttachmentStrip,
+  HistoryAttachments,
+  attachmentPickerItems,
+  attachmentStripReserve,
+} from './AttachmentStrip';
 import { DraftQuoteStrip, HistoryQuotes, MessageBody, ReplyActions } from './ChatQuotes';
 import { SideQuestionList } from './ChatSideQuestions';
 import {
@@ -138,6 +149,7 @@ interface DisplayTurn {
   folded?: AgentHistoryChunk;
   groups: AgentHistoryChunk[];
   quotes?: AgentHistoryChunk['quotes'];
+  attachments?: AgentHistoryChunk['attachments'];
 }
 
 interface RoomTranscriptRow {
@@ -183,7 +195,7 @@ function groupHistoryTurns(chunks: readonly AgentHistoryChunk[]): DisplayTurn[] 
   for (const row of assembleHistoryRows(chunks)) {
     const ch = row.first;
     if (ch.role === 'user' && !ch.work) {
-      if (row.text || ch.quotes?.length) {
+      if (row.text || ch.quotes?.length || ch.attachments?.length) {
         turns.push({
           kind: 'agent',
           key: row.key,
@@ -194,6 +206,7 @@ function groupHistoryTurns(chunks: readonly AgentHistoryChunk[]): DisplayTurn[] 
           groups: [],
           bodies: row.text ? [row] : [],
           quotes: ch.quotes,
+          attachments: ch.attachments,
         });
       }
       continue;
@@ -409,7 +422,10 @@ function CollapsibleActivity(props: {
   );
 }
 
-function UserBubble(props: { children?: JSX.Element }) {
+function UserBubble(props: {
+  children?: JSX.Element;
+  attachments?: readonly { name: string; mimeType: string; bytes: number }[];
+}) {
   return (
     <View style={{ alignItems: 'flex-end' }}>
       <View
@@ -424,6 +440,7 @@ function UserBubble(props: { children?: JSX.Element }) {
         }}
       >
         {props.children}
+        <HistoryAttachments items={props.attachments ?? []} />
       </View>
     </View>
   );
@@ -455,26 +472,31 @@ function RoomTranscriptItem(props: { message: AgentRoomMessage }) {
             : { width: '100%' }
         }
       >
-        <If
-          when={isHuman()}
-          else={
-            <TextView
-              markdown={props.message.content.text}
-              selectable
-              styles={{
-                paragraph: {
-                  color: token('foreground'),
-                  fontSize: 16,
-                  lineHeight: 24,
-                },
-              }}
-              onLinkPress={({ url }) => void openUrl(url)}
-            />
-          }
-        >
-          <Text style={{ ...type.body, color: token('foreground') }}>
-            {props.message.content.text}
-          </Text>
+        <If when={props.message.content.text}>
+          <If
+            when={isHuman()}
+            else={
+              <TextView
+                markdown={props.message.content.text}
+                selectable
+                styles={{
+                  paragraph: {
+                    color: token('foreground'),
+                    fontSize: 16,
+                    lineHeight: 24,
+                  },
+                }}
+                onLinkPress={({ url }) => void openUrl(url)}
+              />
+            }
+          >
+            <Text style={{ ...type.body, color: token('foreground') }}>
+              {props.message.content.text}
+            </Text>
+          </If>
+        </If>
+        <If when={props.message.deletedAt == null}>
+          <HistoryAttachments items={props.message.content.attachments} />
         </If>
       </View>
     </View>
@@ -600,10 +622,10 @@ export function ChatScreen(
 
   const atBottom = signal(true);
   const queueExpanded = signal(false);
-  const pendingSheetOpen = signal(false);
+  const composerSheet = signal<'quotes' | 'pending' | 'attachments' | null>(null);
   const openQueue = () => {
     queueExpanded.set(true);
-    pendingSheetOpen.set(true);
+    composerSheet.set('pending');
   };
   const followLatest = signal(true);
   let transcriptRef: ListRef | undefined;
@@ -633,7 +655,7 @@ export function ChatScreen(
       : turns(),
   );
   const isRunning = () => ctrl.observation()?.run != null;
-  const canQueue = () => !sideDraft && isRunning() && ctrl.hasDraftContent();
+  const canQueue = () => !sideDraft && isRunning() && ctrl.canDeliver();
   const hostOnline = () => isHostConnected(rootId);
   const connectionProgress = () => hostConnectionProgress(rootId);
   const draft = () => getDraft(rootId, sessionId);
@@ -643,14 +665,30 @@ export function ChatScreen(
   const editComposer = (text: string) =>
     sideDraft ? sideDraft.text.set(text) : setDraft(rootId, sessionId, text);
   const quoteLimitReached = () => quotes().length >= quoteLimit;
-  const canSend = () =>
-    sideDraft ? sideDraft.canSend() : ctrl.hasDraftContent() && !ctrl.sending();
+  const canSend = () => (sideDraft ? sideDraft.canSend() : ctrl.canDeliver());
   const send = (delivery: SendDelivery = 'steer') => {
+    if (!canSend()) return;
     if (sideDraft) void sideDraft.submit();
     else
       void ctrl.sendMessage(delivery).then((sent) => {
         if (sent && props.active()) scrollToBottom(false);
       });
+  };
+  let unbindSend: (() => void) | undefined;
+  const unbindComposerSend = () => {
+    unbindSend?.();
+    unbindSend = undefined;
+  };
+  cleanup(unbindComposerSend);
+  const bindComposerSend = () => {
+    unbindComposerSend();
+    unbindSend = keymap.bind(
+      'mod+enter',
+      () => {
+        if (props.active()) send();
+      },
+      { when: 'always' },
+    );
   };
 
   const sendButton = () => (
@@ -680,6 +718,16 @@ export function ChatScreen(
   );
 
   const generation = computed(() => activeHostInfo(rootId)?.generation);
+  const attachments = sideDraft
+    ? undefined
+    : createAttachmentComposer(rootId, sessionId, props.active, generation);
+  const attachmentCount = () => attachments?.items().length ?? 0;
+  const attachmentFailed = () =>
+    attachments?.items().some((item) => item.kind === 'failed') ?? false;
+  const attachmentLabel = () =>
+    tr(attachmentFailed() ? 'Attachments ({count}) · Upload failed' : 'Attachments ({count})', {
+      count: attachmentCount(),
+    });
   const canAskSide = computed(
     () =>
       !sideDraft &&
@@ -1153,7 +1201,7 @@ export function ChatScreen(
         </View>
       }
     >
-      <UserBubble>
+      <UserBubble attachments={props.turn.attachments}>
         <HistoryQuotes quotes={props.turn.quotes ?? []} />
         <Each of={props.turn.bodies} key={(row) => row.key}>
           {(row) => (
@@ -1319,7 +1367,6 @@ export function ChatScreen(
       queueCount() ? tr('Queued Messages ({count})', { count: queueCount() }) : tr('Pending');
     const showLatest = () => !atBottom() && hasLivePreview();
     const jumpToLatest = () => scrollToBottom(!reduceMotion());
-    const quoteSheetOpen = signal(false);
 
     // Leave room for the input at full height, context and at least two lines of transcript.
     // On short pages the secondary controls move into a menu, not on top of the reader.
@@ -1327,17 +1374,19 @@ export function ChatScreen(
       () =>
         pageHeight() - insets().top - bottomInset() <
         228 +
+          (attachmentCount() ? attachmentStripReserve() : 0) +
           (hasReferences() ? (canAskFromTray() ? 152 : 104) : 0) +
           // Reserve the expanded dock too, so opening it cannot change the mode.
           (hasQueueDock() && !sideDraft ? pendingDockLimits.queue : 0) +
           (hasDeliveryDock() && !sideDraft ? pendingDockLimits.delivery : 0) +
           (hasLivePreview() ? 44 : 0),
     );
-    const inlineDock = () => !pendingSheetOpen() && (!compact() || !!queueEditor());
+    const inlineDock = () => composerSheet() !== 'pending' && (!compact() || !!queueEditor());
     effect(() => {
       // A keyboard-only resize must not reparent the focused editor.
       // An actual rotation to a short page may move it to the sheet.
-      if (queueEditor() && pageHeight() < 400) pendingSheetOpen.set(true);
+      if (queueEditor() && pageHeight() < 400 && composerSheet() === null)
+        composerSheet.set('pending');
     });
     const bottomGap = () => (compact() ? 6 : 8);
     const composerMinHeight = 48;
@@ -1350,6 +1399,16 @@ export function ChatScreen(
     const tailGap = () =>
       compact() && !hasLivePreview() && !inlineInteractions().length ? 4 - transcriptGap : 8;
     const compactItems = (): MenuButtonItem[] => [
+      ...(attachments ? attachmentPickerItems(!attachments.canPick()) : []),
+      ...(attachmentCount()
+        ? [
+            {
+              id: 'attachments',
+              label: attachmentLabel(),
+              icon: attachmentFailed() ? 'exclamationmark.triangle' : 'paperclip',
+            },
+          ]
+        : []),
       ...(hasReferences() ? [{ id: 'quotes', label: tr('Quote'), icon: 'quote.bubble' }] : []),
       ...(hasPendingDock() && !inlineDock()
         ? [{ id: 'pending', label: pendingDockLabel(), icon: 'tray' }]
@@ -1376,17 +1435,17 @@ export function ChatScreen(
           hostOnline() && canAskFromTray()
             ? {
                 ask: () => {
-                  quoteSheetOpen.set(false);
+                  composerSheet.set(null);
                   askSide(traySource);
                 },
                 send: () => {
-                  quoteSheetOpen.set(false);
+                  composerSheet.set(null);
                   send();
                 },
                 canSend: canSend(),
                 queue: canQueue()
                   ? () => {
-                      quoteSheetOpen.set(false);
+                      composerSheet.set(null);
                       send('queue');
                     }
                   : undefined,
@@ -1406,7 +1465,7 @@ export function ChatScreen(
         running={isRunning()}
         generation={generation()}
         focusComposer={() => {
-          pendingSheetOpen.set(false);
+          composerSheet.set(null);
           inputRef?.focus();
         }}
       />
@@ -1561,7 +1620,7 @@ export function ChatScreen(
             <View style={{ gap: 16 }}>
               <Each of={ctrl.optimisticSends()} key={(send) => send.id}>
                 {(send) => (
-                  <UserBubble>
+                  <UserBubble attachments={send().draft.attachments}>
                     <HistoryQuotes
                       quotes={send().draft.quotes.map(({ reference }) => ({
                         ...reference,
@@ -1732,6 +1791,9 @@ export function ChatScreen(
 
           <If when={inlineDock() && hasPendingDock()}>{pendingDock(false)}</If>
           <If when={!compact() && hasReferences()}>{quoteStrip()}</If>
+          <If when={attachments && !compact() && attachmentCount()}>
+            <AttachmentStrip composer={attachments!} />
+          </If>
           <View
             style={{
               flexDirection: 'row',
@@ -1740,6 +1802,9 @@ export function ChatScreen(
               pointerEvents: 'box-none',
             }}
           >
+            <If when={attachments && !compact()}>
+              <AttachmentMenu composer={attachments!} failed={attachmentFailed()} />
+            </If>
             <If when={compact() && compactItems().length}>
               <MenuButton
                 testID="chat-composer-actions"
@@ -1747,7 +1812,9 @@ export function ChatScreen(
                 items={compactItems()}
                 onSelect={({ id }) => {
                   if (id === 'latest') jumpToLatest();
-                  else if (id === 'quotes') quoteSheetOpen.set(true);
+                  else if (id === 'quotes') composerSheet.set('quotes');
+                  else if (id === 'attachments') composerSheet.set('attachments');
+                  else if (id === 'photos' || id === 'files') void attachments?.pick(id);
                   else if (id === 'pending') openQueue();
                 }}
                 activeStyle={{ backgroundColor: token('glass-pressed-bg') }}
@@ -1759,7 +1826,7 @@ export function ChatScreen(
                   justifyContent: 'center',
                 }}
               >
-                <Icon name="more" size={20} color={token('glass-foreground')} />
+                <AttachmentMenuGlyph compact failed={attachmentFailed()} />
               </MenuButton>
             </If>
             <If
@@ -1863,6 +1930,8 @@ export function ChatScreen(
                     }
                     disabled={sideDraft?.busy()}
                     ios={sideDraft ? undefined : { inputAccessoryViewID: accessoryId }}
+                    onFocus={bindComposerSend}
+                    onBlur={unbindComposerSend}
                     onChange={({ value }) => editComposer(value)}
                     style={{
                       ...type.body,
@@ -2029,22 +2098,32 @@ export function ChatScreen(
           />
         </If>
 
-        <If when={quoteSheetOpen()}>
+        <If when={composerSheet() === 'quotes'}>
           <ComposerSheet
             title={tr('Quote')}
             scrollId="chat-quote-sheet-scroll"
-            onClose={() => quoteSheetOpen.set(false)}
+            onClose={() => composerSheet.set(null)}
           >
             {quoteStrip()}
           </ComposerSheet>
         </If>
 
-        <If when={pendingSheetOpen()}>
+        <If when={attachments && composerSheet() === 'attachments'}>
+          <ComposerSheet
+            title={attachmentLabel()}
+            scrollId="chat-attachments-sheet-scroll"
+            onClose={() => composerSheet.set(null)}
+          >
+            <AttachmentStrip composer={attachments!} sheet />
+          </ComposerSheet>
+        </If>
+
+        <If when={composerSheet() === 'pending'}>
           <ComposerSheet
             title={tr('Pending')}
             scrollId="chat-pending-sheet-scroll"
             editing={!!queueEditor()}
-            onClose={() => pendingSheetOpen.set(false)}
+            onClose={() => composerSheet.set(null)}
           >
             {pendingDock(true)}
           </ComposerSheet>
