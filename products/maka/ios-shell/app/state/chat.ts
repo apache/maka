@@ -22,6 +22,7 @@ import { batch, cleanup, computed, effect, signal, untracked } from 'nsh';
 import {
   hostMutate,
   hostQuery,
+  MutationNotSubmitted,
   watchHost,
   type AgentBackendPreference,
   type AgentDeliveryPage,
@@ -33,7 +34,11 @@ import {
   type AgentInteractionSummary,
   type AgentModelChoice,
   type AgentMetadataResult,
+  type AgentQueueAction,
+  type AgentQueueEntry,
+  type AgentQueueMessageResult,
   type AgentQueueMutationResult,
+  type AgentRun,
   type AgentObservation,
   type AgentQueue,
   type AgentRoomMessage,
@@ -566,89 +571,198 @@ export async function fetchGitWorkspaceDiff(
   );
 }
 
-// Snapshot and consume only the submitted draft, whether this is the first side question or a normal send.
+export type SendDelivery = 'steer' | 'queue';
+
+type DraftContent = Pick<Draft, 'input' | 'quotes' | 'links'>;
+type SendTarget = {
+  backend: AgentBackendPreference | null;
+  expectedRunId: AgentRun['runId'] | null;
+};
+
+function sendText(snapshot: DraftContent) {
+  return [trimHostWhitespace(snapshot.input.text), ...snapshot.links.map(sessionInvocation)]
+    .filter(Boolean)
+    .join(' ');
+}
+
+function consumeDraft(rootId: string, sessionId: string, snapshot: DraftContent) {
+  const sentQuoteIds = new Set(snapshot.quotes.map((quote) => quote.id));
+  updateDraft(rootId, sessionId, (draft) => ({
+    ...draft,
+    input: draft.input === snapshot.input ? emptyDraft.input : draft.input,
+    quotes: draft.quotes.filter((quote) => !sentQuoteIds.has(quote.id)),
+    links: draft.links.filter((link) => !snapshot.links.includes(link)),
+  }));
+}
+
+async function sendBackend(
+  rootId: string,
+  connection: NonNullable<ReturnType<typeof activeHostInfo>>,
+  backend: AgentBackendPreference | null,
+) {
+  let selected = backend;
+  if (!selected && connection.endpoints.includes('settings')) {
+    const choice = await readDefaultModel(settingsRpc(rootId));
+    selected = choice ? modelBackend(choice) : null;
+  }
+  if (!selected) throw new Error(tr('Select model'));
+  return selected;
+}
+
+function deliverDraft(
+  rootId: string,
+  sessionId: string,
+  generation: number,
+  room: boolean,
+  draft: DraftContent,
+  target: SendTarget,
+  delivery: SendDelivery,
+  onRoomPostPrepared?: (messageId: string) => void,
+) {
+  return hostMutate<AgentSendResult>(
+    'agent',
+    'send',
+    {
+      mentions: [],
+      replyTo: null,
+      onComplete: null,
+      ...(!room && { quotes: draft.quotes.map((quote) => quote.reference) }),
+      delivery,
+      ...target,
+      attachments: [],
+      sessionId,
+      message: sendText(draft),
+    },
+    {
+      rootId,
+      generation,
+      ...(onRoomPostPrepared && {
+        prepareRoomPost: true,
+        onProgress: ({ value }) => {
+          const event = value as { kind: string; messageId?: string } | null;
+          if (event?.kind === 'room_post_prepared' && typeof event.messageId === 'string')
+            onRoomPostPrepared(event.messageId);
+        },
+      }),
+    },
+  );
+}
+
+function sendRejection(result: Extract<AgentSendResult, { kind: 'rejected' | 'not_your_worker' }>) {
+  switch (result.kind === 'rejected' ? result.reason : result.kind) {
+    case 'turn_stopped':
+      return stoppedSend();
+    case 'workspace_unavailable':
+      return tr('Not sent. Choose a workspace, then retry.');
+    case 'model_unavailable':
+      return tr('The selected model is unavailable. Try again or choose another model.');
+    case 'original_operation_unsettled':
+      return tr(
+        'Message was not sent because the previous run is unsettled. Your message is kept.',
+      );
+    case 'skills_unavailable':
+      return tr('The requested skill is unavailable. Edit the message or try again.');
+    case 'not_your_worker':
+      return tr('Could not send the message.');
+  }
+}
+
+const stoppedSend = () => tr('Stopped before delivery. Your message is kept.');
+
+const unconfirmedSend = () =>
+  tr(
+    'Could not confirm whether the message was sent. Check the conversation or queue before retrying.',
+  );
+
+// The fork receipt owns the first side-question send before its chat is mounted.
 export async function sendDraft(
   rootId: string,
   sessionId: string,
-  room: boolean,
-  selectedBackend: (generation: number) => Promise<AgentBackendPreference | null | false>,
-  current = () => true,
-  onError?: (message: string) => void,
+  backend: AgentBackendPreference | null,
+  delivery: SendDelivery = 'steer',
 ): Promise<boolean> {
   const snapshot = getDraft(rootId, sessionId);
-  const quotes = room ? undefined : snapshot.quotes;
-  const links = room ? [] : snapshot.links;
-  const text = [trimHostWhitespace(snapshot.input.text), ...links.map(sessionInvocation)]
-    .filter(Boolean)
-    .join(' ');
-  if (snapshot.sending || (!text && !quotes?.length)) return false;
+  if (snapshot.sending || (!sendText(snapshot) && !snapshot.quotes.length)) return false;
   updateDraft(rootId, sessionId, (draft) => ({ ...draft, sending: true }));
   const fail = (message: string) => {
     hapticNotification('error');
-    if (current()) onError?.(message);
     showToast(message);
     return false;
   };
   try {
     const connection = activeHostInfo(rootId);
     if (!connection) return fail(tr('Computer is offline'));
-    const { generation } = connection;
-    let backend = room ? null : await selectedBackend(generation);
-    if (backend === false || !current()) return false;
-    if (!room && !backend && connection.endpoints.includes('settings')) {
-      const choice = await readDefaultModel(settingsRpc(rootId));
-      backend = choice ? modelBackend(choice) : null;
-    }
-    if (!current()) return false;
-    if (activeHostInfo(rootId)?.generation !== generation) return fail(tr('Computer is offline'));
-    if (!room && !backend) return fail(tr('Select model'));
-    let res: AgentSendResult;
+    const selected = await sendBackend(rootId, connection, backend);
+    if (activeHostInfo(rootId)?.generation !== connection.generation)
+      return fail(tr('Computer is offline'));
+    let result: AgentSendResult;
     try {
-      res = await hostMutate<AgentSendResult>(
-        'agent',
-        'send',
-        {
-          mentions: [],
-          replyTo: null,
-          onComplete: null,
-          ...(quotes && { quotes: quotes.map((quote) => quote.reference) }),
-          delivery: 'queue',
-          expectedRunId: null,
-          attachments: [],
-          backend,
-          sessionId,
-          message: text,
-        },
-        { rootId, generation },
+      result = await deliverDraft(
+        rootId,
+        sessionId,
+        connection.generation,
+        false,
+        snapshot,
+        { backend: selected, expectedRunId: null },
+        delivery,
       );
     } catch (cause) {
       console.warn('Could not confirm send result', cause);
       return fail(
-        tr(
-          'Could not confirm whether the message was sent. Check the conversation or queue before retrying.',
-        ),
+        cause instanceof MutationNotSubmitted
+          ? tr('Could not send the message.')
+          : unconfirmedSend(),
       );
     }
-    if (res.kind === 'rejected' || res.kind === 'not_your_worker') {
-      console.warn('Host declined send', res.kind === 'rejected' ? res.reason : res.kind);
+    if (result.kind === 'rejected' || result.kind === 'not_your_worker')
       return fail(tr('Could not send the message.'));
-    }
-    const sentQuoteIds = new Set(quotes?.map((quote) => quote.id));
-    updateDraft(rootId, sessionId, (draft) => ({
-      ...draft,
-      input: draft.input === snapshot.input ? emptyDraft.input : draft.input,
-      quotes: draft.quotes.filter((quote) => !sentQuoteIds.has(quote.id)),
-      links: draft.links.filter((link) => !links.includes(link)),
-    }));
+    consumeDraft(rootId, sessionId, snapshot);
+    hapticSelection();
+    void refreshHostSessions(rootId, hostById(rootId)?.hostName ?? rootId);
+    return true;
   } catch (cause) {
     console.warn('Could not send message', cause);
-    return fail(tr('Could not send the message.'));
+    return fail(cause instanceof Error ? cause.message : tr('Could not send the message.'));
   } finally {
     updateDraft(rootId, sessionId, (draft) => ({ ...draft, sending: false }));
   }
-  hapticSelection();
-  void refreshHostSessions(rootId, hostById(rootId)?.hostName ?? rootId);
-  return true;
+}
+
+type ComposerSend = {
+  id: number;
+  generation: number;
+  historyThrough: number;
+  draft: DraftContent;
+  delivery: SendDelivery;
+} & (
+  | { state: 'sending'; startsRun: boolean; messageId?: string }
+  | { state: 'queued'; startsRun: boolean; messageId: string; revision: number }
+  | { state: 'started'; messageId: string }
+  | { state: 'failed' | 'unknown'; detail: string; messageId?: string }
+);
+
+type QueueSnapshot = { generation: number; value: AgentQueue };
+type SteeringObservation = { entry: AgentQueueEntry; historyThrough: number; withheldBy?: number };
+type DeliveryCheck = { generation: number } & (
+  | { kind: 'pending' | 'checked'; revision: number }
+  | { kind: 'interrupted'; snapshot: QueueSnapshot }
+  | { kind: 'delivered'; historyThrough: number }
+);
+
+const sentMessageId = (send: ComposerSend) => ('messageId' in send ? send.messageId : undefined);
+
+const emptySends: readonly ComposerSend[] = [];
+// Like drafts, undelivered messages survive leaving and reopening this chat.
+const sendsByChat = signal<Record<string, readonly ComposerSend[]>>({});
+let nextSendId = 0;
+
+export function sendPreview(draft: DraftContent) {
+  return (
+    trimHostWhitespace(draft.input.text) ||
+    draft.quotes[0]?.reference.text ||
+    draft.links[0]?.title ||
+    ''
+  );
 }
 
 let watchSeq = 0;
@@ -689,7 +803,155 @@ export function createConversationController(
     return pending?.generation === activeHostInfo(rootId)?.generation ? pending : null;
   };
   const error = signal<string | null>(null);
-  const queue = signal<AgentQueue>({ revision: 0, entries: [] });
+  const queueSnapshot = signal<QueueSnapshot | null>(null);
+  const queue = () => {
+    const snapshot = queueSnapshot();
+    return snapshot && snapshot.generation === activeHostInfo(rootId)?.generation
+      ? snapshot.value
+      : undefined;
+  };
+  const visibleQueue = computed(
+    () =>
+      queue()?.entries.filter(
+        (entry) => entry.kind !== 'in_flight' && entry.origin?.kind !== 'session_completion',
+      ) ?? [],
+  );
+  const queuedMessages = computed(() =>
+    visibleQueue().filter((entry) => entry.kind === 'followup' || entry.kind === 'held'),
+  );
+  const key = conversationKey(rootId, sessionId);
+  const observedSteering = signal<ReadonlyMap<string, SteeringObservation>>(new Map());
+  const deliveryChecks = new Map<string, DeliveryCheck>();
+  const composerSends = computed(() => sendsByChat()[key] ?? emptySends);
+  const updateSends = (update: (sends: readonly ComposerSend[]) => readonly ComposerSend[]) => {
+    sendsByChat.update((all) => {
+      const current = all[key] ?? emptySends;
+      const next = update(current);
+      if (next === current) return all;
+      const updated = { ...all };
+      if (next.length) updated[key] = next;
+      else delete updated[key];
+      return updated;
+    });
+  };
+
+  const transcriptMessageIds = computed(
+    () =>
+      new Set<string>(
+        isRoom()
+          ? (roomMessages() ?? []).map((row) => row.id)
+          : (chunks() ?? []).flatMap((chunk) =>
+              chunk.role === 'user' && chunk.messageId != null ? [chunk.messageId] : [],
+            ),
+      ),
+  );
+  // Until the RPC supplies a message ID, hold back newly projected rows,
+  // not rows with matching text: repeated prompts are different messages.
+  const unacknowledgedIdle = computed(() =>
+    composerSends().find(
+      (send) =>
+        send.state === 'sending' &&
+        send.startsRun &&
+        send.generation === activeHostInfo(rootId)?.generation,
+    ),
+  );
+  const visibleChunks = computed(() => {
+    const rows = chunks() ?? [];
+    const send = unacknowledgedIdle();
+    return send
+      ? rows.filter(
+          ({ position }) => position?.kind !== 'live' || position.sequence <= send.historyThrough,
+        )
+      : rows;
+  });
+  // Never hide a Room post. The bridge supplies our exact ID before confirming
+  // the mutation; handoff can then use identity even before the final receipt.
+  const visibleRoomMessages = computed(() => roomMessages() ?? []);
+  const unacknowledgedSteer = computed(() =>
+    composerSends().find(
+      (send) => send.state === 'sending' && send.delivery === 'steer' && !send.startsRun,
+    ),
+  );
+  const handedOff = computed(() => {
+    const sends = composerSends();
+    if (!sends.some(sentMessageId)) return emptySends;
+    const revision = queue()?.revision ?? -1;
+    const generation = activeHostInfo(rootId)?.generation;
+    const queuedIds = new Set(queuedMessages().map((entry) => entry.messageId));
+    const delivered = transcriptMessageIds();
+    return sends.filter((send) => {
+      const id = sentMessageId(send);
+      return (
+        id !== undefined &&
+        (delivered.has(id) ||
+          (send.state === 'queued' &&
+            queuedIds.has(id) &&
+            (send.generation !== generation || revision >= send.revision)))
+      );
+    });
+  });
+  effect(() => {
+    const settled = handedOff();
+    if (!settled.length) return;
+    const ids = new Set(settled.map((send) => send.id));
+    updateSends((sends) => sends.filter((send) => !ids.has(send.id)));
+  });
+
+  const projectsInTranscript = (send: ComposerSend) => {
+    if (send.state === 'sending') return send.startsRun;
+    if (send.state !== 'started' && !(send.state === 'queued' && send.startsRun)) return false;
+    // A paginated tail can have advanced past an accepted send while this
+    // chat was closed. Keep it in the dock while checking that delivery.
+    const head = chunks()?.[0]?.position;
+    return (
+      earlierHistory()?.kind !== 'agent' ||
+      head?.kind !== 'live' ||
+      head.sequence <= send.historyThrough
+    );
+  };
+  const remainingSends = computed(() => {
+    const hidden = new Set(handedOff());
+    return composerSends().filter((send) => !hidden.has(send));
+  });
+  const optimisticSends = computed(() => remainingSends().filter(projectsInTranscript));
+  const pendingSends = computed(() =>
+    remainingSends().filter((send) => !projectsInTranscript(send)),
+  );
+  const isWithheld = (steering: SteeringObservation) =>
+    steering.withheldBy !== undefined && steering.withheldBy === unacknowledgedSteer()?.id;
+  const steeringMessages = computed(() => {
+    const steering = observedSteering();
+    if (!steering.size) return [];
+    const delivered = transcriptMessageIds();
+    const localIds = new Set(composerSends().map(sentMessageId));
+    return [...steering.values()]
+      .filter(
+        (item) =>
+          !isWithheld(item) &&
+          !localIds.has(item.entry.messageId) &&
+          !delivered.has(item.entry.messageId),
+      )
+      .map(({ entry }) => entry);
+  });
+  const forgetSteering = (ids: ReadonlySet<string>) =>
+    observedSteering.update((previous) => {
+      if (![...ids].some((id) => previous.has(id))) return previous;
+      const next = new Map(previous);
+      for (const id of ids) next.delete(id);
+      return next;
+    });
+  const retireDelivered = (ids: ReadonlySet<string>) => {
+    if (!ids.size) return;
+    batch(() => {
+      forgetSteering(ids);
+      updateSends((sends) =>
+        sends.filter((send) => {
+          const id = sentMessageId(send);
+          return id === undefined || !ids.has(id);
+        }),
+      );
+    });
+  };
   const pendingInteractions = signal<AgentInteractionRecord[]>([]);
   const models = signal<AgentModelChoice[]>([]);
   const busyInteractionIds = signal<Record<string, boolean>>({});
@@ -821,6 +1083,18 @@ export function createConversationController(
   const refreshTail = async () => {
     const generation = activeHostInfo(rootId)?.generation;
     const current = () => !disposed && activeHostInfo(rootId)?.generation === generation;
+    // Only a read dispatched after delivery was confirmed can use a
+    // truncated window as evidence that the message is now outside it.
+    const confirmedPosts = new Set<string>();
+    const confirmedSteers = new Map<string, number>();
+    if (isRoom()) {
+      for (const send of composerSends())
+        if (send.state === 'started') confirmedPosts.add(send.messageId);
+    } else {
+      for (const [id, check] of deliveryChecks)
+        if (check.kind === 'delivered' && check.generation === generation)
+          confirmedSteers.set(id, check.historyThrough);
+    }
     try {
       const page = await queryHistory({ kind: 'tail' }, null);
       if (!current()) return;
@@ -843,7 +1117,9 @@ export function createConversationController(
             roomMessages.set(tail);
             earlierHistory.set(before == null ? null : { kind: 'room', cursor: before });
           }
+          if (generation !== undefined) historyFence.set({ generation, through });
           lastThrough = Math.max(lastThrough ?? 0, through);
+          if (before != null) retireDelivered(confirmedPosts);
         });
       } else {
         const existing = chunks() ?? [];
@@ -908,6 +1184,12 @@ export function createConversationController(
             }
           }
           if (through !== null) lastThrough = Math.max(lastThrough ?? 0, through);
+          const head = chunks()?.[0]?.position;
+          if (before != null && head?.kind === 'live') {
+            const pagedOut = new Set<string>();
+            for (const [id, fence] of confirmedSteers) if (head.sequence > fence) pagedOut.add(id);
+            retireDelivered(pagedOut);
+          }
         });
       }
       const handoff = !historyDirty && accumulator.completeHandoffIfPending();
@@ -1006,16 +1288,194 @@ export function createConversationController(
       subId,
       'watch',
       { sessionId, after: lastThrough ?? 0 },
-      applyWatchItem,
+      (page) => applyWatchItem(page, gen),
       (cause) => console.warn('Could not watch conversation', cause),
     );
   };
+
+  const isCurrent = (generation: number) =>
+    !disposed && activeHostInfo(rootId)?.generation === generation;
+
+  const applyQueue = (value: AgentQueue, generation: number) => {
+    if (!isCurrent(generation) || !(value.revision >= (queue()?.revision ?? -1))) return;
+    batch(() => {
+      queueSnapshot.set({ generation, value });
+      observedSteering.update((previous) => {
+        const delivered = previous.size ? transcriptMessageIds() : null;
+        const next = new Map(previous);
+        if (delivered) for (const id of next.keys()) if (delivered.has(id)) next.delete(id);
+        for (const entry of value.entries) {
+          if (entry.kind === 'steering' && entry.origin?.kind !== 'session_completion') {
+            if (!transcriptMessageIds().has(entry.messageId)) {
+              // Keep the existing remote pills; only new contenders wait for
+              // a local receipt to tell us which one belongs to our send.
+              const existing = next.get(entry.messageId);
+              next.set(entry.messageId, {
+                entry,
+                historyThrough: existing?.historyThrough ?? historyFence()?.through ?? 0,
+                withheldBy: existing ? existing.withheldBy : unacknowledgedSteer()?.id,
+              });
+            }
+          } else if (entry.kind !== 'in_flight') {
+            next.delete(entry.messageId);
+          }
+        }
+        return next;
+      });
+    });
+  };
+
+  const queryQueue = () =>
+    hostQuery<AgentQueue>('agent', 'queue', { sessionId }, undefined, rootId);
+  const loadQueue = async (generation: number) => applyQueue(await queryQueue(), generation);
+  const refreshQueue = async (generation = activeHostInfo(rootId)?.generation) => {
+    if (isRoom() || generation === undefined || !isCurrent(generation)) return;
+    try {
+      await loadQueue(generation);
+    } catch (cause) {
+      console.warn('Could not read the message queue', cause);
+      if (isCurrent(generation)) showToast(tr('Could not load the message queue.'));
+    }
+  };
+
+  const queueMessage = (messageId: string, expectedRevision: number) =>
+    hostQuery<AgentQueueMessageResult>(
+      'agent',
+      'queueMessage',
+      { sessionId, messageId, expectedRevision },
+      undefined,
+      rootId,
+    );
+
+  const recoverDelivery = (messageId: string, cancelled: boolean) => {
+    const send = composerSends().find((item) => sentMessageId(item) === messageId);
+    if (!send) {
+      if (cancelled) forgetSteering(new Set([messageId]));
+      return;
+    }
+    const { id, generation, historyThrough, draft, delivery } = send;
+    const problem: ComposerSend = {
+      id,
+      generation,
+      historyThrough,
+      draft,
+      delivery,
+      messageId,
+      state: cancelled ? 'failed' : 'unknown',
+      detail: cancelled ? stoppedSend() : unconfirmedSend(),
+    };
+    batch(() => {
+      forgetSteering(new Set([messageId]));
+      updateSends((sends) => sends.map((item) => (item === send ? problem : item)));
+    });
+  };
+
+  const checkFinished = signal(0);
+  effect(() => {
+    const snapshot = queueSnapshot();
+    if (!snapshot || !isCurrent(snapshot.generation) || isRoom()) return;
+    const { generation, value } = snapshot;
+    const local = remainingSends();
+    const steering = observedSteering();
+    checkFinished();
+    if (!local.length && !steering.size && !deliveryChecks.size) return;
+
+    const delivered = transcriptMessageIds();
+    const present = new Set(value.entries.map((entry) => entry.messageId));
+    const missing = new Set<string>();
+    const landedSteering = new Set<string>();
+    for (const [id, entry] of steering) {
+      if (delivered.has(id)) landedSteering.add(id);
+      else if (!present.has(id) && !isWithheld(entry)) missing.add(id);
+    }
+    if (landedSteering.size) forgetSteering(landedSteering);
+    for (const send of local) {
+      const id = sentMessageId(send);
+      if (id === undefined || send.state === 'failed' || present.has(id)) continue;
+      if (
+        send.state === 'queued' &&
+        send.generation === generation &&
+        value.revision < send.revision
+      )
+        continue;
+      missing.add(id);
+    }
+    for (const [id, check] of deliveryChecks) {
+      if (!missing.has(id) && check.kind !== 'pending') deliveryChecks.delete(id);
+    }
+    for (const id of missing) {
+      const previous = deliveryChecks.get(id);
+      if (
+        previous?.generation === generation &&
+        (previous.kind === 'pending' ||
+          previous.kind === 'delivered' ||
+          (previous.kind === 'checked' && previous.revision === value.revision) ||
+          (previous.kind === 'interrupted' && previous.snapshot === snapshot))
+      )
+        continue;
+
+      const check: DeliveryCheck = { generation, kind: 'pending', revision: value.revision };
+      deliveryChecks.set(id, check);
+      const interruptCheck = () => {
+        if (!isCurrent(generation)) return;
+        // A new snapshot can retry even at this revision; don't spin on this one.
+        if (queueSnapshot() !== snapshot) {
+          deliveryChecks.delete(id);
+          return;
+        }
+        deliveryChecks.set(id, { generation, kind: 'interrupted', snapshot });
+        recoverDelivery(id, false);
+      };
+      void (async () => {
+        try {
+          const result = await queueMessage(id, check.revision);
+          if (!isCurrent(generation)) return;
+          if (result.kind === 'revision_conflict') {
+            if ((queue()?.revision ?? -1) < result.actual) {
+              const refreshed = await queryQueue();
+              // A refresh that did not reach the reported revision must not
+              // publish another copy of the very snapshot that conflicted.
+              if (refreshed.revision >= result.actual) applyQueue(refreshed, generation);
+            }
+            interruptCheck();
+            return;
+          }
+          if (result.kind !== 'missing') return;
+          if (result.reason === 'delivered') {
+            const send = composerSends().find((item) => sentMessageId(item) === id);
+            deliveryChecks.set(id, {
+              generation,
+              kind: 'delivered',
+              historyThrough: send?.historyThrough ?? steering.get(id)?.historyThrough ?? 0,
+            });
+            void loadHistory();
+          } else if (result.reason === 'cancelled' || queue()?.revision === check.revision) {
+            recoverDelivery(id, result.reason === 'cancelled');
+          }
+        } catch (cause) {
+          if (!isCurrent(generation)) return;
+          console.warn('Could not verify message delivery', cause);
+          interruptCheck();
+        } finally {
+          if (deliveryChecks.get(id) === check)
+            deliveryChecks.set(id, { generation, kind: 'checked', revision: value.revision });
+          if (isCurrent(generation)) checkFinished.update((n) => n + 1);
+        }
+      })();
+    }
+  });
 
   const refreshAll = async () => {
     error.set(null);
     loading.set(true);
     try {
-      await Promise.all([loadObserve(), loadHistory(), loadInteractions(), loadModels()]);
+      await Promise.all([
+        loadObserve(),
+        loadHistory(),
+        loadInteractions(),
+        loadModels(),
+        refreshQueue(),
+      ]);
     } finally {
       if (!disposed) loading.set(false);
     }
@@ -1096,33 +1556,198 @@ export function createConversationController(
         (!isRoom() && (draft().quotes.length || draft().links.length)),
     );
 
-  const sendMessage = async () => {
+  const submit = async (snapshot: DraftContent, delivery: SendDelivery, retryId?: number) => {
+    const room = isRoom();
+    const content = room ? { input: snapshot.input, quotes: [], links: [] } : snapshot;
+    if (sending() || (!sendText(content) && !content.quotes.length)) return false;
     error.set(null);
-    const sent = await sendDraft(
-      rootId,
-      sessionId,
-      isRoom(),
-      async (generation) => {
-        if (isRoom()) return null;
+    const failPreflight = (message: string) => {
+      hapticNotification('error');
+      if (!disposed && retryId === undefined) error.set(message);
+      showToast(message);
+      return false;
+    };
+
+    const connection = activeHostInfo(rootId);
+    if (!connection) return failPreflight(tr('Computer is offline'));
+    const { generation } = connection;
+    updateDraft(rootId, sessionId, (draft) => ({ ...draft, sending: true }));
+    try {
+      if (!room && (retryId !== undefined || !observation())) {
+        await loadObserve(retryId !== undefined);
+        if (!isCurrent(generation)) return failPreflight(tr('Computer is offline'));
+        if (error() || !observation()) return failPreflight(error() ?? tr('Select model'));
+      }
+      const run = observation()?.run;
+      const expectedRunId = room ? null : (run?.runId ?? null);
+      const startsRun = run == null;
+      const send = {
+        id: retryId ?? ++nextSendId,
+        generation,
+        draft: content,
+        delivery,
+        historyThrough: historyFence()?.through ?? observation()?.through ?? 0,
+      };
+      const keep = (attempt: ComposerSend) => {
+        if (retryId !== undefined && !failedSend(retryId)) return false;
+        batch(() => {
+          if (retryId === undefined) {
+            updateSends((sends) => [...sends, attempt]);
+            consumeDraft(rootId, sessionId, content);
+          } else
+            updateSends((sends) => sends.map((item) => (item.id === send.id ? attempt : item)));
+        });
+        return true;
+      };
+      const runChanged = () => !room && run?.runId !== observation()?.run?.runId;
+      const rejectChangedRun = () => {
+        const detail = observation()?.run
+          ? tr('The active turn changed. Your message is kept.')
+          : stoppedSend();
+        if (keep({ ...send, state: 'failed', detail })) hapticNotification('error');
+        return false;
+      };
+
+      let backend: AgentBackendPreference | null = null;
+      if (!room && !(delivery === 'steer' && run?.backend === 'model')) {
         const pending = selectingModel();
-        if (pending && !(await pending.done)) return false;
-        if (!observation() && activeHostInfo(rootId)?.generation === generation)
-          await loadObserve(false);
-        if (disposed) return null;
-        if (activeHostInfo(rootId)?.generation !== generation)
-          throw new Error(tr('Computer is offline'));
-        if (!observation()) throw new Error(error() ?? tr('Select model'));
-        return selectedBackend();
-      },
-      () => !disposed,
-      (message) => error.set(message),
-    );
-    if (sent && !disposed) {
-      void Promise.all([loadObserve(), loadHistory()]).catch((cause) => {
-        if (!disposed) error.set(cause instanceof Error ? cause.message : String(cause));
-      });
+        const selected = !pending || (await pending.done);
+        if (!isCurrent(generation)) return failPreflight(tr('Computer is offline'));
+        if (runChanged()) return rejectChangedRun();
+        if (!selected) return false;
+        try {
+          backend = await sendBackend(rootId, connection, selectedBackend());
+        } catch (cause) {
+          if (isCurrent(generation) && runChanged()) return rejectChangedRun();
+          throw cause;
+        }
+      }
+      if (!isCurrent(generation)) return failPreflight(tr('Computer is offline'));
+      if (runChanged()) return rejectChangedRun();
+      if (!keep({ ...send, state: 'sending', startsRun })) return false;
+      const settle = (next: ComposerSend) =>
+        updateSends((sends) =>
+          sends.map((item) =>
+            item.id === send.id && item.state === 'sending' && item.generation === generation
+              ? next
+              : item,
+          ),
+        );
+      let result: AgentSendResult;
+      let preparedRoomPost: string | undefined;
+      try {
+        result = await deliverDraft(
+          rootId,
+          sessionId,
+          generation,
+          room,
+          content,
+          {
+            backend,
+            expectedRunId,
+          },
+          delivery,
+          room
+            ? (messageId) => {
+                preparedRoomPost = messageId;
+                settle({ ...send, state: 'sending', startsRun, messageId });
+              }
+            : undefined,
+        );
+      } catch (cause) {
+        console.warn('Could not confirm send result', cause);
+        if (cause instanceof MutationNotSubmitted) {
+          settle({ ...send, state: 'failed', detail: tr('Could not send the message.') });
+          hapticNotification('error');
+        } else {
+          settle({
+            ...send,
+            state: 'unknown',
+            detail: unconfirmedSend(),
+            messageId: preparedRoomPost,
+          });
+          hapticNotification('warning');
+        }
+        return false;
+      }
+      if (result.kind === 'rejected' || result.kind === 'not_your_worker') {
+        settle({ ...send, state: 'failed', detail: sendRejection(result) });
+        hapticNotification('error');
+        return false;
+      }
+      const { messageId } = result;
+      settle(
+        result.kind === 'queued'
+          ? { ...send, state: 'queued', messageId, startsRun, revision: result.revision }
+          : { ...send, state: 'started', messageId },
+      );
+      hapticSelection();
+      if (isCurrent(generation)) {
+        void loadObserve();
+        void loadHistory();
+        if (result.kind === 'queued') void refreshQueue(generation);
+        void refreshHostSessions(rootId, hostById(rootId)?.hostName ?? rootId);
+      }
+      return true;
+    } catch (cause) {
+      console.warn('Could not prepare message', cause);
+      return failPreflight(
+        cause instanceof Error ? cause.message : tr('Could not send the message.'),
+      );
+    } finally {
+      updateDraft(rootId, sessionId, (draft) => ({ ...draft, sending: false }));
     }
-    return sent;
+  };
+
+  const sendMessage = (delivery: SendDelivery = 'steer') => submit(draft(), delivery);
+  const failedSend = (id: number) =>
+    composerSends().find(
+      (send) => send.id === id && (send.state === 'failed' || send.state === 'unknown'),
+    );
+  const dismissPendingSend = (id: number) => {
+    const send = failedSend(id);
+    if (!send) return;
+    batch(() => {
+      const messageId = sentMessageId(send);
+      if (messageId !== undefined) forgetSteering(new Set([messageId]));
+      updateSends((sends) => sends.filter((send) => send.id !== id));
+    });
+  };
+  const editPendingSend = (id: number) => {
+    const send = failedSend(id);
+    if (!send || sending()) return false;
+    const current = draft();
+    const quotes = [...current.quotes];
+    for (const quote of send.draft.quotes) {
+      if (
+        !quotes.some(
+          (item) =>
+            item.sourceKey === quote.sourceKey && item.reference.text === quote.reference.text,
+        )
+      )
+        quotes.push(quote);
+    }
+    if (quotes.length > quoteLimit) {
+      showToast(tr('Quote limit reached ({count})', { count: quoteLimit }));
+      return false;
+    }
+    const links = [
+      ...current.links,
+      ...send.draft.links.filter((link) => !current.links.some((item) => item.id === link.id)),
+    ];
+    const text =
+      current.input.text === send.draft.input.text
+        ? current.input.text
+        : [current.input.text, send.draft.input.text].filter(Boolean).join('\n\n');
+    batch(() => {
+      updateDraft(rootId, sessionId, (draft) => ({ ...draft, input: { text }, quotes, links }));
+      dismissPendingSend(id);
+    });
+    return true;
+  };
+  const retryPendingSend = (id: number) => {
+    const send = failedSend(id);
+    if (send?.state === 'failed') return submit(send.draft, send.delivery, id);
   };
 
   const stopRun = async () => {
@@ -1179,28 +1804,111 @@ export function createConversationController(
     return done;
   };
 
-  const cancelQueuedMessage = async (messageId: string) => {
-    const q = queue();
+  const queueOperation = signal<{ generation: number; through?: number } | null>(null);
+  const queueNotice = signal<{ generation: number; detail: string } | null>(null);
+  const queueError = () => {
+    const notice = queueNotice();
+    return notice && isCurrent(notice.generation) ? notice.detail : null;
+  };
+  const clearQueueError = () => queueNotice.set(null);
+  const queueBusy = () => {
+    const pending = queueOperation();
+    return (
+      !!pending &&
+      isCurrent(pending.generation) &&
+      (pending.through === undefined || (queue()?.revision ?? -1) < pending.through)
+    );
+  };
+  const queueChanged = () =>
+    tr('The queue changed. Review the current message before trying again.');
+  const queueMissing = () => tr('This message is no longer queued.');
+  const reportQueueError = (generation: number, detail: string) => {
+    if (isCurrent(generation)) queueNotice.set({ generation, detail });
+  };
+  const changeQueue = async (
+    edit: Exclude<AgentQueueAction, { kind: 'reorder' }>,
+    expectedRevision = queue()?.revision,
+  ) => {
+    const generation = activeHostInfo(rootId)?.generation;
+    if (disposed || generation === undefined || expectedRevision === undefined || queueBusy())
+      return false;
+    const operation = { generation };
+    queueOperation.set(operation);
+    clearQueueError();
+    let committed: number | undefined;
     try {
+      if (expectedRevision !== queue()?.revision) {
+        reportQueueError(generation, queueChanged());
+        return false;
+      }
       const result = await hostMutate<AgentQueueMutationResult>(
         'agent',
         'editQueue',
-        {
-          sessionId,
-          expectedRevision: q.revision,
-          edit: { kind: 'retract', messageId },
-        },
-        { rootId },
+        { sessionId, expectedRevision, edit },
+        { rootId, generation },
       );
-      queue.set(await hostQuery<AgentQueue>('agent', 'queue', { sessionId }, undefined, rootId));
-      if (result.kind !== 'committed')
-        throw new Error(tr('Could not update the message queue.'), {
-          cause: result.kind === 'rejected' ? result.reason : result.kind,
-        });
-      hapticSelection();
+      if (!isCurrent(generation)) return false;
+      if (result.kind === 'committed') {
+        committed = result.revision;
+        hapticSelection();
+        return true;
+      }
+      reportQueueError(
+        generation,
+        result.kind === 'revision_conflict'
+          ? queueChanged()
+          : result.reason === 'execution_changed'
+            ? tr('This turn cannot accept this message right now. It remains queued.')
+            : result.reason === 'not_running'
+              ? tr('No turn is running. This message remains queued.')
+              : result.reason === 'missing' || result.reason === 'in_flight'
+                ? queueMissing()
+                : tr('Could not update the message queue.'),
+      );
     } catch (cause) {
-      showToast(cause instanceof Error ? cause.message : String(cause));
+      console.warn('Could not update the message queue', cause);
+      reportQueueError(generation, tr('Could not update the message queue.'));
+    } finally {
+      if (queueOperation() === operation) {
+        if (committed !== undefined) {
+          // The receipt fences controls, but only a watch or query can replace the queue.
+          queueOperation.set({ generation, through: committed });
+          if (queueBusy()) void refreshQueue(generation);
+        } else {
+          await refreshQueue(generation);
+          if (queueOperation() === operation) queueOperation.set(null);
+        }
+      }
     }
+    return false;
+  };
+
+  const readQueuedMessage = async (messageId: string) => {
+    const generation = activeHostInfo(rootId)?.generation;
+    const expectedRevision = queue()?.revision;
+    if (disposed || generation === undefined || expectedRevision === undefined || queueBusy())
+      return null;
+    const operation = { generation };
+    queueOperation.set(operation);
+    clearQueueError();
+    try {
+      const result = await queueMessage(messageId, expectedRevision);
+      if (!isCurrent(generation)) return null;
+      if (
+        result.kind === 'ready' &&
+        result.revision === queue()?.revision &&
+        queuedMessages().some((item) => item.messageId === messageId)
+      )
+        return { ...result, generation };
+      reportQueueError(generation, result.kind === 'missing' ? queueMissing() : queueChanged());
+      await refreshQueue(generation);
+    } catch (cause) {
+      console.warn('Could not read queued message', cause);
+      reportQueueError(generation, tr('Could not read the queued message.'));
+    } finally {
+      if (queueOperation() === operation) queueOperation.set(null);
+    }
+    return null;
   };
 
   const respondInteraction = async (requestId: string, answer: Record<string, unknown>) => {
@@ -1240,13 +1948,13 @@ export function createConversationController(
     }
   };
 
-  const applyWatchItem = (page: AgentDeliveryPage) => {
+  const applyWatchItem = (page: AgentDeliveryPage, generation: number) => {
     if (page.kind === 'preview') {
       livePreview.set(accumulator.applyPreviewPage(page.page));
       return;
     }
     if (page.kind === 'queue') {
-      queue.set(page.queue);
+      applyQueue(page.queue, generation);
       return;
     }
     if (page.kind === 'interactions') {
@@ -1325,8 +2033,8 @@ export function createConversationController(
     observation,
     selectedBackend,
     selectingModel,
-    chunks: computed(() => chunks() ?? []),
-    roomMessages: computed(() => roomMessages() ?? []),
+    chunks: visibleChunks,
+    roomMessages: visibleRoomMessages,
     historyLoaded: () => chunks() !== null || roomMessages() !== null,
     isRoom,
     hasMoreBefore: () => earlierHistory() !== null,
@@ -1337,6 +2045,16 @@ export function createConversationController(
     hasDraftContent,
     error,
     queue,
+    queuedMessages,
+    steeringMessages,
+    optimisticSends,
+    pendingSends,
+    editPendingSend,
+    retryPendingSend,
+    dismissPendingSend,
+    queueBusy,
+    queueError,
+    clearQueueError,
     pendingInteractions,
     models,
     busyInteractionIds,
@@ -1348,7 +2066,11 @@ export function createConversationController(
     sendMessage,
     stopRun,
     selectModel,
-    cancelQueuedMessage,
+    readQueuedMessage,
+    promoteQueuedMessage: (messageId: string) => changeQueue({ kind: 'promote', messageId }),
+    updateQueuedMessage: (messageId: string, revision: number, message: string) =>
+      changeQueue({ kind: 'update', messageId, message }, revision),
+    cancelQueuedMessage: (messageId: string) => changeQueue({ kind: 'retract', messageId }),
     respondInteraction,
   };
 }

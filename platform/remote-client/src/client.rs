@@ -25,7 +25,7 @@ use bytes::Bytes;
 use futures_util::{Sink, Stream};
 use maka_remote_pairing::HostPlatform;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use serde_json::{Value, json};
+use serde_json::{Value, json, value::RawValue};
 use std::{
     collections::BTreeMap,
     io,
@@ -217,9 +217,7 @@ enum WireControl {
 enum WireReply {
     Ready,
     Subscribed,
-    Prepared {
-        reference: Value,
-    },
+    Prepared,
     Item {
         value: Value,
     },
@@ -724,12 +722,34 @@ impl RemoteCallHandle {
         attachments: Attachments,
         on_progress: impl FnMut(Value) -> F,
     ) -> Result<Value, RemoteClientError> {
+        self.prepare_mutation(endpoint, method, input, attachments)
+            .await?
+            .confirm(on_progress)
+            .await
+    }
+
+    /// A prepared mutation has not executed. Dropping it without confirming
+    /// closes the call channel without submitting the write.
+    pub async fn prepare_mutation<'a>(
+        &self,
+        endpoint: &'a str,
+        method: &'a str,
+        input: Value,
+        attachments: Attachments,
+    ) -> Result<PreparedMutation<'a>, RemoteClientError> {
         let mut reader = self
             .open_call_channel(endpoint, method, input, &attachments)
             .await?;
         drop(attachments);
-        let reference = match read_frame::<_, WireReply>(&mut reader).await? {
-            WireReply::Prepared { reference } => reference,
+        let reply: Box<RawValue> = read_frame(&mut reader).await?;
+        let reference = match serde_json::from_str(reply.get())? {
+            WireReply::Prepared => {
+                #[derive(Deserialize)]
+                struct Prepared {
+                    reference: Box<RawValue>,
+                }
+                serde_json::from_str::<Prepared>(reply.get())?.reference
+            }
             WireReply::Aborted { reason } | WireReply::BindingRetired { reason } => {
                 return Err(RemoteClientError::HostRejected(reason));
             }
@@ -745,7 +765,12 @@ impl RemoteCallHandle {
             }
         };
 
-        confirm_mutation(&mut reader, endpoint, method, reference, on_progress).await
+        Ok(PreparedMutation {
+            reader,
+            endpoint,
+            method,
+            reference,
+        })
     }
 
     /// Open a demand-driven streaming subscription on an admitted Host endpoint
@@ -764,7 +789,7 @@ impl RemoteCallHandle {
             WireReply::Aborted { reason } | WireReply::BindingRetired { reason } => {
                 return Err(RemoteClientError::HostRejected(reason));
             }
-            WireReply::Finished { .. } | WireReply::Prepared { .. } => {
+            WireReply::Finished { .. } | WireReply::Prepared => {
                 return Err(RemoteClientError::Protocol(format!(
                     "endpoint method '{endpoint}.{method}' is not a subscription"
                 )));
@@ -778,6 +803,35 @@ impl RemoteCallHandle {
         Ok(RemoteSubscription {
             channel: Some(reader),
         })
+    }
+}
+
+pub struct PreparedMutation<'a> {
+    reader: BufReader<BoxedStream>,
+    endpoint: &'a str,
+    method: &'a str,
+    reference: Box<RawValue>,
+}
+
+impl PreparedMutation<'_> {
+    /// Exact compact JSON emitted by the Host, including field order.
+    pub fn reference(&self) -> &RawValue {
+        &self.reference
+    }
+
+    pub async fn confirm<F: Future<Output = ()>>(
+        mut self,
+        on_progress: impl FnMut(Value) -> F,
+    ) -> Result<Value, RemoteClientError> {
+        let reference = serde_json::from_str(self.reference.get())?;
+        confirm_mutation(
+            &mut self.reader,
+            self.endpoint,
+            self.method,
+            reference,
+            on_progress,
+        )
+        .await
     }
 }
 

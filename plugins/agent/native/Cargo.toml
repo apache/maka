@@ -37,6 +37,7 @@ hex.workspace = true
 maka-goal.workspace = true
 maka-session-recap.workspace = true
 maka-agent-facts.workspace = true
+maka-operation-id.workspace = true
 maka-agent-ports.workspace = true
 maka-external-agent.workspace = true
 maka-tool-catalog.workspace = true

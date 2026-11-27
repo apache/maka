@@ -5862,6 +5862,80 @@ mod model_recovery {
         result.expect("steered completion test timed out").unwrap();
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn native_steer_keeps_the_in_flight_model_on_unbound_and_reconfigured_sessions() {
+        let mut rig = Rig::new().unwrap();
+        let mut server = MockAiBuilder::new().interactive(3).start().await.unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(30), async {
+            let base = rig.directory.path().to_path_buf();
+            let boot = bootstrap(&base, server.base_url(), false).await?;
+            attach(&mut rig, &boot).await?;
+            let client = rig.client.as_ref().unwrap();
+            let mut backends = Vec::new();
+            for slug in ["running", "next-turn"] {
+                let catalog = call(client, "settings", "connections", json!({"kind":"start"})).await?;
+                let connection = call(client, "settings", "create", json!({
+                    "expectedCatalogRevision": catalog["revision"],
+                    "connection": {
+                        "slug": slug, "name": slug,
+                        "provider": {"packageId":"maka.providers","entryId":"maka.providers","scope":"profile","name":"ollama"},
+                        "configuration": {"baseUrl": boot.base_url}, "enabled": true, "enabledModelIds": ["llama3.2"],
+                        "modelOverrides": {"llama3.2": {"codeMode": false, "apiProtocol": "openai-chat-completions"}}
+                    }
+                })).await?;
+                backends.push(json!({"kind":"model","connectionId":connection["connection"]["connectionId"],"modelId":"llama3.2"}));
+            }
+            let created = call(client, "agent", "create", json!({
+                "title":"Unbound", "automaticTitle":false, "labels":[], "tools":[],
+                "workspace":{"kind":"directory","path":rig.directory.path().join("workspace")}
+            })).await?;
+            let session = created["session"]["id"].as_str().ok_or("missing session")?;
+            let first = call(client, "agent", "send", json!({
+                "sessionId":session, "message":"Start on the default model.", "backend":backends[0], "delivery":"steer"
+            })).await?;
+            let step = server.next_turn().await.ok_or("missing initial model request")?;
+            let observed = call(client, "agent", "observe", json!({"sessionId":session})).await?;
+            assert!(observed["session"]["backend"].is_null());
+            assert_eq!(observed["run"]["backend"], "model");
+            let run: RunId = serde_json::from_value(observed["run"]["runId"].clone())?;
+            let steer = |text| json!({
+                "sessionId":session, "message":text, "backend":null, "delivery":"steer", "expectedRunId":run
+            });
+            let unbound = call(client, "agent", "send", steer("Steer while unbound.")).await?;
+            assert_eq!(unbound["kind"], "queued");
+
+            let selected = call(client, "agent", "selectBackend", json!({
+                "sessionId":session, "backend":backends[1]
+            })).await?;
+            assert_eq!(selected["session"]["backend"]["connectionId"], backends[1]["connectionId"]);
+            let switched = call(client, "agent", "send", steer("Steer after switching next-turn model.")).await?;
+            assert_eq!(switched["kind"], "queued");
+
+            let owner = rig.captured.lock().unwrap().clone().unwrap();
+            let queue = owner.durable.queue().read(session.into()).await?;
+            let active = owner.durable.frontier(run).await?;
+            for sent in [unbound, switched] {
+                let id = sent["messageId"].as_str().ok_or("missing steer ID")?;
+                let entry = queue.entries.iter().find(|entry| entry.request.message_id == id)
+                    .ok_or("message is not pending steering")?;
+                assert!(matches!(entry.placement, maka_agent_state::queue::Placement::Steering { run: target, .. } if target == run));
+                assert_eq!(entry.request.spec.backend, active.spec.backend);
+            }
+            step.reply_text_with_usage("Continuing.", Usage::new(10, 5));
+            let next = server.next_turn().await.ok_or("missing steered model request")?;
+            let request = next.body().to_string();
+            assert!(request.contains("Steer while unbound."), "{request}");
+            assert!(request.contains("Steer after switching next-turn model."), "{request}");
+            next.reply_text_with_usage("Done.", Usage::new(10, 5));
+            completed_message(client, session, &first["messageId"]).await?;
+            Ok::<_, Box<dyn Error + Send + Sync>>(())
+        }).await;
+        server.shutdown().await;
+        let cleanup = rig.finish().await;
+        assert!(cleanup.is_empty(), "{cleanup:?}");
+        result.expect("native steering test timed out").unwrap();
+    }
+
     #[tokio::test]
     async fn session_read_tail_claims_completion_notice() {
         use maka_plugin_core::contract::ServiceTarget;

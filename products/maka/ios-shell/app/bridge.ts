@@ -140,8 +140,12 @@ export type {
   AgentForkResult,
   AgentInteractionResult,
   AgentMetadataResult,
+  AgentQueueAction,
+  AgentQueueEntry,
+  AgentQueueMessageResult,
   AgentQueueMutationResult,
   AgentSendResult,
+  AgentRun,
   HistoryOrder,
   HistoryPosition,
   HistoryRowAddress,
@@ -294,21 +298,36 @@ function progressKey(rootId: string, generation: number, progressId: string) {
 }
 
 host.on('ios.mutationProgress', (data) => {
-  const progress = data as unknown as MutationProgress & { deliveryId: number; sequence: number };
+  const progress = data as unknown as MutationProgress & {
+    deliveryId: number;
+    sequence: number;
+    requiresObserver?: boolean;
+  };
+  let observed = false;
   try {
-    if (connection(progress.rootId)?.generation === progress.generation) {
-      progressListeners.get(
-        progressKey(progress.rootId, progress.generation, progress.progressId),
-      )?.(progress);
+    const listener =
+      connection(progress.rootId)?.generation === progress.generation
+        ? progressListeners.get(
+            progressKey(progress.rootId, progress.generation, progress.progressId),
+          )
+        : undefined;
+    if (listener) {
+      listener(progress);
+      observed = true;
     }
   } finally {
-    // Return credit even if the event belongs to a Host or call that has since ended.
-    host.post('ios.ackMutationProgress', {
-      deliveryId: progress.deliveryId,
-      sequence: progress.sequence,
-    });
+    // Regular progress returns credit even for ended calls. Prepared posts
+    // must not confirm if the UI timed out and dropped the identity listener.
+    if (!progress.requiresObserver || observed) {
+      host.post('ios.ackMutationProgress', {
+        deliveryId: progress.deliveryId,
+        sequence: progress.sequence,
+      });
+    }
   }
 });
+
+export class MutationNotSubmitted extends Error {}
 
 export async function hostMutate<T = unknown>(
   endpoint: string,
@@ -319,12 +338,14 @@ export async function hostMutate<T = unknown>(
     generation,
     secret,
     progressId,
+    prepareRoomPost,
     onProgress,
   }: {
     rootId?: string;
     generation?: number;
     secret?: string;
     progressId?: string;
+    prepareRoomPost?: boolean;
     onProgress?: ProgressListener;
   } = {},
 ): Promise<T> {
@@ -333,13 +354,14 @@ export async function hostMutate<T = unknown>(
     (rootId !== undefined && target?.generation === undefined) ||
     (generation !== undefined && target?.generation !== generation)
   )
-    throw new Error(tr('Computer is offline'));
+    throw new MutationNotSubmitted(tr('Computer is offline'));
   let key: string | undefined;
   if (onProgress) {
-    if (!target) throw new Error(tr('Computer is offline'));
+    if (!target) throw new MutationNotSubmitted(tr('Computer is offline'));
     progressId ??= 'mutation:' + String(++nextProgressId);
     key = progressKey(target.rootId, target.generation, progressId);
-    if (progressListeners.has(key)) throw new Error('mutation progress ID is already in use');
+    if (progressListeners.has(key))
+      throw new MutationNotSubmitted('mutation progress ID is already in use');
     progressListeners.set(key, onProgress);
   }
   try {
@@ -354,9 +376,11 @@ export async function hostMutate<T = unknown>(
         input,
         secret,
         progressId: onProgress ? progressId : undefined,
+        prepareRoomPost,
       },
-      onProgress ? { timeout: 0 } : undefined,
-    )) as { value: T };
+      onProgress || (endpoint === 'agent' && method === 'send') ? { timeout: 0 } : undefined,
+    )) as { value: T } | { notSubmitted: string };
+    if ('notSubmitted' in res) throw new MutationNotSubmitted(res.notSubmitted);
     return res.value;
   } finally {
     if (key !== undefined) progressListeners.delete(key);

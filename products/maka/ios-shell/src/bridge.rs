@@ -43,6 +43,7 @@ use tokio_util::sync::CancellationToken;
 
 const PAIR_SCHEME: &str = "maka://pair/v1?payload=";
 const PROGRESS_WINDOW: u64 = 8;
+const SEND_TIMEOUT: Duration = Duration::from_secs(30);
 const PROGRESS_ACK_STALL_TIMEOUT: Duration = Duration::from_secs(30);
 pub const ALLOWED_HOST_CALLS: &[&str] = &[
     "ios.bootstrap",
@@ -142,6 +143,7 @@ struct Rpc {
     input: Value,
     subscription_id: Option<String>,
     progress_id: Option<String>,
+    prepare_room_post: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -306,6 +308,7 @@ struct Bridge {
     snapshot_revision: Arc<AtomicU64>,
     shutdown: CancellationToken,
     progress_ack_stall_timeout: Duration,
+    send_timeout: Duration,
     runtime: Handle,
 }
 
@@ -319,9 +322,16 @@ struct MutationProgress<'a> {
 }
 
 impl MutationProgress<'_> {
-    async fn emit(&self, bridge: &Bridge, root: &str, generation: u64, value: Value) {
+    async fn emit(
+        &self,
+        bridge: &Bridge,
+        root: &str,
+        generation: u64,
+        value: Value,
+        requires_observer: bool,
+    ) -> Option<u64> {
         if self.stalled.load(Ordering::Relaxed) {
-            return;
+            return None;
         }
         let mut ack = self.ack.clone();
         let mut event = json!({
@@ -329,10 +339,13 @@ impl MutationProgress<'_> {
             "deliveryId": self.delivery_id,
         });
         event["value"] = value;
+        if requires_observer {
+            event["requiresObserver"] = true.into();
+        }
         loop {
             let mut state = bridge.state.lock().await;
             if self.retired.is_cancelled() || state.current(root, generation).is_none() {
-                return;
+                return None;
             }
             let window = state
                 .mutation_progress
@@ -347,18 +360,19 @@ impl MutationProgress<'_> {
                     .expect("valid progress event name")
                 {
                     window.sent = sequence;
+                    return Some(sequence);
                 }
-                return;
+                return None;
             }
             drop(state);
             // A dead or stalled consumer must not hold up the terminal receipt.
             tokio::select! {
                 biased;
-                _ = self.retired.cancelled() => return,
-                _ = self.sender.closed() => return,
+                _ = self.retired.cancelled() => return None,
+                _ = self.sender.closed() => return None,
                 changed = ack.changed() => {
                     if changed.is_err() {
-                        return;
+                        return None;
                     }
                 }
                 _ = tokio::time::sleep(bridge.progress_ack_stall_timeout) => {
@@ -367,7 +381,7 @@ impl MutationProgress<'_> {
                         "iOS mutation progress ACK stalled for Host {root}, delivery {}; continuing without progress",
                         self.delivery_id,
                     );
-                    return;
+                    return None;
                 }
             }
         }
@@ -380,19 +394,21 @@ impl HostBridge {
         support_dir: PathBuf,
         runtime: Handle,
     ) -> Result<Self, String> {
-        Self::attach_with_progress_stall_timeout(
+        Self::attach_with_timeouts(
             channel,
             support_dir,
             runtime,
             PROGRESS_ACK_STALL_TIMEOUT,
+            SEND_TIMEOUT,
         )
     }
 
-    fn attach_with_progress_stall_timeout(
+    fn attach_with_timeouts(
         channel: HostChannel,
         support_dir: PathBuf,
         runtime: Handle,
         progress_ack_stall_timeout: Duration,
+        send_timeout: Duration,
     ) -> Result<Self, String> {
         let identity = crate::identity::load(&support_dir)?;
         let profile_path = support_dir.join("hosts.json");
@@ -417,6 +433,7 @@ impl HostBridge {
             snapshot_revision: Arc::new(AtomicU64::new(0)),
             shutdown: CancellationToken::new(),
             progress_ack_stall_timeout,
+            send_timeout,
         };
         for &name in ALLOWED_HOST_CALLS {
             let bridge = bridge.clone();
@@ -444,7 +461,14 @@ impl HostBridge {
                             Err(err) => call.reply(Err(err)),
                         }
                     } else if name == "ios.hostMutate" {
-                        let result = bridge.mutate(data, Some(&call)).await;
+                        let send = data["endpoint"] == "agent" && data["method"] == "send";
+                        let result = match bridge.mutate(data, Some(&call)).await {
+                            Ok(value) => Ok(value),
+                            Err(MutationFailure::NotSubmitted(detail)) if send => {
+                                Ok(json!({"notSubmitted": detail}))
+                            }
+                            Err(MutationFailure::NotSubmitted(detail) | MutationFailure::Unconfirmed(detail)) => Err(detail),
+                        };
                         call.reply(result);
                     } else {
                         call.reply(bridge.dispatch(name, data).await);
@@ -479,6 +503,18 @@ impl Drop for HostBridge {
             }
             state.connections.clear();
         });
+    }
+}
+
+#[derive(Debug)]
+enum MutationFailure {
+    NotSubmitted(String),
+    Unconfirmed(String),
+}
+
+impl From<String> for MutationFailure {
+    fn from(cause: String) -> Self {
+        Self::NotSubmitted(cause)
     }
 }
 
@@ -687,17 +723,40 @@ impl Bridge {
         }
     }
 
-    async fn mutate(&self, mut data: Value, caller: Option<&HostCall>) -> Result<Value, String> {
+    async fn mutate(
+        &self,
+        mut data: Value,
+        caller: Option<&HostCall>,
+    ) -> Result<Value, MutationFailure> {
         // Do not feed a credential to serde's diagnostics or the Host's JSON input.
         let secret = match data.as_object_mut().and_then(|data| data.remove("secret")) {
             Some(Value::String(secret)) => Some(secret),
             None | Some(Value::Null) => None,
-            Some(_) => return Err("secret must be UTF-8 text".into()),
+            Some(_) => return Err("secret must be UTF-8 text".to_owned().into()),
         };
         let rpc: Rpc = decode(data)?;
+        let send = rpc.endpoint == "agent" && rpc.method == "send";
+        let deadline = send.then(|| tokio::time::Instant::now() + self.send_timeout);
+        let room_session = if rpc.prepare_room_post == Some(true) {
+            if !send {
+                return Err("Room post preparation requires agent.send"
+                    .to_owned()
+                    .into());
+            }
+            Some(
+                rpc.input["sessionId"]
+                    .as_str()
+                    .ok_or_else(|| "Room session is required".to_owned())?
+                    .to_owned(),
+            )
+        } else {
+            None
+        };
         let attachments = credential_attachments(&rpc, secret)?;
         if rpc.root_id.is_some() && rpc.generation.is_none() {
-            return Err("root-scoped mutations require a connection generation".into());
+            return Err("root-scoped mutations require a connection generation"
+                .to_owned()
+                .into());
         }
         let (root, id, calls, receipt_scope, progress) = {
             let mut state = self.state.lock().await;
@@ -733,23 +792,78 @@ impl Bridge {
                 });
             (root, id, calls, receipt_scope, progress)
         };
-        let result = calls
-            .mutate_with_progress(
-                &rpc.endpoint,
-                &rpc.method,
-                rpc.input,
-                attachments,
-                |value| {
-                    let progress = progress.as_ref();
-                    let root = root.as_str();
-                    async move {
-                        if let Some(progress) = progress {
-                            progress.emit(self, root, id, value).await;
-                        }
-                    }
-                },
-            )
-            .await;
+        let prepare = async {
+            let prepared = calls
+                .prepare_mutation(&rpc.endpoint, &rpc.method, rpc.input, attachments)
+                .await
+                .map_err(error)?;
+            if let Some(session) = room_session {
+                let unavailable =
+                    || "Room post identity could not be delivered before confirmation".to_owned();
+                let progress = progress.as_ref().ok_or_else(unavailable)?;
+                let message_id = maka_operation_id::room_post(
+                    session.as_str(),
+                    prepared.reference().get().as_bytes(),
+                )
+                .ok_or_else(|| "Invalid Room session ID".to_owned())?;
+                let sequence = progress
+                    .emit(
+                        self,
+                        &root,
+                        id,
+                        json!({
+                            "kind":"room_post_prepared", "messageId":message_id,
+                        }),
+                        true,
+                    )
+                    .await
+                    .ok_or_else(unavailable)?;
+                // Watches are independent streams. Wait for the UI to install
+                // the identity before submitting the write.
+                let mut ack = progress.ack.clone();
+                tokio::select! {
+                    biased;
+                    _ = progress.retired.cancelled() => return Err(unavailable()),
+                    _ = progress.sender.closed() => return Err(unavailable()),
+                    seen = ack.wait_for(|value| *value >= sequence) => seen.map(drop).map_err(|_| unavailable())?,
+                    _ = tokio::time::sleep(self.progress_ack_stall_timeout) => return Err(unavailable()),
+                }
+            }
+            Ok::<_, String>(prepared)
+        };
+        let result = async {
+            let prepared = match deadline {
+                Some(deadline) => tokio::time::timeout_at(deadline, prepare)
+                    .await
+                    .map_err(|_| "Timed out preparing the Host message".to_owned())??,
+                None => prepare.await?,
+            };
+            let on_progress = async |value| {
+                if let Some(progress) = &progress {
+                    progress.emit(self, &root, id, value, false).await;
+                }
+            };
+            // Keep the operation reference on a confirm timeout so recovery can
+            // still query the original receipt. Only the first phase is retryable.
+            let result = if let Some(deadline) = deadline {
+                let reference = serde_json::from_str(prepared.reference().get()).map_err(error)?;
+                tokio::time::timeout_at(deadline, prepared.confirm(on_progress))
+                    .await
+                    .unwrap_or_else(|cause| {
+                        Err(RemoteClientError::MutationUncertain {
+                            reference,
+                            cause: Box::new(RemoteClientError::Io(std::io::Error::new(
+                                std::io::ErrorKind::TimedOut,
+                                cause,
+                            ))),
+                        })
+                    })
+            } else {
+                prepared.confirm(on_progress).await
+            };
+            Ok::<_, String>(result)
+        }
+        .await;
         if let Some(progress) = progress {
             self.state
                 .lock()
@@ -757,6 +871,7 @@ impl Bridge {
                 .mutation_progress
                 .remove(&progress.delivery_id);
         }
+        let result = result?;
         if let Err(RemoteClientError::MutationUncertain { reference, .. }) = &result
             && let Some(scope) = receipt_scope
         {
@@ -770,9 +885,9 @@ impl Bridge {
                     "remote Host mutation cleanup failed (operation {})",
                     reference["operation"]
                 );
-                result.map_err(error)?
+                result.map_err(|cause| MutationFailure::Unconfirmed(error(cause)))?
             }
-            result => result.map_err(error)?,
+            result => result.map_err(|cause| MutationFailure::Unconfirmed(error(cause)))?,
         };
         Ok(json!({"value": value}))
     }
@@ -1701,7 +1816,12 @@ mod tests {
                         .await
                         .unwrap_err()
                 } else if call == "ios.hostMutate" {
-                    bridge.mutate(args, None).await.unwrap_err()
+                    let Err(MutationFailure::NotSubmitted(detail)) =
+                        bridge.mutate(args, None).await
+                    else {
+                        panic!("invalid mutation must not be submitted");
+                    };
+                    detail
                 } else {
                     bridge.dispatch(call, args).await.unwrap_err()
                 };
@@ -1723,7 +1843,8 @@ mod tests {
                 )
                 .await
                 .unwrap_err();
-            assert!(error.contains("must be a JSON object"), "{error}");
+            assert!(matches!(error, MutationFailure::NotSubmitted(detail)
+                if detail.contains("must be a JSON object")));
         }
     }
 
@@ -1852,9 +1973,9 @@ mod tests {
                 query.unwrap_err(),
                 "remote Host anchor no longer matches UI"
             );
-            assert_eq!(
-                mutation.unwrap_err(),
-                "remote Host anchor no longer matches UI"
+            assert!(
+                matches!(mutation, Err(MutationFailure::NotSubmitted(reason))
+                if reason == "remote Host anchor no longer matches UI")
             );
             assert!(
                 matches!(attached.bridge.open_subscription(stale, HostSender::default()).await,
@@ -1867,7 +1988,7 @@ mod tests {
 
     async fn send_frame(
         ws: &mut tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
-        value: Value,
+        value: impl serde::Serialize,
     ) {
         let bytes = serde_json::to_vec(&value).unwrap();
         let mut frame = u32::try_from(bytes.len()).unwrap().to_be_bytes().to_vec();
@@ -1971,7 +2092,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn progress_backpressure_is_lossless_and_isolated_to_the_call() {
-        let (_dir, host, app, mut events) = progress_fixture(PROGRESS_ACK_STALL_TIMEOUT);
+        let (_dir, host, app, mut events) =
+            progress_fixture(PROGRESS_ACK_STALL_TIMEOUT, SEND_TIMEOUT);
         let bridge = &host.bridge;
         let a = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let b = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -2036,7 +2158,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn retiring_the_host_wakes_unacked_progress_without_masking_the_error() {
-        let (_dir, host, app, mut events) = progress_fixture(PROGRESS_ACK_STALL_TIMEOUT);
+        let (_dir, host, app, mut events) =
+            progress_fixture(PROGRESS_ACK_STALL_TIMEOUT, SEND_TIMEOUT);
         let bridge = &host.bridge;
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         tokio::time::timeout(Duration::from_secs(5), async {
@@ -2078,7 +2201,8 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn detaching_the_app_or_dropping_the_bridge_wakes_unacked_progress() {
         for detach_app in [true, false] {
-            let (_dir, host, app, mut events) = progress_fixture(PROGRESS_ACK_STALL_TIMEOUT);
+            let (_dir, host, app, mut events) =
+                progress_fixture(PROGRESS_ACK_STALL_TIMEOUT, SEND_TIMEOUT);
             let bridge = host.bridge.clone();
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             tokio::time::timeout(Duration::from_secs(5), async {
@@ -2106,7 +2230,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn stalled_progress_leaves_the_terminal_host_error_visible() {
         let stall_timeout = Duration::from_millis(50);
-        let (_dir, host, _app, mut events) = progress_fixture(stall_timeout);
+        let (_dir, host, _app, mut events) = progress_fixture(stall_timeout, SEND_TIMEOUT);
         let bridge = &host.bridge;
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         tokio::time::timeout(Duration::from_secs(5), async {
@@ -2151,8 +2275,98 @@ mod tests {
         .expect("stalled progress blocked the terminal Host error");
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn room_post_identity_reaches_the_ui_before_confirming_the_mutation() {
+        let (_dir, host, _app, mut events) =
+            progress_fixture(PROGRESS_ACK_STALL_TIMEOUT, SEND_TIMEOUT);
+        let bridge = &host.bridge;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let (generation, session, _anchor) = progress_host(bridge, &listener, "root").await;
+            let namespace = format!("ma_{}", "b".repeat(64));
+            bridge.channel.send("test.mutate", json!({
+                "rootId":"root","generation":generation,"endpoint":"agent","method":"send",
+                "progressId":"shared","prepareRoomPost":true,
+                "input":{"sessionId":format!("{namespace}_{}", "0".repeat(32)),"message":"hello"},
+            })).unwrap();
+            let (method, mut call) = open_rpc(&listener, session).await;
+            assert_eq!(method, "send");
+            let reference = json!({
+                "source":{"stateDomain":"a".repeat(64),"deployment":"00000000-0000-4000-8000-000000000001","revision":1},
+                "namespace":["00000000-0000-4000-8000-000000000002"],
+                "export":"agent","method":"send","operation":"00000000-0000-4000-8000-000000000003",
+                "fingerprint":"c".repeat(64),
+                "contract":{"name":"agent","version":1,"transport":"remote","digest":"d".repeat(64)},
+                "recovery":"journal_v1",
+            });
+            let prepared = maka_host_runtime::application::transport::Reply::Prepared {
+                reference: serde_json::from_value(reference.clone()).unwrap(),
+            };
+            send_frame(&mut call, prepared).await;
+
+            let event = events.recv().await.unwrap();
+            assert_eq!(event["requiresObserver"], true);
+            assert_progress(&event, "root", generation, json!({
+                "kind":"room_post_prepared",
+                "messageId":format!("m_{namespace}_d890eb52ae2e14fd98c6e212a7a0f214"),
+            }));
+            assert!(tokio::time::timeout(Duration::from_millis(50), call.next()).await.is_err(),
+                "the Host could commit before the UI installed the message ID");
+            ack_progress(bridge, &event, event["sequence"].as_u64().unwrap());
+            assert_eq!(read_frame(&mut call).await["kind"], "confirm");
+            finish_mutation(&mut call, reference).await;
+            assert_eq!(events.recv().await.unwrap(), json!({"rootId":"root","reply":{"value":"done"}}));
+        }).await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn send_timeout_only_reports_not_submitted_before_confirm() {
+        let (_dir, host, _app, mut events) =
+            progress_fixture(Duration::from_millis(60), Duration::from_millis(500));
+        let bridge = &host.bridge;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let (generation, session, _anchor) = progress_host(bridge, &listener, "root").await;
+            for room in [false, true] {
+                let start_send = || bridge.channel.send("test.mutate", json!({
+                    "rootId":"root","generation":generation,"endpoint":"agent","method":"send",
+                    "progressId":"shared","prepareRoomPost":room,
+                    "input":{"sessionId":format!("ma_test_{}", "0".repeat(32)),"message":"Keep this"},
+                })).unwrap();
+
+                start_send();
+                let (_, mut call) = open_rpc(&listener, session).await;
+                let reference = json!({"operation":Uuid::new_v4()});
+                if room {
+                    send_frame(&mut call, json!({"kind":"prepared","reference":reference})).await;
+                    assert_eq!(events.recv().await.unwrap()["value"]["kind"], "room_post_prepared");
+                    // The UI never ACKs this Prepared event.
+                }
+                let reply = events.recv().await.unwrap();
+                assert!(reply["reply"]["notSubmitted"].is_string(), "{reply}");
+                assert!(matches!(call.next().await, None | Some(Err(_))), "pre-confirm timeout sent a frame");
+                assert!(bridge.state.lock().await.mutation_progress.is_empty());
+
+                start_send();
+                let (_, mut call) = open_rpc(&listener, session).await;
+                let reference = json!({"operation":Uuid::new_v4()});
+                send_frame(&mut call, json!({"kind":"prepared","reference":reference})).await;
+                if room {
+                    let event = events.recv().await.unwrap();
+                    ack_progress(bridge, &event, event["sequence"].as_u64().unwrap());
+                }
+                assert_eq!(read_frame(&mut call).await["kind"], "confirm");
+                // No terminal receipt: the Host might already have committed.
+                let reply = events.recv().await.unwrap();
+                assert!(reply["error"].as_str().unwrap().contains("not acknowledged"), "{reply}");
+                assert!(bridge.state.lock().await.mutation_progress.is_empty());
+            }
+        }).await.unwrap();
+    }
+
     fn progress_fixture(
         stall_timeout: Duration,
+        send_timeout: Duration,
     ) -> (
         tempfile::TempDir,
         HostBridge,
@@ -2161,11 +2375,12 @@ mod tests {
     ) {
         let dir = tempfile::tempdir().unwrap();
         let channel = HostChannel::new();
-        let host = HostBridge::attach_with_progress_stall_timeout(
+        let host = HostBridge::attach_with_timeouts(
             channel.clone(),
             dir.path().into(),
             Handle::current(),
             stall_timeout,
+            send_timeout,
         )
         .unwrap();
         let bundle = nsh_engine::Bundle::source(
