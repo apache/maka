@@ -22,7 +22,7 @@ import { TextView } from 'nsh/base';
 import { appearance } from './appearance';
 import { CodeBlockAction, codeBlockActions, codeBlockStyles } from './codeBlockLook';
 import { tr } from './locale';
-import { hardToRead, readThemeBlock, sameLook, type Look } from './look';
+import { hardToRead, readThemeBlock, sameLook } from './look';
 import { SettingsButton } from './SettingsPage';
 import { lookLabel } from './ThemeEditor';
 import { Specimen } from './ThemeSpecimen';
@@ -30,10 +30,6 @@ import { bodyTextStyle, C, captionTextStyle, lineWidth, radius, secondaryTextSty
 
 /** A theme Maka wrote in a reply, as a ```maka-theme block of the look's JSON. */
 export const themeExtensions = [{ name: 'maka-theme', language: 'maka-theme' }];
-
-/** The look each applied card's theme replaced, by the theme, while the app runs: a card drawn
- * again after it scrolled away still offers Undo. */
-const replaced = signal(new Map<string, Look>());
 
 /** Below this width the card shows the appearance in effect only, not light and dark side by side. */
 const sideBySide = 520;
@@ -68,25 +64,7 @@ export function ThemeCard(props: { source(): string }) {
 function Card(props: { block(): NonNullable<ReturnType<typeof readThemeBlock>> }) {
   const look = () => props.block().look;
   const width = signal(0);
-  const key = () => JSON.stringify(look());
-  const previous = () => replaced().get(key()) ?? null;
-  const remember = (value: Look | null) => {
-    const next = new Map(replaced());
-    if (value) next.set(key(), value);
-    else next.delete(key());
-    replaced.set(next);
-  };
   const applied = () => sameLook(look(), appearance.shown());
-  const apply = () => {
-    remember(appearance.shown());
-    appearance.changeLook(look(), true);
-  };
-  const undo = () => {
-    const before = previous();
-    if (!before) return;
-    remember(null);
-    appearance.changeLook(before, true);
-  };
   const note = (text: string) => (
     <Text style={{ ...captionTextStyle, color: C.warning }}>{text}</Text>
   );
@@ -121,11 +99,17 @@ function Card(props: { block(): NonNullable<ReturnType<typeof readThemeBlock>> }
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
         <If
           when={applied()}
-          else={<SettingsButton label={tr('Apply')} tone="primary" onPress={apply} />}
+          else={
+            <SettingsButton
+              label={tr('Apply')}
+              tone="primary"
+              onPress={() => appearance.changeLook(look(), true)}
+            />
+          }
         >
           <Text style={{ ...secondaryTextStyle, color: C.secondary }}>{tr('Applied')}</Text>
-          <If when={previous()}>
-            <SettingsButton label={tr('Undo')} tone="quiet" onPress={undo} />
+          <If when={appearance.canUndo()}>
+            <SettingsButton label={tr('Undo')} tone="quiet" onPress={appearance.undo} />
           </If>
         </If>
       </View>

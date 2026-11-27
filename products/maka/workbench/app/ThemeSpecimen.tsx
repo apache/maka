@@ -29,10 +29,13 @@ import { codeTextStyle, lookColors, lookShape, secondaryTextStyle } from './ui';
 export function Specimen(props: { look(): Look | null; compact?: boolean; dark?: boolean }) {
   const C = lookColors(props.look, props.dark);
   const { radius, lineWidth, letterSpacing, raisedShadow } = lookShape(props.look, props.dark);
+  const sampleTextStyle = () => ({
+    ...secondaryTextStyle,
+    fontFamily: props.look()?.cssVars.theme['font-sans'] ?? 'system-ui',
+    letterSpacing: letterSpacing(),
+  });
   const line = (text: string, color: string, extra: object = {}) => (
-    <Text style={{ ...secondaryTextStyle, color, letterSpacing: letterSpacing(), ...extra }}>
-      {text}
-    </Text>
+    <Text style={{ ...sampleTextStyle(), color, ...extra }}>{text}</Text>
   );
   return (
     <View style={{ padding: 12, gap: 10, backgroundColor: C.panel }}>
@@ -49,7 +52,7 @@ export function Specimen(props: { look(): Look | null; compact?: boolean; dark?:
       >
         {line(tr('Can you check this function?'), C.text)}
       </View>
-      <Text style={{ ...secondaryTextStyle, color: C.text, letterSpacing: letterSpacing() }}>
+      <Text style={{ ...sampleTextStyle(), color: C.text }}>
         {tr('It returns early when the list is empty.')}{' '}
         <Text style={{ color: C.accentText, textDecorationLine: 'underline' }}>
           {tr('See the notes.')}

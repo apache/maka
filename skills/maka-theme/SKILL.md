@@ -55,9 +55,8 @@ The block holds one JSON object, with no comments:
 ```
 
 - `name`: what the theme is called, up to 40 characters, in the person's language.
-- `base`: the preset nearest in spirit. The theme starts as that preset; every value you write
-  replaces the preset's. Write only what differs, and always the three main colors of each
-  appearance.
+- `base` is the preset nearest in spirit. Always write the three main colors for each appearance.
+  Include other values where they differ from the defaults described below.
 - `cssVars.light` and `cssVars.dark`: colors as `#rrggbb`. Write both, even for a theme described
   as dark ("late night") or light: the device shows whichever its appearance is.
 - `cssVars.theme`: font and shape.
@@ -87,16 +86,17 @@ Values that are not valid are left out, and the card says so. Keep to the names 
 | `card` | Sidebar and cards (optional) | One small step lighter or darker than `background` |
 | `border` | Lines (optional) | Low contrast against `background` |
 | `muted-foreground` | Secondary text (optional) | Contrast at least 4.5:1 against `background` |
-| `shadow-color` | The shadow (optional, black when left out) | On a dark background, near black or a dark gray, never a light or bright color |
+| `shadow-color` | The shadow (optional) | On a dark background, near black or a dark gray, never a light or bright color |
 
-Leave out the optional colors unless the description needs them: the app derives them from the
-three main colors and keeps them readable.
+When any main color changes in an appearance, the app derives omitted optional colors from the new
+palette and uses black for the shadow. An appearance with the preset's main colors inherits its
+optional colors. Use `null` for an optional color to use its derived value or a black shadow.
 
 ## Font and shape
 
-| Name | Range | Default |
+| Name | Range | App default |
 | --- | --- | --- |
-| `font-sans` | One of the three lists below; leave out for the system font | system |
+| `font-sans` | One of the three lists below | system |
 | `radius` | 0 to 20 (corner radius of a control, pt) | 8 |
 | `border-width` | 1, 1.5, 2 or 3 (pt) | 1 |
 | `letter-spacing` | -0.5 to 1.5 (pt) | 0 |
@@ -105,7 +105,10 @@ three main colors and keeps them readable.
 | `shadow-spread` | -8 to 8 (pt) | 0 |
 | `shadow-opacity` | 0 to 1; 0 is no shadow | 0 |
 
-`font-sans` must be exactly one of:
+Omitted font and shape values inherit the preset's. Use `null` for the app default, including
+`"font-sans": null` for the system font.
+
+Use one of these font lists when choosing a font:
 
 - Serif: `Georgia, "Songti SC", "Noto Serif CJK SC", serif`
 - Monospace: `Menlo, Consolas, "PingFang SC", monospace`

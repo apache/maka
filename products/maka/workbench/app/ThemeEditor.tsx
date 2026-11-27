@@ -55,6 +55,7 @@ import {
   shapeLimits,
   shapeValue,
   unchanged,
+  writeThemeBlock,
   type FontChoice,
   type Look,
   type LookColor,
@@ -72,6 +73,7 @@ import {
   SettingsSelect,
   settingsGutter,
 } from './SettingsPage';
+import { errorText, renderText } from './text';
 import { Specimen } from './ThemeSpecimen';
 import {
   C,
@@ -330,14 +332,21 @@ function ThemeStatus() {
   };
   cleanup(() => clearTimeout(outcomeTimer));
   const copy = () =>
-    void Clipboard.writeText(JSON.stringify(look(), null, 2)).then(() => report(tr('Copied')));
+    void Clipboard.writeText(writeThemeBlock(look())).then(
+      (result) =>
+        report(result === 'failed' ? tr('Could not copy to the clipboard.') : tr('Copied')),
+      (reason) => report(renderText(errorText(reason, 'Could not copy to the clipboard.'))),
+    );
   const paste = async () => {
-    let block: ThemeBlock | null = null;
+    let block: ThemeBlock | null;
     try {
       block = readThemeBlock(JSON.parse(await Clipboard.readText()));
-    } catch {}
-    if (block) appearance.changeLook(block.look, true);
-    else report(tr('The clipboard holds no theme.'));
+    } catch {
+      return report(tr('The clipboard holds no theme.'));
+    }
+    if (!block) return report(tr('The clipboard holds no theme.'));
+    appearance.changeLook(block.look, true);
+    report(tr('Applied'));
   };
   const action = (label: string, onPress: () => void, disabled: () => boolean) => (
     <Button
@@ -345,6 +354,7 @@ function ThemeStatus() {
       disabled={disabled()}
       onPress={onPress}
       style={{
+        flexShrink: 0,
         paddingHorizontal: 10,
         paddingVertical: 4,
         borderRadius: 6,
@@ -362,6 +372,7 @@ function ThemeStatus() {
     <View
       style={{
         flexDirection: 'row',
+        flexWrap: 'wrap',
         alignItems: 'center',
         gap: 8,
         paddingHorizontal: 12,
@@ -372,7 +383,7 @@ function ThemeStatus() {
         borderColor: fixed().line,
       }}
     >
-      <Text style={{ ...secondaryTextStyle, flex: 1, color: fixed().text }}>
+      <Text style={{ ...secondaryTextStyle, flexGrow: 1, flexShrink: 1, color: fixed().text }}>
         {outcome() ??
           (modified()
             ? tr('Based on {preset} · Modified', { preset: lookLabel(look().base) })
