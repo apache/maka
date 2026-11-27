@@ -437,10 +437,12 @@ impl NativeExternalEffects {
                 .settle_owned(key, &name, Err(error), ToolSettlement::Rejected, running)
                 .await;
         }
-        let _progress = self
-            .access
-            .worker_progress()
-            .map(|run| run.prepare_tool(context.operation_id.clone(), &name, &descriptor.input)());
+        let _progress = self.access.worker_progress().map(|run| {
+            run.track(
+                context.operation_id.clone(),
+                super::worker_progress::tool(&name, &descriptor.input),
+            )
+        });
         let (custody, execution) = running.execute();
         let result = AssertUnwindSafe(execution)
             .catch_unwind()

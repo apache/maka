@@ -256,6 +256,10 @@ export function BotWaiting(props: {
   open?(id: string): void;
 }) {
   const expanded = signal(false);
+  const toggleLabel = () =>
+    expanded()
+      ? tr('Collapse tasks')
+      : tr('Show {count} more tasks', { count: props.workers().length - 2 });
   return (
     <View style={{ width: '100%', paddingVertical: 8, gap: 8 }}>
       <Each of={shownWorkers(props.workers(), expanded())} key={(worker) => worker.id}>
@@ -305,12 +309,14 @@ export function BotWaiting(props: {
         }}
       </Each>
       <If when={props.workers().length > 2}>
-        <Button onPress={() => expanded.set(!expanded())}>
-          <Text style={captionTextStyle}>
-            {expanded()
-              ? tr('Collapse tasks')
-              : tr('Show {count} more tasks', { count: props.workers().length - 2 })}
-          </Text>
+        <Button
+          accessibilityLabel={toggleLabel()}
+          style={{ alignSelf: 'flex-start' }}
+          hoverStyle={{ backgroundColor: C.raised }}
+          focusStyle={{ backgroundColor: C.pressed }}
+          onPress={() => expanded.set(!expanded())}
+        >
+          <Text style={captionTextStyle}>{toggleLabel()}</Text>
         </Button>
       </If>
     </View>

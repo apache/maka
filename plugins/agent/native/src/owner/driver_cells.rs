@@ -1898,7 +1898,7 @@ impl NativeCellPort {
             .run
             .access
             .worker_progress()
-            .map(|run| run.prepare_tool(format!("cell/{operation}"), &name, &input));
+            .map(|run| (run, super::worker_progress::tool(&name, &input)));
         let prepared = match PreparedTool::prepare(
             &self.run.owner,
             &self.run.access,
@@ -1987,7 +1987,7 @@ impl NativeCellPort {
             Ok(running) => running,
             Err(error) => return self.persist_return(cell, operation, Err(error), None).await,
         };
-        let _progress = progress.map(|start| start());
+        let _progress = progress.map(|(run, hint)| run.track(format!("cell/{operation}"), hint));
         let (custody, future) = running.execute();
         self.run.owned.lock().map_err(persistence)?.insert(cell);
         self.run

@@ -857,6 +857,16 @@ test('worker progress subscription merges ordered deltas independently of catalo
   deliver({ snapshot: false, upsert: [{ ...row, seq: 4 }], remove: [] });
   await settle();
   assert.equal(workers.progress().get('child').runId, 'two');
+  const catalog = { id: 'child', parentSessionId: 'bot', title: 'Task', archived: false };
+  for (const [activity, kind, expected, seq] of [
+    ['working', 'approval', 'waiting', 6],
+    ['waiting', 'command', 'working', 7],
+  ]) {
+    deliver({ snapshot: false, upsert: [{ ...row, runId: 'two', seq, kind }], remove: [] });
+    await settle();
+    const [worker] = activeWorkers([{ ...catalog, activity }], 'bot', workers.progress());
+    assert.equal(worker.activity, expected);
+  }
   deliver({ snapshot: false, upsert: [], remove: ['child'] });
   await settle();
   assert.equal(workers.progress().size, 0);

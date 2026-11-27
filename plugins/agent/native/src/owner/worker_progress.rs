@@ -115,16 +115,17 @@ pub(crate) struct Run {
 }
 impl Run {
     pub fn new(group: Arc<Group>, execution: ExecutionIdentity) -> Arc<Self> {
-        let sequence = group
-            .sequence
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut state = State::default();
         group.rows.send_modify(|rows| {
+            state.sequence = group
+                .sequence
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             rows.insert(
                 execution.session_id.clone(),
                 WorkerProgress {
                     session_id: execution.session_id.clone(),
                     run_id: execution.run_id,
-                    seq: sequence,
+                    seq: state.sequence,
                     kind: Kind::Working,
                     detail: String::new(),
                 },
@@ -133,10 +134,7 @@ impl Run {
         Arc::new(Self {
             group,
             execution,
-            state: Mutex::new(State {
-                sequence,
-                ..State::default()
-            }),
+            state: Mutex::new(state),
         })
     }
     fn update(&self, edit: impl FnOnce(&mut State)) {
@@ -178,11 +176,19 @@ impl Run {
     }
     pub fn commentary(&self, chars: impl Iterator<Item = char>) {
         let prefix: String = chars.take(96).collect();
-        if let Some((end, punctuation)) = prefix
-            .char_indices()
-            .find(|(_, ch)| matches!(ch, '。' | '！' | '？' | '.' | '!' | '?'))
-        {
-            let sentence = short(&prefix[..end + punctuation.len_utf8()]);
+        let mut chars = prefix.char_indices().peekable();
+        let mut end = prefix.len();
+        while let Some((i, ch)) = chars.next() {
+            if matches!(ch, '。' | '！' | '？')
+                || (matches!(ch, '.' | '!' | '?')
+                    && chars.peek().is_none_or(|(_, next)| next.is_whitespace()))
+            {
+                end = i + ch.len_utf8();
+                break;
+            }
+        }
+        let sentence = short(&prefix[..end]);
+        if sentence.chars().any(char::is_alphanumeric) {
             self.update(|s| s.commentary = Some(sentence));
         }
     }
@@ -306,23 +312,15 @@ impl Drop for ActiveTool {
     }
 }
 impl Run {
-    pub(super) fn prepare_tool(
-        self: &Arc<Self>,
-        id: String,
-        name: &str,
-        input: &Value,
-    ) -> impl FnOnce() -> ActiveTool + use<> {
-        let hint = tool(name, input);
-        let run = Arc::downgrade(self);
-        move || {
-            if let Some(current) = run.upgrade() {
-                current.start_tool(RunningTool {
-                    id: id.clone(),
-                    hint,
-                    todo: None,
-                });
-            }
-            ActiveTool { run, id }
+    pub(super) fn track(self: &Arc<Self>, id: String, hint: Hint) -> ActiveTool {
+        self.start_tool(RunningTool {
+            id: id.clone(),
+            hint,
+            todo: None,
+        });
+        ActiveTool {
+            run: Arc::downgrade(self),
+            id,
         }
     }
 }
@@ -342,7 +340,7 @@ impl Drop for Run {
         });
     }
 }
-fn tool(name: &str, input: &Value) -> Hint {
+pub(super) fn tool(name: &str, input: &Value) -> Hint {
     for key in ["toolSummary", "description", "Description", "title"] {
         if let Some(text) = input[key].as_str().map(short).filter(|s| !s.is_empty()) {
             return (Kind::Summary, text);
@@ -366,6 +364,25 @@ fn tool(name: &str, input: &Value) -> Hint {
             },
             short(path.rsplit(['/', '\\']).next().unwrap_or(&path)),
         ),
+        Some(ExternalToolTarget::Search { query }) => {
+            (Kind::Tool, short(&format!("{name} {query}")))
+        }
+        None if name == "fileChange" => {
+            let path = input["changes"]
+                .as_array()
+                .and_then(|changes| changes.first())
+                .and_then(|change| change["path"].as_str());
+            match path {
+                Some(path) => (
+                    Kind::Edit,
+                    short(&format!(
+                        "{}…",
+                        path.rsplit(['/', '\\']).next().unwrap_or(path)
+                    )),
+                ),
+                None => (Kind::Working, String::new()),
+            }
+        }
         _ => (Kind::Tool, short(name)),
     }
 }
@@ -412,9 +429,22 @@ pub(crate) mod tests {
         let mut rx = group.rows.subscribe();
         run.phase(Kind::Thinking);
         run.commentary("Checking the build. Another sentence.".chars());
-        run.commentary("Incomplete commentary".chars());
+        for (input, expected) in [
+            (
+                "Testing v1.2 in src/main.rs. More",
+                "Testing v1.2 in src/main.rs.",
+            ),
+            ("运行测试", "运行测试"),
+            ("...", "运行测试"),
+        ] {
+            run.commentary(input.chars());
+            assert_eq!(rx.borrow()["child"].detail, expected);
+        }
         run.todo(Some("Full test suite".into()));
-        run.start("native", "Shell", &json!({"command":"cargo test"}));
+        let native = run.track(
+            "native".into(),
+            tool("Shell", &json!({"command":"cargo test"})),
+        );
         for (name, input, kind, text) in [
             (
                 "fileChange",
@@ -427,6 +457,18 @@ pub(crate) mod tests {
                 json!({"CommandLine":"cargo fmt","toolSummary":"Checking format"}),
                 Kind::Summary,
                 "Checking format",
+            ),
+            (
+                "WebSearch",
+                json!({"query":"rust"}),
+                Kind::Tool,
+                "WebSearch rust",
+            ),
+            (
+                "fileChange",
+                json!({"changes":[{"path":"src/a.rs"},{"path":"b"}]}),
+                Kind::Edit,
+                "a.rs…",
             ),
             ("Bash", json!({"command":"pwd"}), Kind::Command, "pwd"),
         ] {
@@ -479,10 +521,10 @@ pub(crate) mod tests {
         });
         run.interaction(&record);
         assert_eq!(rx.borrow()["child"].kind, Kind::Command);
-        run.finish("native");
+        drop(native);
         assert_eq!(rx.borrow()["child"].detail, "Full test suite");
         run.todo(None);
-        assert_eq!(rx.borrow()["child"].detail, "Checking the build.");
+        assert_eq!(rx.borrow()["child"].detail, "运行测试");
         for success in [false, true] {
             run.output(&Output::ToolStart {
                 tool_call_id: "plan".into(), name: "TodoWrite".into(), input: json!({
@@ -500,12 +542,12 @@ pub(crate) mod tests {
                 if success {
                     "Running tests"
                 } else {
-                    "Checking the build."
+                    "运行测试"
                 }
             );
         }
         let replacement = Run::new(group, execution());
-        run.start("late", "Bash", &json!({"command":"late"}));
+        let _late = run.track("late".into(), tool("Bash", &json!({"command":"late"})));
         drop(run);
         assert_eq!(rx.borrow()["child"].run_id, replacement.execution.run_id);
         assert_eq!(rx.borrow()["child"].kind, Kind::Working);

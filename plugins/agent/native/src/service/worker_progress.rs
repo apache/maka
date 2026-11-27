@@ -34,7 +34,7 @@ pub(super) async fn watch(
     input: WorkerProgressRead,
     context: Context,
 ) -> Result<Value, String> {
-    history::authorize(&owner, context.scope(), &input.parent_session_id).await?;
+    history::authorize_session(&owner, context.scope(), &input.parent_session_id).await?;
     if context.scope().identity.agent().is_some() {
         let access = owner.access_for_scope(context.scope()).await?;
         if access.execution().session_id != input.parent_session_id {

@@ -383,13 +383,16 @@ export function activeWorkers<
   const found: ActiveWorker[] = [];
   for (const session of sessions) {
     if (session.parentSessionId !== bot || session.archived) continue;
-    if (session.activity === 'working' || session.activity === 'waiting')
+    const live = progress?.get(session.id);
+    if (session.activity === 'working' || session.activity === 'waiting') {
+      const waiting = live && ['approval', 'question', 'permission', 'form'].includes(live.kind);
       found.push({
         id: session.id,
         title: session.title,
-        activity: session.activity,
-        ...(progress?.has(session.id) ? { progress: progress.get(session.id) } : {}),
+        activity: live ? (waiting ? 'waiting' : 'working') : session.activity,
+        ...(live ? { progress: live } : {}),
       });
+    }
   }
   // What waits for the user comes first.
   return found.sort((a, b) => Number(b.activity === 'waiting') - Number(a.activity === 'waiting'));

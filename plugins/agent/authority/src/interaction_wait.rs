@@ -35,8 +35,9 @@ pub async fn wait(
             .await
             .map_err(|_| "interaction_read_unavailable")?
             .ok_or("interaction_missing")?;
-        if let Some(outcome) = record.outcome {
-            return Ok(outcome);
+        if let Some(outcome) = &record.outcome {
+            access.settled(&record);
+            return Ok(outcome.clone());
         }
         tokio::select! {
             biased;

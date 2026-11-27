@@ -1137,13 +1137,15 @@ impl Interactions for RunAccess {
                 .await
                 .map_err(|error| error.to_string())?
                 .filter(|record| record.execution == self.execution);
-            if let Some(record) = &record
-                && let Some(p) = self.worker_progress()
-            {
-                p.interaction(record);
-            }
             Ok(record)
         })
+    }
+    fn settled(&self, record: &InteractionRecord) {
+        if record.execution == self.execution
+            && let Some(run) = self.worker_progress()
+        {
+            run.interaction(record);
+        }
     }
     fn establish<'a>(
         &'a self,
