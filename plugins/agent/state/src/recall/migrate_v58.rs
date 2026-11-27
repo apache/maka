@@ -69,7 +69,7 @@ pub(crate) fn run(c: &Connection) -> Result<(), StoreError> {
             &owner,
             &owner_json,
             &session,
-            MessageLayout::Current,
+            MessageLayout::LegacyV58OwnerSession,
             Some(&mut state),
         )?;
     }
@@ -323,16 +323,28 @@ mod tests {
         if let Fact::ExternalEffect { event } = &recorded.fact {
             crate::external_effects::replay(db, run, *revision, event).unwrap();
         }
-        crate::session_history::index(db, &recorded).unwrap();
-        if !matches!(
-            recorded.fact,
-            Fact::StepPrepared { .. } | Fact::ExternalEffect { .. }
-        ) {
-            crate::session_history::index_retained(db, &recorded).unwrap();
-        }
-        if legacy_v59 {
+        let has_namespace_id: bool = db
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('agent_session_history') WHERE name='namespace_id')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        if has_namespace_id {
+            crate::session_history::index(db, &recorded).unwrap();
+            if !matches!(
+                recorded.fact,
+                Fact::StepPrepared { .. } | Fact::ExternalEffect { .. }
+            ) {
+                crate::session_history::index_retained(db, &recorded).unwrap();
+            }
+            index::index_fact(db, spec, &recorded, seq).unwrap();
+        } else {
+            crate::session_history::index_legacy_owner_session(db, &recorded).unwrap();
             let mut single = HashSet::new();
-            single.insert(recorded.id.to_string());
+            if legacy_v59 {
+                single.insert(recorded.id.to_string());
+            }
             let mut st = RebuildState::new(single, HashSet::new());
             index::index_fact_with_state(
                 db,
@@ -340,12 +352,10 @@ mod tests {
                 &recorded,
                 seq,
                 Some(blob.reference().clone()),
-                MessageLayout::Current,
+                MessageLayout::LegacyV58OwnerSession,
                 Some(&mut st),
             )
             .unwrap();
-        } else {
-            index::index_fact(db, spec, &recorded, seq).unwrap();
         }
         (seq, recorded)
     }
@@ -938,7 +948,7 @@ mod tests {
     async fn fixed_mid_cut_finds_superseded_cell_completed_and_local_return_with_budget_and_masking()
      {
         let dir = tempfile::tempdir().unwrap();
-        let (root, _store, db_path) = open_test_root(dir.path(), 61).await;
+        let (root, _store, db_path) = open_test_root(dir.path(), i64::MAX).await;
 
         let (owner, turn_id, comp_seq, comp_fact, loc_seq, loc_fact, acc_seq, acc_fact, admit_seq) = {
             let db = open_raw_db(&db_path);
@@ -946,7 +956,7 @@ mod tests {
             let owner = spec.owner.clone();
             let admit_seq: u64 = db
                 .query_row(
-                    "SELECT MIN(sequence) FROM agent_session_history WHERE session='s-midcut'",
+                    "SELECT MIN(h.sequence) FROM agent_session_history h JOIN agent_namespaces ns ON ns.id=h.namespace_id WHERE ns.session='s-midcut'",
                     [],
                     |r| r.get::<_, i64>(0),
                 )
@@ -1236,7 +1246,7 @@ alpha-midcut-cell-needle"#;
     #[tokio::test]
     async fn external_segments_live_streaming_time_window_and_rebuild_parity() {
         let dir = tempfile::tempdir().unwrap();
-        let (root, _store, db_path) = open_test_root(dir.path(), 61).await;
+        let (root, _store, db_path) = open_test_root(dir.path(), i64::MAX).await;
 
         let (owner, run, spec, mut rev, d1_seq, d1_fact, d2_seq, d2_fact, u2_seq, live_tail_fact) = {
             let db = open_raw_db(&db_path);
@@ -1651,14 +1661,17 @@ alpha-midcut-cell-needle"#;
                 },
                 false,
             );
+            let ns_id = crate::namespace::find_id(&db, &owner_json, "s-ext")
+                .unwrap()
+                .unwrap();
             let snapshot_state = |db: &Connection| {
                 let msgs: Vec<(i64, String)> = db
                     .prepare(
                         "SELECT sequence, body FROM agent_recall_messages
-                         WHERE owner=? AND session='s-ext' ORDER BY sequence, ordinal",
+                         WHERE namespace_id=? ORDER BY sequence, ordinal",
                     )
                     .unwrap()
-                    .query_map([&owner_json], |r| Ok((r.get(0)?, r.get(1)?)))
+                    .query_map([ns_id], |r| Ok((r.get(0)?, r.get(1)?)))
                     .unwrap()
                     .collect::<Result<_, _>>()
                     .unwrap();
@@ -1666,10 +1679,10 @@ alpha-midcut-cell-needle"#;
                     .prepare(
                         "SELECT s0_sequence, tail_start_sequence, tail_end_sequence, sealed
                          FROM agent_recall_external_segments
-                         WHERE owner=? AND session='s-ext' ORDER BY s0_sequence",
+                         WHERE namespace_id=? ORDER BY s0_sequence",
                     )
                     .unwrap()
-                    .query_map([&owner_json], |r| {
+                    .query_map([ns_id], |r| {
                         Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
                     })
                     .unwrap()
@@ -1717,7 +1730,7 @@ alpha-midcut-cell-needle"#;
     #[tokio::test]
     async fn snapshot_navigation_matches_v60_coalesced_deltas() {
         let dir = tempfile::tempdir().unwrap();
-        let (root, _store, db_path) = open_test_root(dir.path(), 61).await;
+        let (root, _store, db_path) = open_test_root(dir.path(), i64::MAX).await;
 
         let owner = {
             let db = open_raw_db(&db_path);

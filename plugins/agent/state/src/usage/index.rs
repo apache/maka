@@ -87,7 +87,8 @@ fn insert_model(
         sequence,
         at,
     } = position;
-    c.execute("INSERT INTO agent_usage_calls(request,source,kind,owner,session,run,admission_sequence,started_at,model_id,provider_id,purpose,binding_json,quote_json,origin_json) VALUES(?,?,'model',?,?,?,?,?,?,?,?,?,?,?)",params![id,source,json(owner)?,session,run.map(|r|r.to_string()),integer(sequence)?,at.0,evidence.model_id,evidence.quote.as_ref().map(|q|q.provider_id.as_str()),json(&evidence.purpose)?,json(&evidence.binding)?,evidence.quote.as_ref().map(json).transpose()?,json(origin)?])?;
+    let ns_id = crate::namespace::ensure_id(c, &json(owner)?, session)?;
+    c.execute("INSERT INTO agent_usage_calls(request,source,kind,namespace_id,standalone_session,run,admission_sequence,started_at,model_id,provider_id,purpose,binding_json,quote_json,origin_json) VALUES(?,?,'model',?,NULL,?,?,?,?,?,?,?,?,?)",params![id,source,ns_id,run.map(|r|r.to_string()),integer(sequence)?,at.0,evidence.model_id,evidence.quote.as_ref().map(|q|q.provider_id.as_str()),json(&evidence.purpose)?,json(&evidence.binding)?,evidence.quote.as_ref().map(json).transpose()?,json(origin)?])?;
     Ok(())
 }
 fn insert_tool(
@@ -106,7 +107,14 @@ fn insert_tool(
         sequence,
         at,
     } = position;
-    c.execute("INSERT INTO agent_usage_calls(request,source,kind,owner,session,run,admission_sequence,started_at,name,binding_json,origin_json) VALUES(?,?,'tool',?,?,?,?,?,?,?,?) ON CONFLICT(request) DO NOTHING",params![id,source,owner.map(json).transpose()?,session,run.map(|r|r.to_string()),integer(sequence)?,at.0,name,binding.map(json).transpose()?,json(origin)?])?;
+    let (ns_id, standalone_session) = match owner {
+        Some(owner) => (
+            Some(crate::namespace::ensure_id(c, &json(owner)?, session)?),
+            None,
+        ),
+        None => (None, Some(session)),
+    };
+    c.execute("INSERT INTO agent_usage_calls(request,source,kind,namespace_id,standalone_session,run,admission_sequence,started_at,name,binding_json,origin_json) VALUES(?,?,'tool',?,?,?,?,?,?,?,?) ON CONFLICT(request) DO NOTHING",params![id,source,ns_id,standalone_session,run.map(|r|r.to_string()),integer(sequence)?,at.0,name,binding.map(json).transpose()?,json(origin)?])?;
     Ok(())
 }
 #[derive(Default)]

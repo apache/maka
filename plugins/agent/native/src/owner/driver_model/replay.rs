@@ -885,8 +885,20 @@ mod tests {
                     params![seq, fact, run, seq, id],
                 )
                 .unwrap();
-                db.execute("INSERT INTO agent_session_history(owner,session,sequence,run,admission_sequence,kind,prefix_digest,tool_start,opening_message,fact_id,result_source,tool_use_id)
-                    VALUES('owner','chat',?,?,1,?,'prefix',?,0,?,?,?)",params![seq,run,kind,is_call,fact,!is_call,name]).unwrap();
+                db.execute(
+                    "INSERT OR IGNORE INTO agent_namespaces(owner,session) VALUES('owner','chat')",
+                    [],
+                )
+                .unwrap();
+                let ns_id: i64 = db
+                    .query_row(
+                        "SELECT id FROM agent_namespaces WHERE owner='owner' AND session='chat'",
+                        [],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+                db.execute("INSERT INTO agent_session_history(namespace_id,sequence,run,admission_sequence,kind,prefix_digest,tool_start,opening_message,fact_id,result_source,tool_use_id)
+                    VALUES(?,?,?,1,?,'prefix',?,0,?,?,?)",params![ns_id,seq,run,kind,is_call,fact,!is_call,name]).unwrap();
             }
         }
         maka_event_log::migration::run(&db, &migrations).unwrap();
@@ -904,7 +916,9 @@ mod tests {
         let restricted = db
             .prepare(
                 "SELECT h.tool_use_id FROM agent_memory_recall_outputs r
-                 JOIN agent_session_history h ON h.owner=r.owner AND h.fact_id=r.fact ORDER BY h.tool_use_id",
+                 JOIN agent_session_history h ON h.fact_id=r.fact
+                 JOIN agent_namespaces ns ON ns.id=h.namespace_id AND ns.owner=r.owner
+                 ORDER BY h.tool_use_id",
             )
             .unwrap()
             .query_map([], |r| r.get::<_, String>(0))

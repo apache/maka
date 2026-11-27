@@ -66,7 +66,8 @@ const BASE: &str = "WITH base AS (
  LEFT JOIN workspace_bindings b ON b.id=json_extract(s.configuration,'$.workspace.id')
  LEFT JOIN agent_catalog_controls k ON k.owner=?1 AND k.session=s.id
  LEFT JOIN agent_rooms room ON room.owner=?1 AND room.session=s.id
- LEFT JOIN agent_session_history source ON source.sequence=(SELECT marker.sequence FROM agent_session_history marker INDEXED BY agent_session_history_historical WHERE marker.owner=?1 AND marker.session=s.id AND marker.historical=1 ORDER BY marker.sequence DESC LIMIT 1)
+ LEFT JOIN agent_namespaces ns ON ns.owner=?1 AND ns.session=s.id
+ LEFT JOIN agent_session_history source ON source.sequence=(SELECT marker.sequence FROM agent_session_history marker INDEXED BY agent_session_history_historical WHERE marker.namespace_id=ns.id AND marker.historical=1 ORDER BY marker.sequence DESC LIMIT 1)
  LEFT JOIN agent_history_snapshot_adoptions source_adoption ON source_adoption.run=source.run
  LEFT JOIN agent_history_snapshot_catalog source_summary ON source_summary.snapshot=source_adoption.snapshot
  LEFT JOIN agent_catalog_sessions a ON a.owner=?1 AND a.session=s.id
@@ -103,23 +104,25 @@ static KEY_SQL: LazyLock<String> = LazyLock::new(|| {
         *BASE_SQL
     )
 });
-// CROSS JOIN forces SQLite to drive from the small partial index
-// `agent_session_history_historical` instead of scanning `agent_session_history_run`,
-// while reusing the exact selection filters so unmatched snapshots are never rebuilt.
+// Drive from `agent_namespaces` via UNIQUE(owner, session) range scan, then probe
+// the partial index `agent_session_history_historical(namespace_id, sequence DESC)`
+// so multi-owner databases with many historical snapshots stay scoped to this owner/prefix.
 static STALE_CATALOG_SQL: LazyLock<String> = LazyLock::new(|| {
     format!(
         "SELECT s.id, source.run
 FROM (
-    SELECT session, MAX(sequence) AS sequence
-    FROM agent_session_history INDEXED BY agent_session_history_historical
-    WHERE owner=?1 AND historical=1
-      AND session>=?2 AND session<?3 AND substr(session,1,length(?2))=?2
-    GROUP BY session
+    SELECT ns.id AS namespace_id, ns.session, MAX(h.sequence) AS sequence
+    FROM agent_namespaces ns
+    CROSS JOIN agent_session_history h INDEXED BY agent_session_history_historical
+      ON h.namespace_id=ns.id AND h.historical=1
+    WHERE ns.owner=?1
+      AND ns.session>=?2 AND ns.session<?3 AND substr(ns.session,1,length(?2))=?2
+    GROUP BY ns.session
 ) latest
 CROSS JOIN session_control s ON s.id=latest.session
 CROSS JOIN session_creations route ON route.session_id=s.id AND route.ready=1 AND route.visible=1
 CROSS JOIN agent_session_history source
-  ON source.sequence=latest.sequence AND source.owner=?1 AND source.session=latest.session
+  ON source.sequence=latest.sequence AND source.namespace_id=latest.namespace_id
 CROSS JOIN agent_history_snapshot_adoptions source_adoption ON source_adoption.run=source.run
 LEFT JOIN agent_history_snapshot_catalog source_summary ON source_summary.snapshot=source_adoption.snapshot
 LEFT JOIN workspace_bindings b ON b.id=json_extract(s.configuration,'$.workspace.id')

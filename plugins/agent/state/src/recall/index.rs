@@ -138,10 +138,12 @@ pub(crate) fn compact_operation_receipt(r: &maka_plugin_core::operation::Recover
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum MessageLayout {
-    /// Current schema (v59+): `folded` column removed.
+    /// Current schema (v61+): `namespace_id` surrogate key, no `folded`.
     Current,
-    /// Historical v55 schema (v11..=v58): `folded TEXT NOT NULL` still present
-    /// while migration 55 runs ahead of migration 59 on multi-hop upgrades.
+    /// Historical v59/v60 schema: `(owner, session)` text columns, no `folded`.
+    LegacyV58OwnerSession,
+    /// Historical v55 schema (v11..=v58): `(owner, session)` with `folded TEXT NOT NULL`
+    /// while migration 55 runs ahead of migrations 59–61 on multi-hop upgrades.
     LegacyV55Folded,
 }
 
@@ -220,6 +222,7 @@ fn upsert_external_segment(
     s0_sequence: u64,
     cont: Option<&PendingContinuation>,
     sealed: bool,
+    layout: MessageLayout,
 ) -> Result<(), StoreError> {
     let (tail_start_seq, tail_end_seq, tail_start_at, tail_end_at, tail_end_fact, tail_bytes) =
         match cont {
@@ -234,43 +237,87 @@ fn upsert_external_segment(
             ),
             None => (None, None, None, None, None, 0i64),
         };
-    c.prepare_cached(
-        "INSERT INTO agent_recall_external_segments(
-            owner, session, run, admission_sequence, turn, task, message_id, is_thinking,
-            s0_sequence, tail_start_sequence, tail_end_sequence, tail_start_at, tail_end_at,
-            tail_end_fact, tail_bytes, sealed
-         )
-         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)
-         ON CONFLICT(owner, session, run, task, message_id, is_thinking, s0_sequence)
-         DO UPDATE SET
-            admission_sequence = excluded.admission_sequence,
-            turn = excluded.turn,
-            tail_start_sequence = excluded.tail_start_sequence,
-            tail_end_sequence = excluded.tail_end_sequence,
-            tail_start_at = excluded.tail_start_at,
-            tail_end_at = excluded.tail_end_at,
-            tail_end_fact = excluded.tail_end_fact,
-            tail_bytes = excluded.tail_bytes,
-            sealed = excluded.sealed",
-    )?
-    .execute(params![
-        owner_json,
-        session,
-        run.to_string(),
-        number(admission_sequence)?,
-        turn_id,
-        task.to_string(),
-        message_id,
-        i64::from(is_thinking),
-        number(s0_sequence)?,
-        tail_start_seq,
-        tail_end_seq,
-        tail_start_at,
-        tail_end_at,
-        tail_end_fact,
-        tail_bytes,
-        i64::from(sealed),
-    ])?;
+    match layout {
+        MessageLayout::Current => {
+            let ns_id = crate::namespace::ensure_id(c, owner_json, session)?;
+            c.prepare_cached(
+                "INSERT INTO agent_recall_external_segments(
+                    namespace_id, run, admission_sequence, turn, task, message_id, is_thinking,
+                    s0_sequence, tail_start_sequence, tail_end_sequence, tail_start_at, tail_end_at,
+                    tail_end_fact, tail_bytes, sealed
+                 )
+                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)
+                 ON CONFLICT(namespace_id, run, task, message_id, is_thinking, s0_sequence)
+                 DO UPDATE SET
+                    admission_sequence = excluded.admission_sequence,
+                    turn = excluded.turn,
+                    tail_start_sequence = excluded.tail_start_sequence,
+                    tail_end_sequence = excluded.tail_end_sequence,
+                    tail_start_at = excluded.tail_start_at,
+                    tail_end_at = excluded.tail_end_at,
+                    tail_end_fact = excluded.tail_end_fact,
+                    tail_bytes = excluded.tail_bytes,
+                    sealed = excluded.sealed",
+            )?
+            .execute(params![
+                ns_id,
+                run.to_string(),
+                number(admission_sequence)?,
+                turn_id,
+                task.to_string(),
+                message_id,
+                i64::from(is_thinking),
+                number(s0_sequence)?,
+                tail_start_seq,
+                tail_end_seq,
+                tail_start_at,
+                tail_end_at,
+                tail_end_fact,
+                tail_bytes,
+                i64::from(sealed),
+            ])?;
+        }
+        MessageLayout::LegacyV58OwnerSession => {
+            c.prepare_cached(
+                "INSERT INTO agent_recall_external_segments(
+                    owner, session, run, admission_sequence, turn, task, message_id, is_thinking,
+                    s0_sequence, tail_start_sequence, tail_end_sequence, tail_start_at, tail_end_at,
+                    tail_end_fact, tail_bytes, sealed
+                 )
+                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)
+                 ON CONFLICT(owner, session, run, task, message_id, is_thinking, s0_sequence)
+                 DO UPDATE SET
+                    admission_sequence = excluded.admission_sequence,
+                    turn = excluded.turn,
+                    tail_start_sequence = excluded.tail_start_sequence,
+                    tail_end_sequence = excluded.tail_end_sequence,
+                    tail_start_at = excluded.tail_start_at,
+                    tail_end_at = excluded.tail_end_at,
+                    tail_end_fact = excluded.tail_end_fact,
+                    tail_bytes = excluded.tail_bytes,
+                    sealed = excluded.sealed",
+            )?
+            .execute(params![
+                owner_json,
+                session,
+                run.to_string(),
+                number(admission_sequence)?,
+                turn_id,
+                task.to_string(),
+                message_id,
+                i64::from(is_thinking),
+                number(s0_sequence)?,
+                tail_start_seq,
+                tail_end_seq,
+                tail_start_at,
+                tail_end_at,
+                tail_end_fact,
+                tail_bytes,
+                i64::from(sealed),
+            ])?;
+        }
+        MessageLayout::LegacyV55Folded => {}
+    }
     Ok(())
 }
 
@@ -279,15 +326,26 @@ fn admission_sequence_for(
     owner_json: &str,
     session: &str,
     sequence: u64,
+    layout: MessageLayout,
 ) -> Result<u64, StoreError> {
-    let adm: i64 = c
-        .prepare_cached(
-            "SELECT admission_sequence FROM agent_session_history
-             WHERE owner = ?1 AND session = ?2 AND sequence = ?3",
-        )?
-        .query_row(params![owner_json, session, number(sequence)?], |r| {
-            r.get(0)
-        })?;
+    let adm: i64 = match layout {
+        MessageLayout::Current => {
+            let ns_id = crate::namespace::ensure_id(c, owner_json, session)?;
+            c.prepare_cached(
+                "SELECT admission_sequence FROM agent_session_history
+                 WHERE namespace_id = ?1 AND sequence = ?2",
+            )?
+            .query_row(params![ns_id, number(sequence)?], |r| r.get(0))?
+        }
+        MessageLayout::LegacyV58OwnerSession | MessageLayout::LegacyV55Folded => c
+            .prepare_cached(
+                "SELECT admission_sequence FROM agent_session_history
+                 WHERE owner = ?1 AND session = ?2 AND sequence = ?3",
+            )?
+            .query_row(params![owner_json, session, number(sequence)?], |r| {
+                r.get(0)
+            })?,
+    };
     unsigned(adm)
 }
 
@@ -360,6 +418,7 @@ impl RebuildState {
             seg.s0_sequence,
             Some(&delta),
             true,
+            layout,
         )?;
         let end = delta.body.len();
         let message = Message {
@@ -412,6 +471,7 @@ impl RebuildState {
         message_id: String,
         is_thinking: bool,
         text: &str,
+        layout: MessageLayout,
     ) -> Result<bool, StoreError> {
         let key = (fact.run, task, message_id, is_thinking);
         if let Some(seg) = self.open_deltas.get_mut(&key) {
@@ -440,7 +500,7 @@ impl RebuildState {
         } else {
             let owner_json = serde_json::to_string(&spec.owner)?;
             let admission_sequence =
-                admission_sequence_for(c, &owner_json, &spec.session_id, sequence)?;
+                admission_sequence_for(c, &owner_json, &spec.session_id, sequence, layout)?;
             self.open_deltas.insert(
                 key,
                 OpenDeltaSegment {
@@ -588,6 +648,7 @@ impl RebuildState {
                 seg.s0_sequence,
                 seg.continuation.as_ref(),
                 false,
+                layout,
             )?;
         }
         Ok(())
@@ -695,7 +756,7 @@ fn supersede_completed_cell(
     outer_body: &str,
     outer_is_failure: bool,
     state: Option<&mut RebuildState>,
-    _layout: MessageLayout,
+    layout: MessageLayout,
 ) -> Result<(), StoreError> {
     if outer_is_failure || outer_body.is_empty() {
         return Ok(());
@@ -796,29 +857,57 @@ fn supersede_completed_cell(
         }
         return Ok(());
     }
-    let rows: Vec<(i64, String, String, String)> = c
-        .prepare_cached(
-            "SELECT d.id, h.fact_id, d.body, d.fields_json
-             FROM agent_recall_messages d
-             JOIN agent_session_history h
-               ON h.owner = d.owner AND h.session = d.session AND h.sequence = d.sequence
-             WHERE d.owner = ?1 AND d.session = ?2 AND d.run = ?3
-               AND h.kind = 'cell' AND h.tool_use_id IS NULL
-               AND d.sequence < ?4 AND d.ordinal = 0
-               AND d.body_ref_sequence IS NULL
-               AND d.references_json->>'$[1].digest' = ?5",
-        )?
-        .query_map(
-            params![
-                owner_json,
-                spec.session_id,
-                run.to_string(),
-                number(outer_sequence)?,
-                result_digest
-            ],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-        )?
-        .collect::<Result<_, _>>()?;
+    let rows: Vec<(i64, String, String, String)> = match layout {
+        MessageLayout::Current => {
+            let Some(ns_id) = crate::namespace::find_id(c, &owner_json, &spec.session_id)? else {
+                return Ok(());
+            };
+            c.prepare_cached(
+                "SELECT d.id, h.fact_id, d.body, d.fields_json
+                 FROM agent_recall_messages d
+                 JOIN agent_session_history h
+                   ON h.namespace_id = d.namespace_id AND h.sequence = d.sequence
+                 WHERE d.namespace_id = ?1 AND d.run = ?2
+                   AND h.kind = 'cell' AND h.tool_use_id IS NULL
+                   AND d.sequence < ?3 AND d.ordinal = 0
+                   AND d.body_ref_sequence IS NULL
+                   AND d.references_json->>'$[1].digest' = ?4",
+            )?
+            .query_map(
+                params![
+                    ns_id,
+                    run.to_string(),
+                    number(outer_sequence)?,
+                    result_digest
+                ],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )?
+            .collect::<Result<_, _>>()?
+        }
+        MessageLayout::LegacyV58OwnerSession | MessageLayout::LegacyV55Folded => c
+            .prepare_cached(
+                "SELECT d.id, h.fact_id, d.body, d.fields_json
+                 FROM agent_recall_messages d
+                 JOIN agent_session_history h
+                   ON h.owner = d.owner AND h.session = d.session AND h.sequence = d.sequence
+                 WHERE d.owner = ?1 AND d.session = ?2 AND d.run = ?3
+                   AND h.kind = 'cell' AND h.tool_use_id IS NULL
+                   AND d.sequence < ?4 AND d.ordinal = 0
+                   AND d.body_ref_sequence IS NULL
+                   AND d.references_json->>'$[1].digest' = ?5",
+            )?
+            .query_map(
+                params![
+                    owner_json,
+                    spec.session_id,
+                    run.to_string(),
+                    number(outer_sequence)?,
+                    result_digest
+                ],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )?
+            .collect::<Result<_, _>>()?,
+    };
     for (row_id, fact_id, completed_body, fields_json) in rows {
         if let Some((ref_start, ref_end)) = coverage_span(&completed_body, &fields_json)?
             && !is_protected_from_pruning(c, &owner_json, row_id, &fact_id, None)?
@@ -845,7 +934,7 @@ fn clear_superseded_local_return(
     acc_sequence: u64,
     body: &str,
     state: Option<&mut RebuildState>,
-    _layout: MessageLayout,
+    layout: MessageLayout,
 ) -> Result<(), StoreError> {
     if body.is_empty() {
         return Ok(());
@@ -855,31 +944,47 @@ fn clear_superseded_local_return(
     let acc_seq_i64 = number(acc_sequence)?;
     let body_len_i64 = i64::try_from(body.len()).map_err(|_| invalid("body_ref_end overflow"))?;
 
-    let clear_and_repoint =
-        |row_id: i64, loc_seq: u64, immediate_fts: bool| -> Result<(), StoreError> {
-            if immediate_fts {
-                c.prepare_cached("DELETE FROM agent_recall_terms WHERE rowid = ?1")?
-                    .execute([row_id])?;
-            }
-            c.prepare_cached(
-                "UPDATE agent_recall_messages
+    let clear_and_repoint = |row_id: i64,
+                             loc_seq: u64,
+                             immediate_fts: bool|
+     -> Result<(), StoreError> {
+        if immediate_fts {
+            c.prepare_cached("DELETE FROM agent_recall_terms WHERE rowid = ?1")?
+                .execute([row_id])?;
+        }
+        c.prepare_cached(
+            "UPDATE agent_recall_messages
                  SET body = '', body_ref_sequence = ?2, body_ref_start = 0, body_ref_end = ?3
                  WHERE id = ?1",
-            )?
-            .execute(params![row_id, acc_seq_i64, body_len_i64])?;
-            c.prepare_cached(
-                "UPDATE agent_recall_messages
-                 SET body_ref_sequence = ?1
-                 WHERE owner = ?2 AND session = ?3 AND body_ref_sequence = ?4",
-            )?
-            .execute(params![
-                acc_seq_i64,
-                owner_json,
-                spec.session_id,
-                number(loc_seq)?
-            ])?;
-            Ok(())
-        };
+        )?
+        .execute(params![row_id, acc_seq_i64, body_len_i64])?;
+        match layout {
+            MessageLayout::Current => {
+                if let Some(ns_id) = crate::namespace::find_id(c, &owner_json, &spec.session_id)? {
+                    c.prepare_cached(
+                        "UPDATE agent_recall_messages
+                             SET body_ref_sequence = ?1
+                             WHERE namespace_id = ?2 AND body_ref_sequence = ?3",
+                    )?
+                    .execute(params![acc_seq_i64, ns_id, number(loc_seq)?])?;
+                }
+            }
+            MessageLayout::LegacyV58OwnerSession | MessageLayout::LegacyV55Folded => {
+                c.prepare_cached(
+                    "UPDATE agent_recall_messages
+                         SET body_ref_sequence = ?1
+                         WHERE owner = ?2 AND session = ?3 AND body_ref_sequence = ?4",
+                )?
+                .execute(params![
+                    acc_seq_i64,
+                    owner_json,
+                    spec.session_id,
+                    number(loc_seq)?
+                ])?;
+            }
+        }
+        Ok(())
+    };
 
     if let Some(state) = state {
         let Some((row_id, loc_seq, fact_id, prior_len, prior_hash)) =
@@ -895,28 +1000,49 @@ fn clear_superseded_local_return(
         }
         return Ok(());
     }
-    let rows: Vec<(i64, i64, String)> = c
-        .prepare_cached(
-            "SELECT d.id, d.sequence, h.fact_id
-             FROM agent_session_history h
-             JOIN agent_recall_messages d
-               ON d.owner = h.owner AND d.session = h.session AND d.sequence = h.sequence AND d.ordinal = 0
-             WHERE h.owner = ?1 AND h.session = ?2 AND h.tool_use_id = ?3
-               AND h.run = ?4 AND h.kind = 'local_tool_returned' AND h.sequence < ?5
-               AND d.body_ref_sequence IS NULL AND d.body = ?6",
-        )?
-        .query_map(
-            params![
-                owner_json,
-                spec.session_id,
-                tool_id,
-                run.to_string(),
-                acc_seq_i64,
-                body
-            ],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )?
-        .collect::<Result<_, _>>()?;
+    let rows: Vec<(i64, i64, String)> = match layout {
+        MessageLayout::Current => {
+            let Some(ns_id) = crate::namespace::find_id(c, &owner_json, &spec.session_id)? else {
+                return Ok(());
+            };
+            c.prepare_cached(
+                "SELECT d.id, d.sequence, h.fact_id
+                 FROM agent_session_history h
+                 JOIN agent_recall_messages d
+                   ON d.namespace_id = h.namespace_id AND d.sequence = h.sequence AND d.ordinal = 0
+                 WHERE h.namespace_id = ?1 AND h.tool_use_id = ?2
+                   AND h.run = ?3 AND h.kind = 'local_tool_returned' AND h.sequence < ?4
+                   AND d.body_ref_sequence IS NULL AND d.body = ?5",
+            )?
+            .query_map(
+                params![ns_id, tool_id, run.to_string(), acc_seq_i64, body],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )?
+            .collect::<Result<_, _>>()?
+        }
+        MessageLayout::LegacyV58OwnerSession | MessageLayout::LegacyV55Folded => c
+            .prepare_cached(
+                "SELECT d.id, d.sequence, h.fact_id
+                 FROM agent_session_history h
+                 JOIN agent_recall_messages d
+                   ON d.owner = h.owner AND d.session = h.session AND d.sequence = h.sequence AND d.ordinal = 0
+                 WHERE h.owner = ?1 AND h.session = ?2 AND h.tool_use_id = ?3
+                   AND h.run = ?4 AND h.kind = 'local_tool_returned' AND h.sequence < ?5
+                   AND d.body_ref_sequence IS NULL AND d.body = ?6",
+            )?
+            .query_map(
+                params![
+                    owner_json,
+                    spec.session_id,
+                    tool_id,
+                    run.to_string(),
+                    acc_seq_i64,
+                    body
+                ],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )?
+            .collect::<Result<_, _>>()?,
+    };
     for (row_id, loc_seq_i64, fact_id) in rows {
         if !is_protected_from_pruning(c, &owner_json, row_id, &fact_id, None)? {
             clear_and_repoint(row_id, unsigned(loc_seq_i64)?, true)?;
@@ -926,11 +1052,6 @@ fn clear_superseded_local_return(
 }
 
 /// O(1) update of `agent_recall_external_segments` for a live incoming external delta.
-/// - If an open segment already exists for `(run, task, message_id, is_thinking)`, records
-///   this continuation delta in metadata only and returns `Ok(true)` so the caller skips
-///   `agent_recall_messages` / FTS5 writes completely.
-/// - Otherwise inserts a new open segment at `s0_sequence = sequence` and returns `Ok(false)`
-///   so the caller indexes the immutable `S0` row immediately.
 #[expect(
     clippy::too_many_arguments,
     reason = "live delta tracking updates explicit segment metadata without payload scans"
@@ -944,63 +1065,114 @@ fn record_live_external_delta(
     message_id: &str,
     is_thinking: bool,
     text: &str,
+    layout: MessageLayout,
 ) -> Result<bool, StoreError> {
     let owner_json = serde_json::to_string(&spec.owner)?;
     let run_str = fact.run.to_string();
     let task_str = task.to_string();
-    let open_s0: Option<i64> = c
-        .prepare_cached(
-            "SELECT s0_sequence
-             FROM agent_recall_external_segments
-             WHERE owner = ?1 AND session = ?2 AND run = ?3
-               AND task = ?4 AND message_id = ?5 AND is_thinking = ?6
-               AND sealed = 0",
-        )?
-        .query_row(
-            params![
-                owner_json,
-                spec.session_id,
-                run_str,
-                task_str,
-                message_id,
-                i64::from(is_thinking)
-            ],
-            |r| r.get(0),
-        )
-        .optional()?;
-    if let Some(s0_seq) = open_s0 {
-        let seq_i64 = number(sequence)?;
-        let ts_i64 = fact.at.0;
-        let bytes_i64 = i64::try_from(text.len())
-            .map_err(|_| invalid("external delta chunk exceeds SQLite range"))?;
-        c.prepare_cached(
-            "UPDATE agent_recall_external_segments
-             SET tail_start_sequence = COALESCE(tail_start_sequence, ?7),
-                 tail_end_sequence = ?7,
-                 tail_start_at = COALESCE(tail_start_at, ?8),
-                 tail_end_at = ?8,
-                 tail_end_fact = ?9,
-                 tail_bytes = tail_bytes + ?10
-             WHERE owner = ?1 AND session = ?2 AND run = ?3
-               AND task = ?4 AND message_id = ?5 AND is_thinking = ?6
-               AND s0_sequence = ?11",
-        )?
-        .execute(params![
-            owner_json,
-            spec.session_id,
-            run_str,
-            task_str,
-            message_id,
-            i64::from(is_thinking),
-            seq_i64,
-            ts_i64,
-            fact.id.to_string(),
-            bytes_i64,
-            s0_seq
-        ])?;
-        return Ok(true);
+    let seq_i64 = number(sequence)?;
+    let ts_i64 = fact.at.0;
+    let bytes_i64 = i64::try_from(text.len())
+        .map_err(|_| invalid("external delta chunk exceeds SQLite range"))?;
+
+    match layout {
+        MessageLayout::Current => {
+            let ns_id = crate::namespace::ensure_id(c, &owner_json, &spec.session_id)?;
+            let open_s0: Option<i64> = c
+                .prepare_cached(
+                    "SELECT s0_sequence
+                     FROM agent_recall_external_segments
+                     WHERE namespace_id = ?1 AND run = ?2
+                       AND task = ?3 AND message_id = ?4 AND is_thinking = ?5
+                       AND sealed = 0",
+                )?
+                .query_row(
+                    params![ns_id, run_str, task_str, message_id, i64::from(is_thinking)],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if let Some(s0_seq) = open_s0 {
+                c.prepare_cached(
+                    "UPDATE agent_recall_external_segments
+                     SET tail_start_sequence = COALESCE(tail_start_sequence, ?6),
+                         tail_end_sequence = ?6,
+                         tail_start_at = COALESCE(tail_start_at, ?7),
+                         tail_end_at = ?7,
+                         tail_end_fact = ?8,
+                         tail_bytes = tail_bytes + ?9
+                     WHERE namespace_id = ?1 AND run = ?2
+                       AND task = ?3 AND message_id = ?4 AND is_thinking = ?5
+                       AND s0_sequence = ?10",
+                )?
+                .execute(params![
+                    ns_id,
+                    run_str,
+                    task_str,
+                    message_id,
+                    i64::from(is_thinking),
+                    seq_i64,
+                    ts_i64,
+                    fact.id.to_string(),
+                    bytes_i64,
+                    s0_seq
+                ])?;
+                return Ok(true);
+            }
+        }
+        MessageLayout::LegacyV58OwnerSession => {
+            let open_s0: Option<i64> = c
+                .prepare_cached(
+                    "SELECT s0_sequence
+                     FROM agent_recall_external_segments
+                     WHERE owner = ?1 AND session = ?2 AND run = ?3
+                       AND task = ?4 AND message_id = ?5 AND is_thinking = ?6
+                       AND sealed = 0",
+                )?
+                .query_row(
+                    params![
+                        owner_json,
+                        spec.session_id,
+                        run_str,
+                        task_str,
+                        message_id,
+                        i64::from(is_thinking)
+                    ],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if let Some(s0_seq) = open_s0 {
+                c.prepare_cached(
+                    "UPDATE agent_recall_external_segments
+                     SET tail_start_sequence = COALESCE(tail_start_sequence, ?7),
+                         tail_end_sequence = ?7,
+                         tail_start_at = COALESCE(tail_start_at, ?8),
+                         tail_end_at = ?8,
+                         tail_end_fact = ?9,
+                         tail_bytes = tail_bytes + ?10
+                     WHERE owner = ?1 AND session = ?2 AND run = ?3
+                       AND task = ?4 AND message_id = ?5 AND is_thinking = ?6
+                       AND s0_sequence = ?11",
+                )?
+                .execute(params![
+                    owner_json,
+                    spec.session_id,
+                    run_str,
+                    task_str,
+                    message_id,
+                    i64::from(is_thinking),
+                    seq_i64,
+                    ts_i64,
+                    fact.id.to_string(),
+                    bytes_i64,
+                    s0_seq
+                ])?;
+                return Ok(true);
+            }
+        }
+        MessageLayout::LegacyV55Folded => return Ok(false),
     }
-    let admission_sequence = admission_sequence_for(c, &owner_json, &spec.session_id, sequence)?;
+    let admission_sequence =
+        admission_sequence_for(c, &owner_json, &spec.session_id, sequence, layout)?;
     upsert_external_segment(
         c,
         &owner_json,
@@ -1014,14 +1186,12 @@ fn record_live_external_delta(
         sequence,
         None,
         false,
+        layout,
     )?;
     Ok(false)
 }
 
 /// Seal open live external delta segments matching `(run, filter_task, filter_message_id)`.
-/// Uses `agent_recall_external_segments_open` for O(1) short-circuit when nothing is open,
-/// deletes single-delta `S0`-only rows, and reads only `[tail_start_sequence..=tail_end_sequence]`
-/// for multi-delta tails before marking `sealed = 1`.
 fn seal_live_external_segments(
     c: &Connection,
     spec: &RunSpec,
@@ -1033,6 +1203,16 @@ fn seal_live_external_segments(
     let owner_json = serde_json::to_string(&spec.owner)?;
     let run_str = run.to_string();
     let task_filter = filter_task.map(|t| t.to_string());
+    let current_ns = match layout {
+        MessageLayout::Current => {
+            match crate::namespace::find_id(c, &owner_json, &spec.session_id)? {
+                Some(id) => Some(id),
+                None => return Ok(()),
+            }
+        }
+        MessageLayout::LegacyV58OwnerSession => None,
+        MessageLayout::LegacyV55Folded => return Ok(()),
+    };
     type OpenRow = (
         String,
         String,
@@ -1043,38 +1223,66 @@ fn seal_live_external_segments(
         i64,
         String,
     );
-    let open_rows: Vec<OpenRow> = c
-        .prepare_cached(
-            "SELECT task, message_id, is_thinking, s0_sequence,
-                    tail_start_sequence, tail_end_sequence, tail_bytes, turn
-             FROM agent_recall_external_segments
-             WHERE owner = ?1 AND session = ?2 AND run = ?3 AND sealed = 0
-               AND (?4 IS NULL OR task = ?4)
-               AND (?5 IS NULL OR message_id = ?5)
-             ORDER BY COALESCE(tail_end_sequence, s0_sequence)",
-        )?
-        .query_map(
-            params![
-                owner_json,
-                spec.session_id,
-                run_str,
-                task_filter,
-                filter_message_id
-            ],
-            |r| {
-                Ok((
-                    r.get(0)?,
-                    r.get(1)?,
-                    r.get(2)?,
-                    r.get(3)?,
-                    r.get(4)?,
-                    r.get(5)?,
-                    r.get(6)?,
-                    r.get(7)?,
-                ))
-            },
-        )?
-        .collect::<Result<_, _>>()?;
+    let open_rows: Vec<OpenRow> = match current_ns {
+        Some(ns_id) => c
+            .prepare_cached(
+                "SELECT task, message_id, is_thinking, s0_sequence,
+                        tail_start_sequence, tail_end_sequence, tail_bytes, turn
+                 FROM agent_recall_external_segments
+                 WHERE namespace_id = ?1 AND run = ?2 AND sealed = 0
+                   AND (?3 IS NULL OR task = ?3)
+                   AND (?4 IS NULL OR message_id = ?4)
+                 ORDER BY COALESCE(tail_end_sequence, s0_sequence)",
+            )?
+            .query_map(
+                params![ns_id, run_str, task_filter, filter_message_id],
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                        r.get(6)?,
+                        r.get(7)?,
+                    ))
+                },
+            )?
+            .collect::<Result<_, _>>()?,
+        None => c
+            .prepare_cached(
+                "SELECT task, message_id, is_thinking, s0_sequence,
+                        tail_start_sequence, tail_end_sequence, tail_bytes, turn
+                 FROM agent_recall_external_segments
+                 WHERE owner = ?1 AND session = ?2 AND run = ?3 AND sealed = 0
+                   AND (?4 IS NULL OR task = ?4)
+                   AND (?5 IS NULL OR message_id = ?5)
+                 ORDER BY COALESCE(tail_end_sequence, s0_sequence)",
+            )?
+            .query_map(
+                params![
+                    owner_json,
+                    spec.session_id,
+                    run_str,
+                    task_filter,
+                    filter_message_id
+                ],
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                        r.get(6)?,
+                        r.get(7)?,
+                    ))
+                },
+            )?
+            .collect::<Result<_, _>>()?,
+    };
     if open_rows.is_empty() {
         return Ok(());
     }
@@ -1082,79 +1290,111 @@ fn seal_live_external_segments(
     for (task_str, mid, is_thinking, s0_seq, tail_start, tail_end, tail_bytes, turn_id) in open_rows
     {
         let (Some(start_seq), Some(end_seq)) = (tail_start, tail_end) else {
-            c.prepare_cached(
-                "DELETE FROM agent_recall_external_segments
-                 WHERE owner = ?1 AND session = ?2 AND run = ?3
-                   AND task = ?4 AND message_id = ?5 AND is_thinking = ?6
-                   AND s0_sequence = ?7",
-            )?
-            .execute(params![
-                owner_json,
-                spec.session_id,
-                run_str,
-                task_str,
-                mid,
-                i64::from(is_thinking),
-                s0_seq
-            ])?;
+            match current_ns {
+                Some(ns_id) => {
+                    c.prepare_cached(
+                        "DELETE FROM agent_recall_external_segments
+                         WHERE namespace_id = ?1 AND run = ?2
+                           AND task = ?3 AND message_id = ?4 AND is_thinking = ?5
+                           AND s0_sequence = ?6",
+                    )?
+                    .execute(params![
+                        ns_id,
+                        run_str,
+                        task_str,
+                        mid,
+                        i64::from(is_thinking),
+                        s0_seq
+                    ])?;
+                }
+                None => {
+                    c.prepare_cached(
+                        "DELETE FROM agent_recall_external_segments
+                         WHERE owner = ?1 AND session = ?2 AND run = ?3
+                           AND task = ?4 AND message_id = ?5 AND is_thinking = ?6
+                           AND s0_sequence = ?7",
+                    )?
+                    .execute(params![
+                        owner_json,
+                        spec.session_id,
+                        run_str,
+                        task_str,
+                        mid,
+                        i64::from(is_thinking),
+                        s0_seq
+                    ])?;
+                }
+            }
             continue;
         };
         let target_task: ExternalTaskId = crate::sql::identity(task_str.clone())?;
         let mut body = String::with_capacity(usize::try_from(tail_bytes.max(0)).unwrap_or(0));
         let mut last_meta: Option<(u64, FactId, u64, ContentRef)> = None;
-        {
-            let mut stmt = c.prepare_cached(
-                "SELECT h.sequence, b.content_sha256, b.payload
-                 FROM agent_session_history h
-                 JOIN agent_facts f ON f.sequence = h.sequence
-                 JOIN contents b ON b.id = f.body_content_id
-                 WHERE h.owner = ?1 AND h.session = ?2 AND h.run = ?3
-                   AND h.kind = 'external_task_observed'
-                   AND h.sequence BETWEEN ?4 AND ?5
-                 ORDER BY h.sequence ASC",
-            )?;
-            let mut rows = stmt.query(params![
-                owner_json,
-                spec.session_id,
-                run_str,
-                start_seq,
-                end_seq
-            ])?;
-            while let Some(row) = rows.next()? {
-                let seq = unsigned(row.get::<_, i64>(0)?)?;
-                let digest: String = row.get(1)?;
-                let bytes: Vec<u8> = row.get(2)?;
-                let byte_len = u64::try_from(bytes.len())
-                    .map_err(|_| invalid("Recall fact payload exceeds u64"))?;
-                let recorded: RecordedFact = serde_json::from_slice(&bytes)?;
-                if let Fact::ExternalTaskObserved { task, output, .. } = recorded.fact
-                    && task == target_task
-                {
-                    let matched = match output {
-                        Output::OutputDelta { message_id, text }
-                            if !is_thinking && message_id == mid =>
-                        {
-                            Some(text)
-                        }
-                        Output::ThinkingDelta { message_id, text }
-                            if is_thinking && message_id == mid =>
-                        {
-                            Some(text)
-                        }
-                        _ => None,
-                    };
-                    if let Some(text) = matched {
-                        body.push_str(&text);
-                        last_meta = Some((
-                            seq,
-                            recorded.id,
-                            unsigned(recorded.at.0)?,
-                            ContentRef {
-                                digest,
-                                bytes: byte_len,
-                            },
-                        ));
+        let deltas: Vec<(i64, String, Vec<u8>)> = match current_ns {
+            Some(ns_id) => c
+                .prepare_cached(
+                    "SELECT h.sequence, b.content_sha256, b.payload
+                     FROM agent_session_history h
+                     JOIN agent_facts f ON f.sequence = h.sequence
+                     JOIN contents b ON b.id = f.body_content_id
+                     WHERE h.namespace_id = ?1 AND h.run = ?2
+                       AND h.kind = 'external_task_observed'
+                       AND h.sequence BETWEEN ?3 AND ?4
+                     ORDER BY h.sequence ASC",
+                )?
+                .query_map(params![ns_id, run_str, start_seq, end_seq], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+                })?
+                .collect::<Result<_, _>>()?,
+            None => c
+                .prepare_cached(
+                    "SELECT h.sequence, b.content_sha256, b.payload
+                     FROM agent_session_history h
+                     JOIN agent_facts f ON f.sequence = h.sequence
+                     JOIN contents b ON b.id = f.body_content_id
+                     WHERE h.owner = ?1 AND h.session = ?2 AND h.run = ?3
+                       AND h.kind = 'external_task_observed'
+                       AND h.sequence BETWEEN ?4 AND ?5
+                     ORDER BY h.sequence ASC",
+                )?
+                .query_map(
+                    params![owner_json, spec.session_id, run_str, start_seq, end_seq],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )?
+                .collect::<Result<_, _>>()?,
+        };
+        for (seq_i64, digest, bytes) in deltas {
+            let seq = unsigned(seq_i64)?;
+            let byte_len = u64::try_from(bytes.len())
+                .map_err(|_| invalid("Recall fact payload exceeds u64"))?;
+            let recorded: RecordedFact = serde_json::from_slice(&bytes)?;
+            if let Fact::ExternalTaskObserved { task, output, .. } = recorded.fact
+                && task == target_task
+            {
+                let matched = match output {
+                    Output::OutputDelta { message_id, text }
+                        if !is_thinking && message_id == mid =>
+                    {
+                        Some(text)
                     }
+                    Output::ThinkingDelta { message_id, text }
+                        if is_thinking && message_id == mid =>
+                    {
+                        Some(text)
+                    }
+                    _ => None,
+                };
+                if let Some(text) = matched {
+                    body.push_str(&text);
+                    last_meta = Some((
+                        seq,
+                        recorded.id,
+                        unsigned(recorded.at.0)?,
+                        ContentRef {
+                            digest,
+                            bytes: byte_len,
+                        },
+                    ));
                 }
             }
         }
@@ -1198,22 +1438,43 @@ fn seal_live_external_segments(
             layout,
             FtsMode::Immediate,
         )?;
-        c.prepare_cached(
-            "UPDATE agent_recall_external_segments
-             SET sealed = 1
-             WHERE owner = ?1 AND session = ?2 AND run = ?3
-               AND task = ?4 AND message_id = ?5 AND is_thinking = ?6
-               AND s0_sequence = ?7",
-        )?
-        .execute(params![
-            owner_json,
-            spec.session_id,
-            run_str,
-            task_str,
-            mid,
-            i64::from(is_thinking),
-            s0_seq
-        ])?;
+        match current_ns {
+            Some(ns_id) => {
+                c.prepare_cached(
+                    "UPDATE agent_recall_external_segments
+                     SET sealed = 1
+                     WHERE namespace_id = ?1 AND run = ?2
+                       AND task = ?3 AND message_id = ?4 AND is_thinking = ?5
+                       AND s0_sequence = ?6",
+                )?
+                .execute(params![
+                    ns_id,
+                    run_str,
+                    task_str,
+                    mid,
+                    i64::from(is_thinking),
+                    s0_seq
+                ])?;
+            }
+            None => {
+                c.prepare_cached(
+                    "UPDATE agent_recall_external_segments
+                     SET sealed = 1
+                     WHERE owner = ?1 AND session = ?2 AND run = ?3
+                       AND task = ?4 AND message_id = ?5 AND is_thinking = ?6
+                       AND s0_sequence = ?7",
+                )?
+                .execute(params![
+                    owner_json,
+                    spec.session_id,
+                    run_str,
+                    task_str,
+                    mid,
+                    i64::from(is_thinking),
+                    s0_seq
+                ])?;
+            }
+        }
     }
     Ok(())
 }
@@ -1221,29 +1482,22 @@ fn seal_live_external_segments(
 /// Resolve the target rowid for a single-hop `body_ref_sequence`.
 pub(crate) fn resolve_body_ref_target_id(
     c: &Connection,
-    owner: &str,
-    session: &str,
+    ns_id: crate::namespace::NamespaceId,
     ref_sequence: i64,
 ) -> Result<i64, StoreError> {
     c.prepare_cached(
         "SELECT id FROM agent_recall_messages
-         WHERE owner = ?1 AND session = ?2 AND sequence = ?3 AND ordinal = 0",
+         WHERE namespace_id = ?1 AND sequence = ?2 AND ordinal = 0",
     )?
-    .query_row(params![owner, session, ref_sequence], |r| r.get(0))
+    .query_row(params![ns_id, ref_sequence], |r| r.get(0))
     .optional()?
     .ok_or_else(|| invalid("body_ref target row missing; explicit rebuild required"))
 }
 
 /// Hydrate a superseded Recall row's exact original body using explicit `body_ref_*` metadata.
-/// - When `ref_start` is `Some(start)`, reads the exact byte slice `start..end` directly from
-///   the single-hop target row at `(owner, session, ref_sequence, 0)`.
-/// - When `ref_start` is `None` (a superseded `CellEvent::Completed` whose fields appeared
-///   non-contiguously inside its outer return), reconstructs the exact original body from the
-///   canonical `CellObservation::Completed` blob referenced by `source_sequence`.
 pub(crate) fn resolve_body_ref(
     c: &Connection,
-    owner: &str,
-    session: &str,
+    ns_id: crate::namespace::NamespaceId,
     source_sequence: u64,
     ref_sequence: i64,
     ref_start: Option<i64>,
@@ -1262,14 +1516,13 @@ pub(crate) fn resolve_body_ref(
         let len_i64 = i64::try_from(len).map_err(|_| invalid("body_ref length overflow"))?;
         let bytes: Vec<u8> = c
             .prepare_cached(
-                "SELECT substr(CAST(body AS BLOB), ?4, ?5)
+                "SELECT substr(CAST(body AS BLOB), ?3, ?4)
                  FROM agent_recall_messages
-                 WHERE owner = ?1 AND session = ?2 AND sequence = ?3 AND ordinal = 0",
+                 WHERE namespace_id = ?1 AND sequence = ?2 AND ordinal = 0",
             )?
-            .query_row(
-                params![owner, session, ref_sequence, start_1based, len_i64],
-                |r| r.get(0),
-            )
+            .query_row(params![ns_id, ref_sequence, start_1based, len_i64], |r| {
+                r.get(0)
+            })
             .optional()?
             .ok_or_else(|| invalid("body_ref target row missing; explicit rebuild required"))?;
         if bytes.len() != len {
@@ -1286,9 +1539,9 @@ pub(crate) fn resolve_body_ref(
              FROM agent_session_history h
              JOIN agent_facts f ON f.sequence = h.sequence
              JOIN contents b ON b.id = f.body_content_id
-             WHERE h.owner = ?1 AND h.session = ?2 AND h.sequence = ?3",
+             WHERE h.namespace_id = ?1 AND h.sequence = ?2",
         )?
-        .query_row(params![owner, session, number(source_sequence)?], |r| {
+        .query_row(params![ns_id, number(source_sequence)?], |r| {
             Ok((r.get(0)?, r.get(1)?))
         })
         .optional()?
@@ -1338,12 +1591,9 @@ pub(crate) fn resolve_body_ref(
 
 /// Given a sparse FTS5 candidate list, include any superseded row id within `<= max_sequence`
 /// whose explicit `body_ref_sequence` target matched FTS5 at `sequence > max_sequence`.
-/// Uses the `agent_recall_body_ref` partial index and covers both `CellEvent::Completed`
-/// and `LocalToolReturned`.
 pub(super) fn superseded_rows_for_targets(
     c: &Connection,
-    owner: &str,
-    session: &str,
+    ns_id: crate::namespace::NamespaceId,
     target_ids: &[i64],
     max_sequence: u64,
 ) -> Result<Vec<i64>, StoreError> {
@@ -1356,17 +1606,15 @@ pub(super) fn superseded_rows_for_targets(
          FROM json_each(?1) candidate
          CROSS JOIN agent_recall_messages target ON target.id = candidate.value
          JOIN agent_recall_messages loc
-           ON loc.owner = target.owner
-          AND loc.session = target.session
+           ON loc.namespace_id = target.namespace_id
           AND loc.body_ref_sequence = target.sequence
-         WHERE target.owner = ?2 AND target.session = ?3 AND target.sequence > ?4
-           AND loc.sequence <= ?4",
+         WHERE target.namespace_id = ?2 AND target.sequence > ?3
+           AND loc.sequence <= ?3",
     )?;
     let rows = stmt
-        .query_map(
-            params![encoded, owner, session, number(max_sequence)?],
-            |row| row.get::<_, i64>(0),
-        )?
+        .query_map(params![encoded, ns_id, number(max_sequence)?], |row| {
+            row.get::<_, i64>(0)
+        })?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(rows)
 }
@@ -1374,8 +1622,6 @@ pub(super) fn superseded_rows_for_targets(
 #[derive(Clone)]
 pub(crate) struct ExternalSegmentHeader {
     pub run: RunId,
-    /// Effective sequence at the requested cut (`tail_end_sequence` when unsealed up through
-    /// the cut, or the last matching delta `<= through_sequence` when the cut straddles a segment).
     pub sequence: u64,
     pub admission_sequence: u64,
     pub turn_id: String,
@@ -1388,9 +1634,7 @@ pub(crate) struct ExternalSegmentHeader {
     pub is_thinking: bool,
     pub tail_start_sequence: u64,
     pub tail_start_at: u64,
-    /// Effective timestamp at `sequence`.
     pub tail_end_at: u64,
-    /// Upper-bound byte length for work budget admission (exact when `tail_end_sequence <= cut`).
     pub tail_bytes: u64,
 }
 
@@ -1414,16 +1658,13 @@ pub(crate) struct SealedSegmentSpan {
     pub tail_end_sequence: u64,
 }
 
-/// Resolve the last matching delta `<= through_sequence` within a straddling segment without
-/// decoding the full segment body.
 #[expect(
     clippy::too_many_arguments,
-    reason = "straddling segment lookup requires explicit owner/session/run/segment bounds"
+    reason = "straddling segment lookup requires explicit namespace/run/segment bounds"
 )]
 fn resolve_straddling_tail_end(
     c: &Connection,
-    owner: &str,
-    session: &str,
+    ns_id: crate::namespace::NamespaceId,
     run_str: &str,
     target_task: ExternalTaskId,
     target_mid: &str,
@@ -1436,14 +1677,13 @@ fn resolve_straddling_tail_end(
          FROM agent_session_history h
          JOIN agent_facts f ON f.sequence = h.sequence
          JOIN contents b ON b.id = f.body_content_id
-         WHERE h.owner = ?1 AND h.session = ?2 AND h.run = ?3
+         WHERE h.namespace_id = ?1 AND h.run = ?2
            AND h.kind = 'external_task_observed'
-           AND h.sequence BETWEEN ?4 AND ?5
+           AND h.sequence BETWEEN ?3 AND ?4
          ORDER BY h.sequence DESC",
     )?;
     let mut rows = stmt.query(params![
-        owner,
-        session,
+        ns_id,
         run_str,
         number(tail_start_sequence)?,
         number(through_sequence)?
@@ -1478,12 +1718,9 @@ fn resolve_straddling_tail_end(
 
 /// Return metadata headers for every external delta tail visible at `through_sequence` that is
 /// not yet sealed at `<= through_sequence` (either `sealed = 0` or `tail_end_sequence > cut`).
-/// Uses `agent_recall_external_segments_cut` and performs ZERO payload reads in steady state
-/// and ZERO payload reads for open segments whose `tail_end_sequence <= through_sequence`.
 pub(crate) fn unsealed_external_segment_headers(
     c: &Connection,
-    owner: &str,
-    session: &str,
+    ns_id: crate::namespace::NamespaceId,
     through_sequence: u64,
     min_admission: u64,
 ) -> Result<Vec<ExternalSegmentHeader>, StoreError> {
@@ -1509,25 +1746,25 @@ pub(crate) fn unsealed_external_segment_headers(
                     tail_start_sequence, tail_end_sequence, tail_start_at, tail_end_at,
                     tail_end_fact, tail_bytes
              FROM agent_recall_external_segments INDEXED BY agent_recall_external_segments_open
-             WHERE owner = ?1 AND session = ?2
+             WHERE namespace_id = ?1
                AND sealed = 0
                AND tail_start_sequence IS NOT NULL
-               AND tail_start_sequence <= ?3
-               AND admission_sequence > ?4
+               AND tail_start_sequence <= ?2
+               AND admission_sequence > ?3
              UNION ALL
              SELECT run, admission_sequence, turn, task, message_id, is_thinking,
                     tail_start_sequence, tail_end_sequence, tail_start_at, tail_end_at,
                     tail_end_fact, tail_bytes
              FROM agent_recall_external_segments INDEXED BY agent_recall_external_segments_sealed_seq
-             WHERE owner = ?1 AND session = ?2
+             WHERE namespace_id = ?1
                AND sealed = 1
                AND tail_end_sequence IS NOT NULL
-               AND tail_end_sequence > ?3
+               AND tail_end_sequence > ?2
                AND tail_start_sequence IS NOT NULL
-               AND tail_start_sequence <= ?3
-               AND admission_sequence > ?4",
+               AND tail_start_sequence <= ?2
+               AND admission_sequence > ?3",
         )?
-        .query_map(params![owner, session, through_i64, min_adm_i64], |r| {
+        .query_map(params![ns_id, through_i64, min_adm_i64], |r| {
             Ok((
                 r.get(0)?,
                 r.get(1)?,
@@ -1573,8 +1810,7 @@ pub(crate) fn unsealed_external_segment_headers(
         } else {
             let Some(resolved) = resolve_straddling_tail_end(
                 c,
-                owner,
-                session,
+                ns_id,
                 &run_str,
                 task,
                 &message_id,
@@ -1607,13 +1843,10 @@ pub(crate) fn unsealed_external_segment_headers(
     Ok(out)
 }
 
-/// Hydrate a single external delta segment bounded strictly to `[tail_start_sequence..=header.sequence]`,
-/// optionally filtering deltas by `[since, until]` and masking `restrictions` at each delta's
-/// exact byte offset within the segment.
+/// Hydrate a single external delta segment bounded strictly to `[tail_start_sequence..=header.sequence]`.
 pub(crate) fn hydrate_external_segment(
     c: &Connection,
-    owner: &str,
-    session: &str,
+    ns_id: crate::namespace::NamespaceId,
     header: &ExternalSegmentHeader,
     since: Option<u64>,
     until: Option<u64>,
@@ -1631,14 +1864,13 @@ pub(crate) fn hydrate_external_segment(
          FROM agent_session_history h
          JOIN agent_facts f ON f.sequence = h.sequence
          JOIN contents b ON b.id = f.body_content_id
-         WHERE h.owner = ?1 AND h.session = ?2 AND h.run = ?3
+         WHERE h.namespace_id = ?1 AND h.run = ?2
            AND h.kind = 'external_task_observed'
-           AND h.sequence BETWEEN ?4 AND ?5
+           AND h.sequence BETWEEN ?3 AND ?4
          ORDER BY h.sequence ASC",
     )?;
     let mut rows = stmt.query(params![
-        owner,
-        session,
+        ns_id,
         run_str,
         number(header.tail_start_sequence)?,
         number(header.sequence)?
@@ -1704,8 +1936,7 @@ pub(crate) fn hydrate_external_segment(
 /// straddles `[tail_start_at, tail_end_at]`, preserving exact redaction span coordinates.
 pub(crate) fn slice_sealed_external_segment(
     c: &Connection,
-    owner: &str,
-    session: &str,
+    ns_id: crate::namespace::NamespaceId,
     span: &SealedSegmentSpan,
     since: Option<u64>,
     until: Option<u64>,
@@ -1721,14 +1952,13 @@ pub(crate) fn slice_sealed_external_segment(
          FROM agent_session_history h
          JOIN agent_facts f ON f.sequence = h.sequence
          JOIN contents b ON b.id = f.body_content_id
-         WHERE h.owner = ?1 AND h.session = ?2 AND h.run = ?3
+         WHERE h.namespace_id = ?1 AND h.run = ?2
            AND h.kind = 'external_task_observed'
-           AND h.sequence BETWEEN ?4 AND ?5
+           AND h.sequence BETWEEN ?3 AND ?4
          ORDER BY h.sequence ASC",
     )?;
     let mut rows = stmt.query(params![
-        owner,
-        session,
+        ns_id,
         run_str,
         number(span.tail_start_sequence)?,
         number(span.tail_end_sequence)?
@@ -1831,18 +2061,30 @@ fn insert_raw(
     let owner = serde_json::to_string(owner_val)?;
     let seq = number(message.position.source_sequence)?;
     let ordinal = number(message.position.item_index)?;
+    let current_ns = match layout {
+        MessageLayout::Current => Some(crate::namespace::ensure_id(c, &owner, session_id)?),
+        MessageLayout::LegacyV58OwnerSession | MessageLayout::LegacyV55Folded => None,
+    };
     let folded = if fts_mode == FtsMode::Immediate || layout == MessageLayout::LegacyV55Folded {
         fold(&message.body)
     } else {
         String::new()
     };
     if fts_mode == FtsMode::Immediate {
-        let previous: Option<i64> = c
-            .prepare_cached(
-                "SELECT id FROM agent_recall_messages WHERE owner=? AND session=? AND sequence=? AND ordinal=?",
-            )?
-            .query_row(params![owner, session_id, seq, ordinal], |r| r.get(0))
-            .optional()?;
+        let previous: Option<i64> = match current_ns {
+            Some(ns_id) => c
+                .prepare_cached(
+                    "SELECT id FROM agent_recall_messages WHERE namespace_id=? AND sequence=? AND ordinal=?",
+                )?
+                .query_row(params![ns_id, seq, ordinal], |r| r.get(0))
+                .optional()?,
+            None => c
+                .prepare_cached(
+                    "SELECT id FROM agent_recall_messages WHERE owner=? AND session=? AND sequence=? AND ordinal=?",
+                )?
+                .query_row(params![owner, session_id, seq, ordinal], |r| r.get(0))
+                .optional()?,
+        };
         if let Some(id) = previous {
             c.prepare_cached("DELETE FROM agent_recall_terms WHERE rowid=?")?
                 .execute([id])?;
@@ -1861,6 +2103,35 @@ fn insert_raw(
     let internal = message.fields.iter().all(|f| f.internal);
     let id: i64 = match layout {
         MessageLayout::Current => c
+            .prepare_cached(
+                "INSERT INTO agent_recall_messages(namespace_id,sequence,ordinal,run,turn,message,at,role,body,attachments,references_json,fields_json,origin_json,internal)
+                 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 ON CONFLICT(namespace_id,sequence,ordinal) DO UPDATE SET
+                   message=excluded.message,body=excluded.body,attachments=excluded.attachments,
+                   references_json=excluded.references_json,fields_json=excluded.fields_json,
+                   origin_json=excluded.origin_json,internal=excluded.internal
+                 RETURNING id",
+            )?
+            .query_row(
+                params![
+                    current_ns.expect("current layout namespace"),
+                    seq,
+                    ordinal,
+                    run,
+                    message.turn_id,
+                    message.message_id,
+                    timestamp,
+                    role,
+                    message.body,
+                    attachments,
+                    references,
+                    fields,
+                    origin,
+                    internal,
+                ],
+                |r| r.get(0),
+            )?,
+        MessageLayout::LegacyV58OwnerSession => c
             .prepare_cached(
                 "INSERT INTO agent_recall_messages(owner,session,sequence,ordinal,run,turn,message,at,role,body,attachments,references_json,fields_json,origin_json,internal)
                  VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
@@ -1947,9 +2218,10 @@ fn project(
     }
     let reference: ContentRef = match preloaded_ref {
         Some(r) => r,
-        None => c
-            .query_row(
-                "SELECT x.content_sha256,length(x.payload) FROM agent_facts f JOIN contents x ON x.id=f.body_content_id WHERE f.id=? AND f.run=?",
+        None => {
+            let sql = "SELECT x.content_sha256,length(x.payload) FROM agent_facts f JOIN contents x ON x.id=f.body_content_id WHERE f.id=? AND f.run=?";
+            c.query_row(
+                sql,
                 params![fact.id.to_string(), fact.run.to_string()],
                 |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
             )
@@ -1958,7 +2230,8 @@ fn project(
                     digest,
                     bytes: unsigned(bytes)?,
                 })
-            })??,
+            })??
+        }
     };
 
     let mode = if layout == MessageLayout::LegacyV55Folded
@@ -2462,12 +2735,13 @@ fn project(
                                 message_id.clone(),
                                 thinking,
                                 text,
+                                layout,
                             )?
                         {
                             return Ok(());
                         }
                     } else if record_live_external_delta(
-                        c, spec, fact, sequence, *task, message_id, thinking, text,
+                        c, spec, fact, sequence, *task, message_id, thinking, text, layout,
                     )? {
                         return Ok(());
                     }
@@ -2709,13 +2983,29 @@ fn project(
     Ok(())
 }
 
-fn head(c: &Connection, spec: &RunSpec, sequence: u64) -> Result<(), StoreError> {
+fn head(
+    c: &Connection,
+    spec: &RunSpec,
+    sequence: u64,
+    layout: MessageLayout,
+) -> Result<(), StoreError> {
     let owner = serde_json::to_string(&spec.owner)?;
-    let digest: String = c.query_row(
-        "SELECT prefix_digest FROM agent_session_history WHERE owner=? AND session=? AND sequence=?",
-        params![owner, spec.session_id, number(sequence)?],
-        |r| r.get(0),
-    )?;
+    let digest: String = match layout {
+        MessageLayout::Current => {
+            let ns_id = crate::namespace::find_id(c, &owner, &spec.session_id)?
+                .ok_or(StoreError::EventConflict)?;
+            c.query_row(
+                "SELECT prefix_digest FROM agent_session_history WHERE namespace_id=? AND sequence=?",
+                params![ns_id, number(sequence)?],
+                |r| r.get(0),
+            )?
+        }
+        MessageLayout::LegacyV58OwnerSession | MessageLayout::LegacyV55Folded => c.query_row(
+            "SELECT prefix_digest FROM agent_session_history WHERE owner=? AND session=? AND sequence=?",
+            params![owner, spec.session_id, number(sequence)?],
+            |r| r.get(0),
+        )?,
+    };
     c.execute(
         "INSERT INTO agent_recall_heads(owner,session,sequence,digest) VALUES(?,?,?,?)
          ON CONFLICT(owner,session) DO UPDATE SET sequence=excluded.sequence,digest=excluded.digest
@@ -2782,7 +3072,7 @@ pub(super) fn index_fact_with_state(
         }
         Err(e) => return Err(e),
     }
-    head(c, spec, sequence)
+    head(c, spec, sequence, layout)
 }
 
 pub(crate) fn index_sources(
@@ -2806,28 +3096,210 @@ pub(super) fn index_sources_with_layout(
     layout: MessageLayout,
     fts_mode: FtsMode,
 ) -> Result<(), StoreError> {
-    let kind: String = c.query_row(
-        "SELECT kind FROM agent_session_history WHERE owner=? AND session=? AND sequence=?",
-        params![
-            serde_json::to_string(&spec.owner)?,
-            spec.session_id,
-            number(sequence)?
-        ],
-        |r| r.get(0),
-    )?;
+    let owner = serde_json::to_string(&spec.owner)?;
+    let kind: String = match layout {
+        MessageLayout::Current => {
+            let ns_id = crate::namespace::find_id(c, &owner, &spec.session_id)?
+                .ok_or(StoreError::EventConflict)?;
+            c.query_row(
+                "SELECT kind FROM agent_session_history WHERE namespace_id=? AND sequence=?",
+                params![ns_id, number(sequence)?],
+                |r| r.get(0),
+            )?
+        }
+        MessageLayout::LegacyV58OwnerSession | MessageLayout::LegacyV55Folded => c.query_row(
+            "SELECT kind FROM agent_session_history WHERE owner=? AND session=? AND sequence=?",
+            params![owner, spec.session_id, number(sequence)?],
+            |r| r.get(0),
+        )?,
+    };
     if !matches!(
         kind.as_str(),
         "run_admitted" | "step_prepared" | "external_task_prepared"
     ) {
         return Ok(());
     }
-    let cut = crate::session_history::capture_at(c, &spec.owner, &spec.session_id, Some(sequence))?;
     let bytes: Vec<u8> = c.query_row(
         "SELECT x.payload FROM agent_facts f JOIN contents x ON x.id=f.body_content_id WHERE f.sequence=?",
         [number(sequence)?],
         |r| r.get(0),
     )?;
     let fact: RecordedFact = serde_json::from_slice(&bytes)?;
+    // On legacy pre-v60 schemas (migrations 55/59), resolve consumed queue sources directly
+    // from agent_queue_events / agent_history_queue_requests / agent_queue_content_pins
+    // with the exact same strict validation enforced by session_history::sql::sources.
+    if layout != MessageLayout::Current {
+        let consumed: Option<(i64, Vec<u8>, String)> = c
+            .prepare_cached(
+                "SELECT e.revision, b.payload, b.content_sha256
+                 FROM agent_queue_events e
+                 JOIN contents b ON b.id = e.body_content_id
+                 WHERE e.session = ? AND e.id = ?",
+            )?
+            .query_row(params![spec.session_id, fact.id.to_string()], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
+            .optional()?;
+        if let Some((consumed_revision, ev_bytes, ev_digest)) = consumed {
+            crate::session_history::check_bytes(&ev_bytes, &ev_digest)?;
+            let event: crate::queue::Event = serde_json::from_slice(&ev_bytes)?;
+            let crate::queue::Event::Consumed {
+                cut,
+                run: consumed_run,
+                target,
+            } = event
+            else {
+                return Err(invalid(
+                    "source fact references a non-consumption queue event",
+                ));
+            };
+            if consumed_run != fact.run || cut.session != spec.session_id {
+                return Err(invalid("queue source consumption changed ownership"));
+            }
+            for (position, id) in cut.requests.iter().enumerate() {
+                let row: Option<(Vec<u8>, String)> = c
+                    .prepare_cached(
+                        "SELECT b.payload, b.content_sha256
+                         FROM agent_history_queue_requests q
+                         JOIN agent_queue_events e ON e.session = q.session AND e.revision = q.revision
+                         JOIN contents b ON b.id = e.body_content_id
+                         WHERE q.session = ? AND q.request = ? AND q.revision < ?
+                         ORDER BY q.revision DESC LIMIT 1",
+                    )?
+                    .query_row(params![spec.session_id, id.0, consumed_revision], |r| {
+                        Ok((r.get(0)?, r.get(1)?))
+                    })
+                    .optional()?;
+                let (cmd_bytes, cmd_digest) = row.ok_or_else(|| {
+                    invalid("consumed queue snapshot index missing; explicit rebuild required")
+                })?;
+                crate::session_history::check_bytes(&cmd_bytes, &cmd_digest)?;
+                let crate::queue::Event::Command {
+                    edit:
+                        crate::queue::QueueEdit::Enqueue {
+                            request: frozen, ..
+                        }
+                        | crate::queue::QueueEdit::Update { request: frozen },
+                    ..
+                } = serde_json::from_slice(&cmd_bytes)?
+                else {
+                    return Err(invalid(
+                        "history queue index does not address an immutable request snapshot",
+                    ));
+                };
+                if frozen.id != *id
+                    || frozen.spec.owner != spec.owner
+                    || frozen.spec.session_id != spec.session_id
+                {
+                    return Err(invalid("consumed source belongs to another namespace"));
+                }
+                match &target {
+                    crate::queue::DeliveryTarget::Run => {
+                        if !frozen.matches_run_input(spec.clone()) {
+                            return Err(invalid(
+                                "original Run input differs from consumed request",
+                            ));
+                        }
+                    }
+                    crate::queue::DeliveryTarget::Step { step } => {
+                        // Deserialize only `steering` so pre-#7115 RequestSpec payloads (whose
+                        // `composition` used `systemPrompt`/`tools` instead of `surface`) still
+                        // pass strict steering-order validation during cold migrations.
+                        #[derive(serde::Deserialize)]
+                        struct RequestSteeringOnly {
+                            #[serde(default)]
+                            steering: Vec<ContentRef>,
+                        }
+                        let req_bytes: Vec<u8> = c
+                            .prepare_cached(
+                                "SELECT b.payload
+                                 FROM agent_request_specs r
+                                 JOIN contents b ON b.id = r.content_id
+                                 WHERE r.step = ?1 AND r.run = ?2",
+                            )?
+                            .query_row(params![step.to_string(), fact.run.to_string()], |r| {
+                                r.get(0)
+                            })?;
+                        let request_spec: RequestSteeringOnly = serde_json::from_slice(&req_bytes)?;
+                        if request_spec.steering.get(position) != Some(&frozen.source) {
+                            return Err(invalid(
+                                "Step steering differs from original consumed source order",
+                            ));
+                        }
+                    }
+                    crate::queue::DeliveryTarget::External {
+                        task,
+                        steering,
+                        descriptor,
+                    } => {
+                        let key = maka_agent_facts::external_steering::ExternalSteeringKey {
+                            task: *task,
+                            steering: *steering,
+                        };
+                        let original =
+                            crate::external_steering::read_spec(c, fact.run, &key, descriptor)?;
+                        if original.consume != cut || original.sources.len() != cut.requests.len() {
+                            return Err(invalid(
+                                "External steering differs from original queue prefix",
+                            ));
+                        }
+                        let source = original
+                            .sources
+                            .get(position)
+                            .ok_or_else(|| invalid("External steering original source missing"))?;
+                        if source.request != *id
+                            || source.source != frozen.source
+                            || source.resources != frozen.resources
+                        {
+                            return Err(invalid(
+                                "External steering source/resources differ from original order",
+                            ));
+                        }
+                    }
+                }
+                let reference = frozen.source;
+                reference.validate().map_err(invalid)?;
+                let payload: Option<Vec<u8>> = c
+                    .prepare_cached(
+                        "SELECT b.payload
+                         FROM agent_queue_content_pins p
+                         JOIN contents b ON b.id = p.content_id
+                         WHERE p.session = ?1 AND p.request = ?2
+                           AND b.content_sha256 = ?3 AND length(b.payload) = ?4",
+                    )?
+                    .query_row(
+                        params![
+                            spec.session_id,
+                            frozen.id.0,
+                            reference.digest,
+                            number(reference.bytes)?
+                        ],
+                        |r| r.get(0),
+                    )
+                    .optional()?;
+                let payload = payload.ok_or_else(|| {
+                    invalid("content is not retained by this original queue source")
+                })?;
+                crate::session_history::check_bytes(&payload, &reference.digest)?;
+                let message: maka_agent_facts::message::RootSourceMessage =
+                    serde_json::from_slice(&payload)?;
+                message.validate().map_err(invalid)?;
+                let mut indexed = input_message(
+                    spec,
+                    &fact,
+                    sequence,
+                    position as u64,
+                    message.message.message_id,
+                    message.message.content,
+                    reference,
+                );
+                indexed.origin = message.message.origin;
+                insert(c, spec, indexed, layout, fts_mode)?;
+            }
+        }
+        return head(c, spec, sequence, layout);
+    }
+    let cut = crate::session_history::capture_at(c, &spec.owner, &spec.session_id, Some(sequence))?;
     let mut after = None;
     loop {
         let page = crate::session_history::sources_at(
@@ -2871,7 +3343,7 @@ pub(super) fn index_sources_with_layout(
             break;
         }
     }
-    head(c, spec, sequence)
+    head(c, spec, sequence, layout)
 }
 
 pub(super) fn rebuild(
@@ -2940,25 +3412,52 @@ pub(super) fn rebuild_session(
     layout: MessageLayout,
     mut state: Option<&mut RebuildState>,
 ) -> Result<(), StoreError> {
-    c.execute(
-        "DELETE FROM agent_recall_terms WHERE rowid IN(SELECT id FROM agent_recall_messages WHERE owner=? AND session=?)",
-        params![owner, session],
-    )?;
-    for table in [
-        "agent_recall_messages",
-        "agent_recall_heads",
-        "agent_recall_gaps",
-    ] {
+    match layout {
+        MessageLayout::Current => {
+            if let Some(ns_id) = crate::namespace::find_id(c, owner, session)? {
+                c.execute(
+                    "DELETE FROM agent_recall_terms WHERE rowid IN(SELECT id FROM agent_recall_messages WHERE namespace_id=?)",
+                    [ns_id],
+                )?;
+                c.execute(
+                    "DELETE FROM agent_recall_messages WHERE namespace_id=?",
+                    [ns_id],
+                )?;
+            }
+        }
+        MessageLayout::LegacyV58OwnerSession | MessageLayout::LegacyV55Folded => {
+            c.execute(
+                "DELETE FROM agent_recall_terms WHERE rowid IN(SELECT id FROM agent_recall_messages WHERE owner=? AND session=?)",
+                params![owner, session],
+            )?;
+            c.execute(
+                "DELETE FROM agent_recall_messages WHERE owner=? AND session=?",
+                params![owner, session],
+            )?;
+        }
+    }
+    for table in ["agent_recall_heads", "agent_recall_gaps"] {
         c.execute(
             &format!("DELETE FROM {table} WHERE owner=? AND session=?"),
             params![owner, session],
         )?;
     }
-    if layout == MessageLayout::Current {
-        c.execute(
-            "DELETE FROM agent_recall_external_segments WHERE owner=? AND session=?",
-            params![owner, session],
-        )?;
+    match layout {
+        MessageLayout::Current => {
+            if let Some(ns_id) = crate::namespace::find_id(c, owner, session)? {
+                c.execute(
+                    "DELETE FROM agent_recall_external_segments WHERE namespace_id=?",
+                    [ns_id],
+                )?;
+            }
+        }
+        MessageLayout::LegacyV58OwnerSession => {
+            c.execute(
+                "DELETE FROM agent_recall_external_segments WHERE owner=? AND session=?",
+                params![owner, session],
+            )?;
+        }
+        MessageLayout::LegacyV55Folded => {}
     }
     if let Some(s) = state.as_deref_mut() {
         s.reset_session();
@@ -2975,24 +3474,48 @@ pub(super) fn rebuild_session_rows(
     layout: MessageLayout,
     mut state: Option<&mut RebuildState>,
 ) -> Result<(), StoreError> {
+    let current_ns = match layout {
+        MessageLayout::Current => crate::namespace::find_id(c, owner, session)?,
+        MessageLayout::LegacyV58OwnerSession | MessageLayout::LegacyV55Folded => None,
+    };
+    if layout == MessageLayout::Current && current_ns.is_none() {
+        return Ok(());
+    }
     let mut after = 0i64;
     let mut cached_spec: Option<(i64, RunSpec)> = None;
     loop {
-        let headers: Vec<(i64, i64, String, Vec<u8>)> = c
-            .prepare_cached(
-                "SELECT h.sequence, r.spec_content_id, b.content_sha256, b.payload
-                 FROM agent_session_history h
-                 JOIN agent_facts f ON f.sequence = h.sequence
-                 JOIN agent_run_specs r ON r.run = h.run
-                 JOIN contents b ON b.id = f.body_content_id
-                 WHERE h.owner = ? AND h.session = ? AND h.sequence > ?
-                 ORDER BY h.sequence
-                 LIMIT 256",
-            )?
-            .query_map(params![owner, session, after], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
-            })?
-            .collect::<Result<_, _>>()?;
+        let headers: Vec<(i64, i64, String, Vec<u8>)> = match current_ns {
+            Some(ns_id) => c
+                .prepare_cached(
+                    "SELECT h.sequence, r.spec_content_id, b.content_sha256, b.payload
+                     FROM agent_session_history h
+                     JOIN agent_facts f ON f.sequence = h.sequence
+                     JOIN agent_run_specs r ON r.run = h.run
+                     JOIN contents b ON b.id = f.body_content_id
+                     WHERE h.namespace_id = ? AND h.sequence > ?
+                     ORDER BY h.sequence
+                     LIMIT 256",
+                )?
+                .query_map(params![ns_id, after], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+                })?
+                .collect::<Result<_, _>>()?,
+            None => c
+                .prepare_cached(
+                    "SELECT h.sequence, r.spec_content_id, b.content_sha256, b.payload
+                     FROM agent_session_history h
+                     JOIN agent_facts f ON f.sequence = h.sequence
+                     JOIN agent_run_specs r ON r.run = h.run
+                     JOIN contents b ON b.id = f.body_content_id
+                     WHERE h.owner = ? AND h.session = ? AND h.sequence > ?
+                     ORDER BY h.sequence
+                     LIMIT 256",
+                )?
+                .query_map(params![owner, session, after], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+                })?
+                .collect::<Result<_, _>>()?,
+        };
         if headers.is_empty() {
             break;
         }

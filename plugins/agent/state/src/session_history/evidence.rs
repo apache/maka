@@ -84,10 +84,11 @@ impl<'a> IndexedBody<'a> {
     ) -> Result<Option<Self>, StoreError> {
         let owner_json = serde_json::to_string(owner)?;
         let mut stmt = c.prepare_cached(
-            "SELECT d.id,d.fields_json,h.session,h.sequence,d.body_ref_sequence,d.body_ref_start,d.body_ref_end
+            "SELECT d.id,d.fields_json,h.namespace_id,h.sequence,d.body_ref_sequence,d.body_ref_start,d.body_ref_end
              FROM agent_session_history h
-             CROSS JOIN agent_recall_messages d ON d.owner=h.owner AND d.session=h.session AND d.sequence=h.sequence
-             WHERE h.fact_id=?1 AND h.owner=?2 AND d.ordinal=?3",
+             CROSS JOIN agent_namespaces ns ON ns.id=h.namespace_id
+             CROSS JOIN agent_recall_messages d ON d.namespace_id=h.namespace_id AND d.sequence=h.sequence
+             WHERE h.fact_id=?1 AND ns.owner=?2 AND d.ordinal=?3",
         )?;
         let source = stmt
             .query_row(
@@ -100,7 +101,7 @@ impl<'a> IndexedBody<'a> {
                     Ok((
                         row.get::<_, i64>(0)?,
                         row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
+                        row.get::<_, crate::namespace::NamespaceId>(2)?,
                         super::sql::read_u64(row, 3)?,
                         row.get::<_, Option<i64>>(4)?,
                         row.get::<_, Option<i64>>(5)?,
@@ -109,7 +110,7 @@ impl<'a> IndexedBody<'a> {
                 },
             )
             .optional()?;
-        let Some((id, fields_json, session, sequence, ref_seq, ref_start, ref_end)) = source else {
+        let Some((id, fields_json, ns_id, sequence, ref_seq, ref_start, ref_end)) = source else {
             return Ok(None);
         };
         let fields: Vec<crate::recall::FieldSpan> = serde_json::from_str(&fields_json)?;
@@ -130,12 +131,8 @@ impl<'a> IndexedBody<'a> {
                 let len = end
                     .checked_sub(start)
                     .ok_or_else(|| invalid("corrupt body_ref span"))?;
-                let target_id = crate::recall::index::resolve_body_ref_target_id(
-                    c,
-                    &owner_json,
-                    &session,
-                    ref_seq,
-                )?;
+                let target_id =
+                    crate::recall::index::resolve_body_ref_target_id(c, ns_id, ref_seq)?;
                 let blob = c.blob_open("main", "agent_recall_messages", "body", target_id, true)?;
                 if start.checked_add(len).is_none_or(|e| e > blob.len()) {
                     return Err(invalid("body_ref slice exceeds target body length"));
@@ -148,13 +145,7 @@ impl<'a> IndexedBody<'a> {
             }
             (Some(ref_seq), None, ref_end) => {
                 let text = crate::recall::index::resolve_body_ref(
-                    c,
-                    &owner_json,
-                    &session,
-                    sequence,
-                    ref_seq,
-                    None,
-                    ref_end,
+                    c, ns_id, sequence, ref_seq, None, ref_end,
                 )?;
                 BodySource::Bytes(text.into_bytes())
             }

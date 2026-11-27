@@ -506,7 +506,22 @@ pub(crate) fn load(
     {
         targets.attempts.insert(attempt.to_string());
     }
-    let charged: Vec<String> = c.prepare_cached("SELECT attempt FROM agent_session_history INDEXED BY agent_session_history_kind WHERE owner=? AND session=? AND kind='retry_charged' AND run=? AND sequence>=(SELECT sequence FROM agent_facts WHERE run=? AND revision=1) AND sequence<=(SELECT sequence FROM agent_facts WHERE run=? AND revision=?) ORDER BY sequence")?.query_map(params![serde_json::to_string(&view.spec.owner)?,view.spec.session_id,run.to_string(),run.to_string(),run.to_string(),signed(view.revision)?],|r|r.get(0))?.collect::<Result<_,_>>()?;
+    let charged: Vec<String> = match crate::namespace::find_owner_id(c, &view.spec.owner, &view.spec.session_id)? {
+        Some(namespace_id) => c
+            .prepare_cached("SELECT attempt FROM agent_session_history INDEXED BY agent_session_history_kind WHERE namespace_id=? AND kind='retry_charged' AND run=? AND sequence>=(SELECT sequence FROM agent_facts WHERE run=? AND revision=1) AND sequence<=(SELECT sequence FROM agent_facts WHERE run=? AND revision=?) ORDER BY sequence")?
+            .query_map(
+                params![
+                    namespace_id,
+                    run.to_string(),
+                    run.to_string(),
+                    run.to_string(),
+                    signed(view.revision)?
+                ],
+                |r| r.get(0),
+            )?
+            .collect::<Result<_, _>>()?,
+        None => Vec::new(),
+    };
     targets.attempts.extend(charged);
     for (id, replan) in &view.replans {
         targets.blockers.insert(id.to_string());
@@ -1675,8 +1690,9 @@ pub(crate) fn tool_admission_revision(
     let id: Option<String> = c
         .prepare_cached(
             "SELECT h.fact_id FROM agent_run_specs s
+             JOIN agent_namespaces ns ON ns.owner=s.owner AND ns.session=s.session
              CROSS JOIN agent_session_history h INDEXED BY agent_session_history_tool
-             WHERE s.run=?1 AND h.owner=s.owner AND h.session=s.session AND h.run=s.run
+             WHERE s.run=?1 AND h.namespace_id=ns.id AND h.run=s.run
                AND h.tool_use_id=?2 AND h.kind='tool_admitted'",
         )?
         .query_row(params![run.to_string(), locator], |row| row.get(0))
@@ -3050,7 +3066,11 @@ mod tests {
                 if let Fact::ExternalEffect { event } = &recorded.fact {
                     crate::external_effects::replay(&db, run, revision, event).unwrap();
                 }
-                crate::session_history::index(&db, &recorded).unwrap();
+                if pre_v55_recall {
+                    crate::session_history::index_legacy_owner_session(&db, &recorded).unwrap();
+                } else {
+                    crate::session_history::index(&db, &recorded).unwrap();
+                }
                 if !pre_v55_recall {
                     crate::recall::index_fact(&db, &spec, &recorded, seq).unwrap();
                 } else if !matches!(

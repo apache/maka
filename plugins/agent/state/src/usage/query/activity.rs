@@ -35,7 +35,7 @@ impl Query for Read {
     type Output = UsageActivityPage;
     fn execute(self, db: &Connection) -> Result<Self::Output, StoreError> {
         let through = fence(db, &self.query, &self.domain)?;
-        let (mut predicate, mut values) = scope(&self.query, &through)?;
+        let (mut predicate, mut values) = scope(db, &self.query, &through)?;
         if let Some(kind) = self.selection.kind {
             values.push(Value::Text(
                 match kind {
@@ -62,21 +62,26 @@ impl Query for Read {
         if !self.selection.search.is_empty() {
             values.push(Value::Text(self.selection.search));
             predicate.push_str(&format!(" AND instr(lower(
-                c.session||' '||COALESCE(c.model_id,'')||' '||COALESCE(c.name,'')||' '||
+                COALESCE(ns.session,c.standalone_session)||' '||COALESCE(c.model_id,'')||' '||COALESCE(c.name,'')||' '||
                 COALESCE(c.provider_id,'')||' '||COALESCE(json_extract(c.binding_json,'$.connection_slug'),'')||' '||
                 COALESCE(json_extract(c.binding_json,'$.model'),'')),lower(?{}))>0", values.len()));
         }
-        let base = settled(&predicate);
+        let base = format!(
+            "FROM agent_usage_results r JOIN agent_usage_calls c ON c.request=r.request
+             LEFT JOIN agent_namespaces ns ON ns.id=c.namespace_id {}",
+            settled_where(&predicate)
+        );
         let total: i64 = db.query_row(
             &format!("SELECT COUNT(*) {base}"),
             params_from_iter(&values),
             |r| r.get(0),
         )?;
-        let select = format!("SELECT r.request AS request,c.kind,c.session,c.model_id,c.name,c.started_at,
+        let select = format!("SELECT r.request AS request,c.kind,COALESCE(ns.session,c.standalone_session) AS session,c.model_id,c.name,c.started_at,
             c.binding_json,c.quote_json,c.origin_json,r.completed_at AS completed_at,r.outcome,r.rejection,r.cleanup_json,
             r.input,r.output,r.cache_read,r.cache_write,r.reasoning,r.cost_usd
             FROM agent_usage_results r INDEXED BY agent_usage_result_time
-            CROSS JOIN agent_usage_calls c ON c.request=r.request {}", settled_where(&predicate));
+            CROSS JOIN agent_usage_calls c ON c.request=r.request
+            LEFT JOIN agent_namespaces ns ON ns.id=c.namespace_id {}", settled_where(&predicate));
         let sql = if let Some(after) = self.after {
             values.push(Value::Real(after.completed_at));
             let at = values.len();

@@ -44,14 +44,18 @@ const RUN_HISTORY_RELEASES: &[Step] = &[
     ),
     Step::RunOwnerSession(
         "DELETE FROM agent_recall_terms WHERE rowid IN(SELECT id FROM agent_recall_messages
-         WHERE owner=?2 AND session=?3 AND sequence IN(SELECT sequence FROM agent_facts WHERE run=?1))",
+         WHERE namespace_id=(SELECT id FROM agent_namespaces WHERE owner=?2 AND session=?3)
+           AND sequence IN(SELECT sequence FROM agent_facts WHERE run=?1))",
     ),
     Step::RunOwnerSession(
-        "DELETE FROM agent_recall_messages WHERE owner=?2 AND session=?3
-         AND sequence IN(SELECT sequence FROM agent_facts WHERE run=?1)",
+        "DELETE FROM agent_recall_messages
+         WHERE namespace_id=(SELECT id FROM agent_namespaces WHERE owner=?2 AND session=?3)
+           AND sequence IN(SELECT sequence FROM agent_facts WHERE run=?1)",
     ),
     Step::RunOwnerSession(
-        "DELETE FROM agent_recall_external_segments WHERE owner=?2 AND session=?3 AND run=?1",
+        "DELETE FROM agent_recall_external_segments
+         WHERE namespace_id=(SELECT id FROM agent_namespaces WHERE owner=?2 AND session=?3)
+           AND run=?1",
     ),
     Step::Run(
         "DELETE FROM agent_session_history WHERE sequence IN(SELECT sequence FROM agent_facts WHERE run=?1)",
@@ -175,9 +179,19 @@ const SESSION_RELEASES: &[Step] = &[
     ),
     Step::OwnerSession("DELETE FROM agent_recall_heads WHERE owner=?1 AND session=?2"),
     Step::OwnerSession("DELETE FROM agent_recall_gaps WHERE owner=?1 AND session=?2"),
-    Step::OwnerSession("DELETE FROM agent_recall_external_segments WHERE owner=?1 AND session=?2"),
+    Step::OwnerSession(
+        "DELETE FROM agent_recall_external_segments
+         WHERE namespace_id=(SELECT id FROM agent_namespaces WHERE owner=?1 AND session=?2)",
+    ),
     Step::OwnerSession("DELETE FROM agent_catalog_sessions WHERE owner=?1 AND session=?2"),
     Step::OwnerSession("DELETE FROM agent_catalog_controls WHERE owner=?1 AND session=?2"),
+    Step::OwnerSession(
+        "DELETE FROM agent_namespaces WHERE owner=?1 AND session=?2
+         AND NOT EXISTS(SELECT 1 FROM agent_session_history h WHERE h.namespace_id=agent_namespaces.id)
+         AND NOT EXISTS(SELECT 1 FROM agent_recall_messages m WHERE m.namespace_id=agent_namespaces.id)
+         AND NOT EXISTS(SELECT 1 FROM agent_recall_external_segments s WHERE s.namespace_id=agent_namespaces.id)
+         AND NOT EXISTS(SELECT 1 FROM agent_usage_calls u WHERE u.namespace_id=agent_namespaces.id AND u.namespace_id IS NOT NULL)",
+    ),
 ];
 
 impl Store {
@@ -487,8 +501,9 @@ mod tests {
         );
         for table in [
             owned,
-            "SELECT count(*) FROM agent_session_history WHERE session=?1",
-            "SELECT count(*) FROM agent_recall_messages WHERE session=?1",
+            "SELECT count(*) FROM agent_namespaces WHERE session=?1",
+            "SELECT count(*) FROM agent_session_history h JOIN agent_namespaces ns ON ns.id=h.namespace_id WHERE ns.session=?1",
+            "SELECT count(*) FROM agent_recall_messages d JOIN agent_namespaces ns ON ns.id=d.namespace_id WHERE ns.session=?1",
             "SELECT count(*) FROM agent_queue_events WHERE session=?1",
         ] {
             assert_eq!(rows(&store, table, "removed").await, vec![0], "{table}");
@@ -1030,6 +1045,7 @@ mod tests {
                     "DELETE FROM agent_cells WHERE run=?1",
                     "DELETE FROM agent_catalog_sessions WHERE owner=?1 AND session=?2",
                     "DELETE FROM agent_catalog_controls WHERE owner=?1 AND session=?2",
+                    "DELETE FROM agent_namespaces WHERE owner=?1 AND session=?2 AND NOT EXISTS(SELECT 1 FROM agent_session_history h WHERE h.namespace_id=agent_namespaces.id) AND NOT EXISTS(SELECT 1 FROM agent_recall_messages m WHERE m.namespace_id=agent_namespaces.id) AND NOT EXISTS(SELECT 1 FROM agent_recall_external_segments s WHERE s.namespace_id=agent_namespaces.id) AND NOT EXISTS(SELECT 1 FROM agent_usage_calls u WHERE u.namespace_id=agent_namespaces.id AND u.namespace_id IS NOT NULL)",
                     "DELETE FROM agent_continuation_successors WHERE run=?1 OR source_run=?1",
                 ] {
                     let mut stmt = c.prepare(&format!("EXPLAIN QUERY PLAN {sql}"))?;
@@ -1114,6 +1130,7 @@ mod tests {
             "agent_memory_tool_inputs",
             "agent_memory_legacy_recap_history",
             "agent_model_items",
+            "agent_namespaces",
             "agent_operation_pins",
             "agent_queue_content_pins",
             "agent_queue_events",

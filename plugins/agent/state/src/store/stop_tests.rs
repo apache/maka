@@ -733,13 +733,7 @@ async fn upgrade_repairs_old_reorder_handoff_before_queue_is_used() {
     use crate::queue::Followup;
 
     let dir = tempfile::tempdir().unwrap();
-    let (root, store) = open_through(dir.path(), true, 53).await;
-    // Seed canonical events with the current writer, then restore the v53 schema
-    // before reopening.
-    exec_sql(&store, |c| {
-        c.execute_batch("ALTER TABLE agent_queue_items ADD COLUMN enqueued_at INTEGER NOT NULL DEFAULT 0; ALTER TABLE agent_queue_items ADD COLUMN interrupted_run TEXT; ALTER TABLE agent_recall_messages DROP COLUMN folded;")?;
-        Ok(())
-    }).await;
+    let (root, store) = open(dir.path(), true).await;
 
     let (spec, contents) = external_spec();
     let sid = spec.session_id.clone();
@@ -795,8 +789,10 @@ async fn upgrade_repairs_old_reorder_handoff_before_queue_is_used() {
         .await
         .unwrap();
 
+    // Revert only migration 54's schema columns and ledger entry so reopening replays
+    // queue reorder handoff repair against the seeded historical events.
     exec_sql(&store, |c| {
-        c.execute_batch("ALTER TABLE agent_queue_items DROP COLUMN enqueued_at; ALTER TABLE agent_queue_items DROP COLUMN interrupted_run; ALTER TABLE agent_recall_messages ADD COLUMN folded TEXT NOT NULL DEFAULT '';")?;
+        c.execute_batch("ALTER TABLE agent_queue_items DROP COLUMN enqueued_at; ALTER TABLE agent_queue_items DROP COLUMN interrupted_run; DELETE FROM _sqlx_migrations WHERE version = 54;")?;
         Ok(())
     }).await;
     drop(store);

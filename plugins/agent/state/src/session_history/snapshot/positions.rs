@@ -24,7 +24,7 @@ use maka_agent_facts::{
 };
 use serde::Deserialize;
 
-const CAPTURE_POSITIONS_SQL: &str = "SELECT d.sequence,d.ordinal,d.internal,d.run,h.admission_sequence,f.id,NOT EXISTS(SELECT 1 FROM agent_recall_legacy_evidenced e WHERE e.fact_id=f.id) FROM agent_recall_messages d JOIN agent_session_history h ON h.sequence=d.sequence AND h.owner=d.owner AND h.session=d.session AND h.run=d.run JOIN agent_facts f ON f.sequence=h.sequence AND f.run=h.run WHERE d.owner=? AND d.session=? AND d.sequence<=? ORDER BY d.sequence,d.ordinal";
+const CAPTURE_POSITIONS_SQL: &str = "SELECT d.sequence,d.ordinal,d.internal,d.run,h.admission_sequence,f.id,NOT EXISTS(SELECT 1 FROM agent_recall_legacy_evidenced e WHERE e.fact_id=f.id) FROM agent_recall_messages d JOIN agent_session_history h ON h.sequence=d.sequence AND h.namespace_id=d.namespace_id AND h.run=d.run JOIN agent_facts f ON f.sequence=h.sequence AND f.run=h.run WHERE d.namespace_id=? AND d.sequence<=? ORDER BY d.sequence,d.ordinal";
 
 pub(super) fn capture(
     c: &Connection,
@@ -37,20 +37,18 @@ pub(super) fn capture(
     }
     crate::recall::checked_source_cut(c, &scope.owner, cut)?;
     let owner_json = serde_json::to_string(&scope.owner)?;
+    let Some(namespace_id) = crate::namespace::find_id(c, &owner_json, &scope.session)? else {
+        return Ok(());
+    };
     let unsealed = crate::recall::index::unsealed_external_segment_headers(
         c,
-        &owner_json,
-        &scope.session,
+        namespace_id,
         cut.through_sequence,
         0,
     )?;
     let mut unsealed_iter = unsealed.into_iter().peekable();
     let mut statement = c.prepare_cached(CAPTURE_POSITIONS_SQL)?;
-    let mut rows = statement.query(params![
-        owner_json,
-        scope.session,
-        bind_u64(cut.through_sequence)?
-    ])?;
+    let mut rows = statement.query(params![namespace_id, bind_u64(cut.through_sequence)?])?;
     while let Some(row) = rows.next()? {
         let seq = read_u64(row, 0)?;
         while let Some(delta) = unsealed_iter.next_if(|d| d.sequence < seq) {
@@ -370,9 +368,7 @@ mod tests {
             .prepare(&format!("EXPLAIN QUERY PLAN {CAPTURE_POSITIONS_SQL}"))
             .unwrap();
         let details: Vec<String> = stmt
-            .query_map(params!["\"owner\"", "session", 100_i64], |r| {
-                r.get::<_, String>(3)
-            })
+            .query_map(params![1_i64, 100_i64], |r| r.get::<_, String>(3))
             .unwrap()
             .collect::<Result<_, _>>()
             .unwrap();
@@ -382,9 +378,9 @@ mod tests {
                     || line.contains(
                         "SEARCH d USING COVERING INDEX sqlite_autoindex_agent_recall_messages_1",
                     ))
-                    && line.contains("(owner=? AND session=? AND sequence<?)")
+                    && line.contains("(namespace_id=? AND sequence<?)")
             }),
-            "expected capture query to seek agent_recall_messages via UNIQUE(owner,session,sequence,ordinal), got: {details:?}"
+            "expected capture query to seek agent_recall_messages via UNIQUE(namespace_id,sequence,ordinal), got: {details:?}"
         );
         assert!(
             !details.iter().any(|line| line.contains("TEMP B-TREE")),

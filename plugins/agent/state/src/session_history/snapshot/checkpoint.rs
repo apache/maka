@@ -38,11 +38,16 @@ fn live_baseline(
     namespace: &HistoryNamespace,
     cut: &HistoryCut,
 ) -> Result<Option<(RunId, u64)>, StoreError> {
+    let Some(namespace_id) =
+        crate::namespace::find_owner_id(c, &namespace.owner, &namespace.session)?
+    else {
+        return Ok(None);
+    };
     let row: Option<(String, u64)> = c.query_row(
         "SELECT h.run,h.sequence FROM agent_session_history h INDEXED BY agent_session_history_historical
-        WHERE h.owner=? AND h.session=? AND h.sequence<=? AND h.historical=1
+        WHERE h.namespace_id=? AND h.sequence<=? AND h.historical=1
         ORDER BY h.sequence DESC LIMIT 1",
-        params![serde_json::to_string(&namespace.owner)?, namespace.session, sql::bind_u64(cut.through_sequence)?],
+        params![namespace_id, sql::bind_u64(cut.through_sequence)?],
         |row| Ok((row.get(0)?, sql::read_u64(row, 1)?)),
     ).optional()?;
     row.map(|(run, sequence)| {

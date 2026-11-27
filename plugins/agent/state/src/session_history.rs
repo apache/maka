@@ -41,10 +41,12 @@ mod sql;
 pub mod tool_result_source;
 pub use continuation::ContinuationSource;
 pub(crate) use continuation::admit_continuation;
-#[cfg(test)]
-pub(crate) use sql::recovery_diagnostic;
-pub(crate) use sql::{capture_at, captured_tool_call, source_content_at, sources_at, validate_cut};
+pub(crate) use sql::{
+    capture_at, captured_tool_call, check_bytes, source_content_at, sources_at, validate_cut,
+};
 pub(crate) use sql::{index, index_queue, index_retained};
+#[cfg(test)]
+pub(crate) use sql::{index_legacy_owner_session, recovery_diagnostic};
 
 pub use maka_agent_facts::history_snapshot::HistoryCut;
 pub use metrics::{
@@ -150,10 +152,11 @@ impl ExecutorTranscript {
                     s.start, s.end,
                     (SELECT octet_length(m.body)
                      FROM agent_session_history h
+                     JOIN agent_namespaces ns ON ns.id = h.namespace_id
                      JOIN agent_recall_messages m
-                       ON m.owner = h.owner AND m.session = h.session
+                       ON m.namespace_id = h.namespace_id
                       AND m.sequence = h.sequence AND m.ordinal = s.ordinal
-                     WHERE h.owner = s.namespace AND h.fact_id = s.fact
+                     WHERE ns.owner = s.namespace AND h.fact_id = s.fact
                      LIMIT 1)
              FROM json_each(?1) p CROSS JOIN agent_memory_hidden_spans s
              WHERE s.namespace=?2 AND s.fact=p.value->>0 AND s.ordinal=0",
@@ -248,15 +251,17 @@ impl ExecutorTranscript {
                 "SELECT p.value->>1, CAST(p.value->>3 AS INTEGER), s.start, s.end
                  FROM json_each(?1) p
                  JOIN agent_session_history h
-                   ON h.owner = ?2 AND h.fact_id = p.value->>0
+                   ON h.fact_id = p.value->>0
+                 JOIN agent_namespaces ns
+                   ON ns.id = h.namespace_id AND ns.owner = ?2
                  JOIN agent_recall_external_segments seg
-                   ON seg.owner = h.owner AND seg.session = h.session AND seg.run = h.run
+                   ON seg.namespace_id = h.namespace_id AND seg.run = h.run
                   AND seg.sealed = 1
                   AND seg.tail_end_sequence IS NOT NULL
                   AND seg.tail_end_sequence > ?3
                   AND seg.tail_start_sequence = CAST(p.value->>2 AS INTEGER)
                  JOIN agent_memory_hidden_spans s
-                   ON s.namespace = seg.owner AND s.fact = seg.tail_end_fact AND s.ordinal = 0",
+                   ON s.namespace = ns.owner AND s.fact = seg.tail_end_fact AND s.ordinal = 0",
             )?;
             let max_seq_i64 = sql::bind_u64(max_seq)?;
             for page in pieces.chunks(256) {
@@ -404,18 +409,17 @@ impl Query for MaskTerminalDiagnostic {
         let Self(namespace, run, mut diagnostic) = self;
         // A recovery reason and the terminal row share byte offsets only when the
         // engine persisted that diagnostic verbatim for this Run.
+        let Some(ns_id) = crate::namespace::find_owner_id(c, &namespace.owner, &namespace.session)?
+        else {
+            return Ok(diagnostic);
+        };
         let terminal = c
             .query_row(
                 "SELECT h.fact_id FROM agent_session_history h
              JOIN agent_facts f ON f.sequence=h.sequence JOIN contents b ON b.id=f.body_content_id
-             WHERE h.run=?1 AND h.kind='run_terminated' AND h.owner=?2 AND h.session=?3
-               AND CAST(b.payload AS TEXT)->>'$.fact.diagnostic'=?4",
-                params![
-                    run.to_string(),
-                    serde_json::to_string(&namespace.owner)?,
-                    namespace.session,
-                    diagnostic
-                ],
+             WHERE h.run=?1 AND h.kind='run_terminated' AND h.namespace_id=?2
+               AND CAST(b.payload AS TEXT)->>'$.fact.diagnostic'=?3",
+                params![run.to_string(), ns_id, diagnostic],
                 |row| row.get::<_, String>(0),
             )
             .optional()?;
@@ -1123,9 +1127,10 @@ mod executor_tests {
         // Match real migrated table columns: agent_recall_messages has NO fact_id column.
         c.execute_batch(
             "CREATE TABLE agent_memory_hidden_spans(namespace,fact,ordinal,start,end,session,sequence);
-             CREATE TABLE agent_session_history(owner,session,sequence,run,fact_id);
-             CREATE TABLE agent_recall_messages(owner,session,sequence,ordinal,body);
-             CREATE TABLE agent_recall_external_segments(owner,session,run,sealed,tail_start_sequence,tail_end_sequence,tail_end_fact);",
+             CREATE TABLE agent_namespaces(id INTEGER PRIMARY KEY, owner TEXT, session TEXT);
+             CREATE TABLE agent_session_history(namespace_id INTEGER,sequence,run,fact_id);
+             CREATE TABLE agent_recall_messages(namespace_id INTEGER,sequence,ordinal,body);
+             CREATE TABLE agent_recall_external_segments(namespace_id INTEGER,run,sealed,tail_start_sequence,tail_end_sequence,tail_end_fact);",
         )
         .unwrap();
         let owner = RunOwner {
@@ -1164,19 +1169,24 @@ mod executor_tests {
             };
             transcript.observe(sequence, &record, &mut pieces);
             c.execute(
-                "INSERT INTO agent_session_history VALUES(?1,'s',?2,?3,?4)",
-                rusqlite::params![owner_json, sequence as i64, run.to_string(), id.to_string()],
+                "INSERT INTO agent_session_history VALUES(1,?1,?2,?3)",
+                rusqlite::params![sequence as i64, run.to_string(), id.to_string()],
             )
             .unwrap();
             if index == 3 {
                 c.execute(
-                    "INSERT INTO agent_recall_messages VALUES(?1,'s',4,0,'secret-mid visible')",
+                    "INSERT INTO agent_namespaces(id,owner,session) VALUES(1,?1,'s')",
                     rusqlite::params![owner_json],
                 )
                 .unwrap();
                 c.execute(
-                    "INSERT INTO agent_recall_external_segments VALUES(?1,'s',?2,1,2,4,?3)",
-                    rusqlite::params![owner_json, run.to_string(), id.to_string()],
+                    "INSERT INTO agent_recall_messages VALUES(1,4,0,'secret-mid visible')",
+                    [],
+                )
+                .unwrap();
+                c.execute(
+                    "INSERT INTO agent_recall_external_segments VALUES(1,?1,1,2,4,?2)",
+                    rusqlite::params![run.to_string(), id.to_string()],
                 )
                 .unwrap();
                 c.execute(

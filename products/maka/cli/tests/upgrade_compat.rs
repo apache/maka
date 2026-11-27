@@ -783,19 +783,26 @@ fn verify_sqlite_integrity_and_migrations(root: &Path) -> BTreeMap<String, Vec<i
                         })
                         .unwrap_or_else(|e| panic!("v55 view {view} failed on {rel}: {e}"));
                 }
+                let ns_join = if versions.contains(&62) {
+                    "m.namespace_id=h.namespace_id"
+                } else {
+                    "m.owner=h.owner AND m.session=h.session"
+                };
                 let missing_ended_unknown: i64 = conn
                     .query_row(
-                        "SELECT COUNT(*) FROM agent_session_history h
-                         JOIN agent_facts f ON f.sequence=h.sequence
-                         JOIN contents b ON b.id=f.body_content_id
-                         WHERE h.kind='external_effect' AND h.tool_start=0 AND h.result_source=0
-                           AND CAST(b.payload AS TEXT)->>'$.fact.event.kind'='observed'
-                           AND CAST(b.payload AS TEXT)->>'$.fact.event.observation.receipt.outcome.kind'='unknown'
-                           AND CAST(b.payload AS TEXT)->>'$.fact.event.observation.receipt.cleanup.kind'='confirmed'
-                           AND NOT EXISTS (
-                             SELECT 1 FROM agent_recall_messages m
-                             WHERE m.owner=h.owner AND m.session=h.session AND m.sequence=h.sequence
-                           )",
+                        &format!(
+                            "SELECT COUNT(*) FROM agent_session_history h
+                             JOIN agent_facts f ON f.sequence=h.sequence
+                             JOIN contents b ON b.id=f.body_content_id
+                             WHERE h.kind='external_effect' AND h.tool_start=0 AND h.result_source=0
+                               AND CAST(b.payload AS TEXT)->>'$.fact.event.kind'='observed'
+                               AND CAST(b.payload AS TEXT)->>'$.fact.event.observation.receipt.outcome.kind'='unknown'
+                               AND CAST(b.payload AS TEXT)->>'$.fact.event.observation.receipt.cleanup.kind'='confirmed'
+                               AND NOT EXISTS (
+                                 SELECT 1 FROM agent_recall_messages m
+                                 WHERE {ns_join} AND m.sequence=h.sequence
+                               )"
+                        ),
                         [],
                         |row| row.get(0),
                     )
@@ -849,23 +856,30 @@ fn verify_sqlite_integrity_and_migrations(root: &Path) -> BTreeMap<String, Vec<i
                     has_legacy_table, 1,
                     "v61 must create agent_recall_legacy_evidenced on {rel}"
                 );
+                let ns_join = if versions.contains(&62) {
+                    "h.namespace_id = d.namespace_id"
+                } else {
+                    "h.owner = d.owner AND h.session = d.session"
+                };
                 let bookkeeping: i64 = conn
                     .query_row(
-                        "SELECT COUNT(*) FROM agent_recall_messages d
-                         JOIN agent_session_history h
-                           ON h.owner = d.owner AND h.session = d.session AND h.sequence = d.sequence
-                         JOIN agent_facts f ON f.sequence = h.sequence
-                         JOIN contents c ON c.id = f.body_content_id
-                         WHERE h.kind = 'cell'
-                           AND json_extract(CAST(c.payload AS TEXT), '$.fact.event.kind') IN (
-                             'vm_bound', 'loaded_tools_published', 'child_admitted',
-                             'child_approval_consumed', 'child_bound',
-                             'result_accepted', 'final_notification_queued', 'notification_consumed'
-                           )
-                           AND NOT EXISTS (
-                             SELECT 1 FROM agent_recall_legacy_evidenced e
-                             WHERE e.fact_id = h.fact_id
-                           )",
+                        &format!(
+                            "SELECT COUNT(*) FROM agent_recall_messages d
+                             JOIN agent_session_history h
+                               ON {ns_join} AND h.sequence = d.sequence
+                             JOIN agent_facts f ON f.sequence = h.sequence
+                             JOIN contents c ON c.id = f.body_content_id
+                             WHERE h.kind = 'cell'
+                               AND json_extract(CAST(c.payload AS TEXT), '$.fact.event.kind') IN (
+                                 'vm_bound', 'loaded_tools_published', 'child_admitted',
+                                 'child_approval_consumed', 'child_bound',
+                                 'result_accepted', 'final_notification_queued', 'notification_consumed'
+                               )
+                               AND NOT EXISTS (
+                                 SELECT 1 FROM agent_recall_legacy_evidenced e
+                                 WHERE e.fact_id = h.fact_id
+                               )"
+                        ),
                         [],
                         |row| row.get(0),
                     )
@@ -874,6 +888,57 @@ fn verify_sqlite_integrity_and_migrations(root: &Path) -> BTreeMap<String, Vec<i
                     bookkeeping, 0,
                     "v61 must omit unreferenced pure cell bookkeeping rows from agent_recall_messages on {rel}"
                 );
+            }
+            if has_runs > 0 && versions.contains(&62) {
+                let ns_rows: i64 = conn
+                    .query_row("SELECT COUNT(*) FROM agent_namespaces", [], |row| {
+                        row.get(0)
+                    })
+                    .unwrap();
+                assert!(ns_rows > 0, "v62 must populate agent_namespaces on {rel}");
+                for table in [
+                    "agent_session_history",
+                    "agent_recall_messages",
+                    "agent_usage_calls",
+                ] {
+                    let has_ns: bool = conn
+                        .query_row(
+                            &format!(
+                                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('{table}') WHERE name='namespace_id')"
+                            ),
+                            [],
+                            |row| row.get(0),
+                        )
+                        .unwrap();
+                    let has_legacy: bool = conn
+                        .query_row(
+                            &format!(
+                                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('{table}') WHERE name IN ('owner','session'))"
+                            ),
+                            [],
+                            |row| row.get(0),
+                        )
+                        .unwrap();
+                    assert!(
+                        has_ns && !has_legacy,
+                        "v62 must replace (owner,session) with namespace_id on {table} in {rel}"
+                    );
+                }
+                for dropped in [
+                    "agent_session_history_run_fk",
+                    "agent_session_history_result",
+                    "agent_memory_run_termination",
+                    "agent_usage_call_session_time",
+                ] {
+                    let present: bool = conn
+                        .query_row(
+                            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='index' AND name=?1)",
+                            [dropped],
+                            |row| row.get(0),
+                        )
+                        .unwrap();
+                    assert!(!present, "v62 must drop redundant index {dropped} on {rel}");
+                }
             }
             ledgers.insert(rel, versions);
         }

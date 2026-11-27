@@ -534,7 +534,11 @@ pub(crate) fn rebuild_run(c: &Connection, run: RunId) -> Result<(), StoreError> 
 }
 pub(super) fn rebuild_session(c: &Connection, session: &str) -> Result<(), StoreError> {
     c.execute(
-        "DELETE FROM agent_usage_calls WHERE source='cell' AND session=?",
+        "DELETE FROM agent_usage_calls WHERE source='cell' AND standalone_session=?1 AND standalone_session IS NOT NULL",
+        [session],
+    )?;
+    c.execute(
+        "DELETE FROM agent_usage_calls WHERE source='cell' AND namespace_id IN (SELECT id FROM agent_namespaces WHERE session=?1) AND namespace_id IS NOT NULL",
         [session],
     )?;
     for table in [

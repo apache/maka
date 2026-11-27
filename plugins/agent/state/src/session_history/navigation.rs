@@ -105,9 +105,10 @@ impl Query for ModelLandmarks {
         let mut stmt = c.prepare_cached(
             "SELECT k.value->>0,substr(d.body,1,96),d.fields_json->>'$[0].end'
              FROM json_each(?1) k CROSS JOIN agent_session_history h
+             CROSS JOIN agent_namespaces ns ON ns.id=h.namespace_id
              CROSS JOIN agent_recall_messages d
-             WHERE h.sequence=k.value->>1 AND h.fact_id=k.value->>2 AND h.owner=?2
-               AND d.owner=h.owner AND d.session=h.session AND d.sequence=h.sequence AND d.ordinal=k.value->>3
+             WHERE h.sequence=k.value->>1 AND h.fact_id=k.value->>2 AND ns.owner=?2
+               AND d.namespace_id=h.namespace_id AND d.sequence=h.sequence AND d.ordinal=k.value->>3
                AND d.role='\"user\"' AND d.fields_json->>'$[0].field'='body' AND d.fields_json->>'$[0].start'=0"
         )?;
         let mut rows = stmt.query(params![
@@ -363,13 +364,15 @@ fn live_row(
     if position.source_sequence > cut.through_sequence {
         return Err(invalid("history row exceeds original cut"));
     }
-    let owner_json = serde_json::to_string(&scope.owner)?;
+    let Some(namespace_id) = crate::namespace::find_owner_id(c, &scope.owner, &scope.session)?
+    else {
+        return Err(rusqlite::Error::QueryReturnedNoRows.into());
+    };
     let indexed: Option<(String, u64, String, bool)> = c
         .query_row(
-            "SELECT d.run,h.admission_sequence,h.fact_id,d.internal FROM agent_recall_messages d JOIN agent_session_history h ON h.owner=d.owner AND h.session=d.session AND h.sequence=d.sequence WHERE d.owner=? AND d.session=? AND d.sequence=? AND d.ordinal=? AND h.admission_sequence>?",
+            "SELECT d.run,h.admission_sequence,h.fact_id,d.internal FROM agent_recall_messages d JOIN agent_session_history h ON h.namespace_id=d.namespace_id AND h.sequence=d.sequence WHERE d.namespace_id=? AND d.sequence=? AND d.ordinal=? AND h.admission_sequence>?",
             params![
-                owner_json,
-                scope.session,
+                namespace_id,
                 bind_u64(position.source_sequence)?,
                 bind_u64(position.item_index)?,
                 bind_u64(min_admission)?
@@ -385,11 +388,10 @@ fn live_row(
                  FROM agent_session_history h
                  JOIN agent_facts f ON f.sequence=h.sequence
                  JOIN contents b ON b.id=f.body_content_id
-                 WHERE h.owner=? AND h.session=? AND h.sequence=? AND h.admission_sequence>?
+                 WHERE h.namespace_id=? AND h.sequence=? AND h.admission_sequence>?
                    AND h.kind='external_task_observed'",
                 params![
-                    owner_json,
-                    scope.session,
+                    namespace_id,
                     bind_u64(position.source_sequence)?,
                     bind_u64(min_admission)?
                 ],

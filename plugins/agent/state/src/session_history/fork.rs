@@ -59,12 +59,17 @@ impl Query for ForkCut {
                 }
             }
         };
-        let owner = serde_json::to_string(&self.0.owner)?;
-        let through: u64 = c.query_row(
-            "SELECT sequence FROM agent_session_history WHERE owner=? AND session=? AND sequence<=? ORDER BY sequence DESC LIMIT 1",
-            params![owner, self.0.session, sql::bind_u64(limit)?],
-            |row| sql::read_u64(row, 0),
-        ).optional()?.unwrap_or(0);
+        let through: u64 = match crate::namespace::find_owner_id(c, &self.0.owner, &self.0.session)? {
+            Some(namespace_id) => c
+                .query_row(
+                    "SELECT sequence FROM agent_session_history WHERE namespace_id=? AND sequence<=? ORDER BY sequence DESC LIMIT 1",
+                    params![namespace_id, sql::bind_u64(limit)?],
+                    |row| sql::read_u64(row, 0),
+                )
+                .optional()?
+                .unwrap_or(0),
+            None => 0,
+        };
         let cut = sql::capture_at(c, &self.0.owner, &self.0.session, Some(through))?;
         validate_ranges(c, &ranges, &turns, &cut)?;
         Ok(cut)
@@ -86,26 +91,24 @@ pub(in crate::session_history) fn ranges(
     c: &Connection,
     history: &HistoryNamespace,
 ) -> Result<Vec<Range>, StoreError> {
+    let Some(namespace_id) = crate::namespace::find_owner_id(c, &history.owner, &history.session)?
+    else {
+        return Ok(vec![]);
+    };
     let mut statement = c.prepare_cached(
-        "SELECT run FROM agent_session_history WHERE owner=? AND session=? AND kind='run_admitted' ORDER BY sequence",
+        "SELECT run FROM agent_session_history WHERE namespace_id=? AND kind='run_admitted' ORDER BY sequence",
     )?;
-    let owner = serde_json::to_string(&history.owner)?;
-    let mut rows = statement.query(params![owner, history.session])?;
+    let mut rows = statement.query(params![namespace_id])?;
     let mut last = c.prepare_cached(
         "SELECT max(sequence) FROM agent_session_history INDEXED BY agent_session_history_run
-         WHERE owner=? AND session=? AND run=? AND kind<>?",
+         WHERE run=? AND namespace_id=? AND kind<>?",
     )?;
     let mut ranges = vec![];
     while let Some(row) = rows.next()? {
         let run = sql::identity(row.get(0)?)?;
         let source = sql::run_source(c, history, run)?;
         let end = last.query_row(
-            params![
-                owner,
-                history.session,
-                run.to_string(),
-                TITLE_DIAGNOSTIC_KIND
-            ],
+            params![run.to_string(), namespace_id, TITLE_DIAGNOSTIC_KIND],
             |row| sql::read_u64(row, 0),
         )?;
         ranges.push(Range {
@@ -281,7 +284,11 @@ pub(in crate::session_history) fn validate_baseline(
             "fork baseline is not an actual completed historical marker",
         ));
     }
-    let through=c.query_row("SELECT sequence FROM agent_session_history WHERE owner=? AND session=? AND run=? AND kind='run_terminated'",params![serde_json::to_string(&history.owner)?,history.session,marker.to_string()],|row|sql::read_u64(row,0))?;
+    let Some(namespace_id) = crate::namespace::find_owner_id(c, &history.owner, &history.session)?
+    else {
+        return Err(rusqlite::Error::QueryReturnedNoRows.into());
+    };
+    let through=c.query_row("SELECT sequence FROM agent_session_history WHERE namespace_id=? AND run=? AND kind='run_terminated'",params![namespace_id,marker.to_string()],|row|sql::read_u64(row,0))?;
     if through != cut.through_sequence {
         return Err(invalid(
             "fork baseline guard is not its actual complete marker fence",

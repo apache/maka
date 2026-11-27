@@ -501,36 +501,43 @@ impl CompactionDuration {
         match &self.0 {
             HistoryDataSource::Live { history, cut } => {
                 sql::validate_cut(c, &history.namespace.owner, &history.namespace.session, cut)?;
+                let namespace_id = crate::namespace::find_owner_id(
+                    c,
+                    &history.namespace.owner,
+                    &history.namespace.session,
+                )?;
                 let index = if live_key == "sequence" {
                     ""
                 } else {
                     "INDEXED BY agent_session_history_run"
                 };
                 let attempt_step = if live_key == "attempt" {
-                    " AND step=(SELECT step FROM agent_attempt_ids WHERE run=?3 AND attempt=?6)"
+                    " AND step=(SELECT step FROM agent_attempt_ids WHERE run=?2 AND attempt=?5)"
                 } else {
                     ""
                 };
-                let found = c
-                    .query_row(
-                        &format!(
-                            "SELECT sequence FROM agent_session_history {index}
-                             WHERE owner=?1 AND session=?2 AND run=?3
-                               AND (kind=?4 OR (?4='step_prepared' AND kind='proactive_summary_prepared'))
-                               AND sequence<=?5 AND {live_key}=?6{attempt_step}
-                             ORDER BY sequence LIMIT 1"
-                        ),
-                        params![
-                            serde_json::to_string(&history.namespace.owner)?,
-                            history.namespace.session,
-                            target_run.to_string(),
-                            kind,
-                            sql::bind_u64(cut.through_sequence)?,
-                            key,
-                        ],
-                        |row| sql::read_u64(row, 0),
-                    )
-                    .optional()?;
+                let found = match namespace_id {
+                    Some(namespace_id) => c
+                        .query_row(
+                            &format!(
+                                "SELECT sequence FROM agent_session_history {index}
+                                 WHERE namespace_id=?1 AND run=?2
+                                   AND (kind=?3 OR (?3='step_prepared' AND kind='proactive_summary_prepared'))
+                                   AND sequence<=?4 AND {live_key}=?5{attempt_step}
+                                 ORDER BY sequence LIMIT 1"
+                            ),
+                            params![
+                                namespace_id,
+                                target_run.to_string(),
+                                kind,
+                                sql::bind_u64(cut.through_sequence)?,
+                                key,
+                            ],
+                            |row| sql::read_u64(row, 0),
+                        )
+                        .optional()?,
+                    None => None,
+                };
                 let found = found.ok_or_else(|| {
                     invalid("compaction timing original fact is missing from this fixed source cut")
                 })?;
@@ -689,7 +696,10 @@ impl CompactionDuration {
             ));
         }
         let crossed: bool=match &self.0 {
-            HistoryDataSource::Live {history,..} => c.query_row("SELECT EXISTS(SELECT 1 FROM agent_session_history INDEXED BY agent_session_history_run WHERE owner=? AND session=? AND run=? AND step IS NULL AND kind='context_compacted' AND sequence>? AND sequence<?)",params![serde_json::to_string(&history.namespace.owner)?,history.namespace.session,self.1.to_string(),sql::bind_u64(prepared.sequence)?,sql::bind_u64(adopted.sequence)?],|row|row.get(0))?,
+            HistoryDataSource::Live {history,..} => match crate::namespace::find_owner_id(c, &history.namespace.owner, &history.namespace.session)? {
+                Some(namespace_id) => c.query_row("SELECT EXISTS(SELECT 1 FROM agent_session_history INDEXED BY agent_session_history_run WHERE namespace_id=? AND run=? AND step IS NULL AND kind='context_compacted' AND sequence>? AND sequence<?)",params![namespace_id,self.1.to_string(),sql::bind_u64(prepared.sequence)?,sql::bind_u64(adopted.sequence)?],|row|row.get(0))?,
+                None => false,
+            },
             HistoryDataSource::Snapshot(snapshot) => c.query_row("SELECT EXISTS(SELECT 1 FROM agent_history_snapshot_entries WHERE snapshot=? AND run=? AND kind='fact' AND fact_kind='context_compacted' AND sequence>? AND sequence<?)",params![snapshot.id().to_string(),self.1.to_string(),sql::bind_u64(prepared.sequence)?,sql::bind_u64(adopted.sequence)?],|row|row.get(0))?,
         };
         if crossed {
@@ -730,30 +740,35 @@ impl CompactionDuration {
         };
         match &self.0 {
             HistoryDataSource::Live { history, cut } => {
-                let mut stmt = c.prepare_cached(
-                    "SELECT sequence FROM agent_session_history INDEXED BY agent_session_history_run
-                     WHERE owner=?1 AND session=?2 AND run=?3 AND step=?4 AND kind='model_closed'
-                       AND sequence>?5 AND sequence<?6
-                     ORDER BY sequence DESC",
-                )?;
-                let sequences = stmt
-                    .query_map(
-                        params![
-                            serde_json::to_string(&history.namespace.owner)?,
-                            history.namespace.session,
-                            target_run.to_string(),
-                            step.to_string(),
-                            sql::bind_u64(after_sequence)?,
-                            sql::bind_u64(before_sequence)?,
-                        ],
-                        |row| sql::read_u64(row, 0),
-                    )?
-                    .collect::<Result<Vec<_>, _>>()?;
-                for sequence in sequences {
-                    if let Some(item) = sql::item(c, &history.namespace, cut, sequence)?
-                        && is_success(&item)
-                    {
-                        return Ok(item);
+                if let Some(namespace_id) = crate::namespace::find_owner_id(
+                    c,
+                    &history.namespace.owner,
+                    &history.namespace.session,
+                )? {
+                    let mut stmt = c.prepare_cached(
+                        "SELECT sequence FROM agent_session_history INDEXED BY agent_session_history_run
+                         WHERE namespace_id=?1 AND run=?2 AND step=?3 AND kind='model_closed'
+                           AND sequence>?4 AND sequence<?5
+                         ORDER BY sequence DESC",
+                    )?;
+                    let sequences = stmt
+                        .query_map(
+                            params![
+                                namespace_id,
+                                target_run.to_string(),
+                                step.to_string(),
+                                sql::bind_u64(after_sequence)?,
+                                sql::bind_u64(before_sequence)?,
+                            ],
+                            |row| sql::read_u64(row, 0),
+                        )?
+                        .collect::<Result<Vec<_>, _>>()?;
+                    for sequence in sequences {
+                        if let Some(item) = sql::item(c, &history.namespace, cut, sequence)?
+                            && is_success(&item)
+                        {
+                            return Ok(item);
+                        }
                     }
                 }
             }

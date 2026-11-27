@@ -31,7 +31,7 @@ impl Query for Read {
     type Output = UsageReport;
     fn execute(self, db: &Connection) -> Result<Self::Output, StoreError> {
         let through = fence(db, &self.query, &self.domain)?;
-        let (predicate, values) = scope(&self.query, &through)?;
+        let (predicate, values) = scope(db, &self.query, &through)?;
         let base = settled(&predicate);
         let models = model_totals(db, &format!("{base} AND c.kind='model'"), &values)?;
         let tools = tool_totals(db, &format!("{base} AND c.kind='tool'"), &values)?;
@@ -118,7 +118,7 @@ impl Query for SessionTotals {
     type Output = SessionUsageTotals;
     fn execute(self, db: &Connection) -> Result<Self::Output, StoreError> {
         let through = fence(db, &self.query, &self.domain)?;
-        let (predicate, values) = scope(&self.query, &through)?;
+        let (predicate, values) = scope(db, &self.query, &through)?;
         let mut statement = db.prepare_cached(&format!(
             "SELECT COALESCE(SUM(r.input),0) AS input,COUNT(*)-COUNT(r.input) AS input_missing,
             COALESCE(SUM(r.output),0) AS output,COUNT(*)-COUNT(r.output) AS output_missing,

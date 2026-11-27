@@ -241,6 +241,10 @@
       "plugins/agent/state/migrations/0061_dedup_recall_index.sql": {
         "version": 61,
         "sha384": "5dee9fc1a747264e063af1f3c29e2817adf5d4e77736c0fb673ea00d26365e28ced4084a688a01e64f504241498e7470"
+      },
+      "plugins/agent/state/migrations/0062_namespace_surrogate_keys.sql": {
+        "version": 62,
+        "sha384": "2397b5ea94b59167a0522fb31455b66b74d6cb5fa445ba5dfa2dabd0182379179c1d8cb0479f8e3d6595aeaaab3a09a3"
       }
     },
     "checkpoint-repository": {

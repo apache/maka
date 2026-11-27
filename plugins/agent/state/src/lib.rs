@@ -29,6 +29,7 @@ pub mod external_steering;
 pub mod fold;
 pub mod interactions;
 pub mod memory;
+mod namespace;
 pub mod operation;
 pub mod queue;
 pub mod recall;
@@ -439,6 +440,13 @@ pub const MIGRATIONS: &[maka_event_log::migration::Migration] = &[
         configure: None,
         data: Some(recall::migrate_v58::run),
     },
+    maka_event_log::migration::Migration {
+        version: 62,
+        description: "intern namespace surrogate keys for history and recall",
+        sql: include_str!("../migrations/0062_namespace_surrogate_keys.sql"),
+        configure: None,
+        data: Some(namespace::migrate_namespace_surrogate_keys),
+    },
 ];
 
 #[cfg(test)]
@@ -450,7 +458,7 @@ mod migration_tests {
             .chain(super::MIGRATIONS)
             .copied()
             .collect();
-        for through in [0, 41].into_iter().chain(46..=60) {
+        for through in [0, 41].into_iter().chain(46..=61) {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("root.sqlite");
             let db = rusqlite::Connection::open(&path).unwrap();
@@ -474,6 +482,51 @@ mod migration_tests {
                 )
                 .unwrap();
             assert_eq!(identities, 0);
+            for table in [
+                "agent_session_history",
+                "agent_recall_messages",
+                "agent_recall_external_segments",
+                "agent_usage_calls",
+            ] {
+                let has_ns_id: bool = db
+                    .query_row(
+                        &format!(
+                            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('{table}') WHERE name='namespace_id')"
+                        ),
+                        [],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+                assert!(has_ns_id, "migration 61 must add namespace_id to {table}");
+                let has_owner: bool = db
+                    .query_row(
+                        &format!(
+                            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('{table}') WHERE name IN ('owner','session'))"
+                        ),
+                        [],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+                assert!(
+                    !has_owner,
+                    "migration 61 must drop owner/session from {table}"
+                );
+            }
+            for dropped in [
+                "agent_session_history_run_fk",
+                "agent_session_history_result",
+                "agent_memory_run_termination",
+                "agent_usage_call_session_time",
+            ] {
+                let exists: bool = db
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='index' AND name=?)",
+                        [dropped],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+                assert!(!exists, "migration 61 must drop redundant index {dropped}");
+            }
         }
     }
 }

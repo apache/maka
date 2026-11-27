@@ -494,6 +494,11 @@ fn evidence_source(
     sequence: u64,
     item_index: u64,
 ) -> Result<(String, String, i64), StoreError> {
+    let Some(ns_id) = crate::namespace::find_id(c, namespace, session)? else {
+        return Err(invalid("memory evidence source unavailable"));
+    };
+    let seq_i64 = i64::try_from(sequence).map_err(|_| invalid("source sequence overflow"))?;
+    let ord_i64 = i64::try_from(item_index).map_err(|_| invalid("source ordinal overflow"))?;
     let source: Option<(
         String,
         Option<i64>,
@@ -504,13 +509,8 @@ fn evidence_source(
         String,
     )> = c
         .query_row(
-            "SELECT d.body,d.body_ref_sequence,d.body_ref_start,d.body_ref_end,h.fact_id,d.at,s.configuration FROM agent_recall_messages d JOIN agent_session_history h ON h.owner=d.owner AND h.session=d.session AND h.sequence=d.sequence JOIN session_control s ON s.id=d.session WHERE d.owner=?1 AND d.session=?2 AND d.sequence=?3 AND d.ordinal=?4 AND d.internal=0 AND s.archived=0 AND NOT EXISTS(SELECT 1 FROM session_retirements WHERE session_id=d.session AND remove_session=1)",
-            params![
-                namespace,
-                session,
-                i64::try_from(sequence).map_err(|_| invalid("source sequence overflow"))?,
-                i64::try_from(item_index).map_err(|_| invalid("source ordinal overflow"))?
-            ],
+            "SELECT d.body,d.body_ref_sequence,d.body_ref_start,d.body_ref_end,h.fact_id,d.at,s.configuration FROM agent_recall_messages d JOIN agent_session_history h ON h.namespace_id=d.namespace_id AND h.sequence=d.sequence JOIN session_control s ON s.id=?2 WHERE d.namespace_id=?1 AND d.sequence=?3 AND d.ordinal=?4 AND d.internal=0 AND s.archived=0 AND NOT EXISTS(SELECT 1 FROM session_retirements WHERE session_id=?2 AND remove_session=1)",
+            params![ns_id, session, seq_i64, ord_i64],
             |r| {
                 Ok((
                     r.get(0)?,
@@ -530,7 +530,7 @@ fn evidence_source(
     };
     if let Some(ref_seq) = ref_seq {
         body = crate::recall::index::resolve_body_ref(
-            c, namespace, session, sequence, ref_seq, ref_start, ref_end,
+            c, ns_id, sequence, ref_seq, ref_start, ref_end,
         )?;
     }
     let configuration: serde_json::Value = serde_json::from_str(&configuration)?;
@@ -1097,18 +1097,23 @@ mod tests {
     #[test]
     fn evidence_is_verified_incremental_and_never_carried_to_a_correction() {
         let c = setup();
-        c.execute_batch("CREATE TABLE session_control(id TEXT PRIMARY KEY, configuration TEXT, archived INTEGER); CREATE TABLE session_retirements(session_id TEXT, remove_session INTEGER); CREATE TABLE agent_recall_messages(owner TEXT,session TEXT,sequence INTEGER,ordinal INTEGER,body TEXT,at INTEGER,internal INTEGER,body_ref_sequence INTEGER,body_ref_start INTEGER,body_ref_end INTEGER); CREATE TABLE agent_session_history(owner TEXT,session TEXT,sequence INTEGER,fact_id TEXT);").unwrap();
+        c.execute_batch("CREATE TABLE session_control(id TEXT PRIMARY KEY, configuration TEXT, archived INTEGER); CREATE TABLE session_retirements(session_id TEXT, remove_session INTEGER); CREATE TABLE agent_namespaces(id INTEGER PRIMARY KEY, owner TEXT NOT NULL, session TEXT NOT NULL, UNIQUE(owner, session)); CREATE TABLE agent_recall_messages(namespace_id INTEGER,sequence INTEGER,ordinal INTEGER,body TEXT,at INTEGER,internal INTEGER,body_ref_sequence INTEGER,body_ref_start INTEGER,body_ref_end INTEGER); CREATE TABLE agent_session_history(namespace_id INTEGER,sequence INTEGER,fact_id TEXT);").unwrap();
         let text = "Prefer 中文";
         let fact = uuid::Uuid::new_v4();
         c.execute("INSERT INTO session_control VALUES('s','{}',0)", [])
             .unwrap();
         c.execute(
-            "INSERT INTO agent_recall_messages(owner,session,sequence,ordinal,body,at,internal) VALUES('host/agent','s',1,0,?,100,0)",
+            "INSERT INTO agent_namespaces VALUES(1,'host/agent','s')",
+            [],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO agent_recall_messages(namespace_id,sequence,ordinal,body,at,internal) VALUES(1,1,0,?,100,0)",
             [text],
         )
         .unwrap();
         c.execute(
-            "INSERT INTO agent_session_history VALUES('host/agent','s',1,?)",
+            "INSERT INTO agent_session_history VALUES(1,1,?)",
             [fact.to_string()],
         )
         .unwrap();

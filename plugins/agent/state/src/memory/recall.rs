@@ -82,7 +82,8 @@ SELECT k.seq,k.scope,k.id,m.revision,m.assertion,v.body,m.modified_at,v.metadata
   FROM (SELECT source FROM agent_memory_evidence WHERE namespace=k.namespace AND scope=k.scope AND id=k.id AND assertion=m.assertion
         ORDER BY sequence LIMIT 5) e
   LEFT JOIN session_control s ON s.id=e.source->>'$.reference.sessionId'
-  LEFT JOIN agent_session_history h ON h.owner=m.namespace AND h.session=s.id AND h.sequence=e.source->>'$.reference.sequence')
+  LEFT JOIN agent_namespaces ns ON ns.owner=m.namespace AND ns.session=s.id
+  LEFT JOIN agent_session_history h ON h.namespace_id=ns.id AND h.sequence=e.source->>'$.reference.sequence')
 FROM hits f CROSS JOIN agent_memory_recall_keys k ON k.seq=f.seq
  CROSS JOIN agent_memories m USING(namespace,scope,id)
  CROSS JOIN agent_memory_versions v ON v.namespace=m.namespace AND v.scope=m.scope AND v.id=m.id AND v.revision=m.assertion
@@ -437,9 +438,11 @@ impl Query for RestrictedArchives {
                 OR EXISTS(SELECT 1 FROM agent_memory_snapshot_outputs WHERE snapshot=?3 AND fact=input.value)
                 FROM json_each(?2) AS input)
              SELECT fact,direct FROM sources WHERE direct OR EXISTS(
-                SELECT 1 FROM agent_session_history call CROSS JOIN agent_session_history result
-                WHERE call.owner=?1 AND call.fact_id=sources.fact AND call.tool_start=1
-                  AND result.owner=call.owner AND result.session=call.session AND result.run=call.run
+                SELECT 1 FROM agent_session_history call
+                CROSS JOIN agent_namespaces ns ON ns.id=call.namespace_id
+                CROSS JOIN agent_session_history result
+                WHERE ns.owner=?1 AND call.fact_id=sources.fact AND call.tool_start=1
+                  AND result.namespace_id=call.namespace_id AND result.run=call.run
                   AND result.tool_use_id=call.tool_use_id
                   AND (result.result_source=1 OR result.kind='operation_observed' OR (result.kind='external_effect' AND result.tool_start=0))
                   AND EXISTS(",
@@ -710,7 +713,7 @@ mod tests {
         migrate(&db, 50);
         db.execute_batch("INSERT INTO contents VALUES(1,'spec',x'7b7d'); INSERT INTO agent_run_specs VALUES('run',1,'owner','chat',1);").unwrap();
 
-        let record = |db: &Connection, n: i64, target: &str| {
+        let record = |db: &Connection, n: i64, target: &str, legacy: bool| {
             let next = ReadInput {
                 path: target.into(),
                 offset: None,
@@ -743,15 +746,21 @@ mod tests {
                     params![seq, fact, seq + 1],
                 )
                 .unwrap();
-                db.execute("INSERT INTO agent_session_history(owner,session,sequence,run,admission_sequence,kind,prefix_digest,tool_use_id,tool_start,opening_message,fact_id,result_source)
-                    VALUES('owner','chat',?1,'run',1,?2,'prefix',?3,?4,0,?5,?6)",params![seq,kind,n.to_string(),is_call,fact,!is_call]).unwrap();
+                if legacy {
+                    db.execute("INSERT INTO agent_session_history(owner,session,sequence,run,admission_sequence,kind,prefix_digest,tool_use_id,tool_start,opening_message,fact_id,result_source)
+                        VALUES('owner','chat',?1,'run',1,?2,'prefix',?3,?4,0,?5,?6)",params![seq,kind,n.to_string(),is_call,fact,!is_call]).unwrap();
+                } else {
+                    let ns_id = crate::namespace::ensure_id(db, "owner", "chat").unwrap();
+                    db.execute("INSERT INTO agent_session_history(namespace_id,sequence,run,admission_sequence,kind,prefix_digest,tool_use_id,tool_start,opening_message,fact_id,result_source)
+                        VALUES(?1,?2,'run',1,?3,'prefix',?4,?5,0,?6,?7)",params![ns_id,seq,kind,n.to_string(),is_call,fact,!is_call]).unwrap();
+                }
             }
         };
-        record(&db, 1, "notes.txt");
-        record(&db, 3, "session:sample");
+        record(&db, 1, "notes.txt", true);
+        record(&db, 3, "session:sample", true);
         migrate(&db, 51);
-        record(&db, 5, "notes.txt");
-        record(&db, 7, "attachment:photo");
+        record(&db, 5, "notes.txt", true);
+        record(&db, 7, "attachment:photo", true);
         db.execute_batch(
             "INSERT INTO session_control(id,fingerprint,revision,created_at,updated_at,archived,configuration)
              VALUES('chat','test',1,0,0,0,'{}'),('other','test',1,0,0,0,'{}');
@@ -799,7 +808,8 @@ mod tests {
         migrate(&db, i64::MAX);
         db.execute_batch(
             "INSERT INTO contents VALUES(1,'spec',x'7b7d');
-            INSERT INTO agent_run_specs(run,schema_version,owner,session,spec_content_id) VALUES('run',1,'owner','chat',1);",
+            INSERT INTO agent_run_specs(run,schema_version,owner,session,spec_content_id) VALUES('run',1,'owner','chat',1);
+            INSERT INTO agent_namespaces(id,owner,session) VALUES(1,'owner','chat');",
         )
         .unwrap();
         let notification = |n: i64, cell: &str| {
@@ -815,8 +825,8 @@ mod tests {
             .unwrap();
             db.execute("INSERT INTO agent_facts(sequence,id,run,revision,schema_version,at,body_content_id)
                 VALUES(?1,?2,'run',?1,1,1,?3)",params![n,id,n+1]).unwrap();
-            db.execute("INSERT INTO agent_session_history(owner,session,sequence,run,admission_sequence,kind,prefix_digest,tool_start,opening_message,fact_id,result_source)
-                VALUES('owner','chat',?1,'run',1,'cell','prefix',0,0,?2,0)",params![n,id]).unwrap();
+            db.execute("INSERT INTO agent_session_history(namespace_id,sequence,run,admission_sequence,kind,prefix_digest,tool_start,opening_message,fact_id,result_source)
+                VALUES(1,?1,'run',1,'cell','prefix',0,0,?2,0)",params![n,id]).unwrap();
         };
         notification(1, "one");
         notification(2, "one");
@@ -829,8 +839,8 @@ mod tests {
             INSERT INTO contents VALUES(1000,'wait-result',CAST('{"body":{"isError":false,"output":{"format":"cell","value":{"cell":"one"}}}}' AS BLOB)),
                                        (1001,'wait-fact',CAST('{"fact":{"result":{"digest":"wait-result"}}}' AS BLOB));
             INSERT INTO agent_facts VALUES(1000,'wait','reader-run',1,1,1,1001);
-            INSERT INTO agent_session_history(owner,session,sequence,run,admission_sequence,kind,prefix_digest,tool_start,opening_message,fact_id,result_source)
-            VALUES('owner','chat',1000,'reader-run',1000,'local_tool_returned','prefix',0,0,'wait',1);"#).unwrap();
+            INSERT INTO agent_session_history(namespace_id,sequence,run,admission_sequence,kind,prefix_digest,tool_start,opening_message,fact_id,result_source)
+            VALUES(1,1000,'reader-run',1000,'local_tool_returned','prefix',0,0,'wait',1);"#).unwrap();
         let restricted = || {
             db.query_row(
                 "SELECT count(*) FROM agent_memory_recall_outputs
@@ -855,8 +865,8 @@ mod tests {
         assert_eq!(restricted(), 0);
 
         let page_cost = |last: i64| {
-            let mut stmt = db.prepare("SELECT count(*) FROM agent_session_history h WHERE h.sequence BETWEEN ?1 AND ?2
-                AND EXISTS(SELECT 1 FROM agent_memory_recall_outputs r WHERE r.owner=h.owner AND r.fact=h.fact_id)").unwrap();
+            let mut stmt = db.prepare("SELECT count(*) FROM agent_session_history h JOIN agent_namespaces ns ON ns.id=h.namespace_id WHERE h.sequence BETWEEN ?1 AND ?2
+                AND EXISTS(SELECT 1 FROM agent_memory_recall_outputs r WHERE r.owner=ns.owner AND r.fact=h.fact_id)").unwrap();
             assert_eq!(
                 stmt.query_row(params![last - 15, last], |r| r.get::<_, i64>(0))
                     .unwrap(),
