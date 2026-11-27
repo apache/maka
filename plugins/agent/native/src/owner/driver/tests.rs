@@ -5717,6 +5717,149 @@ mod model_recovery {
         delegated_notifications("stop", Waits::Permission).await;
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn steered_delegated_task_notifies_once_per_run() {
+        use maka_agent_facts::interaction::{InteractionOutcome, InteractionRecord};
+        use maka_agent_state::queue::MessageResolution;
+        let mut rig = Rig::new().unwrap();
+        let mut server = MockAiBuilder::new().interactive(4).start().await.unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(90), async {
+            let base = rig.directory.path().to_path_buf();
+            let boot = bootstrap_with(&base, server.base_url(), |c| {
+                c["todo"] = json!(false);
+            })
+            .await?;
+            rig.attach_host(root(&base, false).await?, boot.deployment, boot.gateway, true, None)
+                .await?;
+            let client = rig.client.as_ref().unwrap();
+            let catalog = call(client, "settings", "connections", json!({"kind":"start"})).await?;
+            let connection = call(client, "settings", "create", json!({
+                "expectedCatalogRevision": catalog["revision"],
+                "connection": {
+                    "slug": "dedup", "name": "dedup",
+                    "provider": {"packageId":"maka.providers","entryId":"maka.providers","scope":"profile","name":"ollama"},
+                    "configuration": {"baseUrl": boot.base_url}, "enabled": true, "enabledModelIds": ["llama3.2"],
+                    "modelOverrides": {"llama3.2": {"codeMode": false, "apiProtocol": "openai-chat-completions"}}
+                }
+            })).await?;
+            let backend = json!({"kind":"model","connectionId":connection["connection"]["connectionId"],"modelId":"llama3.2"});
+            let mut sessions = Vec::new();
+            for title in ["Caller", "Worker"] {
+                let created = call(client, "agent", "create", json!({
+                    "title": title, "automaticTitle": false, "labels": [], "tools": [],
+                    "workspace": {"kind":"directory","path": base.join("workspace")}
+                })).await?;
+                sessions.push(created["session"]["id"].as_str().ok_or("session missing")?.to_owned());
+            }
+            let (caller, worker) = (&sessions[0], &sessions[1]);
+
+            // Turn A dispatches primary task and completes normally.
+            let turn_a = call(client, "agent", "send", json!({"sessionId":caller,"message":"Turn A","backend":backend})).await?;
+            let caller_a = server.next_turn().await.ok_or("caller A turn missing")?;
+            let owner = rig.captured.lock().unwrap().clone().unwrap();
+            let primary = bot_tools::agent_call(&owner, caller, "send", json!({
+                "sessionId": worker, "message": "Initial task.", "backend": backend, "onComplete": "notify_caller"
+            })).await?;
+            let primary_msg = primary["messageId"].as_str().ok_or("primary messageId")?.to_owned();
+            let worker_turn_1 = server.next_turn().await.ok_or("worker turn 1 missing")?;
+            caller_a.reply_text_with_usage("Dispatched.", Usage::new(10, 5));
+            quiescent_message(client, caller, &turn_a["messageId"]).await?;
+
+            // Turn B steers the still-running worker Run; verify both land in the same Run.
+            call(client, "agent", "send", json!({"sessionId":caller,"message":"Turn B","backend":backend})).await?;
+            let caller_b = server.next_turn().await.ok_or("caller B turn missing")?;
+            let caller_b_run = owner.durable.latest_run(caller.clone()).await?.ok_or("caller B run missing")?;
+            let steered = bot_tools::agent_call(&owner, caller, "send", json!({
+                "sessionId": worker, "message": "Steer.", "backend": backend, "delivery": "steer", "onComplete": "notify_caller"
+            })).await?;
+            let steer_msg = steered["messageId"].as_str().ok_or("steer messageId")?.to_owned();
+            worker_turn_1.reply_text_with_usage("Acknowledged.", Usage::new(10, 5));
+            let worker_turn_2 = server.next_turn().await.ok_or("worker turn 2 missing")?;
+            let (
+                MessageResolution::Delivered { run: run1, shared: false },
+                MessageResolution::Delivered { run: steer_run, shared: true },
+            ) = (
+                owner.durable.queue().resolve_message(worker.clone(), primary_msg.clone()).await?,
+                owner.durable.queue().resolve_message(worker.clone(), steer_msg).await?,
+            ) else {
+                return Err("expected primary and steer in the same Run".into());
+            };
+            assert_eq!(run1, steer_run);
+
+            // Live Turn B must immediately receive ONE steered Attention notice citing primary_msg.
+            let worker_access = owner.runs.state().await.controls.get(worker)
+                .and_then(|c| c.access.upgrade()).ok_or("worker access missing")?;
+            let view = owner.durable.frontier(run1).await?;
+            let t0 = now();
+            owner.durable.interactions().establish(
+                worker_access.claim(), (&view).into(),
+                InteractionRecord {
+                    execution: worker_access.execution().clone(), request_id: "steer-question".into(), created_at: t0,
+                    request: serde_json::from_value(json!({"kind":"question","toolUseId":"steer-q-tool",
+                        "questions":[{"question":"Continue?","options":[{"label":"Yes"},{"label":"No"}]}]}))?,
+                    outcome: None,
+                }, None, vec![],
+            ).await?;
+            owner.deliver_completions_at(t0).await?;
+            caller_b.reply_text_with_usage("Watching.", Usage::new(10, 5));
+            let caller_b_steered = server.next_turn().await.ok_or("live Turn B did not receive attention")?;
+            assert_eq!(owner.durable.latest_run(caller.clone()).await?, Some(caller_b_run));
+            let last_user = |body: &Value| -> String {
+                body["messages"].as_array().unwrap().iter().rev()
+                    .find(|m| m["role"] == "user").unwrap().to_string()
+            };
+            let attention_text = last_user(caller_b_steered.body());
+            assert!(attention_text.contains("steer-question") && attention_text.contains(&primary_msg), "{attention_text}");
+
+            // Answer question and finish Run 1 while Turn B is live; Turn B receives ONE steered
+            // completion notice citing primary_msg and both watches settle together.
+            owner.durable.interactions().commit_outcome(worker, "steer-question",
+                InteractionOutcome::QuestionAnswer { answers: vec![Some("Yes".into())], committed_at: now() }).await?;
+            worker_turn_2.reply_text_with_usage("Run 1 done.", Usage::new(20, 10));
+            completed_message(client, worker, &primary["messageId"]).await?;
+            owner.deliver_completions().await?;
+            assert!(owner.store.message_completions(&owner.prefix, None).await?.is_empty());
+            caller_b_steered.reply_text_with_usage("Answered.", Usage::new(5, 5));
+            let r1_notice = server.next_turn().await.ok_or("live Turn B did not receive Run 1 completion")?;
+            assert_eq!(owner.durable.latest_run(caller.clone()).await?, Some(caller_b_run));
+            let r1_text = last_user(r1_notice.body());
+            assert!(r1_text.contains("Run 1 done.") && r1_text.contains(&primary_msg), "{r1_text}");
+
+            // A second Run on the same worker must still emit its own completion notice.
+            let second = bot_tools::agent_call(&owner, caller, "send", json!({
+                "sessionId": worker, "message": "Second task.", "backend": backend, "onComplete": "notify_caller"
+            })).await?;
+            let second_msg = second["messageId"].as_str().ok_or("second messageId")?.to_owned();
+            let Trigger::Message { message_id: b_caller_msg } = owner.durable.frontier(caller_b_run).await?.spec.trigger else {
+                return Err("missing caller B trigger".into());
+            };
+            r1_notice.reply_text_with_usage("Handled Run 1.", Usage::new(10, 5));
+            quiescent_message(client, caller, &json!(b_caller_msg)).await?;
+
+            let worker_run2 = server.next_turn().await.ok_or("worker run 2 turn missing")?;
+            worker_run2.reply_text_with_usage("Run 2 done.", Usage::new(20, 10));
+            completed_message(client, worker, &second["messageId"]).await?;
+            owner.deliver_completions().await?;
+            let r2_notice = server.next_turn().await.ok_or("Run 2 completion missing")?;
+            let r2_text = last_user(r2_notice.body());
+            assert!(r2_text.contains("Run 2 done.") && r2_text.contains(&second_msg), "{r2_text}");
+            let r2_run = owner.durable.latest_run(caller.clone()).await?.ok_or("r2 caller run missing")?;
+            let Trigger::Message { message_id: r2_caller_msg } = owner.durable.frontier(r2_run).await?.spec.trigger else {
+                return Err("missing r2 trigger".into());
+            };
+            r2_notice.reply_text_with_usage("Handled Run 2.", Usage::new(10, 5));
+            quiescent_message(client, caller, &json!(r2_caller_msg)).await?;
+            assert!(owner.store.message_completions(&owner.prefix, None).await?.is_empty());
+            assert_eq!(call(client, "agent", "queue", json!({"sessionId": caller})).await?["entries"], json!([]));
+            Ok::<_, Box<dyn Error + Send + Sync>>(())
+        })
+        .await;
+        server.shutdown().await;
+        let cleanup = rig.finish().await;
+        assert!(cleanup.is_empty(), "{cleanup:?}");
+        result.expect("steered completion test timed out").unwrap();
+    }
+
     /// What the delegated task waits on after it asks its caller.
     #[derive(Clone, Copy, PartialEq)]
     enum Waits {
@@ -7194,11 +7337,26 @@ async fn stop_cancels_an_unconsumed_completion_notice() {
         request["workspace"] = json!(route.workspace);
         request["binding"] = json!(route.binding);
         let worker = format!("{}missing-worker", owner.prefix);
-        owner
-            .store
-            .register_message_completion(&owner.prefix, &worker, "task", &session, request)
-            .await?;
+        for message in ["00-steer", "task"] {
+            owner
+                .store
+                .register_message_completion(
+                    &owner.prefix,
+                    &worker,
+                    message,
+                    &session,
+                    request.clone(),
+                )
+                .await?;
+        }
         owner.deliver_completions().await?;
+        assert!(
+            owner
+                .store
+                .message_completions(&owner.prefix, None)
+                .await?
+                .is_empty()
+        );
         let queue = owner.durable.queue();
         let pending = queue.steering(session.clone(), source.run_id).await?;
         let [notice] = pending.entries.as_slice() else {
@@ -7238,6 +7396,117 @@ async fn stop_cancels_an_unconsumed_completion_notice() {
                 maka_agent_state::queue::MessageResolution::Cancelled
             );
         }
+        Ok(())
+    }
+    .await;
+    let cleanup = rig.finish().await;
+    assert!(cleanup.is_empty(), "{cleanup:?}");
+    result.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cross_turn_user_stop_holds_completion_notices() {
+    use maka_agent_state::queue::Placement;
+    let mut rig = Rig::new().unwrap();
+    let result: TestResult<()> = async {
+        let session = rig.start().await?;
+        rig.assemble(&session).await?;
+        let owner = rig.captured.lock().unwrap().clone().unwrap();
+        let _producer = owner.producer_gate.lock().await;
+        let source_a = rig.driver.as_ref().unwrap().access.execution().clone();
+        let route = owner.return_route(&source_a).await?;
+        rig.append(
+            vec![Fact::RunTerminated {
+                terminal: Terminal::Completed,
+                diagnostic: None,
+            }],
+            vec![],
+        )
+        .await?;
+        let view_a = owner.durable.frontier(source_a.run_id).await?;
+        let mut spec_b = view_a.spec.clone();
+        spec_b.turn_id = Uuid::new_v4().to_string();
+        spec_b.trigger = Trigger::Message {
+            message_id: Uuid::new_v4().to_string(),
+        };
+        let admission_b = maka_agent_state::Admission::new(spec_b.clone(), at(), vec![]);
+        let run_b = admission_b.run();
+        owner.durable.admit(admission_b).await?;
+        let source_b = maka_agent_facts::durable::ExecutionIdentity {
+            session_id: session.clone(),
+            turn_id: spec_b.turn_id,
+            run_id: run_b,
+        };
+        let make_req = |src: &maka_agent_facts::durable::ExecutionIdentity| -> TestResult<Value> {
+            let mut req = serde_json::to_value(&route.backend)?;
+            req["source"] = json!(src);
+            req["workspace"] = json!(route.workspace);
+            req["binding"] = json!(route.binding);
+            Ok(req)
+        };
+        let queue = owner.durable.queue();
+
+        // An already-queued Completion { caller: A } is moved to Held when user stops B,
+        // and a subsequent completion arriving after the user Stop also lands in Held.
+        let worker_pre = format!("{}missing-pre", owner.prefix);
+        owner
+            .store
+            .register_message_completion(
+                &owner.prefix,
+                &worker_pre,
+                "a-pre",
+                &session,
+                make_req(&source_a)?,
+            )
+            .await?;
+        owner.deliver_completions().await?;
+        owner
+            .store
+            .data_writer()?
+            .write(owner.durable.stop_run_statement(
+                run_b,
+                FactId::new(),
+                at(),
+                maka_agent_facts::durable::StopRequester::User,
+            ))
+            .await?;
+        let worker_2 = format!("{}missing-2", owner.prefix);
+        owner
+            .store
+            .register_message_completion(
+                &owner.prefix,
+                &worker_2,
+                "a-2",
+                &session,
+                make_req(&source_a)?,
+            )
+            .await?;
+        owner
+            .store
+            .register_message_completion(
+                &owner.prefix,
+                &worker_2,
+                "b-2",
+                &session,
+                make_req(&source_b)?,
+            )
+            .await?;
+        owner.deliver_completions().await?;
+        assert!(
+            owner
+                .store
+                .message_completions(&owner.prefix, None)
+                .await?
+                .is_empty()
+        );
+        let held_entries = queue.read(session.clone()).await?;
+        assert_eq!(held_entries.entries.len(), 2);
+        assert!(
+            held_entries
+                .entries
+                .iter()
+                .all(|e| e.placement == Placement::Held)
+        );
         Ok(())
     }
     .await;

@@ -263,7 +263,7 @@ fn has_held(c: &Connection, session: &str) -> Result<bool, StoreError> {
     .query_row([session], |row| row.get(0))?)
 }
 /// From a user Stop until the Session's next Run, what others send waits.
-fn holding(c: &Connection, session: &str) -> Result<bool, StoreError> {
+pub(super) fn holding(c: &Connection, session: &str) -> Result<bool, StoreError> {
     Ok(has_held(c, session)?
         || match crate::sql::latest(c, session.to_owned())? {
             Some(run) => stopped_by_user(c, run)?,
@@ -666,7 +666,6 @@ pub(super) fn write(
 pub(crate) fn stop_queue(
     c: &Connection,
     session: &str,
-    run: RunId,
     stop: &Change,
     requester: &StopRequester,
 ) -> Result<(), StoreError> {
@@ -696,15 +695,13 @@ pub(crate) fn stop_queue(
             expected_revision = commit.revision;
             continue;
         }
-        // The stopped turn's own continuation is taken back with the Stop.
+        // Hold any pending worker completion across a user Stop (even if owned by an earlier
+        // finished turn); only the stopped turn's own recovery continuation is taken back.
         let keep = match entry.placement {
-            Placement::Completion { caller } => {
-                caller == run
-                    && matches!(
-                        source.message.origin,
-                        Some(MessageOrigin::SessionCompletion { .. })
-                    )
-            }
+            Placement::Completion { .. } => matches!(
+                source.message.origin,
+                Some(MessageOrigin::SessionCompletion { .. })
+            ),
             Placement::Held => false,
             Placement::Followup | Placement::Steering { .. } => true,
         };
