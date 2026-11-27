@@ -217,7 +217,7 @@ export function StageFloatingComposer(props: {
 
       <If when={!minimized() && (props.session()?.quotes().length ?? 0) > 0}>
         <View style={{ paddingHorizontal: 12, paddingTop: 8 }}>
-          <DraftQuotes owner={props.session()!} />
+          <DraftQuotes owner={props.session()!} focusEditor={() => followupInput?.focus()} />
         </View>
       </If>
 

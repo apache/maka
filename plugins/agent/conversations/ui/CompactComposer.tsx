@@ -35,6 +35,7 @@ export function CompactComposer(props: {
   chooseModel(): void;
   attach(node: InputRef): void;
 }) {
+  let editor: InputRef;
   const running = () => (props.session()?.run() ?? null) !== null;
   const unavailable = () => props.session()?.modelDetails().kind === 'unavailable';
   const failure = () => {
@@ -62,7 +63,10 @@ export function CompactComposer(props: {
   return (
     <View>
       <CompactInputBar
-        attach={props.attach}
+        attach={(node) => {
+          editor = node;
+          props.attach(node);
+        }}
         label={tr('Ask Maka')}
         placeholder={props.session()?.empty() === false ? tr('Ask a follow-up') : tr('Ask Maka')}
         value={props.session()?.draft() ?? ''}
@@ -72,7 +76,7 @@ export function CompactComposer(props: {
         extra={
           <>
             <If when={props.session() !== null}>
-              <DraftQuotes owner={props.session()!} />
+              <DraftQuotes owner={props.session()!} focusEditor={() => editor.focus()} />
             </If>
             <If when={(props.session()?.attachments.files().length ?? 0) > 0}>
               <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>

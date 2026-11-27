@@ -486,6 +486,7 @@ export function SideComposer(props: {
   stop(): void;
   attach(node: InputRef): void;
 }) {
+  let editor: InputRef;
   const running = () => (props.session()?.run() ?? null) !== null;
   const failure = () => {
     const session = props.session();
@@ -514,11 +515,14 @@ export function SideComposer(props: {
     <View style={{ borderTopWidth: 1, borderTopColor: C.line, backgroundColor: C.panel }}>
       <If when={(props.session()?.quotes().length ?? 0) > 0}>
         <View style={{ paddingHorizontal: INSET, paddingTop: 10 }}>
-          <DraftQuotes owner={props.session()!} />
+          <DraftQuotes owner={props.session()!} focusEditor={() => editor.focus()} />
         </View>
       </If>
       <InputRow
-        attach={props.attach}
+        attach={(node) => {
+          editor = node;
+          props.attach(node);
+        }}
         label={tr('Ask in the side question')}
         placeholder={tr('Ask a follow-up')}
         value={props.session()?.draft() ?? ''}

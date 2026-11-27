@@ -802,7 +802,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                   >
                     <If when={owner !== null}>
                       <DraftAttachments draft={owner!.attachments} preview={owner!.previewImage} />
-                      <DraftQuotes owner={owner!} />
+                      <DraftQuotes owner={owner!} focusEditor={focusEditor} />
                     </If>
                     <If when={local !== null}>
                       <StagedAttachments
