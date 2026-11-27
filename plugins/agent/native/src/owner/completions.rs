@@ -68,8 +68,9 @@ fn excerpt(text: &str) -> Option<String> {
 }
 enum Notice<'a> {
     Finished {
+        /// `Some` once the watched message ran; `None` only if cancelled before starting a Run.
+        run: Option<RunId>,
         terminal: Terminal,
-        result: RunResult,
     },
     Unavailable,
     Attention {
@@ -78,19 +79,35 @@ enum Notice<'a> {
     },
 }
 impl Notice<'_> {
+    /// Scoped per worker Run (rather than per `SessionSend` message) once a message has
+    /// landed in a Run, so steering an active worker never fans out duplicate notifications.
     fn identity(&self, task: &Completion) -> String {
-        let mut key = format!("session-completion/{}/{}", task.session_id, task.message_id);
-        if let Self::Attention { run, reason } = self {
-            let cause = match reason {
-                NotificationAttention::Interaction { request } => format!("interaction/{request}"),
-                NotificationAttention::Authority { blocker } => format!("authority/{blocker}"),
-            };
-            key.push_str(&format!("/{run}/{cause}"));
-        }
+        let key = match self {
+            Self::Finished { run: Some(run), .. } => {
+                format!("session-completion/{}/{run}", task.session_id)
+            }
+            Self::Finished { run: None, .. } => {
+                format!("session-completion/{}/{}", task.session_id, task.message_id)
+            }
+            Self::Unavailable => {
+                format!("session-completion/{}/unavailable", task.session_id)
+            }
+            Self::Attention { run, reason } => {
+                let cause = match reason {
+                    NotificationAttention::Interaction { request } => {
+                        format!("interaction/{request}")
+                    }
+                    NotificationAttention::Authority { blocker } => {
+                        format!("authority/{blocker}")
+                    }
+                };
+                format!("session-completion/{}/{run}/{cause}", task.session_id)
+            }
+        };
         hex::encode(Sha256::digest(key.as_bytes()))[..32].to_owned()
     }
 
-    fn message(&self, task: &Completion, language: Language) -> String {
+    fn message(&self, task: &Completion, result: &RunResult, language: Language) -> String {
         let session_read = format!(
             "SessionRead({})",
             serde_json::json!({"sessionId": task.session_id})
@@ -100,7 +117,7 @@ impl Notice<'_> {
             serde_json::json!({"path": format!("maka://session/{}", task.session_id)})
         );
         let (status, inline_result) = match self {
-            Self::Finished { terminal, result } => (
+            Self::Finished { terminal, .. } => (
                 match terminal {
                     Terminal::Completed => "completed",
                     Terminal::Failed => "failed",
@@ -477,6 +494,23 @@ impl Owner {
                 .notification_states(self.run_owner(), runs)
                 .await
                 .map_err(|error| error.to_string())?;
+            // Prefer already-frozen entries, primary (non-steered) messages, and completed
+            // callers so run-scoped deduplication preserves the primary messageId and a
+            // non-stoppable caller when multiple watches land in the same worker Run.
+            pending.sort_by(|(a_entry, a_req, a_res), (b_entry, b_req, b_res)| {
+                let rank = |entry: &Completion,
+                            req: &CompletionRequest,
+                            res: &MessageResolution| {
+                    let shared = matches!(res, MessageResolution::Delivered { shared: true, .. });
+                    let source_live = states
+                        .get(&req.source.run_id)
+                        .is_some_and(|state| state.terminal.is_none());
+                    (entry.notification.is_none(), shared, source_live)
+                };
+                rank(a_entry, a_req, a_res)
+                    .cmp(&rank(b_entry, b_req, b_res))
+                    .then_with(|| a_entry.key.cmp(&b_entry.key))
+            });
             for (entry, request, resolution) in pending {
                 // One invalid route must not prevent unrelated callers from receiving results.
                 if let Err(error) = self
@@ -548,8 +582,8 @@ impl Owner {
             } else {
                 match resolution {
                     MessageResolution::Cancelled => Notice::Finished {
+                        run: None,
                         terminal: Terminal::Cancelled,
-                        result: RunResult::default(),
                     },
                     MessageResolution::Delivered { run, .. } => {
                         let state = states
@@ -573,10 +607,8 @@ impl Owner {
                                     return Ok(());
                                 }
                                 Notice::Finished {
+                                    run: Some(run),
                                     terminal: terminal.clone(),
-                                    result: self
-                                        .run_result(&entry.session_id, run, terminal, true)
-                                        .await,
                                 }
                             }
                             (None, Some(reason)) if !state.stopped => {
@@ -611,38 +643,63 @@ impl Owner {
                 }
                 return Ok(());
             }
-            let route = self
-                .resolve_notification_route(
-                    request.backend,
-                    &request.source.session_id,
-                    request.workspace,
-                    request.binding,
-                )
-                .await?;
-            let Some(notification) = self
-                .prepare_notification_checked(
-                    &request.source.session_id,
-                    &route,
-                    &identity,
-                    |language| notice.message(&entry, language),
-                    MessageOrigin::SessionCompletion {
-                        session_id: entry.session_id.clone(),
-                        message_id: entry.message_id.clone(),
-                    },
-                    placement,
-                    None,
-                    UnixMillis(now as i64),
-                )
-                .await
-                .map_err(String::from)?
-            else {
-                return Ok(());
+            let notification = if !attention
+                && let Some(original) = self
+                    .durable
+                    .queue()
+                    .entry(
+                        request.source.session_id.clone(),
+                        maka_agent_state::queue::RequestId(identity.clone()),
+                    )
+                    .await
+                    .map_err(|error| error.to_string())?
+            {
+                original.request
+            } else {
+                let result = match &notice {
+                    Notice::Finished {
+                        run: Some(run),
+                        terminal,
+                    } => {
+                        self.run_result(&entry.session_id, *run, terminal, true)
+                            .await
+                    }
+                    _ => RunResult::default(),
+                };
+                let route = self
+                    .resolve_notification_route(
+                        request.backend,
+                        &request.source.session_id,
+                        request.workspace,
+                        request.binding,
+                    )
+                    .await?;
+                let Some(notification) = self
+                    .prepare_notification_checked(
+                        &request.source.session_id,
+                        &route,
+                        &identity,
+                        |language| notice.message(&entry, &result, language),
+                        MessageOrigin::SessionCompletion {
+                            session_id: entry.session_id.clone(),
+                            message_id: entry.message_id.clone(),
+                        },
+                        placement,
+                        None,
+                        UnixMillis(now as i64),
+                    )
+                    .await
+                    .map_err(String::from)?
+                else {
+                    return Ok(());
+                };
+                if attention {
+                    // Admission identity is the durable deduplication record; keep the completion watch.
+                    self.admit_notification(&notification).await?;
+                    return Ok(());
+                }
+                notification
             };
-            if attention {
-                // Admission identity is the durable deduplication record; keep the completion watch.
-                self.admit_notification(&notification).await?;
-                return Ok(());
-            }
             self.store
                 .settle_message_completion(
                     &self.prefix,
