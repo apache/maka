@@ -5087,21 +5087,23 @@ impl PacedBinds {
 /// the platform a transient size, which clamps the offset before the
 /// content grows back (a list jumping when a row expands).
 fn extend_frame(frame: &mut Vec<nsh_core::MountItem>, items: Vec<nsh_core::MountItem>) {
-    use nsh_core::MountItem;
-    let start = frame.len();
-    frame.extend(items);
-    for k in start..frame.len() {
-        let MountItem::ScrollContent { id, size } = frame[k] else {
-            continue;
-        };
-        let earlier = frame[..k].iter().rposition(|m| {
-            matches!(m, MountItem::ScrollContent { id: e, .. } | MountItem::ScrollBy { id: e, .. } if *e == id)
-        });
-        if let Some(j) = earlier
-            && let MountItem::ScrollContent { size: s, .. } = &mut frame[j]
-        {
-            *s = size;
+    use nsh_core::{Command, MountItem};
+    frame.reserve(items.len());
+    for item in items {
+        if let MountItem::ScrollContent { id, size } = item {
+            let earlier = frame.iter_mut().rev().find(|m| {
+                matches!(m,
+                    MountItem::ScrollContent { id: view, .. }
+                    | MountItem::ScrollBy { id: view, .. }
+                    | MountItem::Command { id: view, command: Command::ScrollTo { .. } }
+                    if *view == id)
+            });
+            if let Some(MountItem::ScrollContent { size: previous, .. }) = earlier {
+                *previous = size;
+                continue;
+            }
         }
+        frame.push(item);
     }
 }
 
@@ -5668,7 +5670,7 @@ mount(() => <View>
         };
         let mut frame = vec![content(Points(313.0))];
         super::extend_frame(&mut frame, vec![content(Points(544.0))]);
-        assert_eq!(heights(&frame), [544.0, 544.0]);
+        assert_eq!(heights(&frame), [544.0]);
         // A scroll in between keeps the size it scrolled against.
         let mut frame = vec![
             content(Points(313.0)),

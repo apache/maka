@@ -87,6 +87,49 @@ fn clipboard(surface: &TerminalSurface, expected: &str) {
     });
 }
 
+pub(super) fn scroll_to_keeps_its_offset_across_layout_rounds() {
+    let source = r#"
+import { Scroll, View, mount, signal } from "nsh";
+function App() {
+  const height = signal(18694);
+  let scroll;
+  return <Scroll style={{height: 410}} ref={node => { scroll = node; }}>
+    <View style={{height: height(), flexShrink: 0}} onLayout={({bounds}) => {
+      switch (bounds.size.height) {
+        case 18694:
+          height.set(18693);
+          scroll.scrollTo({y: 18283, animated: false});
+          break;
+        case 18693: height.set(18641); break;
+        case 18641: height.set(18695); break;
+        case 18695: height.set(18644); break;
+        case 18644: height.set(18697); break;
+      }
+    }}>
+      <View accessibilityLabel={height() === 18697 ? "Heading" : "Pending"} onPress={() => {}}
+        style={{position: "absolute", top: 18299, width: 120, height: 24}} />
+    </View>
+  </Scroll>;
+}
+mount(App);
+"#;
+    let code = nsh_bundler::compile_module("ScrollLayout.tsx", source, &[]).unwrap();
+    let surface = TerminalSurface::new(
+        EngineConfig::new(App::Js(Bundle::source(code))),
+        size(DevicePixels(320), DevicePixels(410)),
+        1.0,
+        Box::new(|_| {}),
+        Arc::new(|| {}),
+    )
+    .unwrap();
+    pump_until(&surface, || surface.pressable_bounds("Heading").len() == 1);
+    assert_eq!(
+        surface.pressable_bounds("Heading")[0].top(),
+        nsh_terminal::px(16.0)
+    );
+    surface.shutdown();
+}
+
 pub(super) fn scrolling_dismisses_hover_tooltip() {
     let source = r#"
 import { Clipboard, Scroll, Text, View, mount } from "nsh";
