@@ -201,6 +201,33 @@ test('a saved shape keeps the values in range, and the default radius draws corn
   assert.ok(look.unchanged(black));
 });
 
+test("a theme block fills from its preset, and the skill's example reads whole", async () => {
+  const block = look.readThemeBlock({
+    base: 'bauhaus',
+    cssVars: { light: { primary: '#0044CC', accent: '#ff0000' }, theme: { radius: 99 } },
+  });
+  assert.equal(block.look.cssVars.light.primary, '#0044cc');
+  assert.equal(
+    block.look.cssVars.light.background,
+    look.presetLooks.bauhaus.cssVars.light.background,
+  );
+  assert.equal(block.look.cssVars.theme.radius, 0);
+  assert.equal(block.ignored, 2);
+  assert.equal(look.readThemeBlock({ base: 'nope' }), null);
+  const { readFile } = await import('node:fs/promises');
+  const skill = await readFile(
+    new URL('../../../../skills/maka-theme/SKILL.md', import.meta.url),
+    'utf8',
+  );
+  const examples = [...skill.matchAll(/^```maka-theme\n([\s\S]*?)\n```$/gm)];
+  assert.ok(examples.length > 0);
+  for (const [, source] of examples) {
+    const example = look.readThemeBlock(JSON.parse(source));
+    assert.equal(example.ignored, 0);
+    assert.equal(look.hardToRead(example.look), false);
+  }
+});
+
 test('every preset reads in both appearances', () => {
   for (const id of look.lookIds)
     for (const mode of ['light', 'dark']) {

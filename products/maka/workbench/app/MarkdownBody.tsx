@@ -27,6 +27,7 @@ import { CodeBlockAction, codeBlockActions, codeBlockStyles } from './codeBlockL
 import { MermaidView } from './MermaidView';
 import { MarkdownImageView } from './MarkdownImage';
 import { SpecView, markdownExtensions } from './SpecView';
+import { ThemeCard } from './ThemeCard';
 import { SourceText } from './SourceText';
 import { tr } from './locale';
 import type { MessageSelection } from './messageSelection';
@@ -234,6 +235,8 @@ export function MarkdownBody(props: {
                           return (
                             <SourceChip source={() => marker.source} openLink={openSpecLink} />
                           );
+                        if (node.name === 'maka-theme')
+                          return <ThemeCard source={() => node.text ?? ''} />;
                         return node.name === 'spec' ? (
                           <SpecView
                             source={() => node.text ?? ''}

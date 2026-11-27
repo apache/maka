@@ -22,6 +22,7 @@ import { Button, ContextMenu, MenuItem, TextView } from 'nsh/base';
 import { MarkdownImageView } from './MarkdownImage';
 import { MermaidView } from './MermaidView';
 import { SpecView, markdownExtensions } from './SpecView';
+import { ThemeCard } from './ThemeCard';
 import type { BotTranscriptMessage } from './botTranscript';
 import { tr } from './locale';
 import { compactCopyInset, CompactReplyFooter, LocalMessageCopy } from './CompactReplyFooter';
@@ -107,7 +108,9 @@ export function BotReply(props: {
                                 })()}
                                 extensions={markdownExtensions}
                                 renderCustom={(node) =>
-                                  node.name === 'spec' ? (
+                                  node.name === 'maka-theme' ? (
+                                    <ThemeCard source={() => node.text ?? ''} />
+                                  ) : node.name === 'spec' ? (
                                     <SpecView
                                       source={() => node.text ?? ''}
                                       sessionId={props.sessionId}

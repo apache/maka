@@ -149,12 +149,13 @@ const darkLook = (look: Look | null) => {
 };
 /** Whether the interface is dark. */
 export const isDark = () => darkLook(appearance.look());
-/** The shape of `look` (null for the default look); terminals keep their own. */
-export function lookShape(look: () => Look | null) {
+/** The shape of `look` (null for the default look) in the appearance in effect, or the one
+ * `dark` names; terminals keep their own. */
+export function lookShape(look: () => Look | null, dark?: boolean) {
   const shaped = () => (platform.idiom === 'terminal' ? null : look());
   const shadowOf = (scale: number) => {
     const value = shaped();
-    return value ? lookShadow(value, colorScheme() !== 'light', scale) : null;
+    return value ? lookShadow(value, dark ?? colorScheme() !== 'light', scale) : null;
   };
   return {
     /** A corner of radius `n` in the default look, as this look draws it. */
@@ -200,8 +201,9 @@ const REGIONS = {
   floatingRaised: ['raised', 'pressed'],
 } satisfies Record<string, [Tone, Tone]>;
 type Colors = Record<Tone | keyof typeof REGIONS, string>;
-/** The colors of `look` (null for the default palette), read anew each time one is. */
-export function lookColors(look: () => Look | null): Colors {
+/** The colors of `look` (null for the default palette) in the appearance in effect, or the one
+ * `appearanceDark` names, read anew each time one is. */
+export function lookColors(look: () => Look | null, appearanceDark?: boolean): Colors {
   // The look's tokens and whether its background is dark, made once per look and appearance;
   // null for the default palette and in terminals.
   let made: { look: Look; dark: boolean; tokens: LookTokens; darkBackground: boolean } | null =
@@ -210,7 +212,7 @@ export function lookColors(look: () => Look | null): Colors {
     if (platform.idiom === 'terminal') return null;
     const value = look();
     if (!value) return null;
-    const dark = colorScheme() !== 'light';
+    const dark = appearanceDark ?? colorScheme() !== 'light';
     if (made?.look !== value || made.dark !== dark) {
       const picked = value.cssVars[dark ? 'dark' : 'light'];
       made = {
@@ -224,7 +226,8 @@ export function lookColors(look: () => Look | null): Colors {
   };
   // `darkLook` of the look, from what is made.
   const lookIsDark = () =>
-    platform.idiom === 'terminal' || (current()?.darkBackground ?? colorScheme() !== 'light');
+    platform.idiom === 'terminal' ||
+    (current()?.darkBackground ?? appearanceDark ?? colorScheme() !== 'light');
   const colors: Colors = Object.defineProperties({} as Colors, {
     ...Object.fromEntries(
       Object.keys(DARK).map((key) => [

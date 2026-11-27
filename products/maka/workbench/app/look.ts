@@ -309,6 +309,61 @@ export function readLook(value: unknown): Look | null {
   };
 }
 
+/** What a theme block, written by Maka in a reply or pasted, describes: its preset with the
+ * block's values over it, the values that are not valid left out and counted. */
+export type ThemeBlock = { look: Look; name: string | null; ignored: number };
+const blockName = 40;
+/** The theme `value` describes, or null when it is not an object naming a preset. */
+export function readThemeBlock(value: unknown): ThemeBlock | null {
+  const block = value as Record<string, unknown> | null;
+  if (!block || typeof block !== 'object' || !lookIds.includes(block.base as LookId)) return null;
+  const preset = presetLooks[block.base as LookId];
+  const vars = (block.cssVars ?? {}) as Record<string, unknown>;
+  const entries = (part: unknown) =>
+    part && typeof part === 'object' ? Object.entries(part as Record<string, unknown>) : [];
+  let ignored = 0;
+  const colors = (mode: 'light' | 'dark'): LookColors => {
+    const out: Record<string, string> = { ...preset.cssVars[mode] };
+    for (const [key, color] of entries(vars[mode])) {
+      const value = typeof color === 'string' ? color.toLowerCase() : color;
+      if ([...colorKeys, 'shadow-color'].includes(key as LookColor) && hex(value)) out[key] = value;
+      else ignored++;
+    }
+    return out as LookColors;
+  };
+  const theme: Record<string, unknown> = { ...preset.cssVars.theme };
+  for (const [key, value] of entries(vars.theme)) {
+    const limits = shapeLimits[key as ShapeKey];
+    if (key === 'font-sans' && typeof value === 'string' && value.trim()) theme[key] = value;
+    else if (limits && typeof value === 'number' && value >= limits[0] && value <= limits[1])
+      theme[key] = value;
+    else ignored++;
+  }
+  const name = typeof block.name === 'string' ? block.name.trim().slice(0, blockName) : '';
+  return {
+    look: {
+      base: preset.base,
+      cssVars: {
+        light: colors('light'),
+        dark: colors('dark'),
+        theme: theme as Look['cssVars']['theme'],
+      },
+    },
+    name: name || null,
+    ignored,
+  };
+}
+/** Whether a color picked in `look` reads below its minimum against the background, in either
+ * appearance: what the editor warns of. */
+export const hardToRead = (look: Look) =>
+  (['light', 'dark'] as const).some((mode) => {
+    const colors = look.cssVars[mode];
+    return Object.entries(minimumContrast).some(([key, minimum]) => {
+      const color = colors[key as LookColor];
+      return color !== undefined && contrast(color, colors.background) < minimum!;
+    });
+  });
+
 /** A corner of radius `n` at the default radius (8), as a look of radius `r` draws it: every
  * corner scales alike, a panel's no rounder than 24. */
 export const scaledRadius = (n: number, r: number) =>

@@ -19,7 +19,17 @@
 
 // Settings › General › Theme: a preset to start from, then each color, the shape and the
 // font, seen on a sample of a conversation while a value is dragged, then on the whole window.
-import { batch, colorScheme, computed, platform, signal, Text, View } from 'nsh';
+import {
+  batch,
+  cleanup,
+  Clipboard,
+  colorScheme,
+  computed,
+  platform,
+  signal,
+  Text,
+  View,
+} from 'nsh';
 import { Button, ColorArea, ColorField, ColorPicker, ColorSlider, Popover, Slider } from 'nsh/base';
 import { tr } from './locale';
 import { appearance, colorThemes } from './appearance';
@@ -38,6 +48,7 @@ import {
   pickedColors,
   presetLooks,
   readable,
+  readThemeBlock,
   sameLook,
   scaledRadius,
   shadowPresets,
@@ -49,6 +60,7 @@ import {
   type LookColor,
   type LookId,
   type LookShape,
+  type ThemeBlock,
   type ShapeKey,
 } from './look';
 import {
@@ -60,14 +72,13 @@ import {
   SettingsSelect,
   settingsGutter,
 } from './SettingsPage';
+import { Specimen } from './ThemeSpecimen';
 import {
   C,
   captionTextStyle,
   codeTextStyle,
   defaultColors,
   floatingStyle,
-  lookColors,
-  lookShape,
   lineWidth,
   radius,
   secondaryTextStyle,
@@ -309,6 +320,25 @@ function ThemeStatus() {
   const fixed = () => defaultColors(colorScheme() !== 'light');
   const look = () => appearance.shown();
   const modified = () => !unchanged(look());
+  // What the last copy or paste came to, shown in place of the look's name for a moment.
+  const outcome = signal<string | null>(null);
+  let outcomeTimer: ReturnType<typeof setTimeout> | undefined;
+  const report = (text: string) => {
+    clearTimeout(outcomeTimer);
+    outcome.set(text);
+    outcomeTimer = setTimeout(() => outcome.set(null), 2000);
+  };
+  cleanup(() => clearTimeout(outcomeTimer));
+  const copy = () =>
+    void Clipboard.writeText(JSON.stringify(look(), null, 2)).then(() => report(tr('Copied')));
+  const paste = async () => {
+    let block: ThemeBlock | null = null;
+    try {
+      block = readThemeBlock(JSON.parse(await Clipboard.readText()));
+    } catch {}
+    if (block) appearance.changeLook(block.look, true);
+    else report(tr('The clipboard holds no theme.'));
+  };
   const action = (label: string, onPress: () => void, disabled: () => boolean) => (
     <Button
       accessibilityLabel={label}
@@ -343,10 +373,17 @@ function ThemeStatus() {
       }}
     >
       <Text style={{ ...secondaryTextStyle, flex: 1, color: fixed().text }}>
-        {modified()
-          ? tr('Based on {preset} · Modified', { preset: lookLabel(look().base) })
-          : lookLabel(look().base)}
+        {outcome() ??
+          (modified()
+            ? tr('Based on {preset} · Modified', { preset: lookLabel(look().base) })
+            : lookLabel(look().base))}
       </Text>
+      {action(tr('Copy theme'), copy, () => false)}
+      {action(
+        tr('Paste theme'),
+        () => void paste(),
+        () => false,
+      )}
       {action(tr('Undo'), appearance.undo, () => !appearance.canUndo())}
       {action(
         tr('Restore preset'),
@@ -419,97 +456,6 @@ function PresetCard(props: { id: LookId }) {
         {lookLabel(props.id)}
       </Text>
     </Button>
-  );
-}
-
-/** A piece of a conversation in the colors in effect: what the settings page has none of.
- * `compact` keeps a bubble, a reply, code and the field: every color but the warning, and
- * every part of the shape. */
-function Specimen(props: { look(): Look | null; compact?: boolean }) {
-  const C = lookColors(props.look);
-  const { radius, lineWidth, letterSpacing, raisedShadow } = lookShape(props.look);
-  const line = (text: string, color: string, extra: object = {}) => (
-    <Text style={{ ...secondaryTextStyle, color, letterSpacing: letterSpacing(), ...extra }}>
-      {text}
-    </Text>
-  );
-  return (
-    <View style={{ padding: 12, gap: 10, backgroundColor: C.panel }}>
-      <View
-        style={{
-          alignSelf: 'flex-end',
-          maxWidth: '80%',
-          paddingHorizontal: 12,
-          paddingVertical: 8,
-          borderRadius: radius(12),
-          backgroundColor: C.card,
-          ...raisedShadow(),
-        }}
-      >
-        {line(tr('Can you check this function?'), C.text)}
-      </View>
-      <Text style={{ ...secondaryTextStyle, color: C.text, letterSpacing: letterSpacing() }}>
-        {tr('It returns early when the list is empty.')}{' '}
-        <Text style={{ color: C.accentText, textDecorationLine: 'underline' }}>
-          {tr('See the notes.')}
-        </Text>
-      </Text>
-      <If when={!props.compact}>{line(tr('Ran the tests · 12 passed'), C.muted)}</If>
-      <View style={{ borderRadius: radius(6), padding: 8, backgroundColor: C.card, gap: 2 }}>
-        <Text style={{ ...codeTextStyle, color: C.text, backgroundColor: C.removed }}>
-          {'- if (items.length == 0) return;'}
-        </Text>
-        <Text style={{ ...codeTextStyle, color: C.text, backgroundColor: C.added }}>
-          {'+ if (!items.length) return [];'}
-        </Text>
-      </View>
-      <If when={!props.compact}>{line(tr('Something needs your attention.'), C.warning)}</If>
-      <View
-        style={{ flexDirection: props.compact ? 'row' : 'column', gap: props.compact ? 8 : 10 }}
-      >
-        <View
-          style={{
-            flexGrow: props.compact ? 1 : 0,
-            minHeight: 32,
-            paddingHorizontal: 10,
-            justifyContent: 'center',
-            borderRadius: radius(8),
-            borderWidth: lineWidth(),
-            borderColor: C.line,
-            backgroundColor: C.background,
-            ...raisedShadow(),
-          }}
-        >
-          {line(tr('Write a reply…'), C.muted)}
-        </View>
-        <View style={{ flexDirection: 'row', gap: 8 }}>
-          <View
-            style={{
-              paddingHorizontal: 12,
-              paddingVertical: 6,
-              borderRadius: radius(8),
-              backgroundColor: C.accent,
-              ...raisedShadow(),
-            }}
-          >
-            {line(tr('Send'), C.onAccent, { fontWeight: '600' })}
-          </View>
-          <If when={!props.compact}>
-            <View
-              style={{
-                paddingHorizontal: 12,
-                paddingVertical: 6,
-                borderRadius: radius(8),
-                borderWidth: lineWidth(),
-                borderColor: C.line,
-              }}
-            >
-              {line(tr('Cancel'), C.text)}
-            </View>
-          </If>
-        </View>
-      </View>
-    </View>
   );
 }
 
