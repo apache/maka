@@ -229,6 +229,10 @@
       "plugins/agent/state/migrations/0058_simplify_memory_replay.sql": {
         "version": 58,
         "sha384": "1c902ea7390fbaef4429b1296e45831e3671199708814c9bc97f9293bca852fa330d1a34c0cf16b6066f1cd30d63eb34"
+      },
+      "plugins/agent/state/migrations/0059_drop_duplicate_indexes.sql": {
+        "version": 59,
+        "sha384": "220abd74c51acfa8dd0085d7ed28f37d6e8f20dc256eaede1ff0e69e788cc6caed747937a5da50066e26207cb58bf782"
       }
     },
     "checkpoint-repository": {

@@ -805,6 +805,25 @@ fn verify_sqlite_integrity_and_migrations(root: &Path) -> BTreeMap<String, Vec<i
                     "v55 must index every ended-unknown external observation on {rel}"
                 );
             }
+            if has_runs > 0 && versions.contains(&59) {
+                for dropped in [
+                    "agent_recall_message_order",
+                    "agent_recall_scope_runs",
+                    "agent_run_specs_history",
+                    "agent_interaction_requests_session",
+                    "agent_interaction_outcomes_session",
+                    "agent_continuation_successors_run",
+                ] {
+                    let exists: bool = conn
+                        .query_row(
+                            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='index' AND name=?)",
+                            [dropped],
+                            |row| row.get(0),
+                        )
+                        .unwrap();
+                    assert!(!exists, "v59 must drop duplicate index {dropped} on {rel}");
+                }
+            }
             ledgers.insert(rel, versions);
         }
     }
