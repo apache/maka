@@ -46,6 +46,7 @@ members = [
     "products/maka/ios-shell",
     "products/maka/host-shell",
     "products/maka/client",
+    "products/maka/admin-tui",
     "products/maka/terminal-shell",
     "products/maka/updater",
     "products/maka/workbench",

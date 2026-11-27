@@ -20,6 +20,7 @@
 use clap::Parser;
 mod access;
 mod acp;
+mod admin;
 mod application;
 mod args;
 mod candidate;
