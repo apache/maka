@@ -210,7 +210,10 @@ enum ExistingDelivery {
         pending_live_caller: Option<RunId>,
         enqueued_at: Option<UnixMillis>,
     },
-    RetractedByOtherCaller(RunId),
+    RetractedByOtherCaller {
+        caller: RunId,
+        request: Box<maka_agent_state::queue::PreparedRequest>,
+    },
 }
 
 impl Owner {
@@ -835,13 +838,14 @@ impl Owner {
                     }
                     break (request, pending_live_caller);
                 }
-                ExistingDelivery::RetractedByOtherCaller(stopped_caller)
-                    if seen_stopped.insert(stopped_caller) =>
-                {
+                ExistingDelivery::RetractedByOtherCaller {
+                    caller: stopped_caller,
+                    ..
+                } if seen_stopped.insert(stopped_caller) => {
                     watches.retain(|w| w.request.source.run_id != stopped_caller);
                     identity = rescue_identity(&identity, stopped_caller);
                 }
-                ExistingDelivery::Absent | ExistingDelivery::RetractedByOtherCaller(_) => {
+                ExistingDelivery::Absent | ExistingDelivery::RetractedByOtherCaller { .. } => {
                     let result = match notice {
                         Notice::Finished {
                             run: Some(run),
@@ -904,6 +908,7 @@ impl Owner {
         now: u64,
     ) -> Result<(), String> {
         let mut identity = frozen.id.0.clone();
+        let mut latest_retracted = frozen.clone();
         let mut seen_stopped = BTreeSet::new();
         let (notification, pending_live_caller) = loop {
             match self
@@ -922,13 +927,15 @@ impl Owner {
                     };
                     break (chosen, pending_live_caller);
                 }
-                ExistingDelivery::RetractedByOtherCaller(stopped_caller)
-                    if seen_stopped.insert(stopped_caller) =>
-                {
+                ExistingDelivery::RetractedByOtherCaller {
+                    caller: stopped_caller,
+                    request,
+                } if seen_stopped.insert(stopped_caller) => {
+                    latest_retracted = *request;
                     watches.retain(|w| w.request.source.run_id != stopped_caller);
                     identity = rescue_identity(&identity, stopped_caller);
                 }
-                ExistingDelivery::Absent | ExistingDelivery::RetractedByOtherCaller(_) => {
+                ExistingDelivery::Absent | ExistingDelivery::RetractedByOtherCaller { .. } => {
                     if identity == frozen.id.0 {
                         // Original frozen notification was never admitted; preserve existing behavior.
                         break (frozen.clone(), None);
@@ -938,8 +945,8 @@ impl Owner {
                         .queue()
                         .content(
                             recipient.to_owned(),
-                            frozen.id.clone(),
-                            frozen.source.clone(),
+                            latest_retracted.id.clone(),
+                            latest_retracted.source.clone(),
                         )
                         .await
                         .map_err(|error| error.to_string())?;
@@ -1113,14 +1120,10 @@ impl Owner {
                 })
             }
             MessageResolution::Cancelled => {
-                // Only rescue when CallerStopped retracted the shared notice; an explicit
-                // user queue Retract/RetractAll settles all watches sharing that notice.
+                // Check durable queue/run state directly (never the pre-lock snapshot) so a
+                // concurrent Stop cannot be misclassified as an explicit user Retract.
                 if let QueuePlacement::Completion { caller } = existing.placement
                     && watches.iter().any(|w| w.request.source.run_id != caller)
-                    && self
-                        .caller_state(recipient, caller, states)
-                        .await?
-                        .is_some_and(|(stopped, _)| stopped)
                     && self
                         .durable
                         .queue()
@@ -1128,7 +1131,10 @@ impl Owner {
                         .await
                         .map_err(|error| error.to_string())?
                 {
-                    Ok(ExistingDelivery::RetractedByOtherCaller(caller))
+                    Ok(ExistingDelivery::RetractedByOtherCaller {
+                        caller,
+                        request: Box::new(existing.request),
+                    })
                 } else {
                     Ok(ExistingDelivery::Reusable {
                         request: existing.request,

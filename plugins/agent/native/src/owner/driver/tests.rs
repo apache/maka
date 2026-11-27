@@ -7524,24 +7524,29 @@ async fn cross_turn_retract_and_user_stop_hold_completion_notices() {
         );
         assert!(queue.read(session.clone()).await?.entries.is_empty());
 
-        // 2. After user Stop on B, a new completion with both A and B watches must land in Held.
-        let claim_b = owner.durable.claim(run_b).await?;
-        let view_b = owner.durable.frontier(run_b).await?;
+        // 2. An already-queued Completion { caller: A } is moved to Held when user stops B,
+        //    and a subsequent completion arriving after the user Stop also lands in Held.
+        let worker_pre = format!("{}missing-pre", owner.prefix);
         owner
-            .durable
-            .append(
-                &claim_b,
-                (&view_b).into(),
-                vec![maka_agent_state::Change {
-                    id: FactId::new(),
-                    at: at(),
-                    fact: Fact::StopRequested {
-                        diagnostic: "user_requested_stop".into(),
-                        requester: maka_agent_facts::durable::StopRequester::User,
-                    },
-                }],
-                vec![],
+            .store
+            .register_message_completion(
+                &owner.prefix,
+                &worker_pre,
+                "a-pre",
+                &session,
+                make_req(&source_a)?,
             )
+            .await?;
+        owner.deliver_completions().await?;
+        owner
+            .store
+            .data_writer()?
+            .write(owner.durable.stop_run_statement(
+                run_b,
+                FactId::new(),
+                at(),
+                maka_agent_facts::durable::StopRequester::User,
+            ))
             .await?;
         let worker_2 = format!("{}missing-2", owner.prefix);
         owner
@@ -7573,8 +7578,13 @@ async fn cross_turn_retract_and_user_stop_hold_completion_notices() {
                 .is_empty()
         );
         let held_entries = queue.read(session.clone()).await?;
-        assert_eq!(held_entries.entries.len(), 1);
-        assert_eq!(held_entries.entries[0].placement, Placement::Held);
+        assert_eq!(held_entries.entries.len(), 2);
+        assert!(
+            held_entries
+                .entries
+                .iter()
+                .all(|e| e.placement == Placement::Held)
+        );
         Ok(())
     }
     .await;

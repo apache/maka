@@ -1570,7 +1570,7 @@ impl Statement for StopRun {
             && let Fact::StopRequested { requester, .. } = &self.change.fact
             && !matches!(requester, StopRequester::Internal)
         {
-            crate::queue::stop_queue(c, &view.spec.session_id, self.run, &self.change, requester)?;
+            crate::queue::stop_queue(c, &view.spec.session_id, &self.change, requester)?;
         }
         let (_, changed) = sql::append(
             c,
