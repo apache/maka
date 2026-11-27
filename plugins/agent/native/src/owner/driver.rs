@@ -25,11 +25,13 @@ mod tests;
 use futures_util::{FutureExt, future::BoxFuture};
 use maka_agent_authority::permissions::Access;
 use maka_agent_engine::{PreparedModel, RunError, cleanup::Evidence, ports::*};
+#[cfg(test)]
+use maka_agent_facts::tool_output::ReturnedToolResult;
 use maka_agent_facts::{
     artifact::{PublishedArtifact, ToolReturn},
     durable::*,
     tool_call::{ToolCallIdentity, ToolRejection},
-    tool_output::{ReturnedToolResult, ToolOutput, ToolSuccess},
+    tool_output::{ToolOutput, ToolSuccess},
     tools::{PreparedEffect, ToolCallContext, ToolError, ToolSemantics},
 };
 use maka_agent_state::{

@@ -219,6 +219,8 @@ pub struct RequestSpec {
     pub source_digest: String,
     pub effective_source_digest: String,
     pub provenance: ContentRef,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_contracts: Option<ContentRef>,
     pub projection: Option<ContentRef>,
     pub adjudications: Vec<AdjudicationBasis>,
     pub steering: Vec<ContentRef>,
@@ -867,6 +869,7 @@ impl RequestSpec {
                 &self.request,
                 &self.recovery_contract,
             ];
+            refs.extend(self.tool_contracts.iter());
             refs.extend(self.projection.iter());
             refs.extend(self.adjudications.iter().map(|basis| &basis.evidence));
             refs.extend(self.steering.iter());

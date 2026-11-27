@@ -519,7 +519,7 @@ pub(super) fn validate_source_record(
     if owner != actual_owner
         || session != actual_session
         || kind != actual_kind
-        || locator != tool_locator(c, record)?.map(|value| value.0)
+        || locator != tool_locator(record).map(|value| value.0)
     {
         return Err(invalid(
             "canonical history header kind/locator/namespace differs from its original fact",
@@ -711,7 +711,7 @@ pub(crate) fn index(c: &Connection, record: &RecordedFact) -> Result<(), StoreEr
     // are hashed rather than today's reserialized/redacted semantic projection.
     let prefix = chain(&previous, sequence, &digest)?;
     let scope = fact_scope(c, record)?;
-    let locator = tool_locator(c, record)?;
+    let locator = tool_locator(record);
     let historical = if let Fact::RunAdmitted { spec: expected } = &record.fact {
         let (value, reference) = spec(
             c,
@@ -785,7 +785,7 @@ pub(crate) fn index_legacy_owner_session(
             params![record.run.to_string(), original.digest, bind_u64(original.bytes)?],
             |r| r.get(0),
         )?;
-        let descriptor: maka_agent_facts::external_effects::ExternalEffectDescriptor =
+        let descriptor: maka_agent_facts::external_effects::StoredExternalEffectDescriptor =
             serde_json::from_slice(&bytes)?;
         Some((
             maka_agent_facts::tool_call::tool_use_id(record.run, &descriptor.operation_id),
@@ -795,7 +795,7 @@ pub(crate) fn index_legacy_owner_session(
             ),
         ))
     } else {
-        tool_locator(c, record)?
+        tool_locator(record)
     };
     let historical = if let Fact::RunAdmitted { spec: expected } = &record.fact {
         let (digest, bytes): (String, Vec<u8>) = c.query_row(
@@ -838,6 +838,13 @@ pub(crate) fn index_legacy_owner_session(
     Ok(())
 }
 pub(crate) fn index_retained(c: &Connection, record: &RecordedFact) -> Result<(), StoreError> {
+    index_retained_with_external(c, record, None)
+}
+pub(crate) fn index_retained_with_external(
+    c: &Connection,
+    record: &RecordedFact,
+    external: Option<&crate::external_effects::PersistedExternalEffect>,
+) -> Result<(), StoreError> {
     let (sequence, owner, session): (u64, String, String) = c
         .prepare_cached("SELECT h.sequence,ns.owner,ns.session FROM agent_session_history h JOIN agent_namespaces ns ON ns.id=h.namespace_id JOIN agent_facts f ON f.sequence=h.sequence WHERE f.id=? AND h.run=?")?
         .query_row(params![record.id.to_string(), record.run.to_string()], |r| {
@@ -849,6 +856,7 @@ pub(crate) fn index_retained(c: &Connection, record: &RecordedFact) -> Result<()
         &session,
         record,
         sequence,
+        external,
     )
 }
 fn index_refs(
@@ -857,6 +865,7 @@ fn index_refs(
     session: &str,
     record: &RecordedFact,
     sequence: u64,
+    external: Option<&crate::external_effects::PersistedExternalEffect>,
 ) -> Result<(), StoreError> {
     let mut references = record
         .fact
@@ -943,14 +952,44 @@ fn index_refs(
             event:
                 maka_agent_facts::external_effects::ExternalEffectEvent::Prepared { key, descriptor },
         } => {
-            let original =
-                crate::external_effects::read_descriptor(c, record.run, key, descriptor)?;
-            references.extend(original.resources.into_iter().filter_map(
-                |resource| match resource {
-                    ResourceRecovery::Reference { descriptor } => Some(descriptor),
-                    _ => None,
-                },
-            ));
+            if let Some(crate::external_effects::PersistedExternalEffect::Prepared { extra_refs }) =
+                external
+            {
+                references.extend(extra_refs.iter().cloned());
+            } else {
+                let (original, definition_ref) =
+                    crate::external_effects::read_descriptor_with_definition_ref(
+                        c, record.run, key, descriptor,
+                    )?;
+                references.extend(definition_ref);
+                references.extend(original.resources.into_iter().filter_map(|resource| {
+                    match resource {
+                        ResourceRecovery::Reference { descriptor } => Some(descriptor),
+                        _ => None,
+                    }
+                }));
+            }
+        }
+        Fact::ExternalTaskPrepared { descriptor, .. }
+        | Fact::ExternalTaskBound { descriptor, .. } => {
+            if let Some(instr_ref) =
+                crate::sql::external_task_instructions_ref(c, record.run, descriptor)?
+            {
+                references.push(instr_ref);
+            }
+        }
+        Fact::ExternalEffect {
+            event: maka_agent_facts::external_effects::ExternalEffectEvent::Returned { output, .. },
+        } => {
+            if let Some(crate::external_effects::PersistedExternalEffect::Returned { returned }) =
+                external
+            {
+                references.extend(returned.completed_cell_result().cloned());
+            } else {
+                let returned: maka_agent_facts::external_effects::StoredExternalReturn =
+                    owned_metadata(c, record.run, output)?;
+                references.extend(returned.completed_cell_result().cloned());
+            }
         }
         _ => {}
     }
@@ -1724,10 +1763,7 @@ fn view_through(
     }
     Ok(view)
 }
-fn tool_locator(
-    c: &Connection,
-    record: &RecordedFact,
-) -> Result<Option<(String, bool)>, StoreError> {
+fn tool_locator(record: &RecordedFact) -> Option<(String, bool)> {
     use maka_agent_facts::{
         cells::CellEvent, external_effects::ExternalEffectEvent, model::ModelPart,
     };
@@ -1785,7 +1821,7 @@ fn tool_locator(
             | CellEvent::ChildObserved {
                 cell, operation, ..
             } => (format!("cell:{cell}:{operation}"), false),
-            _ => return Ok(None),
+            _ => return None,
         },
         Fact::ExternalTaskObserved { task, output, .. } => {
             use maka_agent_facts::executor::Output;
@@ -1795,28 +1831,24 @@ fn tool_locator(
                 | Output::ToolResult { tool_call_id, .. } => {
                     (format!("{task}:{tool_call_id}"), false)
                 }
-                _ => return Ok(None),
+                _ => return None,
             }
         }
         Fact::ExternalEffect { event } => {
             let key = event.key();
-            let original = match event {
-                ExternalEffectEvent::Prepared { descriptor, .. } => descriptor.clone(),
-                _ => crate::external_effects::read_original(c, record.run, &key)?.descriptor,
-            };
-            let descriptor =
-                crate::external_effects::read_descriptor(c, record.run, &key, &original)?;
+            // external_effects::persist enforces descriptor.operation_id == "external:{task}:{operation}"
+            // within the same transaction, so tool_locator does not need to re-decode the descriptor.
             (
-                descriptor.operation_id,
+                format!("external:{}:{}", key.task, key.operation),
                 matches!(event, ExternalEffectEvent::Prepared { .. }),
             )
         }
-        _ => return Ok(None),
+        _ => return None,
     };
-    Ok(Some((
+    Some((
         maka_agent_facts::tool_call::tool_use_id(record.run, &operation),
         start,
-    )))
+    ))
 }
 pub(crate) fn captured_tool_call(
     c: &Connection,
@@ -2135,7 +2167,7 @@ pub(super) fn resolve_tool_result(
             "tool result index does not reference an original retained result fact",
         ));
     }
-    let (use_id, _) = tool_locator(c, &item.recorded)?
+    let (use_id, _) = tool_locator(&item.recorded)
         .ok_or_else(|| invalid("tool result has no original tool identity"))?;
     let starts: Vec<u64> = c
         .prepare_cached(

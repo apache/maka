@@ -663,6 +663,16 @@ impl Store {
             .query(crate::external_effects::ReadDescriptor(run, key))
             .await
     }
+
+    pub async fn read_external_return(
+        &self,
+        run: RunId,
+        reference: ContentRef,
+    ) -> Result<maka_agent_facts::external_effects::ExternalReturn, StoreError> {
+        self.data
+            .query(crate::external_effects::ReadReturn(run, reference))
+            .await
+    }
     pub fn new(data: DataWriter, domain: DriverDomain) -> Result<Self, StoreError> {
         if !data.same_root(&domain.inner.data) {
             return Err(invalid("driver domain belongs to another Root owner"));

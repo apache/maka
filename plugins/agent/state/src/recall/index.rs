@@ -86,6 +86,15 @@ fn tool_return(
             )?;
             body.resolve(reply).map_err(invalid)?
         }
+        StoredToolResult::CellCompleted(body) => {
+            let result_ref = body
+                .result_ref()
+                .ok_or_else(|| invalid("shared cell projection missing completed result ref"))?
+                .clone();
+            let obs: maka_agent_facts::cells::CellObservation =
+                serde_json::from_slice(&exact(c, run, &result_ref, layout)?)?;
+            body.resolve(&obs).map_err(invalid)?
+        }
     };
     Ok(ToolReturn {
         schema_version: returned.schema_version,
@@ -2489,7 +2498,9 @@ fn project(
             message.role = Role::ToolResult;
             let mut completed_cell = None;
             with_owned_bytes(c, fact.run, output, layout, |bytes| {
-                completed_cell = document::external_returned(bytes, &mut message)?;
+                completed_cell = document::external_returned(bytes, &mut message, &mut |r| {
+                    exact(c, fact.run, r, layout)
+                })?;
                 Ok(())
             })?;
             message.references.push(output.clone());

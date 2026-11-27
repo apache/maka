@@ -21,7 +21,7 @@ use super::*;
 use maka_agent_facts::cells::{
     CellEvent, CellId, CellNotification, CellNotificationBody, CellReplyState, CellStatus,
 };
-use maka_agent_facts::tool_output::{ReturnedToolResult, ToolOutput};
+use maka_agent_facts::tool_output::{StoredToolResult, ToolOutput};
 impl Engine {
     pub(super) async fn resolve_recovered_cells(
         &self,
@@ -153,9 +153,14 @@ impl Engine {
             .store
             .content(view.run, returned.result.clone())
             .await?;
-        let original: maka_agent_facts::artifact::ToolReturn<ReturnedToolResult> =
+        let original: maka_agent_facts::artifact::ToolReturn<StoredToolResult> =
             serde_json::from_slice(&bytes).map_err(StoreError::from)?;
-        let ToolOutput::Cell(reply) = &original.body.output else {
+        let output = match &original.body {
+            StoredToolResult::Inline(body) => &body.output,
+            StoredToolResult::CellCompleted(body) => &body.output,
+            StoredToolResult::Operation(_) => return Ok(vec![]),
+        };
+        let ToolOutput::Cell(reply) = output else {
             return Ok(vec![]);
         };
         let CellReplyState::Completed { result } = &reply.state else {

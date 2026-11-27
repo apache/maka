@@ -1703,6 +1703,33 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
     .await;
     let new_base_url = server.base_url();
 
+    // Record pre-upgrade contents.id high-water marks so Stage 3 proves live continuation
+    // newly inserted compressed contents rows (not merely re-pinning pre-existing digests).
+    let pre_upgrade_max_content_id: BTreeMap<PathBuf, i64> = {
+        let mut dbs = Vec::new();
+        collect_sqlite_files(&dirs.root, &mut dbs);
+        let mut marks = BTreeMap::new();
+        for db in dbs {
+            let conn = Connection::open_with_flags(&db, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+            let has_contents: bool = conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='contents')",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            if has_contents {
+                let max_id: i64 = conn
+                    .query_row("SELECT COALESCE(MAX(id), 0) FROM contents", [], |r| {
+                        r.get(0)
+                    })
+                    .unwrap();
+                marks.insert(db, max_id);
+            }
+        }
+        marks
+    };
+
     // Stage 1: Cold startup & in-place schema/data migrations.
     let mut host = Host::spawn_with(bin, &dirs.root, &dirs.home, &dirs.workspace)
         .unwrap_or_else(|e| panic!("spawn Host {}: {e}", bin.display()));
@@ -2032,7 +2059,7 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
         )
         .await;
         assert_eq!(followup["kind"], "queued", "{followup}");
-        let run = wait_run_completed(
+        let continuation_run_id = wait_run_completed(
             &client,
             &manifest.primary_session_id,
             followup["messageId"].as_str().unwrap(),
@@ -2042,11 +2069,15 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
             &client,
             "agent",
             "loadedMemories",
-            json!({"sessionId": manifest.primary_session_id, "runId": run}),
+            json!({"sessionId": manifest.primary_session_id, "runId": continuation_run_id}),
             Attachments::new(),
         )
         .await;
         assert_eq!(loaded, json!([]), "tool-restricted session loaded a pin");
+        let continuation_run_id = continuation_run_id
+            .as_str()
+            .expect("wait_run_completed must return continuation runId")
+            .to_owned();
         assert!(
             saw_pre_context.load(Ordering::SeqCst),
             "post-upgrade model request did not retain pre-upgrade conversation context"
@@ -2195,6 +2226,98 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
         );
 
         host.quit(&mut client).await.expect("Host quit");
+
+        // Verify the exact post-upgrade continuation run newly inserted PR 5 zstd-compressed
+        // contents rows (id > pre_upgrade_max_content_id) and wrote PR 6 out-of-line toolContracts.
+        {
+            let mut dbs = Vec::new();
+            collect_sqlite_files(&dirs.root, &mut dbs);
+            let mut matched_continuation_run = false;
+            let mut saw_newly_inserted_compressed = false;
+            let mut saw_compact_request_spec = false;
+            for db in dbs {
+                let conn =
+                    Connection::open_with_flags(&db, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+                maka_event_log::content::register_sql_functions(&conn).unwrap();
+                let has_req: bool = conn
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='agent_request_specs')",
+                        [],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+                if !has_req {
+                    continue;
+                }
+                let has_run: bool = conn
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM agent_run_specs WHERE run = ?1)",
+                        [&continuation_run_id],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+                if !has_run {
+                    continue;
+                }
+                matched_continuation_run = true;
+                let max_id_before = pre_upgrade_max_content_id.get(&db).copied().unwrap_or(0);
+                let newly_compressed: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*)
+                         FROM agent_content_pins p
+                         JOIN contents c ON c.id = p.content_id
+                         WHERE p.run = ?1
+                           AND c.id > ?2
+                           AND c.encoding IN (1, 2, 3)
+                           AND c.logical_bytes IS NOT NULL",
+                        rusqlite::params![&continuation_run_id, max_id_before],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+                if newly_compressed > 0 {
+                    saw_newly_inserted_compressed = true;
+                }
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT maka_content_text(c.payload, c.encoding)
+                         FROM agent_request_specs r
+                         JOIN contents c ON c.id = r.content_id
+                         WHERE r.run = ?1",
+                    )
+                    .unwrap();
+                let specs: Vec<String> = stmt
+                    .query_map([&continuation_run_id], |r| r.get::<_, String>(0))
+                    .unwrap()
+                    .collect::<Result<_, _>>()
+                    .unwrap();
+                assert!(
+                    !specs.is_empty(),
+                    "continuation run {continuation_run_id} must record at least one RequestSpec"
+                );
+                for raw in specs {
+                    let parsed: Value = serde_json::from_str(&raw).unwrap();
+                    if parsed
+                        .get("toolContracts")
+                        .and_then(|v| v.get("digest"))
+                        .is_some()
+                    {
+                        saw_compact_request_spec = true;
+                    }
+                }
+            }
+            assert!(
+                matched_continuation_run,
+                "could not locate post-upgrade continuation run {continuation_run_id}"
+            );
+            assert!(
+                saw_newly_inserted_compressed,
+                "post-upgrade continuation run {continuation_run_id} must newly insert zstd-compressed contents blobs"
+            );
+            assert!(
+                saw_compact_request_spec,
+                "post-upgrade continuation run {continuation_run_id} must write out-of-line RequestSpec.toolContracts"
+            );
+        }
 
         // Cold startup preserves historical device rows but must prune
         // invitations for a publication this Host is not serving.

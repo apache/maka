@@ -17,10 +17,7 @@
  * under the License.
  */
 use super::*;
-use maka_agent_facts::{
-    external_effects::{ExternalEffectEvent, ExternalReturn},
-    tool_output::ToolOutput,
-};
+use maka_agent_facts::{external_effects::ExternalEffectEvent, tool_output::ToolOutput};
 fn id(run: RunId, key: &maka_agent_facts::external_effects::ExternalEffectKey) -> String {
     format!("external:{run}:{}:{}", key.task, key.operation)
 }
@@ -30,6 +27,7 @@ pub(super) fn index(
     record: &RecordedFact,
     sequence: u64,
     event: &ExternalEffectEvent,
+    external: Option<&crate::external_effects::PersistedExternalEffect>,
 ) -> Result<(), StoreError> {
     let key = event.key();
     let request = id(record.run, &key);
@@ -71,23 +69,38 @@ pub(super) fn index(
             observe_receipt(c, &request, sequence, record.at, observation)?
         }
         ExternalEffectEvent::Returned { output, .. } => {
-            let value: ExternalReturn = decode(c, output)?;
-            match value {
-                ExternalReturn::Failure { settlement, .. } => {
-                    settle(c, &request, sequence, record.at, settlement, true, None)?
+            let decoded;
+            let value = match external {
+                Some(crate::external_effects::PersistedExternalEffect::Returned { returned }) => {
+                    returned.as_ref()
                 }
-                ExternalReturn::Output {
+                _ => {
+                    decoded = decode::<maka_agent_facts::external_effects::StoredExternalReturn>(
+                        c, output,
+                    )?;
+                    &decoded
+                }
+            };
+            match value {
+                maka_agent_facts::external_effects::StoredExternalReturn::Failure {
+                    settlement,
+                    ..
+                } => settle(c, &request, sequence, record.at, *settlement, true, None)?,
+                maka_agent_facts::external_effects::StoredExternalReturn::Output {
                     output: ToolOutput::Operation(reply),
                     is_error,
                     ..
-                } => observe_returned_receipt(c, &request, sequence, record.at, &reply, is_error)?,
-                ExternalReturn::Output { is_error, .. } => settle(
+                } => observe_returned_receipt(c, &request, sequence, record.at, reply, *is_error)?,
+                maka_agent_facts::external_effects::StoredExternalReturn::Output {
+                    is_error,
+                    ..
+                } => settle(
                     c,
                     &request,
                     sequence,
                     record.at,
                     ToolSettlement::Returned,
-                    is_error,
+                    *is_error,
                     None,
                 )?,
             }

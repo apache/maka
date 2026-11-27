@@ -117,7 +117,7 @@ fn content_id(c: &Connection, reference: &ContentRef) -> Result<i64, StoreError>
         .optional()?
         .ok_or_else(|| invalid("missing canonical content"))
 }
-fn pin(c: &Connection, run: RunId, reference: &ContentRef) -> Result<(), StoreError> {
+pub(crate) fn pin(c: &Connection, run: RunId, reference: &ContentRef) -> Result<(), StoreError> {
     c.prepare_cached(
         "INSERT INTO agent_content_pins(run,content_id) VALUES(?,?) ON CONFLICT DO NOTHING",
     )?
@@ -139,6 +139,28 @@ pub(super) fn decode<T: DeserializeOwned>(
         content::read(c, &reference.digest)?.ok_or_else(|| invalid("missing canonical bytes"))?;
     Ok(serde_json::from_slice(&bytes)?)
 }
+/// Fail-closed extraction of `payload.instructionsRef` from an owned external task descriptor.
+/// Absent or `null` `payload` / `instructionsRef` returns `Ok(None)`; malformed JSON or a
+/// malformed `instructionsRef` returns an error instead of silently dropping pinning/custody.
+pub(crate) fn external_task_instructions_ref(
+    c: &Connection,
+    run: RunId,
+    descriptor: &ContentRef,
+) -> Result<Option<ContentRef>, StoreError> {
+    let raw = owned_content(c, run, descriptor)?;
+    let val: serde_json::Value = serde_json::from_slice(&raw)?;
+    let Some(instr) = val.pointer("/payload/instructionsRef") else {
+        return Ok(None);
+    };
+    if instr.is_null() {
+        return Ok(None);
+    }
+    let instr_ref: ContentRef = serde_json::from_value(instr.clone())
+        .map_err(|e| invalid(format!("invalid external task instructionsRef: {e}")))?;
+    instr_ref.validate().map_err(invalid)?;
+    Ok(Some(instr_ref))
+}
+
 pub(crate) fn owned_content(
     c: &Connection,
     run: RunId,
@@ -1032,6 +1054,7 @@ fn validate_request_lineage(
             || incoming.effective_source_digest != frozen.effective_source_digest
             || incoming.composition != frozen.composition
             || incoming.provenance != frozen.provenance
+            || incoming.tool_contracts != frozen.tool_contracts
             || incoming.projection != frozen.projection
             || incoming.adjudications != frozen.adjudications
             || incoming.steering != frozen.steering
@@ -1098,6 +1121,12 @@ fn record(c: &Connection, fact: &RecordedFact) -> Result<(), StoreError> {
     pin(c, fact.run, &body.reference)?;
     for reference in fact.fact.content_refs() {
         pin(c, fact.run, reference)?;
+    }
+    if let Fact::ExternalTaskPrepared { descriptor, .. }
+    | Fact::ExternalTaskBound { descriptor, .. } = &fact.fact
+        && let Some(instr_ref) = external_task_instructions_ref(c, fact.run, descriptor)?
+    {
+        pin(c, fact.run, &instr_ref)?;
     }
     if let Fact::StepPrepared { step, request, .. }
     | Fact::ProactiveSummaryPrepared { step, request, .. } = &fact.fact
@@ -1490,6 +1519,7 @@ pub(crate) fn append(
     crate::external_publication::validate_batch(&view, changes)?;
     insert_blobs(c, contents)?;
     let mut facts = Vec::new();
+    let mut persisted_external = Vec::new();
     let mut steering_used = false;
     for (index, change) in changes.iter().enumerate() {
         if change.fact.is_admission() {
@@ -1646,9 +1676,16 @@ pub(crate) fn append(
         if matches!(recorded.fact, Fact::ExternalSteering { .. }) {
             crate::external_steering::persist(c, run, &recorded)?;
         }
-        if let Fact::ExternalEffect { event } = &recorded.fact {
-            crate::external_effects::persist(c, run, recorded.revision, event)?;
-        }
+        let external = if let Fact::ExternalEffect { event } = &recorded.fact {
+            Some(crate::external_effects::persist(
+                c,
+                run,
+                recorded.revision,
+                event,
+            )?)
+        } else {
+            None
+        };
         if matches!(&recorded.fact, Fact::Cell { .. })
             || (matches!(&recorded.fact, Fact::ContextCompacted { .. })
                 && matches!(&view.spec.origin, RunOrigin::Local))
@@ -1659,25 +1696,26 @@ pub(crate) fn append(
             crate::cells::apply_tools_loaded(c, &view.spec.session_id, &recorded, changes)?;
         }
         facts.push(recorded);
+        persisted_external.push(external);
     }
     if steering.is_some() && !steering_used {
         return Err(invalid("steering consumption requires StepPrepared"));
     }
     crate::artifacts::append(c, run, &facts, artifacts)?;
     let mut indexed = Vec::with_capacity(facts.len());
-    for fact in &facts {
-        crate::session_history::index_retained(c, fact)?;
+    for (fact, external) in facts.iter().zip(persisted_external.iter()) {
+        crate::session_history::index_retained_with_external(c, fact, external.as_ref())?;
         let sequence = fact_sequence(c, fact)?;
         index_non_recall(c, &view.spec, fact, sequence)?;
-        indexed.push((fact, sequence));
+        indexed.push((fact, sequence, external.as_ref()));
     }
     persist(c, &view)?;
-    for &(fact, sequence) in &indexed {
-        crate::usage::index_fact(c, &view.spec, fact, sequence)?;
+    for &(fact, sequence, external) in &indexed {
+        crate::usage::index_fact_with_external(c, &view.spec, fact, sequence, external)?;
     }
     // Keep Recall FTS5 writes last so preceding ON CONFLICT / INSERT OR IGNORE
     // statements do not trigger redundant fts5SavepointMethod -> fts5IndexFlush.
-    for &(fact, sequence) in &indexed {
+    for &(fact, sequence, _) in &indexed {
         index_recall(c, &view.spec, fact, sequence)?;
     }
     Ok((
@@ -3532,5 +3570,81 @@ mod tests {
                 .as_deref(),
             Some("The operation outcome is unknown.")
         );
+    }
+
+    #[test]
+    fn external_task_instructions_ref_fails_closed_on_malformed_reference() {
+        use crate::ContentBlob;
+        use maka_agent_facts::durable::{ContentRef, RunId};
+
+        let db = Connection::open_in_memory().unwrap();
+        maka_event_log::migration::run(
+            &db,
+            &maka_event_log::ROOT_MIGRATIONS
+                .iter()
+                .chain(crate::MIGRATIONS)
+                .copied()
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+        let run = RunId::new();
+        let spec_blob = ContentBlob::new(b"{}".to_vec());
+        let spec_cid = spec_blob.store(&db).unwrap();
+        db.execute(
+            r#"INSERT INTO agent_run_specs(run, schema_version, owner, session, spec_content_id)
+             VALUES(?1, 1, '"test"', 'sess-instr', ?2)"#,
+            params![run.to_string(), spec_cid],
+        )
+        .unwrap();
+        let insert_descriptor = |payload: &[u8]| -> ContentRef {
+            let blob = ContentBlob::new(payload.to_vec());
+            let cid = blob.store(&db).unwrap();
+            db.execute(
+                "INSERT OR IGNORE INTO agent_content_pins(run, content_id) VALUES(?1, ?2)",
+                params![run.to_string(), cid],
+            )
+            .unwrap();
+            blob.reference().clone()
+        };
+
+        // Absent and null instructionsRef return Ok(None).
+        let absent = insert_descriptor(br#"{"payload":{"prompt":"hi"}}"#);
+        assert_eq!(
+            super::external_task_instructions_ref(&db, run, &absent).unwrap(),
+            None
+        );
+        let null_ref = insert_descriptor(br#"{"payload":{"instructionsRef":null}}"#);
+        assert_eq!(
+            super::external_task_instructions_ref(&db, run, &null_ref).unwrap(),
+            None
+        );
+
+        // Valid instructionsRef returns Ok(Some(ref)).
+        let valid_ref = ContentRef {
+            digest: format!("sha256:{}", "b".repeat(64)),
+            bytes: 42,
+        };
+        let valid_desc = insert_descriptor(
+            &serde_json::to_vec(&serde_json::json!({
+                "payload": { "instructionsRef": valid_ref }
+            }))
+            .unwrap(),
+        );
+        assert_eq!(
+            super::external_task_instructions_ref(&db, run, &valid_desc).unwrap(),
+            Some(valid_ref)
+        );
+
+        // Malformed instructionsRef (wrong type or invalid digest) MUST fail closed.
+        let wrong_type = insert_descriptor(br#"{"payload":{"instructionsRef":"not-a-ref"}}"#);
+        assert!(super::external_task_instructions_ref(&db, run, &wrong_type).is_err());
+
+        let bad_digest = insert_descriptor(
+            br#"{"payload":{"instructionsRef":{"digest":"sha256:not-hex","bytes":10}}}"#,
+        );
+        assert!(super::external_task_instructions_ref(&db, run, &bad_digest).is_err());
+
+        let invalid_json = insert_descriptor(b"not json at all");
+        assert!(super::external_task_instructions_ref(&db, run, &invalid_json).is_err());
     }
 }

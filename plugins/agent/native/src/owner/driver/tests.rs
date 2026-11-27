@@ -1217,6 +1217,7 @@ impl Rig {
             source_digest: descriptor.digest.clone(),
             effective_source_digest: descriptor.digest.clone(),
             provenance: source.reference().clone(),
+            tool_contracts: None,
             projection: None,
             adjudications: vec![],
             steering: vec![],
