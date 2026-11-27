@@ -183,7 +183,7 @@ export function SkeletonBlock(props: {
           height: props.height,
           flex: props.flex,
           borderRadius: props.radius ?? 4,
-          backgroundColor: C.line,
+          backgroundColor: C.pressed,
         },
         props.style,
       ]}
