@@ -10,8 +10,8 @@
     "test": "node ../../../scripts/rust/product.mjs test"
   },
   "devDependencies": {
-    "@json-render/core": "0.22.0",
-    "@json-render/directives": "0.22.0",
+    "@json-render/core": "0.23.2",
+    "@json-render/directives": "0.23.2",
     "@pierre/trees": "1.0.0",
     "ajv": "8.20.0",
     "ajv-formats": "3.0.1",

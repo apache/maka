@@ -21,7 +21,7 @@
     "esbuild@0.28.2": true
   },
   "devDependencies": {
-    "@biomejs/biome": "2.6.3",
+    "@biomejs/biome": "2.6.8",
     "esbuild": "0.28.2",
     "husky": "^9.1.7",
     "typescript": "7.0.2",
