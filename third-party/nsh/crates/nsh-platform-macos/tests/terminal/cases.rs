@@ -130,6 +130,55 @@ mount(App);
     surface.shutdown();
 }
 
+pub(super) fn scroll_to_uses_viewport_before_next_layout_round() {
+    let source = r#"
+import { Clipboard, Scroll, View, keymap, mount, signal } from "nsh";
+function App() {
+  const viewport = signal(600);
+  const content = signal(800);
+  let scroll;
+  keymap.bind("f7", () => {
+    viewport.set(400);
+    content.set(1000);
+    scroll.scrollTo({y: 584, animated: false});
+  }, { when: "always" });
+  return <Scroll style={{height: viewport()}} ref={node => { scroll = node; }}
+    onLayout={({bounds}) => {
+      switch (bounds.size.height) {
+        case 600: Clipboard.writeText("ready"); break;
+        case 400:
+          viewport.set(420);
+          content.set(1200);
+          break;
+      }
+    }}>
+    <View style={{height: content(), flexShrink: 0}}>
+      <View accessibilityLabel={content() === 1200 ? "Heading" : "Pending"} onPress={() => {}}
+        style={{position: "absolute", top: 600, width: 120, height: 24}} />
+    </View>
+  </Scroll>;
+}
+mount(App);
+"#;
+    let code = nsh_bundler::compile_module("ScrollViewport.tsx", source, &[]).unwrap();
+    let surface = TerminalSurface::new(
+        EngineConfig::new(App::Js(Bundle::source(code))),
+        size(DevicePixels(320), DevicePixels(600)),
+        1.0,
+        Box::new(|_| {}),
+        Arc::new(|| {}),
+    )
+    .unwrap();
+    clipboard(&surface, "ready");
+    key(&surface, "f7");
+    pump_until(&surface, || surface.pressable_bounds("Heading").len() == 1);
+    assert_eq!(
+        surface.pressable_bounds("Heading")[0].top(),
+        nsh_terminal::px(16.0)
+    );
+    surface.shutdown();
+}
+
 pub(super) fn scrolling_dismisses_hover_tooltip() {
     let source = r#"
 import { Clipboard, Scroll, Text, View, mount } from "nsh";

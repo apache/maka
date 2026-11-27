@@ -90,7 +90,7 @@ pub use nsh_js::with_inline_root;
 /// Signed packages, release-key certificates, revocations and trust stores.
 #[cfg(feature = "js-core")]
 pub use nsh_package as package;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 #[cfg(not(target_arch = "wasm32"))]
 pub use storage::{FileStorage, resolve_data_dir, support_dir};
 
@@ -2796,7 +2796,7 @@ impl<M: TextEngine + 'static> Driver<M> {
             mouse_moves: Vec::new(),
             mouse_moved: None,
             key_path: Vec::new(),
-            sets_seen: FxHashMap::default(),
+            sets_seen: FxHashSet::default(),
             resized: None,
             roots_resized: Vec::new(),
             resize_burst_ends: None,
@@ -3550,7 +3550,7 @@ struct State<M: TextEngine> {
     /// engine notifies each (a buffer reused between events).
     key_path: Vec<NodeId>,
     /// [`keep_last_sets`]'s buffer, reused.
-    sets_seen: FxHashMap<(u8, NodeId, u32), usize>,
+    sets_seen: FxHashSet<WholeSet>,
     /// The viewport size a resize set this turn ([`MountSink::resized`]).
     resized: Option<Size<Points>>,
     /// The roots [`EngineControl::set_root_size`] sized this turn, each
@@ -5087,16 +5087,13 @@ impl PacedBinds {
 /// the platform a transient size, which clamps the offset before the
 /// content grows back (a list jumping when a row expands).
 fn extend_frame(frame: &mut Vec<nsh_core::MountItem>, items: Vec<nsh_core::MountItem>) {
-    use nsh_core::{Command, MountItem};
+    use nsh_core::MountItem;
     frame.reserve(items.len());
     for item in items {
         if let MountItem::ScrollContent { id, size } = item {
-            let earlier = frame.iter_mut().rev().find(|m| {
-                matches!(m,
-                    MountItem::ScrollContent { id: view, .. }
-                    | MountItem::ScrollBy { id: view, .. }
-                    | MountItem::Command { id: view, command: Command::ScrollTo { .. } }
-                    if *view == id)
+            let earlier = frame.iter_mut().rev().find(|m| match m {
+                MountItem::ScrollContent { id: view, .. } => *view == id,
+                _ => scroll_boundary(m) == Some(id),
             });
             if let Some(MountItem::ScrollContent { size: previous, .. }) = earlier {
                 *previous = size;
@@ -5107,50 +5104,68 @@ fn extend_frame(frame: &mut Vec<nsh_core::MountItem>, items: Vec<nsh_core::Mount
     }
 }
 
-/// Of the items of a frame merged from several commits that set one part
-/// of a view whole (its frame, style, text, ...), keeps the last: the
-/// platform would apply each in one pass, and a list's rounds (binds, then
-/// the paced ones) relay and restyle the same cells. Frames apart from
-/// each other by a layout animation are all kept: the platform animates
-/// each with the one before it (a list's rows set where they showed, then
-/// slide: `nsh_core`'s `list_motion.rs`). Once per turn, with `last` the
-/// reused buffer.
-fn keep_last_sets(
-    frame: &mut Vec<nsh_core::MountItem>,
-    last: &mut FxHashMap<(u8, NodeId, u32), usize>,
-) {
-    last.clear();
-    let mut repeated = false;
-    let mut run = 0;
-    for (k, item) in frame.iter().enumerate() {
-        run += matches!(item, nsh_core::MountItem::LayoutAnimation(_)) as u32;
-        if let Some(key) = sets_whole(item, run) {
-            repeated |= last.insert(key, k).is_some();
-        }
+/// The view whose viewport and content extent a scroll operation uses.
+fn scroll_boundary(item: &nsh_core::MountItem) -> Option<NodeId> {
+    use nsh_core::{Command, MountItem};
+    match *item {
+        MountItem::ScrollBy { id, .. }
+        | MountItem::Command {
+            id,
+            command: Command::ScrollTo { .. } | Command::ZoomTo { .. },
+        } => Some(id),
+        _ => None,
     }
-    if !repeated {
-        return;
-    }
-    let (mut k, mut run) = (0, 0);
-    frame.retain(|item| {
-        k += 1;
-        run += matches!(item, nsh_core::MountItem::LayoutAnimation(_)) as u32;
-        sets_whole(item, run).is_none_or(|key| last[&key] == k - 1)
-    });
 }
 
-/// The part of a view an item sets whole, and the view: of two such items
-/// the later is all the view ends up with. Frames also by the `run` of
-/// layout animation they are in.
-fn sets_whole(item: &nsh_core::MountItem, run: u32) -> Option<(u8, nsh_core::NodeId, u32)> {
+/// Keeps only the last whole set of each part of a view. Layout animations
+/// need the frames they animate between, and scrolls need the viewport in
+/// effect when they run. Scan backwards and pack retained items into the
+/// tail in mount order.
+fn keep_last_sets(frame: &mut Vec<nsh_core::MountItem>, seen: &mut FxHashSet<WholeSet>) {
+    use nsh_core::MountItem;
+    seen.clear();
+    let mut run = 0;
+    let mut kept = frame.len();
+    for index in (0..frame.len()).rev() {
+        let item = &frame[index];
+        if let Some(key) = sets_whole(item, run) {
+            if !seen.insert(key) {
+                continue;
+            }
+        } else if matches!(item, MountItem::LayoutAnimation(_)) {
+            run += 1;
+        } else if let Some(id) = scroll_boundary(item) {
+            seen.remove(&WholeSet::Frame(id, run));
+        }
+        kept -= 1;
+        if index != kept {
+            frame.swap(index, kept);
+        }
+    }
+    if kept != 0 {
+        frame.drain(..kept);
+    }
+}
+
+#[derive(PartialEq, Eq, Hash)]
+enum WholeSet {
+    Frame(NodeId, u32),
+    Overflow(NodeId),
+    ViewStyle(NodeId),
+    Text(NodeId),
+    Events(NodeId),
+    Image(NodeId),
+}
+
+fn sets_whole(item: &nsh_core::MountItem, run: u32) -> Option<WholeSet> {
     use nsh_core::MountItem;
     Some(match *item {
-        MountItem::Frame { id, .. } => (0, id, run),
-        MountItem::Overflow { id, .. } => (1, id, 0),
-        MountItem::ViewStyle { id, .. } => (2, id, 0),
-        MountItem::Text { id, .. } => (3, id, 0),
-        MountItem::Events { id, .. } => (4, id, 0),
-        MountItem::Image { id, .. } => (5, id, 0),
+        MountItem::Frame { id, .. } => WholeSet::Frame(id, run),
+        MountItem::Overflow { id, .. } => WholeSet::Overflow(id),
+        MountItem::ViewStyle { id, .. } => WholeSet::ViewStyle(id),
+        MountItem::Text { id, .. } => WholeSet::Text(id),
+        MountItem::Events { id, .. } => WholeSet::Events(id),
+        MountItem::Image { id, .. } => WholeSet::Image(id),
         _ => return None,
     })
 }
@@ -5734,6 +5749,37 @@ mount(() => <View>
             })
             .collect();
         assert_eq!(frames, [50.0, 20.0]);
+    }
+
+    #[test]
+    fn a_relative_scroll_keeps_only_its_own_viewport() {
+        use nsh_core::{Bounds, Point};
+        let viewport = |id, height| MountItem::Frame {
+            id,
+            frame: Bounds::new(Point::default(), Size::new(Points(320.0), Points(height))),
+        };
+        let mut frame = vec![
+            viewport(2, 600.0),
+            viewport(3, 100.0),
+            viewport(2, 400.0),
+            MountItem::ScrollBy {
+                id: 2,
+                dx: Points::ZERO,
+                dy: Points(10.0),
+            },
+        ];
+        super::extend_frame(&mut frame, vec![viewport(3, 200.0), viewport(2, 420.0)]);
+        super::keep_last_sets(&mut frame, &mut Default::default());
+        let [before, MountItem::ScrollBy { id: 2, .. }, other, after] = frame.as_slice() else {
+            panic!("expected the last viewport on each side of the scroll and one for the peer");
+        };
+        let geometry = |item: &MountItem| match item {
+            MountItem::Frame { id, frame } => (*id, frame.size.height.0),
+            _ => panic!("expected a viewport frame"),
+        };
+        assert_eq!(geometry(before), (2, 400.0));
+        assert_eq!(geometry(other), (3, 200.0));
+        assert_eq!(geometry(after), (2, 420.0));
     }
 }
 
