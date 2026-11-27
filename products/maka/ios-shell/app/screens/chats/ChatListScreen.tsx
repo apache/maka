@@ -464,7 +464,6 @@ export function ChatListScreen(props: { onOpenSession: (item: ScopedSession) => 
           <SearchField
             value={sessionSearchQuery()}
             placeholder={tr('Search chats or projects')}
-            clearLabel={tr('Clear search')}
             onChange={setSessionSearchQuery}
           />
 
@@ -538,7 +537,7 @@ export function ChatListScreen(props: { onOpenSession: (item: ScopedSession) => 
                     {(bot) => (
                       <View
                         role="button"
-                        accessibilityLabel={'Maka Bot · ' + bot().host.hostName}
+                        accessibilityLabel={tr('{name} Bot', { name: bot().host.hostName })}
                         onPress={() => void openBot(bot().host.rootId, bot().host.hostName)}
                         class="active:bg-row-pressed"
                         style={{

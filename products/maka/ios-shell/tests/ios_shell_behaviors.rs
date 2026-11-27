@@ -1725,7 +1725,7 @@ async fn diff_line_quote_inserts_into_draft_and_returns_to_chat_preserving_exist
     let sample_patch = "diff --git a/src/auth.rs b/src/auth.rs
 --- a/src/auth.rs
 +++ b/src/auth.rs
-@@ -12,3 +12,3 @@ fn refresh() {
+@@ -1234,3 +1234,3 @@ fn refresh() {
 -    let ttl = 30;
 +    let ttl = 60;
      ttl
@@ -1784,10 +1784,11 @@ async fn diff_line_quote_inserts_into_draft_and_returns_to_chat_preserving_exist
     app.press("label:Diff: src/auth.rs").unwrap();
     app.wait_for("label:Quote line to chat").unwrap();
     app.press("label:Quote line to chat").unwrap();
+    app.wait_for("text:Quoted auth.rs:1234").unwrap();
 
     // Returns cleanly to ChatScreen with both original draft and quoted path:line.
     app.wait_for("text:/Please check this:/").unwrap();
-    app.wait_for(r"text:/src\/auth\.rs:12/").unwrap();
+    app.wait_for(r"text:/src\/auth\.rs:1234/").unwrap();
     app.press("label:Files & Changes").unwrap();
     app.press("label:Files").unwrap();
     app.wait_for("label:.github").unwrap();
@@ -1969,6 +1970,10 @@ async fn settings_credentials_use_secret_slot_and_provider_progress_stays_live()
                 "host":"proxy.example","port":443,"bypassList":[],"autoBypassDomains":[],"authEnabled":true,"username":"phone"},
                 "credential":{"configured":true,"credentialId":"proxy-fixture-id","revision":2,"locator":{"key":"proxy"}}}),
             "snapshot" => query_web.clone(),
+            "projects" => json!({"kind":"projects","projects":[],"next":null}),
+            "mcpConfigurations" => json!({"locations":[
+                {"location":"user:agents","path":"/config/mcp.json","revision":"mcp-basis","servers":[]}
+            ]}),
             other => {
                 query_failures.send(Err(format!("unexpected query {other}"))).unwrap();
                 call.reject("unexpected query");
@@ -1985,7 +1990,10 @@ async fn settings_credentials_use_secret_slot_and_provider_progress_stays_live()
         let data = call.take_data();
         let result = match data["method"].as_str().unwrap() {
             "saveCredential" => json!({"kind":"saved"}),
+            "save" => json!({"kind":"future_web_result"}),
+            "saveKey" if data["secret"] == "bad-web-key" => json!({"kind":"invalid_key"}),
             "saveKey" => json!({"kind":"updated","snapshot":web}),
+            "manageMcpServer" => json!({"kind":"changed"}),
             "updateNetwork" => json!({"kind":"applied","result":{"kind":"committed","revision":5}}),
             "discoverModels" => {
                 tx.send((data, call.into_reply())).unwrap();
@@ -2024,6 +2032,12 @@ async fn settings_credentials_use_secret_slot_and_provider_progress_stays_live()
     app.press("label:Models & Connections").unwrap();
     app.wait_for("label:Fixture provider").unwrap();
     app.press("label:Fixture provider").unwrap();
+    app.press("label:Advanced options").unwrap();
+    app.type_text("label:Request body overlay", "{").unwrap();
+    app.press("label:Save").unwrap();
+    app.wait_for("text:Enter a JSON object.").unwrap();
+    assert!(rx.try_recv().is_err());
+    app.clear("label:Request body overlay").unwrap();
     app.wait_for("label:API Key").unwrap();
     app.type_text("label:API Key", "provider-fixture-secret")
         .unwrap();
@@ -2085,6 +2099,12 @@ async fn settings_credentials_use_secret_slot_and_provider_progress_stays_live()
     app.press("label:Search source").unwrap();
     app.choose_menu_item("Search provider").unwrap();
     app.wait_for("label:API Key").unwrap();
+    app.type_text("label:API Key", "bad-web-key").unwrap();
+    app.press("label:Save API key").unwrap();
+    app.wait_for("text:Invalid API key").unwrap();
+    assert!(!app.shows("text:Could not save the search API key."));
+    assert_eq!(rx.try_recv().unwrap().0["method"], "saveKey");
+    app.clear("label:API Key").unwrap();
     app.type_text("label:API Key", "web-fixture-secret")
         .unwrap();
     app.press("label:Save API key").unwrap();
@@ -2097,6 +2117,43 @@ async fn settings_credentials_use_secret_slot_and_provider_progress_stays_live()
     assert_eq!(call["method"], "saveKey");
     assert_eq!(call["secret"], "web-fixture-secret");
     assert_eq!(call["input"], json!({"settingsRevision":6,"revision":null}));
+    app.press("label:Search provider").unwrap();
+    app.choose_menu_item("Brave").unwrap();
+    app.press("label:Save").unwrap();
+    app.wait_for("text:Could not read or update settings.")
+        .unwrap();
+    let (call, _) = rx.try_recv().unwrap();
+    assert_eq!(call["method"], "save");
+    assert_eq!(call["input"]["settings"]["backend"]["kind"], "brave");
+    app.press("label:Search provider").unwrap();
+    app.choose_menu_item("Tavily").unwrap();
+    app.press("label:Settings").unwrap();
+
+    app.press("label:MCP").unwrap();
+    app.wait_for("label:Add MCP server").unwrap();
+    app.press("label:Add MCP server").unwrap();
+    app.type_text("label:Name", "test-server").unwrap();
+    app.press("label:Protocol").unwrap();
+    app.choose_menu_item("HTTP").unwrap();
+    app.type_text("label:URL", "https://example.test/mcp")
+        .unwrap();
+    let headers = "label:Header environment references (JSON)";
+    app.type_text(headers, "{").unwrap();
+    app.press("label:Save").unwrap();
+    app.wait_for("text:Enter a JSON object.").unwrap();
+    assert!(rx.try_recv().is_err());
+    app.clear(headers).unwrap();
+    app.press("label:Save").unwrap();
+    app.wait_for("text:Refresh and try again.").unwrap();
+    assert!(!app.shows("text:Could not save the MCP server."));
+    let (call, _) = rx.try_recv().unwrap();
+    assert_eq!(call["method"], "manageMcpServer");
+    assert_eq!(call["input"]["revision"], "mcp-basis");
+    assert_eq!(call["input"]["name"], "test-server");
+    app.clear("label:Name").unwrap();
+    app.press("label:Protocol").unwrap();
+    app.choose_menu_item("stdio").unwrap();
+    app.press("label:MCP").unwrap();
     app.press("label:Settings").unwrap();
 
     app.press("label:Network Proxy").unwrap();
@@ -2247,11 +2304,26 @@ async fn host_settings_edit_presets_plugins_mcp_and_skills() {
     channel.handle("ios.hostMutate", move |mut call| {
         let data = call.take_data();
         let value = match data["method"].as_str().unwrap() {
+            "manageMcpServer" if data["input"]["name"] == "future-server" =>
+                json!({"kind":"future_mcp_result"}),
             "createPreset" | "updatePreset" | "manageMcpServer" => json!({"kind":"saved"}),
             "deletePreset" => json!({"kind":"deleted"}),
-            "setEnabled" | "editComposition" => json!({"status":"committed","value":source}),
+            "setEnabled" => json!({"status":"rejected","reason":"invalid_source"}),
+            "editComposition" => json!({"status":"committed","value":source}),
+            "installUrl" if data["input"]["url"] == "https://example.com/invalid.maka-plugin" =>
+                json!({"status":"rejected","reason":"invalid_bundle","diagnostic":"private plugin diagnostic"}),
+            "installUrl" if data["input"]["url"] == "https://example.com/offline.maka-plugin" => {
+                tx.send(data).unwrap();
+                call.reject("private plugin diagnostic");
+                return;
+            }
             "installUrl" => json!({"status":"committed","value":{"source":source,"package":{"id":"new.plugin","revision":"v2"}}}),
             "trustProjectMcp" => json!({"kind":"trusted"}),
+            "update" if data["endpoint"] == "skills" => {
+                tx.send(data).unwrap();
+                call.reject("Skill management is disabled");
+                return;
+            }
             "setPreference" | "delete" => json!({"kind":"applied"}),
             method => {
                 unexpected_tx.send(method.to_owned()).unwrap();
@@ -2371,9 +2443,31 @@ async fn host_settings_edit_presets_plugins_mcp_and_skills() {
     app.wait_for("label:Enabled").unwrap();
     app.press("label:Enabled").unwrap();
     let write = writes.try_recv().unwrap();
+    app.wait_for("text:The selected deployment source is invalid.")
+        .unwrap();
     assert_eq!(write["method"], "setEnabled");
     assert_eq!(write["input"]["instance"], json!(["key"]));
     app.press("label:Plugins").unwrap();
+    for (url, message) in [
+        (
+            "https://example.com/invalid.maka-plugin",
+            "The plugin bundle is invalid.",
+        ),
+        (
+            "https://example.com/offline.maka-plugin",
+            "Could not install the plugin.",
+        ),
+    ] {
+        app.type_text("label:URL", url).unwrap();
+        app.press("label:Install").unwrap();
+        app.wait_for(&format!("text:{message}")).unwrap();
+        assert!(!app.shows("text:/private plugin diagnostic/"));
+        let write = writes.try_recv().unwrap();
+        assert_eq!(write["method"], "installUrl");
+        assert_eq!(write["input"]["url"], url);
+        assert!(writes.try_recv().is_err());
+        app.clear("label:URL").unwrap();
+    }
     app.type_text("label:URL", "https://example.com/plugin.maka-plugin")
         .unwrap();
     app.press("label:Install").unwrap();
@@ -2438,6 +2532,13 @@ async fn host_settings_edit_presets_plugins_mcp_and_skills() {
             "session":"new-anchor","epoch":"e","transport":"quic","endpoints":["agent","settings","management","skills"]
         }}}})).unwrap();
     assert!(writes.try_recv().is_err());
+    app.clear("label:Name").unwrap();
+    app.type_text("label:Name", "future-server").unwrap();
+    app.press("label:Save").unwrap();
+    app.wait_for("text:Could not save the MCP server.").unwrap();
+    assert_eq!(writes.try_recv().unwrap()["input"]["name"], "future-server");
+    app.clear("label:Name").unwrap();
+    app.type_text("label:Name", "new-server").unwrap();
     app.press("label:Save").unwrap();
     let write = writes.try_recv().unwrap();
     assert_eq!(write["method"], "manageMcpServer");
@@ -2494,6 +2595,14 @@ async fn host_settings_edit_presets_plugins_mcp_and_skills() {
     assert_eq!(write["method"], "setPreference");
     assert_eq!(write["input"]["preference"]["enabled"], false);
     app.press("label:Release checklist").unwrap();
+    app.wait_for("label:Update").unwrap();
+    app.press("label:Update").unwrap();
+    app.wait_for("text:Could not read or update settings.")
+        .unwrap();
+    assert!(!app.shows("text:/Skill management is disabled/"));
+    let write = writes.try_recv().unwrap();
+    assert_eq!(write["method"], "update");
+    assert_eq!(write["input"]["reference"], "skill-ref");
     app.wait_for("label:Delete").unwrap();
     app.press("label:Delete").unwrap();
     let write = writes.try_recv().unwrap();

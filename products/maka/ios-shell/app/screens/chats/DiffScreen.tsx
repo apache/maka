@@ -19,7 +19,7 @@
 
 import { safeAreaInsets, signal, Text, View, token } from 'nsh';
 import { DiffView, NavPage } from 'nsh/base';
-import { tr } from '../../locale';
+import { formatCount, tr } from '../../locale';
 import { appendQuoteToDraft, extractPatchLineText, type ParsedDiffFile } from '../../state/chat';
 import { showToast } from '../../state/hostPool';
 import { hapticNotification, hapticSelection } from '../../state/preferences';
@@ -54,7 +54,7 @@ export function DiffScreen(props: {
     const picked = selectedLine() ?? firstChangedLine();
     appendQuoteToDraft(props.rootId, props.sessionId, props.file.path, picked.line, picked.text);
     hapticNotification('success');
-    showToast(tr('Quoted {path}:{line}', { path: fileName(), line: picked.line }));
+    showToast(tr('Quoted {path}:{line}', { path: fileName(), line: String(picked.line) }));
     props.onQuotedBackToChat();
   };
 
@@ -131,7 +131,7 @@ export function DiffScreen(props: {
                   color: token('diff-add-fg'),
                 }}
               >
-                {'+' + String(props.file.added)}
+                {'+' + formatCount(props.file.added)}
               </Text>
             </If>
             <If when={props.file.deleted > 0}>
@@ -143,7 +143,7 @@ export function DiffScreen(props: {
                   color: token('diff-del-fg'),
                 }}
               >
-                {'-' + String(props.file.deleted)}
+                {'-' + formatCount(props.file.deleted)}
               </Text>
             </If>
           </View>
@@ -211,7 +211,7 @@ export function DiffScreen(props: {
           <ActionButton
             title={
               selectedLine()
-                ? tr('Quote line {line} to chat', { line: selectedLine()!.line })
+                ? tr('Quote line {line} to chat', { line: String(selectedLine()!.line) })
                 : tr('Quote line to chat')
             }
             icon="quote"

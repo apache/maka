@@ -141,7 +141,15 @@ export function ConnectionFormScreen(
       overlay() !== initialOverlay());
   const save = () =>
     void work.run(async () => {
-      const body: unknown = overlay().trim() ? JSON.parse(overlay()) : null;
+      const source = overlay().trim();
+      let body: unknown = null;
+      if (source) {
+        try {
+          body = JSON.parse(source);
+        } catch (cause) {
+          throw new Error(tr('Enter a JSON object.'), { cause });
+        }
+      }
       if (body !== null && (typeof body !== 'object' || Array.isArray(body)))
         throw new Error(tr('Enter a JSON object.'));
       if (!name().trim()) throw new Error(tr('Enter a connection name.'));
@@ -173,7 +181,8 @@ export function ConnectionFormScreen(
               ...(body ? { requestBodyOverlay: body as Record<string, unknown> } : {}),
             },
           });
-      if (result.kind !== 'committed' || !result.connection) throw new Error(result.kind);
+      if (result.kind !== 'committed' || !result.connection)
+        throw new Error(tr('Could not read or update settings.'), { cause: result.kind });
       connectionId = result.connection.connectionId;
       props.onChanged();
       await load();
@@ -192,7 +201,8 @@ export function ConnectionFormScreen(
       const result = await rpc.mutate('settings', 'remove', {
         expected: connectionBasis(detail()!.target),
       });
-      if (result.kind !== 'committed') throw new Error(result.kind);
+      if (result.kind !== 'committed')
+        throw new Error(tr('Could not read or update settings.'), { cause: result.kind });
       props.onChanged();
       if (work.canWrite()) props.onBack();
     });
@@ -231,7 +241,8 @@ export function ConnectionFormScreen(
       progress.set(tr('Discovering models…'));
       try {
         const result = await rpc.mutate('settingsSetup', 'discoverModels', detail()!.target);
-        if (result.kind !== 'ready') throw new Error(result.kind);
+        if (result.kind !== 'ready')
+          throw new Error(tr('Could not load models.'), { cause: result.kind });
         props.onChanged();
         await load();
       } finally {
@@ -264,7 +275,13 @@ export function ConnectionFormScreen(
             },
           },
         );
-        if (result.kind !== 'saved') throw new Error(result.reason);
+        if (result.kind !== 'saved')
+          throw new Error(tr('Could not save the credential.'), {
+            cause:
+              result.kind === 'failed'
+                ? new Error(result.message, { cause: result.reason })
+                : result.reason,
+          });
         await load();
       } finally {
         login.set(null);

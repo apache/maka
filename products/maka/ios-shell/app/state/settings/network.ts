@@ -54,7 +54,9 @@ export async function saveNetwork(
     credential === 'replace' ? { secret: password } : undefined,
   );
   if (result.kind !== 'applied' || result.result.kind !== 'committed') {
-    throw new Error(result.kind === 'applied' ? result.result.kind : result.kind);
+    throw new Error(tr('Could not read or update settings.'), {
+      cause: result.kind === 'applied' ? result.result.kind : result.kind,
+    });
   }
   return rpc.query('settings', 'network', {});
 }

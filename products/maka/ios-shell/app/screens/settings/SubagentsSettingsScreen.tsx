@@ -19,7 +19,7 @@
 
 import { effect, signal, untracked } from 'nsh';
 import type { ServiceMethods } from '../../../../../../packages/plugin-sdk/src/generated/methods';
-import { tr } from '../../locale';
+import { thinkingLevelLabel, tr } from '../../locale';
 import { activeHostInfo } from '../../state/hostPool';
 import {
   loadModelCatalog,
@@ -117,7 +117,12 @@ export function SubagentsSettingsScreen(
               title={preset().name}
               subtitle={[
                 preset().description,
-                [presetModelLabel(preset().model), preset().thinkingLevel]
+                [
+                  presetModelLabel(preset().model),
+                  preset().thinkingLevel == null
+                    ? null
+                    : thinkingLevelLabel(preset().thinkingLevel!),
+                ]
                   .filter(Boolean)
                   .join(' · '),
               ]
@@ -300,7 +305,10 @@ export function SubagentEditor(props: SettingsPageProps & { presetId: string | n
             value={draft()!.thinkingLevel ?? ''}
             options={[
               { id: '', label: tr('Default') },
-              ...currentModel()!.thinkingLevels.map((id) => ({ id, label: id })),
+              ...currentModel()!.thinkingLevels.map((id) => ({
+                id,
+                label: thinkingLevelLabel(id),
+              })),
             ]}
             disabled={work.busy()}
             change={(level) => edit({ thinkingLevel: level || null })}

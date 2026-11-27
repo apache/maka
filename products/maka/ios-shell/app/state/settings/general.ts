@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { tr } from '../../locale';
 import type {
   SettingsAssistantPreferences,
   SettingsPreferencesMutation,
@@ -41,7 +42,8 @@ export async function saveInstructions(
     revision: basis.revision,
     content,
   });
-  if (result.kind !== 'saved') throw new Error(result.kind);
+  if (result.kind !== 'saved')
+    throw new Error(tr('Could not read or update settings.'), { cause: result.kind });
 }
 
 export async function savePreference(
@@ -53,6 +55,7 @@ export async function savePreference(
     expectedRevision: basis.revision,
     mutation,
   });
-  if (result.kind !== 'committed') throw new Error(result.kind);
+  if (result.kind !== 'committed')
+    throw new Error(tr('Could not read or update settings.'), { cause: result.kind });
   return rpc.query('settings', 'assistantPreferences', {});
 }

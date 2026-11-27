@@ -23,7 +23,7 @@ import type {
   HistoryRowAddress,
 } from '../../../../packages/plugin-sdk/src/index.js';
 import { host } from 'nsh';
-import { currentLocale, tr } from './locale';
+import { tr } from './locale';
 
 export type HostViewFilter =
   | { kind: 'all_computers' }
@@ -62,7 +62,7 @@ export function pathLabel(
   if (transport === 'websocket') return tr('WebSocket');
   if (!path) return tr('QUIC');
   return tr(path.kind === 'direct' ? 'Direct QUIC · {latency} ms' : 'Relay · {latency} ms', {
-    latency: new Intl.NumberFormat(currentLocale()).format(path.rttMs),
+    latency: path.rttMs,
   });
 }
 
@@ -297,7 +297,7 @@ export async function hostMutate<T = unknown>(
     throw new Error(tr('Computer is offline'));
   let key: string | undefined;
   if (onProgress) {
-    if (!target) throw new Error('remote Host is not connected');
+    if (!target) throw new Error(tr('Computer is offline'));
     progressId ??= 'mutation:' + String(++nextProgressId);
     key = progressKey(target.rootId, target.generation, progressId);
     if (progressListeners.has(key)) throw new Error('mutation progress ID is already in use');

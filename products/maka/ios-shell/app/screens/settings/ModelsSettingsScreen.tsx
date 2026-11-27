@@ -24,7 +24,7 @@ import type {
   Identity,
   SettingsConnectionSummary,
 } from '../../../../../../packages/plugin-sdk/src/generated/runtime';
-import { tr } from '../../locale';
+import { formatCount, thinkingLevelLabel, tr } from '../../locale';
 import { GroupRow, InsetGroup } from '../../ui';
 import {
   connectionCatalog,
@@ -181,7 +181,8 @@ export function ModelsSettingsScreen(
                   ? { connectionId: target.connectionId, modelId: target.modelId }
                   : null,
               });
-              if (result.kind !== 'committed') throw new Error(result.kind);
+              if (result.kind !== 'committed')
+                throw new Error(tr('Could not read or update settings.'), { cause: result.kind });
               props.onChanged();
             })
           }
@@ -190,7 +191,10 @@ export function ModelsSettingsScreen(
           <SettingChoice
             title={tr('Default thinking level')}
             value={currentModel()?.defaultThinkingLevel ?? ''}
-            options={currentModel()!.thinkingLevels.map((id) => ({ id, label: id }))}
+            options={currentModel()!.thinkingLevels.map((id) => ({
+              id,
+              label: thinkingLevelLabel(id),
+            }))}
             disabled={work.busy()}
             change={(level) =>
               void work.run(async () => {
@@ -207,7 +211,8 @@ export function ModelsSettingsScreen(
                   expected: connectionBasis(detail.target),
                   changes: { modelOverrides },
                 });
-                if (result.kind !== 'committed') throw new Error(result.kind);
+                if (result.kind !== 'committed')
+                  throw new Error(tr('Could not read or update settings.'), { cause: result.kind });
                 await load();
               })
             }
@@ -220,7 +225,7 @@ export function ModelsSettingsScreen(
             <GroupRow
               title={row().name}
               subtitle={row().provider.name}
-              value={String(row().enabledModelCount)}
+              value={formatCount(row().enabledModelCount)}
               disabled={work.busy() || !row().editable}
               chevron
               divider
