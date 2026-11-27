@@ -7663,7 +7663,11 @@ async fn cross_turn_user_stop_holds_completion_notices() {
         };
         let admission_b = maka_agent_state::Admission::new(spec_b.clone(), at(), vec![]);
         let run_b = admission_b.run();
+        // Claim B under the scheduler's lock so it cannot start inference before the stop.
+        let runs = owner.runs.state().await;
         owner.durable.admit(admission_b).await?;
+        let _claim_b = owner.durable.claim(run_b).await?;
+        drop(runs);
         let source_b = maka_agent_facts::durable::ExecutionIdentity {
             session_id: session.clone(),
             turn_id: spec_b.turn_id,
