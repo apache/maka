@@ -80,7 +80,32 @@ enum HostObservation {
 impl Status {
     pub async fn run(self) -> Result<(), HostError> {
         if let Some(root) = self.root {
-            let mut client = HostClient::connect(&root, None).await?;
+            let location = maka_event_log::root::resolve(&root).map_err(|error| -> HostError {
+                if error.kind() == std::io::ErrorKind::NotFound {
+                    format!(
+                        "State Root {} does not exist or is not initialized",
+                        root.display()
+                    )
+                    .into()
+                } else {
+                    format!("State Root {} is not usable: {error}", root.display()).into()
+                }
+            })?;
+            let mut client = HostClient::connect(&root, None)
+                .await
+                .map_err(|error| -> HostError {
+                    if host_absent(&error) {
+                        format!(
+                            "no Host is running for State Root {} (root id {}); use `maka host status --root-id {}` to observe its managed deployment",
+                            root.display(),
+                            location.root_id(),
+                            location.root_id()
+                        )
+                        .into()
+                    } else {
+                        error
+                    }
+                })?;
             println!("{}", serde_json::to_string(&client.status().await?)?);
             return Ok(());
         }
@@ -153,8 +178,20 @@ async fn observe_host(deployment: &Deployment) -> HostObservation {
     }
     .await;
     result.unwrap_or_else(|error| HostObservation::Unavailable {
-        message: error.to_string().chars().take(2048).collect(),
+        message: if host_absent(&error) {
+            "no Host is running for this State Root".to_owned()
+        } else {
+            error.to_string().chars().take(2048).collect()
+        },
     })
+}
+
+/// A stopped Host is an expected observation, not an O/S failure: the live
+/// discovery record is simply absent until a Host registers for this State Root.
+fn host_absent(error: &HostError) -> bool {
+    error
+        .downcast_ref::<std::io::Error>()
+        .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound)
 }
 
 pub(super) async fn pending(
