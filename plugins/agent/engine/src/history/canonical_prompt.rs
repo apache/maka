@@ -37,11 +37,6 @@ const PINNED_MEMORY: u64 = 1 << 2;
 const WORDS: usize = 20;
 const RECORD_BYTES: usize = WORDS * 8;
 type Record = [u64; WORDS];
-
-fn decode_record(bytes: &[u8; RECORD_BYTES]) -> Record {
-    std::array::from_fn(|i| u64::from_le_bytes(bytes[i * 8..i * 8 + 8].try_into().unwrap()))
-}
-
 #[derive(Clone, Copy, Default)]
 struct List {
     offset: u64,
@@ -71,7 +66,9 @@ impl Store {
             .arena
             .read_control_owned::<RECORD_BYTES>(offset, self.owner.clone())
             .await?;
-        Ok(decode_record(&bytes))
+        Ok(std::array::from_fn(|i| {
+            u64::from_le_bytes(bytes[i * 8..i * 8 + 8].try_into().unwrap())
+        }))
     }
     async fn write(&self, record: Record) -> io::Result<u64> {
         self.arena
@@ -382,8 +379,6 @@ pub(crate) async fn restore(
     arena: CaptureArena,
     resources: ModelPreparationResources,
     layout: Layout,
-    legacy_memory_prefix: bool,
-    cancellation: &CancellationToken,
 ) -> io::Result<Prompt> {
     if layout.version != 2
         || layout
@@ -400,42 +395,6 @@ pub(crate) async fn restore(
     let available = arena.with_writer(|writer| Ok(writer.position())).await?;
     if layout.byte_len > available {
         return Err(invalid());
-    }
-    if legacy_memory_prefix {
-        let index = layout.index_offset;
-        let count = layout.message_count;
-        let cancellation = cancellation.clone();
-        // Upgrade only this verified, request-owned copy. The archived content
-        // and its reference keep their original bytes and logical identity.
-        arena
-            .with_writer(move |writer| {
-                for i in 0..count {
-                    if cancellation.is_cancelled() {
-                        return Err(crate::preparation_cancelled(
-                            "frozen prompt restore cancelled",
-                        ));
-                    }
-                    let mut address = [0; 8];
-                    writer.read_exact_at(index + i as u64 * 8, &mut address)?;
-                    let offset = u64::from_le_bytes(address);
-                    let mut bytes = [0; RECORD_BYTES];
-                    writer.read_exact_at(offset, &mut bytes)?;
-                    let record = decode_record(&bytes);
-                    match role(record[2])? {
-                        MessageRole::System => continue,
-                        MessageRole::User => {
-                            let flags = record[MESSAGE_FLAGS] | PINNED_MEMORY;
-                            return writer.write_at(
-                                offset + (MESSAGE_FLAGS * 8) as u64,
-                                &flags.to_le_bytes(),
-                            );
-                        }
-                        _ => return Err(invalid()),
-                    }
-                }
-                Err(invalid())
-            })
-            .await?;
     }
     arena.seal().await?;
     Ok(make_prompt(

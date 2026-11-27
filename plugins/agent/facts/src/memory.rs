@@ -401,7 +401,6 @@ impl MemoryProjection {
 pub enum MemoryAdmission {
     /// The original receiver could not be established.
     #[default]
-    #[serde(alias = "legacy")]
     Unknown,
     Excluded,
     Disabled,
@@ -419,7 +418,6 @@ impl MemoryAdmission {
 #[serde(rename_all = "snake_case")]
 pub enum MemoryReplay {
     #[default]
-    #[serde(rename = "legacy")]
     Unrecorded,
     Shared,
     Run(crate::durable::RunId),

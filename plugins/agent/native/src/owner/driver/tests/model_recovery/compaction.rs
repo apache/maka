@@ -163,7 +163,7 @@ async fn requested_compaction_resumes_from_checkpoint_with_optional_focus_and_mo
             let running = call(client,"agent","work",target.clone()).await?;
             assert_eq!(running["execution"]["runId"] != original["execution"]["runId"], switch);
             if let Some(pin) = added {
-                super::preset_acceptance::pinned_memory::assert_wire(&resumed, marker);
+                super::preset_acceptance::pinned_memory::assert_wire(resumed, marker);
                 let loaded = call(client,"agent","loadedMemories",json!({"sessionId":session,"runId":running["execution"]["runId"]})).await?;
                 assert_eq!(loaded[0]["id"], pin["id"]);
                 let original_loaded = call(client,"agent","loadedMemories",json!({"sessionId":session,"runId":original["execution"]["runId"]})).await?;

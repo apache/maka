@@ -128,7 +128,7 @@ pub(super) struct PreparedContinuation {
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct FrozenInput {
+struct FrozenInput {
     continuing: Option<AcceptedModel>,
     accepted: AcceptedModel,
     adapter: SourceRevision,
@@ -140,8 +140,6 @@ pub(super) struct FrozenInput {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     prompt_chunks: Vec<ContentRef>,
     layout: preparation::FrozenPromptLayout,
-    #[serde(default, rename = "memoryPrefix", skip_serializing)]
-    legacy_memory_prefix: bool,
     covered_prefix: Option<CoveredPrefix>,
     normalization: Option<maka_model::ProviderKind>,
     wire: FrozenWire,
@@ -214,7 +212,7 @@ impl FrozenCellKnowledge {
     }
 }
 impl FrozenInput {
-    pub(super) async fn restore_prompt(
+    async fn restore_prompt(
         &self,
         io: preparation::PreparationIo,
         resources: ModelPreparationResources,
@@ -230,7 +228,6 @@ impl FrozenInput {
             &self.prompt,
             &self.prompt_chunks,
             &self.layout,
-            self.legacy_memory_prefix,
             cancellation,
         )
         .await
@@ -938,7 +935,6 @@ impl DriverModel {
                 }
             });
             let mut frozen = FrozenInput {
-                legacy_memory_prefix: false,
                 continuing: preflight.map(|_| self.source.accepted.clone()),
                 accepted: source.accepted.clone(),
                 adapter: adapter.source().clone(),
