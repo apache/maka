@@ -27,6 +27,7 @@ const quoteLabel = (quote: QuoteRef) => quote.label || quote.source?.sessionName
 
 export function DraftQuotes(props: {
   owner: Pick<ComposerSession, 'quotes' | 'editable' | 'removeQuote'>;
+  focusEditor(): void;
 }) {
   return (
     <If when={props.owner.quotes().length > 0}>
@@ -62,7 +63,10 @@ export function DraftQuotes(props: {
                 label={tr('Remove quote')}
                 icon="close"
                 disabled={!props.owner.editable()}
-                onPress={() => props.owner.removeQuote(index())}
+                onPress={() => {
+                  props.owner.removeQuote(index());
+                  props.focusEditor();
+                }}
               />
             </View>
           )}

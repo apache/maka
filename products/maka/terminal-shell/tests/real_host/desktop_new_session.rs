@@ -3214,16 +3214,13 @@ async fn desktop_external_agent_satisfies_new_session_connection_prompt() {
     desktop.control("Add a model connection").await;
 
     desktop.press("Add a model connection").await;
-    desktop.control("Enable Antigravity").await;
-    desktop.press("Enable Antigravity").await;
-    desktop
-        .control("I understand and accept the external agent permissions")
-        .await;
+    desktop.press("Antigravity").await;
     desktop
         .press("I understand and accept the external agent permissions")
         .await;
     desktop.press("Confirm permissions and enable").await;
-    desktop.control("Disable Antigravity").await;
+    // The switch keeps its name in both states. Refresh appears for enabled agents.
+    desktop.control("Refresh").await;
 
     desktop.press("Back to app").await;
     desktop.control("Focus message composer").await;
@@ -3240,9 +3237,14 @@ async fn desktop_external_agent_satisfies_new_session_connection_prompt() {
         .await;
 
     desktop.press("Open settings").await;
-    desktop.control("Disable Antigravity").await;
-    desktop.press("Disable Antigravity").await;
-    desktop.control("Enable Antigravity").await;
+    desktop.control("Refresh").await;
+    desktop.press("Antigravity").await;
+    desktop
+        .until("the last enabled external agent did not turn off", || {
+            (desktop.controls("Antigravity").len() == 1 && desktop.controls("Refresh").is_empty())
+                .then_some(())
+        })
+        .await;
 
     desktop.press("Back to app").await;
     desktop.control("Add a model connection").await;
