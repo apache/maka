@@ -1280,6 +1280,11 @@ async fn composed_acp_setup_checks_a_provider_without_exposing_state_root()
     #[cfg(windows)]
     let sandbox_guard = WindowsSandboxGuard::setup(&sandbox.root).await?;
     let mut serve = host::command(&sandbox)?;
+    // Account isolation walks the denied native-task directory under the Host's TEMP.
+    #[cfg(windows)]
+    serve
+        .env("TMP", sandbox.directory.path())
+        .env("TEMP", sandbox.directory.path());
     serve
         .args(["application", "serve", "--root"])
         .arg(&sandbox.root)
@@ -1302,7 +1307,11 @@ async fn composed_acp_setup_checks_a_provider_without_exposing_state_root()
             json!({"executor":"probe","action":{"kind":"check"}}),
         )
         .await?;
-        if checked != json!({"kind":"checked","info":{"title":null,"name":"isolated-probe","version":"1"},"methods":[]}) {
+        if checked != json!({
+            "kind": "checked",
+            "info": {"title": null, "name": "isolated-probe", "version": "1"},
+            "methods": []
+        }) {
             return Err(format!("ACP provider check: {checked}"));
         }
         let created = mutate(&client, "agent", "create", json!({
