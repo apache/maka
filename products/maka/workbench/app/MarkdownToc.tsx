@@ -209,7 +209,7 @@ function TocHeadingList(props: {
                     height: 12,
                     borderRadius: 1,
                     flexShrink: 0,
-                    backgroundColor: isActive() ? C.text : C.line,
+                    backgroundColor: isActive() ? C.text : C.pressed,
                     opacity: isActive() ? 1 : 0.45,
                   }}
                 />

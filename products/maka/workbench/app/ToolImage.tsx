@@ -236,7 +236,7 @@ export function ToolImageStrip(props: {
           onPress={() => void open()}
           style={{ height: 24, paddingHorizontal: 4, justifyContent: 'center', borderRadius: 4 }}
           hoverStyle={{ backgroundColor: C.raised }}
-          focusStyle={{ backgroundColor: C.line }}
+          focusStyle={{ backgroundColor: C.pressed }}
         >
           <Text style={{ ...captionTextStyle, color: C.muted }}>{`+${hidden()}`}</Text>
         </Button>

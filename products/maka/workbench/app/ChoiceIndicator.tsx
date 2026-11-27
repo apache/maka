@@ -75,7 +75,7 @@ export function ChoiceIndicator(props: {
         cx.beginPath();
         if (props.kind === 'switch') {
           cx.roundRect(1, 1, 30, 14, 7);
-          cx.fillStyle = props.checked && !props.disabled ? C.accent : C.line;
+          cx.fillStyle = props.checked && !props.disabled ? C.accent : C.pressed;
           cx.fill();
           cx.beginPath();
           cx.arc(props.checked ? 24 : 8, 8, 5, 0, Math.PI * 2);
