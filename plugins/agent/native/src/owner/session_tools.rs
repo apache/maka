@@ -488,7 +488,7 @@ impl Owner {
         session_id: &str,
         observed: Option<&crate::contract::Run>,
         scope: &Scope,
-    ) -> Result<Option<(SessionRunOverview, Option<RunId>)>, String> {
+    ) -> Result<Option<(SessionRunOverview, Option<(RunId, String)>)>, String> {
         let latest = match observed {
             Some(active) => Some(active.run_id),
             None => self
@@ -529,7 +529,10 @@ impl Owner {
         };
 
         let latest_id = view.run;
-        let terminal_run = view.terminal.as_ref().map(|_| latest_id);
+        let terminal_run = view
+            .terminal
+            .as_ref()
+            .map(|_| (latest_id, view.spec.turn_id.clone()));
         let state = match &view.terminal {
             Some(term) => enum_snake(term),
             None if view.stopped => "stopped".into(),
@@ -920,20 +923,20 @@ impl Owner {
             }
         };
 
-        let tail_read = requested_tail
+        if requested_tail
+            && let Some(caller) = scope.identity.agent()
+            && let Some((run, turn_id)) = terminal_run
             && matches!(
                 &transcript,
                 Some(SessionTranscript::Agent {
                     items,
                     after_cursor: None,
                     ..
-                }) if items
-                    .last()
-                    .is_none_or(|entry| entry.offset.is_none_or(|offset| offset == 0))
-            );
-        if tail_read
-            && let Some(caller) = scope.identity.agent()
-            && let Some(run) = terminal_run
+                }) if items.last().is_some_and(|entry| {
+                    entry.turn_id.as_deref() == Some(turn_id.as_str())
+                        && entry.offset.is_none_or(|offset| offset == 0)
+                })
+            )
         {
             self.claim_completion_on_session_read(&session_id, &caller.session_id, run)
                 .await

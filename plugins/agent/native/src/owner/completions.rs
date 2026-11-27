@@ -512,6 +512,38 @@ impl Owner {
         if worker_session == recipient {
             return Ok(());
         }
+        // Check watches before queue.entry: background delivery always commits the queue row
+        // before deleting the watch, so observing no watch guarantees any delivered row is
+        // already visible to the subsequent queue lookup.
+        if self
+            .store
+            .has_message_completions(&self.prefix, worker_session, recipient)
+            .await
+            .map_err(|error| error.to_string())?
+        {
+            let mut entries = Vec::new();
+            let mut after = None;
+            loop {
+                let page = self
+                    .store
+                    .message_completions_for_recipient(
+                        &self.prefix,
+                        worker_session,
+                        recipient,
+                        after.as_deref(),
+                    )
+                    .await
+                    .map_err(|error| error.to_string())?;
+                if page.is_empty() {
+                    break;
+                }
+                after = page.last().map(|entry| entry.key.clone());
+                entries.extend(page);
+            }
+            if !entries.is_empty() {
+                self.deliver_completion_batch(entries, now()).await?;
+            }
+        }
         let request = RequestId(finished_run_identity(worker_session, run));
         if self
             .durable
@@ -521,43 +553,10 @@ impl Owner {
             .map_err(|error| error.to_string())?
             .is_some()
         {
-            return self
-                .retract_pending_completion(recipient, worker_session, run, &request)
-                .await;
+            self.retract_pending_completion(recipient, worker_session, run, &request)
+                .await?;
         }
-        if !self
-            .store
-            .has_message_completions(&self.prefix, worker_session, recipient)
-            .await
-            .map_err(|error| error.to_string())?
-        {
-            return Ok(());
-        }
-        let mut entries = Vec::new();
-        let mut after = None;
-        loop {
-            let page = self
-                .store
-                .message_completions_for_recipient(
-                    &self.prefix,
-                    worker_session,
-                    recipient,
-                    after.as_deref(),
-                )
-                .await
-                .map_err(|error| error.to_string())?;
-            if page.is_empty() {
-                break;
-            }
-            after = page.last().map(|entry| entry.key.clone());
-            entries.extend(page);
-        }
-        if entries.is_empty() {
-            return Ok(());
-        }
-        self.deliver_completion_batch(entries, now()).await?;
-        self.retract_pending_completion(recipient, worker_session, run, &request)
-            .await
+        Ok(())
     }
     async fn retract_pending_completion(
         &self,
@@ -574,11 +573,11 @@ impl Owner {
                 .read(recipient.to_owned())
                 .await
                 .map_err(|error| error.to_string())?;
-            if !current
-                .entries
-                .iter()
-                .any(|entry| entry.request.id == *request)
-            {
+            // Preserve user-Stop Held completions for the next Run; stop_queue bumps
+            // queue.revision when holding, so expected_revision CAS catches concurrent Stops.
+            if !current.entries.iter().any(|entry| {
+                entry.request.id == *request && !matches!(entry.placement, QueuePlacement::Held)
+            }) {
                 return Ok(());
             }
             match queue

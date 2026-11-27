@@ -6010,6 +6010,7 @@ mod model_recovery {
             quiescent_message(client, caller, &json!(r3_msg)).await?;
             assert!(owner.store.message_completions(&owner.prefix, None).await?.is_empty());
             assert_eq!(call(client, "agent", "queue", json!({"sessionId": caller})).await?["entries"], json!([]));
+
             Ok::<_, Box<dyn Error + Send + Sync>>(())
         })
         .await;
@@ -6018,6 +6019,75 @@ mod model_recovery {
         assert!(cleanup.is_empty(), "{cleanup:?}");
         result
             .expect("session_read tail claim test timed out")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn user_stop_held_completion_survives_session_read_claim() {
+        let mut rig = Rig::new().unwrap();
+        let mut server = MockAiBuilder::new().interactive(4).start().await.unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(90), async {
+            let base = rig.directory.path().to_path_buf();
+            let boot = bootstrap_with(&base, server.base_url(), |c| {
+                c["todo"] = json!(false);
+            })
+            .await?;
+            rig.attach_host(root(&base, false).await?, boot.deployment, boot.gateway, true, None)
+                .await?;
+            let client = rig.client.as_ref().unwrap();
+            let catalog = call(client, "settings", "connections", json!({"kind":"start"})).await?;
+            let connection = call(client, "settings", "create", json!({
+                "expectedCatalogRevision": catalog["revision"],
+                "connection": {
+                    "slug": "held-claim", "name": "held-claim",
+                    "provider": {"packageId":"maka.providers","entryId":"maka.providers","scope":"profile","name":"ollama"},
+                    "configuration": {"baseUrl": boot.base_url}, "enabled": true, "enabledModelIds": ["llama3.2"],
+                    "modelOverrides": {"llama3.2": {"codeMode": false, "apiProtocol": "openai-chat-completions"}}
+                }
+            })).await?;
+            let backend = json!({"kind":"model","connectionId":connection["connection"]["connectionId"],"modelId":"llama3.2"});
+            let mut sessions = Vec::new();
+            for title in ["Caller", "Worker"] {
+                let created = call(client, "agent", "create", json!({
+                    "title": title, "automaticTitle": false, "labels": [], "tools": [],
+                    "workspace": {"kind":"directory","path": base.join("workspace")}
+                })).await?;
+                sessions.push(created["session"]["id"].as_str().ok_or("session missing")?.to_owned());
+            }
+            let (caller, worker) = (&sessions[0], &sessions[1]);
+            let owner = rig.captured.lock().unwrap().clone().unwrap();
+
+            call(client, "agent", "send", json!({"sessionId":caller,"message":"Turn","backend":backend})).await?;
+            let _caller_turn = server.next_turn().await.ok_or("caller turn missing")?;
+            let caller_run = owner.durable.latest_run(caller.clone()).await?.ok_or("caller run missing")?;
+            let sent = bot_tools::agent_call(&owner, caller, "send", json!({
+                "sessionId": worker, "message": "Task.", "backend": backend, "onComplete": "notify_caller"
+            })).await?;
+            let worker_turn = server.next_turn().await.ok_or("worker turn missing")?;
+            worker_turn.reply_text_with_usage("Done.", Usage::new(20, 10));
+            completed_message(client, worker, &sent["messageId"]).await?;
+            let worker_run = owner.durable.latest_run(worker.clone()).await?.ok_or("worker run missing")?;
+            owner.deliver_completions().await?;
+            call(client, "agent", "stop", json!({"sessionId": caller, "runId": caller_run})).await?;
+            while owner.durable.frontier(caller_run).await?.terminal.is_none() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            let held = call(client, "agent", "queue", json!({"sessionId": caller})).await?;
+            assert_eq!(held["entries"][0]["kind"], "held", "{held}");
+
+            owner
+                .claim_completion_on_session_read(worker, caller, worker_run)
+                .await?;
+            let still_held = call(client, "agent", "queue", json!({"sessionId": caller})).await?;
+            assert_eq!(still_held["entries"][0]["kind"], "held", "{still_held}");
+            Ok::<_, Box<dyn Error + Send + Sync>>(())
+        })
+        .await;
+        server.shutdown().await;
+        let cleanup = rig.finish().await;
+        assert!(cleanup.is_empty(), "{cleanup:?}");
+        result
+            .expect("held completion claim test timed out")
             .unwrap();
     }
 
