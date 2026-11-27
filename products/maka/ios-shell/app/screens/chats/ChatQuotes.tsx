@@ -160,6 +160,7 @@ export function ReplyActions(props: {
   bodies: readonly HistoryRow[];
   loadBodies?: () => Promise<HistoryRow[] | undefined>;
   needsFullReply?: boolean;
+  startsAtPageBoundary: boolean;
   limitReached: boolean;
   onQuote: (row: HistoryRow, text: string, combined?: readonly HistoryRow[]) => boolean;
   onAskSide?: () => void;
@@ -168,15 +169,18 @@ export function ReplyActions(props: {
   const canQuote = () =>
     sources().length > 0 &&
     !props.limitReached &&
+    !props.startsAtPageBoundary &&
     (props.needsFullReply ? props.loadBodies !== undefined : sources().every(isCompleteHistoryRow));
   const copyReply = () => {
+    const visibleText = props.bodies.map((row) => row.text).join('\n\n');
     void (async () => {
       try {
-        const loaded = props.loadBodies ? await props.loadBodies() : undefined;
-        const bodies = loaded?.length ? loaded : props.bodies;
-        if (!bodies.length) return;
+        const loaded = await props.loadBodies?.().catch(() => undefined);
+        const fullText = loaded?.every(isCompleteHistoryRow)
+          ? loaded.map((row) => row.text).join('\n\n')
+          : '';
         hapticSelection();
-        await Clipboard.writeText(bodies.map((row) => row.text).join('\n\n'));
+        await Clipboard.writeText(trimHostWhitespace(fullText) ? fullText : visibleText);
         showToast(tr('Copied'));
       } catch (cause) {
         showToast(cause instanceof Error ? cause.message : String(cause));
