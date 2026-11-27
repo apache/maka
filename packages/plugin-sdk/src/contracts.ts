@@ -1199,6 +1199,10 @@ export const contracts: {
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
                     type: ['string', 'null'],
                   },
+                  delegatedBy: {
+                    description: "Creator that dispatched this child's first local message.",
+                    type: ['string', 'null'],
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -2879,6 +2883,10 @@ export const contracts: {
                   parentSessionId: {
                     description:
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
+                    type: ['string', 'null'],
+                  },
+                  delegatedBy: {
+                    description: "Creator that dispatched this child's first local message.",
                     type: ['string', 'null'],
                   },
                   branch: {
@@ -8059,6 +8067,10 @@ export const contracts: {
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
                     type: ['string', 'null'],
                   },
+                  delegatedBy: {
+                    description: "Creator that dispatched this child's first local message.",
+                    type: ['string', 'null'],
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -12062,6 +12074,10 @@ export const contracts: {
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
                     type: ['string', 'null'],
                   },
+                  delegatedBy: {
+                    description: "Creator that dispatched this child's first local message.",
+                    type: ['string', 'null'],
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -12852,6 +12868,10 @@ export const contracts: {
                   parentSessionId: {
                     description:
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
+                    type: ['string', 'null'],
+                  },
+                  delegatedBy: {
+                    description: "Creator that dispatched this child's first local message.",
                     type: ['string', 'null'],
                   },
                   branch: {
@@ -20928,6 +20948,10 @@ export const contracts: {
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
                     type: ['string', 'null'],
                   },
+                  delegatedBy: {
+                    description: "Creator that dispatched this child's first local message.",
+                    type: ['string', 'null'],
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -22135,6 +22159,10 @@ export const contracts: {
                   parentSessionId: {
                     description:
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
+                    type: ['string', 'null'],
+                  },
+                  delegatedBy: {
+                    description: "Creator that dispatched this child's first local message.",
                     type: ['string', 'null'],
                   },
                   branch: {
@@ -24396,6 +24424,10 @@ export const contracts: {
                   parentSessionId: {
                     description:
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
+                    type: ['string', 'null'],
+                  },
+                  delegatedBy: {
+                    description: "Creator that dispatched this child's first local message.",
                     type: ['string', 'null'],
                   },
                   branch: {
@@ -29913,6 +29945,10 @@ export const contracts: {
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
                     type: ['string', 'null'],
                   },
+                  delegatedBy: {
+                    description: "Creator that dispatched this child's first local message.",
+                    type: ['string', 'null'],
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -31855,6 +31891,10 @@ export const contracts: {
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
                     type: ['string', 'null'],
                   },
+                  delegatedBy: {
+                    description: "Creator that dispatched this child's first local message.",
+                    type: ['string', 'null'],
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -33195,6 +33235,10 @@ export const contracts: {
                   parentSessionId: {
                     description:
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
+                    type: ['string', 'null'],
+                  },
+                  delegatedBy: {
+                    description: "Creator that dispatched this child's first local message.",
                     type: ['string', 'null'],
                   },
                   branch: {
@@ -36984,6 +37028,10 @@ export const contracts: {
                   parentSessionId: {
                     description:
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
+                    type: ['string', 'null'],
+                  },
+                  delegatedBy: {
+                    description: "Creator that dispatched this child's first local message.",
                     type: ['string', 'null'],
                   },
                   branch: {
@@ -44902,6 +44950,10 @@ export const contracts: {
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
                     type: ['string', 'null'],
                   },
+                  delegatedBy: {
+                    description: "Creator that dispatched this child's first local message.",
+                    type: ['string', 'null'],
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -47312,6 +47364,10 @@ export const contracts: {
                   parentSessionId: {
                     description:
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
+                    type: ['string', 'null'],
+                  },
+                  delegatedBy: {
+                    description: "Creator that dispatched this child's first local message.",
                     type: ['string', 'null'],
                   },
                   branch: {
@@ -53635,6 +53691,10 @@ export const contracts: {
                   parentSessionId: {
                     description:
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
+                    type: ['string', 'null'],
+                  },
+                  delegatedBy: {
+                    description: "Creator that dispatched this child's first local message.",
                     type: ['string', 'null'],
                   },
                   branch: {
