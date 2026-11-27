@@ -403,10 +403,10 @@ impl DriverModel {
                 let prepared=preparation::prepare_request(&settings,prompt.clone(),definitions.clone(),preparation::OutputBudget::Compute(model.main_output_limit),ModelPurpose::Main,calibration)?;
                 self.check_pinned_window(&model, &prepared.context_breakdown)?;
                 let snapshot=preparation::snapshot_prompt(self.preparation_io()?,self.resources.clone(),&prepared.request.prompt,&self.cancellation).await?;
-                let (prompt,layout_chunks,layout,cleanup)=snapshot.into_parts();
+                let (prompt,layout_chunks,layout_media,layout,cleanup)=snapshot.into_parts();
                 let evidence=self.cleanup.clone();
                 self.workers.spawn(async move{if let Err(error)=cleanup.await{evidence.observe(&error);}});
-                frozen.prompt=prompt;frozen.prompt_chunks=layout_chunks.iter().map(|chunk| chunk.reference().clone()).collect();frozen.layout=layout;frozen.covered_prefix=None;
+                frozen.prompt=prompt;frozen.prompt_chunks=layout_chunks.iter().map(|chunk| chunk.reference().clone()).collect();frozen.prompt_media=layout_media.iter().map(|blob| blob.reference().clone()).collect();frozen.layout=layout;frozen.covered_prefix=None;
                 frozen.instructions=prepared.request.prompt.instructions().map(str::to_owned);
                 frozen.normalization=prepared.request.prompt.normalization().cloned();frozen.wire=FrozenWire::capture(&prepared.request.prompt)?;
                 let (body,texts)=frozen.seal()?;
@@ -436,6 +436,7 @@ impl DriverModel {
                 let mut contents=vec![body,recovery,projection,provenance,surface_blob];
                 if let Some(blob)=tool_contracts_blob{contents.push(blob);}
                 contents.extend(layout_chunks);
+                contents.extend(layout_media);
                 contents.extend(texts);
                 Ok(contents)
             }.await;

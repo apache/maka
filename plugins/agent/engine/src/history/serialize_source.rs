@@ -18,7 +18,7 @@
  */
 
 //! Logical message JSON emitted directly from immutable typed recipes.
-use maka_agent_facts::model::prompt_source::source::*;
+use maka_agent_facts::{durable::ContentRef, model::prompt_source::source::*};
 use maka_provider_protocol::json_stream::pull::{JsonEscape, Transform};
 use std::{future::Future, io, pin::Pin, sync::Arc};
 use tokio_util::sync::CancellationToken;
@@ -31,6 +31,15 @@ pub(crate) trait AsyncEmit: Send {
         &'a mut self,
         bytes: &'a [u8],
     ) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + 'a>>;
+}
+
+pub(crate) trait MediaExternalizer: Send {
+    fn capture<'a>(
+        &'a mut self,
+        bytes: SourceBytes,
+        budget: &'a Arc<dyn SourceBudget>,
+        cancellation: &'a CancellationToken,
+    ) -> Pin<Box<dyn Future<Output = io::Result<ContentRef>> + Send + 'a>>;
 }
 type MediaLabel<'a> = dyn FnMut(usize, &ContentRecipe) -> io::Result<TextSource> + Send + 'a;
 struct SyncEmit<'a, F>(&'a mut F);
@@ -63,6 +72,7 @@ pub(crate) async fn message_async<'a>(
         cancellation,
         emit,
         media,
+        externalizer: None,
         preserve_media: false,
     }
     .message(message)
@@ -75,25 +85,40 @@ pub(crate) async fn exact_message_async(
     cancellation: &CancellationToken,
     emit: &mut dyn AsyncEmit,
 ) -> io::Result<()> {
+    exact_message_async_with_media(message, budget, cancellation, emit, None).await
+}
+
+pub(crate) async fn exact_message_async_with_media(
+    message: &MessageRecipe,
+    budget: &Arc<dyn SourceBudget>,
+    cancellation: &CancellationToken,
+    emit: &mut dyn AsyncEmit,
+    externalizer: Option<&mut dyn MediaExternalizer>,
+) -> io::Result<()> {
+    let mut no_label = |_: usize, _: &ContentRecipe| {
+        Err(io::Error::other("exact serialization never labels media"))
+    };
     Encoder {
         budget,
         cancellation,
         emit,
-        media: &mut |_, _| Err(io::Error::other("exact serialization never labels media")),
+        media: &mut no_label,
+        externalizer,
         preserve_media: true,
     }
     .message(message)
     .await
 }
 
-struct Encoder<'a> {
+struct Encoder<'a, 'b> {
     budget: &'a Arc<dyn SourceBudget>,
     cancellation: &'a CancellationToken,
     emit: &'a mut dyn AsyncEmit,
     media: &'a mut MediaLabel<'a>,
+    externalizer: Option<&'b mut dyn MediaExternalizer>,
     preserve_media: bool,
 }
-impl Encoder<'_> {
+impl Encoder<'_, '_> {
     async fn literal(&mut self, bytes: &[u8]) -> io::Result<()> {
         if self.cancellation.is_cancelled() {
             return Err(crate::preparation_cancelled(
@@ -272,16 +297,27 @@ impl Encoder<'_> {
             } = &part
                 && self.preserve_media
             {
-                self.literal(b"{\"type\":\"file\",\"mediaType\":").await?;
+                self.literal(br#"{"type":"file","mediaType":"#).await?;
                 self.text(&media.media_type).await?;
-                self.literal(b",\"data\":{\"type\":\"data\",\"data\":\"")
+                if let Some(externalizer) = self.externalizer.as_mut() {
+                    let reference = externalizer
+                        .capture(media.bytes.clone(), self.budget, self.cancellation)
+                        .await?;
+                    self.literal(br#","data":{"type":"ref","digest":""#).await?;
+                    self.literal(reference.digest.as_bytes()).await?;
+                    self.literal(br#"","bytes":"#).await?;
+                    let bytes_text = reference.bytes.to_string();
+                    self.literal(bytes_text.as_bytes()).await?;
+                    self.literal(b"}").await?;
+                } else {
+                    self.literal(br#","data":{"type":"data","data":""#).await?;
+                    self.transformed(
+                        media.bytes.clone(),
+                        maka_provider_protocol::json_stream::pull::Base64Encoder::new(),
+                    )
                     .await?;
-                self.transformed(
-                    media.bytes.clone(),
-                    maka_provider_protocol::json_stream::pull::Base64Encoder::new(),
-                )
-                .await?;
-                self.literal(b"\"}").await?;
+                    self.literal(br#""}"#).await?;
+                }
                 self.exact_media_options(media, provider_options).await?;
                 self.literal(b"}").await?;
                 index += 1;
