@@ -9657,7 +9657,7 @@ async fn compaction_resumes_with_steering_indexed_at_its_original_delivery() {
         .await?;
         let external_history = String::from_utf8(external_history)?;
         assert!(external_history.contains(steering_text));
-        assert!(!external_history.contains(summary_text));
+        assert!(external_history.contains(summary_text));
         let context = recall
             .context(
                 session.clone(),
@@ -9675,7 +9675,8 @@ async fn compaction_resumes_with_steering_indexed_at_its_original_delivery() {
             context
                 .messages
                 .iter()
-                .all(|msg| msg.role != maka_agent_state::recall::Role::Compaction)
+                .any(|msg| msg.role == maka_agent_state::recall::Role::Compaction
+                    && msg.body == summary_text)
         );
         let original = model_recovery::call(rig.client.as_ref().unwrap(), "agent", "history", json!({
             "sessionId":session, "position":{"kind":"tail"}, "view":"text", "includeThinking":false
