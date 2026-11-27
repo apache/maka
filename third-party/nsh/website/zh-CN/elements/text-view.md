@@ -789,6 +789,8 @@ impl Abbreviations {
 | 属性 | Rust | 类型 | 默认值 | 说明 |
 |---|---|---|---|---|
 | `markdown` | `.markdown(..)` | `string` | | Markdown 形式的文档。 |
+| `sourceId` | `.source_id(..)` | `string` | | 阅读锚点使用的原始 Markdown 稳定标识。 |
+| `sourceOffset` | `.source_offset(..)` | `number` | `0` | 与稳定的 `sourceId` 配合，指定摘录在原始 Markdown 中的 UTF-8 起始字节偏移。向前补齐内容时，阅读锚点仍指向同一段文字。 |
 | `html` | `.html(..)` | `string` | | HTML 形式的文档，未提供 `markdown` 时使用。 |
 | `document` | `.document(..)` | `TextViewDocument` | | 文档块形式的文档，`markdown` 和 `html` 都未提供时使用。 |
 | `options` | `.options(..)` | `MarkdownOptions` | 全部默认值 | 读取的 Markdown 语法（[选项](#options)）。 |

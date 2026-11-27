@@ -18,7 +18,7 @@
  */
 
 import { approvalOutcome, approvalRejectionError } from '../approval';
-import { cleanup, computed, effect, signal } from 'nsh';
+import { batch, cleanup, computed, effect, signal, untracked } from 'nsh';
 import {
   hostMutate,
   hostQuery,
@@ -40,7 +40,9 @@ import {
   type AgentSession,
   type AgentSendResult,
   type HistoryOrder,
+  type HistoryPosition,
   type HistoryRowAddress,
+  type HistoryView,
   type QuoteRef,
 } from '../bridge';
 import { LivePreviewAccumulator, type LivePreviewSnapshot } from '../streaming';
@@ -103,16 +105,34 @@ export interface HistoryRow {
   text: string;
 }
 
+const chunkEnd = (chunk: AgentHistoryChunk) => chunk.offset + Buffer.byteLength(chunk.text, 'utf8');
+
+function sameHistoryField(a: AgentHistoryChunk, b: AgentHistoryChunk) {
+  return (
+    a.field === b.field &&
+    compareHistoryRows(a, b) === 0 &&
+    historyAddressKey(a.position) === historyAddressKey(b.position)
+  );
+}
+
 export function assembleHistoryRows(chunks: readonly AgentHistoryChunk[]): HistoryRow[] {
   const rows: HistoryRow[] = [];
   for (const chunk of chunks) {
     const row = rows.at(-1);
-    if (row && chunk.offset > 0 && compareHistoryRows(row.first, chunk) === 0) {
+    if (
+      row &&
+      chunk.offset > 0 &&
+      chunkEnd(row.last) === chunk.offset &&
+      sameHistoryField(row.first, chunk)
+    ) {
       row.text += chunk.text;
       row.last = chunk;
     } else {
       rows.push({
-        key: chunk.order.path.join('/') + ':' + String(chunk.order.itemIndex),
+        key:
+          row && sameHistoryField(row.first, chunk)
+            ? row.key + ':' + chunk.offset
+            : chunk.order.path.join('/') + ':' + String(chunk.order.itemIndex),
         first: chunk,
         last: chunk,
         text: chunk.text,
@@ -158,10 +178,152 @@ export function historyQuote(row: HistoryRow, text: string): QuoteRef {
 
 export function isCompleteHistoryRow(row: HistoryRow): boolean {
   const { last } = row;
-  return (
-    row.first.offset === 0 && last.offset + Buffer.byteLength(last.text, 'utf8') === last.totalBytes
+  return row.first.offset === 0 && chunkEnd(last) === last.totalBytes;
+}
+
+export function historyTurnKey(chunk: AgentHistoryChunk): string | null {
+  const position = chunk.position;
+  const id = position.kind === 'imported' ? chunk.importedTurn : chunk.turnId;
+  if (id == null) return null;
+  return JSON.stringify(
+    position.kind === 'live' ? ['live', id] : [position.kind, position.path, position.snapshot, id],
   );
 }
+
+type AgentPage = Extract<AgentHistoryPage, { kind: 'ready' }>;
+export type HistoryFence = { generation: number; through: number | null };
+
+// A fresh tail may have moved beyond our entire window. Chronology alone
+// cannot distinguish adjacent rows from rows with missing history between them.
+function overlappingTail(existing: AgentHistoryChunk[], tail: AgentHistoryChunk[]) {
+  const first = tail[0];
+  if (!first) return false;
+  for (let i = existing.length - 1; i >= 0; i--) {
+    const old = existing[i];
+    if (compareHistoryRows(old, first) < 0) break;
+    if (first.offset > 0) {
+      if (
+        sameHistoryField(old, first) &&
+        old.offset <= first.offset &&
+        chunkEnd(old) >= first.offset
+      )
+        return true;
+    } else if (
+      tail.some(
+        (row) =>
+          sameHistoryField(old, row) && old.offset <= chunkEnd(row) && row.offset <= chunkEnd(old),
+      )
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function checkFragmentSeam(older: AgentHistoryChunk | undefined, next: AgentHistoryChunk) {
+  if (
+    next.offset > 0 &&
+    (!older ||
+      !sameHistoryField(older, next) ||
+      older.offset >= next.offset ||
+      chunkEnd(older) !== next.offset)
+  ) {
+    throw new Error('Conversation history has a gap at the page boundary');
+  }
+}
+
+const projectionKey = (row: AgentHistoryChunk) =>
+  row.position.kind === 'live' && row.runId ? row.runId : historyTurnKey(row);
+
+function boundaryProjectionChanged(existing: AgentHistoryChunk[], tail: AgentHistoryChunk[]) {
+  const first = tail[0];
+  if (!first) return false;
+  const key = projectionKey(first);
+  if (key === null) return false;
+  let folded = tail.some((row) => row.foldedWork && projectionKey(row) === key);
+  let final = tail.some((row) => row.finalOutput && projectionKey(row) === key);
+  for (let i = existing.length - 1; (folded || final) && i >= 0; i--) {
+    const row = existing[i];
+    if (projectionKey(row) !== key) continue;
+    if (row.foldedWork) folded = false;
+    if (row.finalOutput) final = false;
+  }
+  return folded || final;
+}
+
+function joinHistory(older: AgentHistoryChunk[], tail: AgentHistoryChunk[]) {
+  const first = tail[0];
+  if (!first) return older;
+  const prefix: AgentHistoryChunk[] = [];
+  for (const row of older) {
+    const order = compareHistoryRows(row, first);
+    if (order > 0 || (order === 0 && row.offset >= first.offset)) break;
+    if (order < 0) {
+      prefix.push(row);
+      continue;
+    }
+    if (!sameHistoryField(row, first)) break;
+    // The newer window owns row metadata, including on a prefix fetched
+    // before it. Only source data specific to the first fragment stays there.
+    const text =
+      chunkEnd(row) <= first.offset
+        ? row.text
+        : Buffer.from(row.text)
+            .subarray(0, first.offset - row.offset)
+            .toString('utf8');
+    prefix.push({
+      ...first,
+      offset: row.offset,
+      text,
+      attachments: row.attachments,
+      quotes: row.quotes,
+      citation: row.citation,
+      citationAnchor: row.citationAnchor,
+      hasReferences: row.hasReferences,
+    });
+  }
+  return [...prefix, ...tail];
+}
+
+type EarlierHistory =
+  | { kind: 'agent'; cursor: NonNullable<AgentPage['before']>; through: number | null }
+  | { kind: 'room'; cursor: string };
+
+// A page may be mostly tool rows or a single fragment of a long message.
+// Walk backwards across pages once, looking for a prompt and reply in a Turn
+// older than the one already at the head of the transcript.
+function earlierTurnBoundary(head: AgentHistoryChunk | undefined) {
+  const headTurn = head ? historyTurnKey(head) : null;
+  let turn: string | null = null;
+  let reply = false;
+  let prompt = false;
+  return (page: readonly AgentHistoryChunk[]) => {
+    for (let i = page.length - 1; i >= 0; i--) {
+      const row = page[i];
+      const key = historyTurnKey(row);
+      if (key !== turn) {
+        if (prompt && reply) return true;
+        turn = key;
+        reply = false;
+        prompt = false;
+      }
+      if (key === null || key === headTurn) continue;
+      if (
+        row.role === 'assistant' &&
+        row.field === 'body' &&
+        !row.sourceCitation &&
+        row.text &&
+        row.offset + Buffer.byteLength(row.text, 'utf8') === row.totalBytes
+      ) {
+        reply = true;
+      }
+      if (reply && row.role === 'user' && !row.work && row.offset === 0) prompt = true;
+    }
+    return false;
+  };
+}
+
+const maxEarlierPages = 24;
 
 export const quoteLimit = 16;
 
@@ -192,7 +354,6 @@ interface Draft {
 
 const emptyDraft: Draft = { input: { text: '' }, quotes: [], links: [], sending: false };
 const draftMap = signal<Record<string, Draft>>({});
-const scrollOffsetMap = new Map<string, number>();
 let nextQuoteId = 0;
 
 export function getDraft(rootId: string, sessionId: string): Draft {
@@ -311,14 +472,6 @@ export function appendFileQuote(
     label,
     text: trimHostWhitespace(snippet?.text ?? '') || label,
   });
-}
-
-export function getSavedScrollOffset(rootId: string, sessionId: string): number {
-  return scrollOffsetMap.get(conversationKey(rootId, sessionId)) ?? 0;
-}
-
-export function saveScrollOffset(rootId: string, sessionId: string, y: number) {
-  scrollOffsetMap.set(conversationKey(rootId, sessionId), Math.max(0, y));
 }
 
 export interface ParsedDiffFile {
@@ -503,6 +656,7 @@ let watchSeq = 0;
 export function createConversationController(
   rootId: string,
   initialSession: AgentSession,
+  active: () => boolean,
   enabled = true,
 ) {
   const sessionId = initialSession.id;
@@ -520,11 +674,15 @@ export function createConversationController(
   const chunks = signal<AgentHistoryChunk[] | null>(null);
   const roomMessages = signal<AgentRoomMessage[] | null>(null);
   const isRoom = signal(initialSession.kind === 'room');
-  const beforeCursor = signal<unknown>(null);
+  const earlierHistory = signal<EarlierHistory | null>(null);
   const loading = signal(true);
-  const earlierGeneration = signal<number | null>(null);
-  const loadingEarlier = () =>
-    earlierGeneration() !== null && earlierGeneration() === activeHostInfo(rootId)?.generation;
+  const earlierState = signal<{ kind: 'loading' | 'failed'; generation: number } | null>(null);
+  const currentEarlierState = () => {
+    const state = earlierState();
+    return state?.generation === activeHostInfo(rootId)?.generation ? state : null;
+  };
+  const loadingEarlier = () => currentEarlierState()?.kind === 'loading';
+  const earlierFailed = () => currentEarlierState()?.kind === 'failed';
   const modelSelection = signal<{ generation: number; done: Promise<boolean> } | null>(null);
   const selectingModel = () => {
     const pending = modelSelection();
@@ -541,6 +699,13 @@ export function createConversationController(
 
   let disposed = false;
   let lastThrough: number | null = null;
+  const historyFence = signal<HistoryFence>();
+  let pageEpoch = 0;
+  effect(() => {
+    if (active()) return;
+    pageEpoch++;
+    if (untracked(loadingEarlier)) earlierState.set(null);
+  });
   let stopSubscription: (() => void) | undefined;
   let activeGeneration = -1;
 
@@ -576,80 +741,179 @@ export function createConversationController(
     }
   };
 
-  const joinHistory = (older: AgentHistoryChunk[], tail: AgentHistoryChunk[]) => {
-    const first = tail[0];
-    if (!first) return older;
-    const prefix: AgentHistoryChunk[] = [];
-    for (const row of older) {
-      const order = compareHistoryRows(row, first);
-      if (order > 0 || (order === 0 && row.offset >= first.offset)) break;
-      if (order < 0) {
-        prefix.push(row);
-        continue;
-      }
-      // Host offsets are UTF-8 byte offsets on character boundaries.
-      let remaining = first.offset - row.offset;
-      let end = 0;
-      for (const character of row.text) {
-        if (remaining <= 0) break;
-        const code = character.codePointAt(0)!;
-        remaining -= code <= 0x7f ? 1 : code <= 0x7ff ? 2 : code <= 0xffff ? 3 : 4;
-        end += character.length;
-      }
-      prefix.push(end === row.text.length ? row : { ...row, text: row.text.slice(0, end) });
-    }
-    return [...prefix, ...tail];
+  const queryHistory = (
+    position: HistoryPosition,
+    through: number | null,
+    view: HistoryView = 'chat',
+  ) =>
+    hostQuery<AgentHistoryPage>(
+      'agent',
+      'history',
+      { sessionId, through, position, includeThinking: true, view },
+      undefined,
+      rootId,
+    );
+  const agentPage = (page: AgentHistoryPage): AgentPage => {
+    if (page.kind !== 'ready') throw new Error('Expected agent history', { cause: page.kind });
+    return page;
   };
+  const assertHistoryAdvance = (current: unknown, next: unknown, count: number) => {
+    if (next != null && (!count || JSON.stringify(current) === JSON.stringify(next)))
+      throw new Error('Conversation history did not advance');
+  };
+  const readBefore = async (
+    head: AgentHistoryChunk | undefined,
+    before: NonNullable<AgentPage['before']>,
+    through: number | null,
+    current: () => boolean,
+    enough: (chunks: AgentHistoryChunk[]) => boolean,
+  ) => {
+    const pages: AgentHistoryChunk[][] = [];
+    let boundary = head;
+    let cursor: AgentPage['before'] = before;
+    for (let n = 0; n < maxEarlierPages && cursor != null; n++) {
+      const page = agentPage(await queryHistory({ kind: 'before', cursor }, through));
+      if (!current()) return;
+      assertHistoryAdvance(cursor, page.before, page.chunks.length);
+      if (boundary) checkFragmentSeam(page.chunks.at(-1), boundary);
+      pages.push(page.chunks);
+      boundary = page.chunks[0] ?? boundary;
+      cursor = page.before;
+      if (enough(page.chunks)) break;
+    }
+    return { chunks: pages.reverse().flat(), before: cursor };
+  };
+
+  const readHistoryDetail = async (
+    anchor: AgentHistoryChunk,
+    view: 'steps' | 'turn',
+    fence: HistoryFence,
+    wanted: () => boolean,
+  ) => {
+    const epoch = pageEpoch;
+    const current = () =>
+      !disposed &&
+      active() &&
+      pageEpoch === epoch &&
+      activeHostInfo(rootId)?.generation === fence.generation &&
+      wanted();
+    let position: HistoryPosition = { kind: 'row', position: anchor.position, field: anchor.field };
+    const rows: AgentHistoryChunk[] = [];
+    try {
+      while (current()) {
+        const page = agentPage(await queryHistory(position, fence.through, view));
+        if (!current()) return;
+        rows.push(...page.chunks);
+        if (page.after == null) return rows;
+        assertHistoryAdvance(
+          position.kind === 'after' ? position.cursor : null,
+          page.after,
+          page.chunks.length,
+        );
+        position = { kind: 'after', cursor: page.after };
+      }
+    } catch (cause) {
+      if (current()) throw cause;
+    }
+  };
+
   let pagedHistory = false;
   const refreshTail = async () => {
     const generation = activeHostInfo(rootId)?.generation;
+    const current = () => !disposed && activeHostInfo(rootId)?.generation === generation;
     try {
-      const page = await hostQuery<AgentHistoryPage>(
-        'agent',
-        'history',
-        {
-          sessionId,
-          through: null,
-          position: { kind: 'tail' },
-          includeThinking: true,
-          view: 'conversation',
-        },
-        undefined,
-        rootId,
-      );
-      if (disposed || activeHostInfo(rootId)?.generation !== generation) return;
+      const page = await queryHistory({ kind: 'tail' }, null);
+      if (!current()) return;
       const preserveHistory = pagedHistory || loadingEarlier();
-      if (page?.kind === 'room') {
-        isRoom.set(true);
-        const tail = page.page.items;
-        if (tail.length || !preserveHistory)
-          roomMessages.update((previous) =>
-            preserveHistory && tail.length
-              ? [...(previous ?? []).filter((item) => item.sequence < tail[0].sequence), ...tail]
-              : tail,
-          );
-        if (!preserveHistory) beforeCursor.set(page.page.before ?? null);
-        if (typeof page.page?.through === 'number') {
-          lastThrough = Math.max(lastThrough ?? 0, page.page.through);
+      if (page.kind === 'room') {
+        batch(() => {
+          isRoom.set(true);
+          const { items: tail, before, through } = page.page;
+          const existing = roomMessages() ?? [];
+          // Room sequences need not be consecutive. A shared message proves overlap.
+          const overlaps = tail.length > 0 && existing.some((item) => item.id === tail[0].id);
+          if (preserveHistory && overlaps) {
+            roomMessages.set([
+              ...existing.filter((item) => item.sequence < tail[0].sequence),
+              ...tail,
+            ]);
+          } else {
+            if (loadingEarlier()) earlierState.set(null);
+            pagedHistory = false;
+            roomMessages.set(tail);
+            earlierHistory.set(before == null ? null : { kind: 'room', cursor: before });
+          }
+          lastThrough = Math.max(lastThrough ?? 0, through);
+        });
+      } else {
+        const existing = chunks() ?? [];
+        let { chunks: tail, before, through } = page;
+        let preserve = preserveHistory && overlappingTail(existing, tail);
+        let rebased = false;
+        let rebaseFailure: { cause: unknown } | undefined;
+        if (preserve && boundaryProjectionChanged(existing, tail)) {
+          // A tail starting inside a newly folded Run cannot tell us which
+          // earlier rows survived projection. Re-read that boundary at its
+          // new fence; only splice untouched history beyond the Run.
+          const boundaryRun = projectionKey(tail[0]);
+          const epoch = pageEpoch;
+          const reading = () => current() && active() && epoch === pageEpoch;
+          preserve = false;
+          if (generation !== undefined && before != null && reading()) {
+            const flight = { kind: 'loading', generation } as const;
+            earlierState.set(flight);
+            try {
+              const rebuilt = await readBefore(tail[0], before, through, reading, (rows) =>
+                rows.some((row) => projectionKey(row) !== boundaryRun),
+              );
+              if (!current()) return;
+              if (rebuilt) {
+                rebased = rebuilt.chunks.length > 0;
+                tail = joinHistory(rebuilt.chunks, tail);
+                before = rebuilt.before;
+                preserve =
+                  projectionKey(tail[0]) !== boundaryRun && overlappingTail(existing, tail);
+              }
+            } catch (cause) {
+              if (reading()) rebaseFailure = { cause };
+            } finally {
+              if (!disposed && earlierState() === flight) earlierState.set(null);
+            }
+          }
         }
-      } else if (page?.kind === 'ready') {
-        isRoom.set(false);
-        const tail = page.chunks;
-        if (tail.length || !preserveHistory)
-          chunks.update((previous) =>
-            preserveHistory && tail.length ? joinHistory(previous ?? [], tail) : tail,
-          );
-        if (!preserveHistory) beforeCursor.set(page.before ?? null);
-        if (typeof page.through === 'number') {
-          lastThrough = Math.max(lastThrough ?? 0, page.through);
-        }
+        if (!current()) return;
+        batch(() => {
+          isRoom.set(false);
+          const merged = preserve ? joinHistory(existing, tail) : undefined;
+          const sameHead =
+            existing[0] &&
+            tail[0] &&
+            sameHistoryField(existing[0], tail[0]) &&
+            existing[0].offset === tail[0].offset;
+          if (merged && (merged[0] !== tail[0] || sameHead)) {
+            pagedHistory ||= rebased;
+            chunks.set(merged);
+          } else {
+            if (loadingEarlier()) earlierState.set(null);
+            pagedHistory = rebased;
+            chunks.set(tail);
+            earlierHistory.set(before == null ? null : { kind: 'agent', cursor: before, through });
+          }
+          if (generation !== undefined) {
+            historyFence.set({ generation, through });
+            if (rebaseFailure) {
+              earlierState.set({ kind: 'failed', generation });
+              const { cause } = rebaseFailure;
+              showToast(cause instanceof Error ? cause.message : String(cause));
+            }
+          }
+          if (through !== null) lastThrough = Math.max(lastThrough ?? 0, through);
+        });
       }
       const handoff = !historyDirty && accumulator.completeHandoffIfPending();
       if (handoff) livePreview.set(handoff);
     } catch (cause) {
-      if (!disposed && activeHostInfo(rootId)?.generation === generation) {
-        error.set(cause instanceof Error ? cause.message : String(cause));
-      }
+      if (current()) error.set(cause instanceof Error ? cause.message : String(cause));
     }
   };
 
@@ -757,46 +1021,70 @@ export function createConversationController(
     }
   };
 
-  const loadEarlier = async () => {
-    const cursor = beforeCursor();
+  const loadEarlier = async (retry = false) => {
+    const edge = earlierHistory();
     const generation = activeHostInfo(rootId)?.generation;
-    if (cursor == null || generation == null || loadingEarlier()) return;
-    earlierGeneration.set(generation);
+    if (
+      !active() ||
+      !edge ||
+      generation == null ||
+      loading() ||
+      loadingEarlier() ||
+      retry !== earlierFailed()
+    )
+      return;
+    const flight = { kind: 'loading', generation } as const;
+    earlierState.set(flight);
+    const epoch = pageEpoch;
+    const current = () =>
+      !disposed &&
+      active() &&
+      pageEpoch === epoch &&
+      earlierState() === flight &&
+      earlierHistory() === edge &&
+      generation === activeHostInfo(rootId)?.generation;
     try {
-      const page = await hostQuery<AgentHistoryPage>(
-        'agent',
-        'history',
-        {
-          sessionId,
-          through: lastThrough,
-          position: isRoom()
-            ? { kind: 'before_message', messageId: cursor }
-            : { kind: 'before', cursor },
-          includeThinking: true,
-          view: 'conversation',
-        },
-        undefined,
-        rootId,
-      );
-      if (disposed || activeHostInfo(rootId)?.generation !== generation) return;
-      pagedHistory = true;
-      if (page?.kind === 'room') {
-        const older = page.page?.items ?? [];
-        const existing = roomMessages() ?? [];
-        const seen = new Set(existing.map((m) => m.id));
-        roomMessages.set([...older.filter((m) => !seen.has(m.id)), ...existing]);
-        beforeCursor.set(page.page?.before ?? null);
-      } else if (page?.kind === 'ready') {
-        const older = page.chunks ?? [];
-        chunks.update((existing) => joinHistory(older, existing ?? []));
-        beforeCursor.set(page.before ?? null);
+      if (edge.kind === 'room') {
+        const page = await queryHistory(
+          { kind: 'before_message', messageId: edge.cursor },
+          lastThrough,
+        );
+        if (!current()) return;
+        if (page.kind !== 'room') throw new Error('Expected Room history', { cause: page.kind });
+        const { items, before } = page.page;
+        assertHistoryAdvance(edge.cursor, before, items.length);
+        pagedHistory = true;
+        batch(() => {
+          roomMessages.update((existing) => {
+            if (!existing?.length) return items;
+            const first = existing[0];
+            return [...items.filter((item) => item.sequence < first.sequence), ...existing];
+          });
+          earlierHistory.set(before == null ? null : { kind: 'room', cursor: before });
+        });
+      } else {
+        const head = chunks()?.[0];
+        const result = await readBefore(
+          head,
+          edge.cursor,
+          edge.through,
+          current,
+          earlierTurnBoundary(head),
+        );
+        if (!result || !current()) return;
+        pagedHistory = true;
+        batch(() => {
+          chunks.update((existing) => joinHistory(result.chunks, existing ?? []));
+          earlierHistory.set(result.before == null ? null : { ...edge, cursor: result.before });
+        });
       }
     } catch (cause) {
-      if (!disposed && activeHostInfo(rootId)?.generation === generation) {
+      if (current()) {
+        earlierState.set({ kind: 'failed', generation });
         showToast(cause instanceof Error ? cause.message : String(cause));
       }
     } finally {
-      if (!disposed && earlierGeneration() === generation) earlierGeneration.set(null);
+      if (!disposed && earlierState() === flight) earlierState.set(null);
     }
   };
 
@@ -1041,9 +1329,10 @@ export function createConversationController(
     roomMessages: computed(() => roomMessages() ?? []),
     historyLoaded: () => chunks() !== null || roomMessages() !== null,
     isRoom,
-    beforeCursor,
+    hasMoreBefore: () => earlierHistory() !== null,
     loading,
     loadingEarlier,
+    earlierFailed,
     sending,
     hasDraftContent,
     error,
@@ -1054,6 +1343,8 @@ export function createConversationController(
     livePreview,
     refreshAll,
     loadEarlier,
+    historyFence,
+    readHistoryDetail,
     sendMessage,
     stopRun,
     selectModel,

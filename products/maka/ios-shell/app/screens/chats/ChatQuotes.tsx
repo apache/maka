@@ -50,6 +50,8 @@ export function MessageBody(props: {
     return selected?.body === props.row.text && isQuotable(props.row) ? selected.text : '';
   };
   let area: ViewRef | undefined;
+  const sourceId = () =>
+    props.row.first.offset > 0 || props.row.last.offset > 0 ? props.row.key : undefined;
   const quoteSelection = () => {
     const text = selectedExcerpt();
     if (text && !props.limitReached && props.onQuote(props.row, text)) {
@@ -101,6 +103,8 @@ export function MessageBody(props: {
           else={
             <TextView
               markdown={props.row.text}
+              sourceId={sourceId()}
+              sourceOffset={props.row.first.offset}
               classes={{ codeBlockHeader: 'px-3 text-foreground' }}
               codeBlockActions={[{ id: 'copy', label: tr('Copy') }]}
               styles={{
@@ -110,7 +114,14 @@ export function MessageBody(props: {
             />
           }
         >
-          <Text style={{ ...type.body, color: token('foreground') }}>{props.row.text}</Text>
+          <Text
+            textSource={
+              sourceId() ? { id: props.row.key, offset: props.row.first.offset } : undefined
+            }
+            style={{ ...type.body, color: token('foreground') }}
+          >
+            {props.row.text}
+          </Text>
         </If>
       </View>
       <If when={selectedExcerpt()}>
@@ -147,26 +158,42 @@ const replyActionStyle = {
 
 export function ReplyActions(props: {
   bodies: readonly HistoryRow[];
+  loadBodies?: () => Promise<HistoryRow[] | undefined>;
   limitReached: boolean;
   onQuote: (row: HistoryRow, text: string, combined?: readonly HistoryRow[]) => boolean;
   onAskSide?: () => void;
 }) {
   const sources = computed(() => props.bodies.filter(isQuotable));
   const canQuote = () =>
-    sources().length > 0 && !props.limitReached && sources().every(isCompleteHistoryRow);
-  const copyReply = () => {
-    hapticSelection();
-    void Clipboard.writeText(props.bodies.map((row) => row.text).join('\n\n'));
-    showToast(tr('Copied'));
+    sources().length > 0 &&
+    !props.limitReached &&
+    (props.loadBodies !== undefined || sources().every(isCompleteHistoryRow));
+  const withReply = async (action: (bodies: readonly HistoryRow[]) => void | Promise<void>) => {
+    try {
+      const bodies = props.loadBodies ? await props.loadBodies() : props.bodies;
+      if (bodies?.length && bodies.every(isCompleteHistoryRow)) await action(bodies);
+    } catch (cause) {
+      showToast(cause instanceof Error ? cause.message : String(cause));
+    }
   };
+  const copyReply = () =>
+    void withReply(async (bodies) => {
+      hapticSelection();
+      await Clipboard.writeText(bodies.map((row) => row.text).join('\n\n'));
+      showToast(tr('Copied'));
+    });
   const quoteReply = () => {
     if (!canQuote()) return;
-    const rows = sources();
-    props.onQuote(
-      rows[0],
-      rows.map((row) => row.text).join('\n\n'),
-      rows.length > 1 ? rows : undefined,
-    );
+    const onQuote = props.onQuote;
+    void withReply((bodies) => {
+      const rows = bodies.filter(isQuotable);
+      if (rows.length)
+        onQuote(
+          rows[0],
+          rows.map((row) => row.text).join('\n\n'),
+          rows.length > 1 ? rows : undefined,
+        );
+    });
   };
   const actions = (
     <View style={{ flexDirection: 'row' }}>

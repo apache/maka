@@ -357,6 +357,11 @@ style id:fit-min fontSize 10
 style id:fixed-height numberOfLines 1
 style id:fixed-height lineHeight 20
 expect Hello
+expect Excerpt
+tap id:extend-excerpt
+expect Earlier café
+expect Excerpt
+covers [props] sourceOffset
 covers [styles] numberOfLines
 covers [styles] textOverflow
 covers [styles] userSelect

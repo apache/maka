@@ -1509,7 +1509,7 @@ async fn first_load_waits_for_catalogs_and_history_without_hiding_cached_chats()
                 return;
             }
             "history" => {
-                history_tx.send(call).unwrap();
+                history_tx.send((query["input"].clone(), call)).unwrap();
                 return;
             }
             "observe" => json!({"session":observed,"through":0,"run":null}),
@@ -1587,23 +1587,54 @@ async fn first_load_waits_for_catalogs_and_history_without_hiding_cached_chats()
     assert!(!app.screen().matches(skeleton).unwrap());
 
     app.press(chat_row).unwrap();
-    let abandoned = fixture_recv(&mut history_rx).await;
+    let (_, abandoned) = fixture_recv(&mut history_rx).await;
     app.fast_forward(Duration::from_millis(70)).unwrap();
     assert!(!app.screen().matches(skeleton).unwrap());
     app.press("label:Chats").unwrap();
     app.press(chat_row).unwrap();
-    let history = fixture_recv(&mut history_rx).await;
+    let (_, history) = fixture_recv(&mut history_rx).await;
     // Cross the previous visit's deadline, but not the new visit's.
     app.fast_forward(Duration::from_millis(149)).unwrap();
     assert!(!app.screen().matches(skeleton).unwrap());
     app.fast_forward(Duration::from_millis(1)).unwrap();
     assert!(app.screen().matches(skeleton).unwrap());
     abandoned.resolve(json!({"value":{"kind":"ready","through":0,"before":null,"chunks":[]}}));
-    history.resolve(json!({"value":{
-        "kind":"ready","through":1,"before":null,
-        "chunks":[quote_history_row(1, "assistant", "Loaded transcript")]
-    }}));
+    let latest = quote_history_row(
+        2,
+        "assistant",
+        &format!(
+            "{}Loaded transcript",
+            "A paragraph in the first history page.\n\n".repeat(30)
+        ),
+    );
+    let cursor = history_cursor(&latest);
+    history.resolve(history_page(2, vec![latest], cursor.clone()));
     app.wait_for("text:Loaded transcript").unwrap();
+    assert!(!app.screen().matches(skeleton).unwrap());
+    assert!(
+        !app.screen()
+            .layout("text:Loaded transcript")
+            .unwrap()
+            .unwrap()
+            .clipped
+    );
+    assert!(
+        history_rx.try_recv().is_err(),
+        "leaving the skeleton auto-paged history"
+    );
+    app.scroll("id:chat-transcript", px(-1300.)).unwrap();
+    let (input, earlier) = fixture_recv(&mut history_rx).await;
+    assert_eq!(input["position"], json!({"kind":"before","cursor":cursor}));
+    assert_eq!(input["through"], 2);
+    assert_eq!(input["view"], "chat");
+    earlier.resolve(history_page(
+        2,
+        vec![quote_history_row(1, "user", "Earlier prompt")],
+        Value::Null,
+    ));
+    app.scroll("id:chat-transcript", px(80.)).unwrap();
+    app.scroll("id:chat-transcript", px(-170.)).unwrap();
+    app.wait_for("text:Earlier prompt").unwrap();
     assert!(!app.screen().matches(skeleton).unwrap());
     app.press("label:Chats").unwrap();
 
@@ -2029,6 +2060,8 @@ async fn catalog_pagination_keeps_chats_and_pending_on_the_current_snapshot() {
     let pending_head = page("pending-live", &first, Some("s-31"));
     let mut chats_head = page("chats-1", &first, Some("s-31"));
     chats_head["sessions"][0]["title"] = json!("Catalog after peer update");
+    let chats_head = Arc::new(std::sync::Mutex::new(chats_head));
+    let chats_basis = chats_head.clone();
     let pending_basis = Arc::new(std::sync::Mutex::new(page(
         "pending-unavailable",
         &[row(31, "Unavailable review")],
@@ -2065,7 +2098,7 @@ async fn catalog_pagination_keeps_chats_and_pending_on_the_current_snapshot() {
                     basis.lock().unwrap().clone()
                 }
             }
-            "list" => chats_head.clone(),
+            "list" => chats_basis.lock().unwrap().clone(),
             "botOutbox" if hold_bot_query.swap(false, Ordering::SeqCst) => {
                 bot_tx.send(call).unwrap();
                 return;
@@ -2278,6 +2311,10 @@ async fn catalog_pagination_keeps_chats_and_pending_on_the_current_snapshot() {
     );
     assert!(app.settle());
     assert!(!app.screen().matches("text:Wrong chat").unwrap());
+    assert!(
+        !app.screen().matches("label:Load more chats").unwrap(),
+        "a scrollable catalog showed a manual pager before any filter"
+    );
     app.type_text("label:Search chats or projects", "Needle moved up")
         .unwrap();
     app.wait_for("text:No matches in loaded chats").unwrap();
@@ -2287,22 +2324,57 @@ async fn catalog_pagination_keeps_chats_and_pending_on_the_current_snapshot() {
     assert_eq!(failed_query["input"]["position"]["revision"], "chats-1");
     failed_reply.reject("chat second page unavailable");
     app.wait_for("text:chat second page unavailable").unwrap();
-    app.press("label:Retry").unwrap();
+    app.wait_for("id:chat-catalog >> label:Retry").unwrap();
+    let mut pushed_head = page("chats-after-error", &first, Some("s-31"));
+    pushed_head["sessions"][0]["title"] = json!("New head after failure");
+    *chats_head.lock().unwrap() = pushed_head.clone();
+    push(&mut app, chats_watch, pushed_head);
+    assert!(app.settle());
+    app.wait_for("text:Could not sync chats").unwrap();
+    app.wait_for("text:chat second page unavailable").unwrap();
+    assert!(
+        page_rx.try_recv().is_err(),
+        "push retried the failed extension"
+    );
+    app.press("label:Clear search").unwrap();
+    app.wait_for("label:Conversation: New head after failure")
+        .unwrap();
+    app.scroll("id:chat-catalog", px(2800.)).unwrap();
+    assert!(page_rx.try_recv().is_err(), "scroll retried a failed page");
+    app.type_text("label:Search chats or projects", "Needle moved up")
+        .unwrap();
+    app.wait_for("text:No matches in loaded chats").unwrap();
+    app.press("id:chat-catalog >> label:Retry").unwrap();
     let (retry_query, retry_reply) = fixture_recv(&mut page_rx).await;
     assert_eq!(
         retry_query["input"]["position"],
-        json!({"kind":"after","revision":"chats-1","cursor":"s-31"})
+        json!({"kind":"after","revision":"chats-after-error","cursor":"s-31"})
     );
-    retry_reply
-        .resolve(json!({"value":page("chats-1", &[row(32, "Needle moved up")], Some("s-32"))}));
+    retry_reply.resolve(
+        json!({"value":page("chats-after-error", &[row(32, "Needle moved up")], Some("s-32"))}),
+    );
     app.wait_for("label:Conversation: Needle moved up").unwrap();
 
     // Swap rows across the boundary while a further page is outstanding.
-    app.press("label:Load more chats").unwrap();
+    assert_eq!(
+        app.screen()
+            .input_text("label:Search chats or projects")
+            .unwrap()
+            .as_deref(),
+        Some("Needle moved up")
+    );
+    app.press("label:Clear search").unwrap();
+    app.scroll("id:chat-catalog", px(700.)).unwrap();
+    assert!(page_rx.try_recv().is_err());
+    app.wheel(
+        "id:chat-catalog",
+        nsh_core::geometry::point(px(0.), px(2200.)),
+    )
+    .unwrap();
     let (old_query, old_reply) = fixture_recv(&mut page_rx).await;
     assert_eq!(
         old_query["input"]["position"],
-        json!({"kind":"after","revision":"chats-1","cursor":"s-32"})
+        json!({"kind":"after","revision":"chats-after-error","cursor":"s-32"})
     );
     let mut new_head = first[..31].to_vec();
     new_head.push(row(32, "Needle moved up in live catalog"));
@@ -2322,9 +2394,8 @@ async fn catalog_pagination_keeps_chats_and_pending_on_the_current_snapshot() {
     new_reply.resolve(json!({"value":page("chats-2", &[row(31, "Needle moved down"), row(33, "Newest chat")], None)}));
     app.wait_for("label:Conversation: Needle moved up in live catalog")
         .unwrap();
-    old_reply.resolve(json!({"value":page("chats-1", &[row(33, "Needle stale")], None)}));
+    old_reply.resolve(json!({"value":page("chats-after-error", &[row(33, "Needle stale")], None)}));
     assert!(app.settle());
-    app.press("label:Clear search").unwrap();
     app.type_text("label:Search chats or projects", "Needle")
         .unwrap();
     app.wait_for("text:Needle moved down").unwrap();
@@ -2337,8 +2408,13 @@ async fn catalog_pagination_keeps_chats_and_pending_on_the_current_snapshot() {
         );
     }
     assert!(!app.screen().matches("text:Needle stale").unwrap());
-    assert!(!app.screen().matches("label:Load more chats").unwrap());
+    assert!(
+        !app.screen()
+            .matches("id:chat-catalog >> label:Retry")
+            .unwrap()
+    );
 
+    *chats_head.lock().unwrap() = page("chats-1", &chats_after_peer, Some("s-31"));
     app.press("label:Pending").unwrap();
     app.wait_for("text:Allow service call PageTwoTool?")
         .unwrap();
@@ -2397,6 +2473,306 @@ async fn catalog_pagination_keeps_chats_and_pending_on_the_current_snapshot() {
             .matches("text:Needle from old connection")
             .unwrap()
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reconnect_refresh_preserves_a_failed_catalog_extension_until_retry() {
+    let host_state = |revision, connection: Value| {
+        json!({"revision":revision,"hosts":[{"rootId":"root","hostName":"Studio","endpoints":["agent"]}],
+            "active":connection["connection"],"connections":{"root":connection}})
+    };
+    let online = |generation| {
+        json!({"status":"connected","connection":{
+            "rootId":"root","hostName":"Studio","generation":generation,"endpoints":["agent"]
+        }})
+    };
+    let channel = HostChannel::new();
+    channel.handle("ios.bootstrap", move |call| {
+        call.resolve(host_state(1, online(1)))
+    });
+    let (catalog, mut requests) = mpsc::unbounded_channel();
+    channel.handle("ios.hostQuery", move |mut call| {
+        let data = call.take_data();
+        let input = &data["input"];
+        match data["method"].as_str().unwrap() {
+            "list" if input["filter"] == "all" => catalog.send((input.clone(), call)).unwrap(),
+            "list" => {
+                call.resolve(json!({"value":{"revision":"pending","sessions":[],"after":null}}))
+            }
+            "botOutbox" => call.resolve(json!({"value":{"isBot":false}})),
+            method => panic!("unexpected query {method}"),
+        };
+    });
+    channel.handle("ios.subscribe", |mut call| {
+        let data = call.take_data();
+        call.resolve(json!({"rootId":"root","subscriptionId":data["subscriptionId"],"generation":data["generation"]}));
+    });
+    channel.handle("ios.unsubscribe", |call| {
+        call.resolve(json!({"cancelled":true}))
+    });
+    let mut config = engine_config(channel, tokio::runtime::Handle::current());
+    config.viewport = Size::new(px(390.), px(844.));
+    config.environment.os = Os::MacOs;
+    config.environment.reduce_motion = true;
+    let mut app = Headless::start(config).unwrap();
+    let page = |revision, id, title, after: Option<&str>| {
+        json!({"value":{
+            "revision":revision, "after":after, "sessions":[{
+                "id":id,"title":title,"kind":"agent","activity":"idle","revision":1
+            }]
+        }})
+    };
+    let (input, head) = fixture_recv(&mut requests).await;
+    assert_eq!(input["position"]["kind"], "start");
+    head.resolve(page("before", "cached", "Cached chat", Some("cached")));
+    app.wait_for("label:Conversation: Cached chat").unwrap();
+    app.press("label:Load more chats").unwrap();
+    let (input, extension) = fixture_recv(&mut requests).await;
+    assert_eq!(input["position"]["cursor"], "cached");
+    extension.reject("Could not read second page");
+    app.wait_for("text:Could not read second page").unwrap();
+
+    app.send_host_event(
+        "ios.hostState",
+        host_state(2, json!({"status":"offline","autoReconnect":false})),
+    )
+    .unwrap();
+    app.wait_for_gone("label:Retry", Duration::from_secs(2))
+        .unwrap();
+    assert!(
+        app.screen()
+            .matches("label:Conversation: Cached chat")
+            .unwrap()
+    );
+    app.send_host_event("ios.hostState", host_state(3, online(2)))
+        .unwrap();
+    let (input, refreshed) = fixture_recv(&mut requests).await;
+    assert_eq!(input["position"]["kind"], "start");
+    let head = page("reconnected", "updated", "Refreshed chat", Some("updated"));
+    refreshed.resolve(head.clone());
+    app.wait_for("label:Conversation: Refreshed chat").unwrap();
+    app.wait_for("text:Could not read second page").unwrap();
+    assert!(app.settle());
+    assert!(
+        requests.try_recv().is_err(),
+        "reconnect retried an uncommitted page"
+    );
+
+    app.press("label:Retry").unwrap();
+    let (_, retry) = fixture_recv(&mut requests).await;
+    retry.resolve(head);
+    let (input, extension) = fixture_recv(&mut requests).await;
+    assert_eq!(
+        input["position"],
+        json!({"kind":"after","revision":"reconnected","cursor":"updated"})
+    );
+    extension.resolve(page("reconnected", "next", "Second page", None));
+    app.wait_for("label:Conversation: Second page").unwrap();
+    assert!(!app.screen().matches("label:Retry").unwrap());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn all_chats_can_page_a_healthy_catalog_while_another_needs_retry() {
+    fn row(id: &str, title: &str) -> Value {
+        json!({"id":id,"title":title,"kind":"agent","activity":"idle","revision":1})
+    }
+    fn page(revision: &str, sessions: Vec<Value>, after: Option<&str>) -> Value {
+        json!({"value":{"revision":revision,"sessions":sessions,"after":after}})
+    }
+
+    let channel = HostChannel::new();
+    channel.handle("ios.bootstrap", |call| {
+        let a = json!({"rootId":"a","hostName":"Studio","generation":1,"endpoints":["agent"]});
+        let b = json!({"rootId":"b","hostName":"Laptop","generation":1,"endpoints":["agent"]});
+        call.resolve(json!({"revision":1,"hosts":[a,b],"filter":{"kind":"all_computers"},"active":a,
+            "connections":{"a":{"status":"connected","connection":a},"b":{"status":"connected","connection":b}}}));
+    });
+    let (pages, mut requests) = mpsc::unbounded_channel();
+    channel.handle("ios.hostQuery", move |mut call| {
+        let query = call.take_data();
+        let root = &query["rootId"];
+        let input = &query["input"];
+        match query["method"].as_str().unwrap() {
+            "list" if input["filter"] == "needs_you" => call.resolve(page("pending", vec![], None)),
+            "list" => pages
+                .send((root.clone(), input["position"].clone(), call))
+                .unwrap(),
+            "botOutbox" => call.resolve(json!({"value":{"isBot":false}})),
+            method => panic!("unexpected query {method}"),
+        }
+    });
+    channel.handle("ios.subscribe", |mut call| {
+        let data = call.take_data();
+        call.resolve(
+            json!({"rootId":data["rootId"],"subscriptionId":data["subscriptionId"],"generation":1}),
+        );
+    });
+    let mut config = engine_config(channel, tokio::runtime::Handle::current());
+    config.viewport = Size::new(px(390.), px(844.));
+    config.environment.os = Os::MacOs;
+    config.environment.reduce_motion = true;
+    let mut app = Headless::start(config).unwrap();
+    for _ in 0..2 {
+        let (root, position, reply) = fixture_recv(&mut requests).await;
+        assert_eq!(position, json!({"kind":"start"}));
+        let root = root.as_str().unwrap();
+        reply.resolve(page(
+            root,
+            vec![row("first", &format!("First {root}"))],
+            Some("first"),
+        ));
+    }
+    app.wait_for("label:Conversation: First a").unwrap();
+    app.wait_for("label:Conversation: First b").unwrap();
+    app.press("label:Load more chats").unwrap();
+    let mut roots = Vec::new();
+    for _ in 0..2 {
+        let (root, position, reply) = fixture_recv(&mut requests).await;
+        assert_eq!(
+            position,
+            json!({"kind":"after","revision":root,"cursor":"first"})
+        );
+        if root == "a" {
+            let rows = (0..24)
+                .map(|n| row(&format!("chat-{n}"), &format!("Studio chat {n}")))
+                .collect();
+            reply.resolve(page("a", rows, Some("chat-23")));
+        } else {
+            assert_eq!(root, "b");
+            reply.reject("Laptop second page unavailable");
+        }
+        roots.push(root);
+    }
+    assert_ne!(roots[0], roots[1]);
+    app.wait_for("text:Laptop second page unavailable").unwrap();
+    app.wait_for("label:Retry").unwrap();
+    app.wait_for("label:Conversation: Studio chat 0").unwrap();
+    assert!(!app.screen().matches("label:Load more chats").unwrap());
+    app.scroll("id:chat-catalog", px(2800.)).unwrap();
+    let (root, position, reply) = fixture_recv(&mut requests).await;
+    assert_eq!(root, "a");
+    assert_eq!(
+        position,
+        json!({"kind":"after","revision":"a","cursor":"chat-23"})
+    );
+    reply.resolve(page(
+        "a",
+        vec![row("scroll", "Found by scrolling")],
+        Some("scroll"),
+    ));
+    app.wait_for("label:Conversation: Found by scrolling")
+        .unwrap();
+
+    app.type_text("label:Search chats or projects", "Only in the next page")
+        .unwrap();
+    app.wait_for("text:No matches in loaded chats").unwrap();
+    app.press("label:Load more chats").unwrap();
+    let (root, position, reply) = fixture_recv(&mut requests).await;
+    assert_eq!(root, "a");
+    assert_eq!(
+        position,
+        json!({"kind":"after","revision":"a","cursor":"scroll"})
+    );
+    reply.resolve(page("a", vec![row("match", "Only in the next page")], None));
+    app.wait_for("label:Conversation: Only in the next page")
+        .unwrap();
+    assert!(app.screen().matches("label:Retry").unwrap());
+    assert!(app.settle());
+    assert!(
+        requests.try_recv().is_err(),
+        "paging retried the failed laptop window"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_catalog_barely_taller_than_the_viewport_pages_without_dragging() {
+    let channel = HostChannel::new();
+    channel.handle("ios.bootstrap", |call| {
+        let host = json!({"rootId":"root","hostName":"Host","generation":1,"endpoints":["agent"]});
+        call.resolve(json!({"revision":1,"hosts":[host],"active":host,
+            "connections":{"root":{"status":"connected","connection":host}}}));
+    });
+    let (pages, mut requests) = mpsc::unbounded_channel();
+    channel.handle("ios.hostQuery", move |mut call| {
+        let data = call.take_data();
+        let input = &data["input"];
+        let value = match data["method"].as_str().unwrap() {
+            "list" if input["filter"] == "needs_you" => {
+                json!({"revision":"pending","sessions":[],"after":null,"needsYouCount":0})
+            }
+            "list" if input["position"]["kind"] == "after" => {
+                pages.send((input.clone(), call)).unwrap();
+                return;
+            }
+            "list" => {
+                let rows: Vec<_> = (0..15)
+                    .map(|n| {
+                        json!({
+                            "id":format!("chat-{n}"),"title":format!("Seed chat {n}"),
+                            "kind":"agent","revision":1,"workspace":{"path":"/work"},
+                            "activity":"idle","updatedAt":1700000000000u64+n
+                        })
+                    })
+                    .collect();
+                json!({"revision":"catalog","sessions":rows,"after":"chat-0","needsYouCount":0})
+            }
+            "botOutbox" => json!({"isBot":false}),
+            method => panic!("unexpected query {method}"),
+        };
+        call.resolve(json!({"value":value}));
+    });
+    channel.handle("ios.subscribe", |mut call| {
+        let data = call.take_data();
+        call.resolve(
+            json!({"rootId":"root","subscriptionId":data["subscriptionId"],"generation":1}),
+        );
+    });
+    let mut config = engine_config(channel, tokio::runtime::Handle::current());
+    config.viewport = Size::new(px(390.), px(640.));
+    config.environment = Environment {
+        os: Os::MacOs,
+        reduce_motion: true,
+        ..Environment::default()
+    };
+    let mut app = Headless::start(config).unwrap();
+    app.wait_for("label:Conversation: Seed chat 14").unwrap();
+    assert!(app.settle());
+    let overflow = |app: &Headless| {
+        let scroll = app
+            .screen()
+            .layout_nodes()
+            .into_iter()
+            .find(|node| node.test_id.as_deref() == Some("chat-catalog"))
+            .unwrap();
+        scroll.scroll.unwrap().content_size.unwrap().height.0 - scroll.bounds.size.height.0
+    };
+    let size = 640. + overflow(&app) - 100.;
+    let wheel = |app: &mut Headless, dy| {
+        app.wheel("id:chat-catalog", nsh_core::geometry::point(px(0.), px(dy)))
+            .unwrap();
+    };
+    wheel(&mut app, 15.);
+    wheel(&mut app, -15.);
+    app.set_viewport(Size::new(px(390.), px(size))).unwrap();
+    assert!(app.settle());
+    let extra = overflow(&app);
+    assert!(
+        extra > 1. && extra <= 160.,
+        "fixture must barely overflow: {extra}"
+    );
+    assert!(!app.shows("label:Load more chats"));
+    assert!(requests.try_recv().is_err());
+    wheel(&mut app, extra + 20.);
+    let (input, page) = fixture_recv(&mut requests).await;
+    assert_eq!(
+        input["position"],
+        json!({"kind":"after","revision":"catalog","cursor":"chat-0"})
+    );
+    page.resolve(json!({"value":{"revision":"catalog","after":null,"sessions":[
+        {"id":"next","title":"Found by wheel","kind":"agent","revision":1,"activity":"idle","updatedAt":1}
+    ]}}));
+    app.wait_for("label:Conversation: Found by wheel").unwrap();
+    assert!(requests.try_recv().is_err());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2739,6 +3115,15 @@ fn quote_chat_fixture(
     older_chunks: Vec<Value>,
     hold_first_refresh: Option<mpsc::UnboundedSender<(HostCall, Value)>>,
 ) -> (Headless, mpsc::UnboundedReceiver<(Send, HostCall)>) {
+    quote_chat_fixture_with_work(chunks, older_chunks, hold_first_refresh, None)
+}
+
+fn quote_chat_fixture_with_work(
+    chunks: Vec<Value>,
+    older_chunks: Vec<Value>,
+    hold_first_refresh: Option<mpsc::UnboundedSender<(HostCall, Value)>>,
+    work: Option<(Vec<Value>, Vec<Value>)>,
+) -> (Headless, mpsc::UnboundedReceiver<(Send, HostCall)>) {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     let channel = HostChannel::new();
@@ -2763,6 +3148,17 @@ fn quote_chat_fixture(
                     session("other", "Other Chat")
                 };
                 json!({"session":row,"through":17,"run":null})
+            }
+            "history" if matches!(data["input"]["view"].as_str(), Some("turn" | "steps")) => {
+                let (turn, steps) = work.as_ref().expect("unexpected work read");
+                let rows = if data["input"]["view"] == "turn" {
+                    assert_eq!(data["input"]["position"]["position"], chunks.last().unwrap()["position"]);
+                    turn
+                } else {
+                    assert_eq!(data["input"]["position"]["position"], steps[0]["position"]);
+                    steps
+                };
+                json!({"kind":"ready","chunks":rows,"through":17,"before":null,"after":null})
             }
             "history" => {
                 let (rows, before) = match (
@@ -2910,11 +3306,682 @@ fn watch_selection_menus(
     }
 }
 
+// Headless scrolling clamps the offset. Deliver the native drag events for
+// short transcripts that UIKit lets the reader pull at the top.
+fn pull_at_transcript_start(app: &mut Headless) {
+    use nsh_core::{EventKind, EventPayload, Point};
+
+    let list = app
+        .screen()
+        .layout_nodes()
+        .into_iter()
+        .find(|node| node.test_id.as_deref() == Some("chat-transcript"))
+        .expect("transcript scroll view");
+    for event in [
+        EventKind::ScrollDragStart,
+        EventKind::ScrollDragEnd,
+        EventKind::ScrollEnd,
+    ] {
+        app.engine().control().dispatch_event(
+            list.id,
+            event,
+            EventPayload::Scroll(Point::default()),
+        );
+    }
+    assert!(app.settle());
+}
+
 fn quote_history_row(sequence: u64, role: &str, text: &str) -> Value {
     json!({"importedTurn":null,"field":"body","position":{"kind":"live","sequence":sequence,
         "fact":Uuid::from_u128(u128::from(sequence)),"itemIndex":0},
         "order":{"path":[sequence],"itemIndex":0},"offset":0,"totalBytes":text.len(),
         "messageId":format!("m{sequence}"),"turnId":"t1","role":role,"text":text,"tool":null})
+}
+
+fn history_cursor(row: &Value) -> Value {
+    json!({"position":row["position"],"field":row["field"],"offset":row["offset"]})
+}
+
+fn history_page(through: u64, chunks: Vec<Value>, before: Value) -> Value {
+    json!({"value":{"kind":"ready","through":through,"chunks":chunks,"before":before,"after":null}})
+}
+
+struct ProjectionFixture {
+    app: Headless,
+    queries: mpsc::UnboundedReceiver<(Value, HostCall)>,
+    watch: Value,
+}
+
+impl ProjectionFixture {
+    async fn start(initial: Value) -> Self {
+        let channel = HostChannel::new();
+        channel.handle("ios.bootstrap", |call| {
+            let host =
+                json!({"rootId":"root","hostName":"Host","generation":1,"endpoints":["agent"]});
+            call.resolve(json!({"revision":1,"hosts":[host],"active":host,
+                "connections":{"root":{"status":"connected","connection":host}}}));
+        });
+        let (query_tx, queries) = mpsc::unbounded_channel();
+        let first_tail = std::sync::atomic::AtomicBool::new(true);
+        channel.handle("ios.hostQuery", move |mut call| {
+            let data = call.take_data();
+            let session = json!({"id":"projection","title":"Projection Chat","kind":"agent","revision":1,
+                "workspace":{"path":"/work"},"activity":"idle","updatedAt":1});
+            let value = match data["method"].as_str().unwrap() {
+                "list" if data["input"]["scope"]["kind"] == "side_questions" =>
+                    json!({"sessions":[],"revision":"side","after":null,"before":null}),
+                "list" => json!({"sessions":[session],"needsYouCount":0}),
+                "observe" => json!({"session":session,"through":11,"run":null}),
+                "botOutbox" => json!({"isBot":false}),
+                "models" => json!({"kind":"ready","choices":[]}),
+                "pendingInteractions" => json!({"entries":[]}),
+                "history" => {
+                    let input = data["input"].clone();
+                    if input["position"]["kind"] == "tail" &&
+                        first_tail.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                        call.resolve(initial.clone());
+                    } else {
+                        query_tx.send((input, call)).unwrap();
+                    }
+                    return;
+                }
+                method => panic!("unexpected query: {method}"),
+            };
+            call.resolve(json!({"value":value}));
+        });
+        let (watch_tx, mut watch_rx) = mpsc::unbounded_channel();
+        channel.handle("ios.subscribe", move |mut call| {
+            let data = call.take_data();
+            let handle =
+                json!({"rootId":"root","subscriptionId":data["subscriptionId"],"generation":1});
+            if data["method"] == "watch" {
+                watch_tx.send(handle.clone()).unwrap();
+            }
+            call.resolve(handle);
+        });
+        channel.handle("ios.unsubscribe", |call| {
+            call.resolve(json!({"cancelled":true}))
+        });
+        let mut config = engine_config(channel, tokio::runtime::Handle::current());
+        config.viewport = Size::new(px(390.), px(844.));
+        config.environment = Environment {
+            os: Os::MacOs,
+            reduce_motion: true,
+            ..Environment::default()
+        };
+        let mut app = Headless::start(config).unwrap();
+        app.wait_for("label:Conversation: Projection Chat").unwrap();
+        app.press("label:Conversation: Projection Chat").unwrap();
+        let watch = fixture_recv(&mut watch_rx).await;
+        Self {
+            app,
+            queries,
+            watch,
+        }
+    }
+
+    fn ended(&mut self) {
+        let mut watch = self.watch.clone();
+        watch["item"] = json!({"kind":"events","through":12,"nextAfter":12,"events":[
+            {"sequence":12,"runId":Uuid::nil(),"turnId":"t1","fact":{"kind":"ended"}}
+        ]});
+        self.app
+            .send_host_event("ios.subscriptionItem", watch)
+            .unwrap();
+    }
+}
+
+fn mark_final(row: &mut Value) {
+    row["finalOutput"] = json!(true);
+    row["foldedWork"] = json!({"thoughts":0,"tools":1,"messages":0,"imageCount":0,"images":[]});
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn completed_tail_supersedes_a_late_before_from_the_live_projection() {
+    let prompt = quote_history_row(1, "user", "What changed?");
+    let mut suffix = quote_history_row(3, "assistant", " done");
+    suffix["offset"] = json!(5);
+    suffix["totalBytes"] = json!("café done".len());
+    let cursor = history_cursor(&suffix);
+    let mut prefix = suffix.clone();
+    prefix["offset"] = json!(0);
+    prefix["text"] = json!("café");
+    let mut fx =
+        ProjectionFixture::start(history_page(11, vec![suffix.clone()], cursor.clone())).await;
+    let mut ask = watch_selection_menu(&mut fx.app, "Ask Side Question");
+    fx.app.wait_for("text:done").unwrap();
+    pull_at_transcript_start(&mut fx.app);
+    let (input, stale) = fixture_recv(&mut fx.queries).await;
+    assert_eq!(input["through"], 11);
+    assert_eq!(input["position"]["cursor"], cursor);
+    fx.ended();
+    let (input, tail) = fixture_recv(&mut fx.queries).await;
+    assert_eq!(input["position"]["kind"], "tail");
+    mark_final(&mut suffix);
+    tail.resolve(history_page(12, vec![suffix.clone()], cursor.clone()));
+    let (input, rebuilt) = fixture_recv(&mut fx.queries).await;
+    assert_eq!(input["through"], 12);
+    assert_eq!(input["view"], "chat");
+    assert_eq!(input["position"]["cursor"], cursor);
+    stale.resolve(history_page(
+        11,
+        vec![prompt.clone(), prefix.clone()],
+        Value::Null,
+    ));
+    assert!(fx.app.settle());
+    assert!(
+        !fx.app.shows("café done"),
+        "the stale before published during rebasing"
+    );
+    mark_final(&mut prefix);
+    rebuilt.resolve(history_page(12, vec![prompt.clone(), prefix], Value::Null));
+    fx.app.wait_for("text:café done").unwrap();
+
+    fx.app.press("role:button[Copy reply]").unwrap();
+    let (input, work) = fixture_recv(&mut fx.queries).await;
+    assert_eq!(input["view"], "turn");
+    assert_eq!(input["through"], 12);
+    let mut tool = quote_history_row(2, "tool_call", "");
+    tool["tool"] = json!({"toolUseId":"t","call":{"name":"Inspect result"}});
+    let mut group = tool.clone();
+    group["tool"] = Value::Null;
+    group["work"] = json!({"end":history_cursor(&tool),"kinds":[{"kind":"tool","presentation":null}],
+        "last":{"kind":"tool","presentation":null},"thoughts":0,"tools":1,"messages":0,
+        "imageCount":0,"images":[]});
+    let mut final_body = quote_history_row(3, "assistant", "café done");
+    final_body["finalOutput"] = json!(true);
+    work.resolve(history_page(
+        12,
+        vec![prompt, group, final_body],
+        Value::Null,
+    ));
+    fx.app.wait_for("text:Copied").unwrap();
+    assert_eq!(fx.app.screen().clipboard(), Some("café done"));
+    fx.app.press("label:Used 1 tool").unwrap();
+    let (input, steps) = fixture_recv(&mut fx.queries).await;
+    assert_eq!(input["view"], "steps");
+    steps.resolve(history_page(12, vec![tool], Value::Null));
+    fx.app.wait_for("text:Inspect result").unwrap();
+    assert!(ask(&mut fx.app, "text:café done", Some("café")));
+    fx.app.wait_for("text:Side Question").unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn folded_tail_keeps_both_final_parts_when_only_the_second_fits() {
+    let prompt = quote_history_row(1, "user", "Show both parts");
+    let mut tool = quote_history_row(2, "tool_call", "");
+    tool["tool"] = json!({"toolUseId":"t","call":{"name":"Inspect result"}});
+    let tool_end = history_cursor(&tool);
+    tool["work"] = json!({"end":tool_end,"kinds":[{"kind":"tool","presentation":null}],
+        "last":{"kind":"tool","presentation":null},"thoughts":0,"tools":1,"messages":0,
+        "imageCount":0,"images":[]});
+    tool["tool"] = Value::Null;
+    let mut a = quote_history_row(3, "assistant", "First final part A");
+    let beginning = "The beginning of final body B.\n\n";
+    let end = format!("<!--{}-->\n\nFinal B end", "x".repeat(32730));
+    assert!(beginning.len() + end.len() > 32 * 1024 && end.len() <= 32 * 1024);
+    let mut suffix = quote_history_row(4, "assistant", &end);
+    suffix["offset"] = json!(beginning.len());
+    suffix["totalBytes"] = json!(beginning.len() + end.len());
+    let mut prefix = suffix.clone();
+    prefix["offset"] = json!(0);
+    prefix["text"] = json!(beginning);
+    let cursor = history_cursor(&suffix);
+    let mut fx =
+        ProjectionFixture::start(history_page(11, vec![suffix.clone()], cursor.clone())).await;
+    let mut ask = watch_selection_menu(&mut fx.app, "Ask Side Question");
+    fx.app.wait_for("text:Final B end").unwrap();
+    pull_at_transcript_start(&mut fx.app);
+    let (input, before) = fixture_recv(&mut fx.queries).await;
+    assert_eq!(input["through"], 11);
+    before.resolve(history_page(
+        11,
+        vec![prompt.clone(), tool, a.clone(), prefix.clone()],
+        Value::Null,
+    ));
+    fx.app.wait_for("text:First final part A").unwrap();
+    fx.app
+        .wait_for("text:The beginning of final body B.")
+        .unwrap();
+    fx.ended();
+    let (_, tail) = fixture_recv(&mut fx.queries).await;
+    mark_final(&mut suffix);
+    tail.resolve(history_page(12, vec![suffix], cursor.clone()));
+    let (input, rebase) = fixture_recv(&mut fx.queries).await;
+    assert_eq!(input["through"], 12);
+    assert_eq!(input["position"]["cursor"], cursor);
+    mark_final(&mut a);
+    mark_final(&mut prefix);
+    rebase.resolve(history_page(12, vec![prompt, a, prefix], Value::Null));
+    fx.app.wait_for("label:Used 1 tool").unwrap();
+    fx.app.wait_for("text:First final part A").unwrap();
+    fx.app
+        .wait_for("text:The beginning of final body B.")
+        .unwrap();
+    fx.app.wait_for("text:Final B end").unwrap();
+    assert_eq!(fx.app.screen().count("label:Used 1 tool").unwrap(), 1);
+    assert!(fx.app.settle());
+    assert!(ask(
+        &mut fx.app,
+        "text:First final part A",
+        Some("First final part A")
+    ));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn expanded_user_headed_work_follows_new_steps_and_ignores_an_old_generation() {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    let channel = HostChannel::new();
+    let connection = |generation| {
+        let host = json!({"rootId":"root","hostName":"Host","generation":generation,"endpoints":["agent"]});
+        json!({"revision":generation,"hosts":[host],"active":host,
+            "connections":{"root":{"status":"connected","connection":host}}})
+    };
+    channel.handle("ios.bootstrap", move |call| call.resolve(connection(1)));
+    let mut message = quote_history_row(10, "user", "Worker reported back");
+    message["origin"] = json!({"kind":"bot_worker","sessionId":"worker"});
+    let mut group = message.clone();
+    group["text"] = json!("");
+    group["totalBytes"] = json!(0);
+    let tool = |sequence, name: &str| {
+        let mut row = quote_history_row(sequence, "tool_call", "");
+        row["tool"] = json!({"toolUseId":format!("tool-{sequence}"),"call":{"name":name}});
+        row
+    };
+    let first_tool = tool(11, "Read source");
+    let next_tool = tool(12, "Verify source");
+    let responses = Arc::new(AtomicU64::new(1));
+    let response = responses.clone();
+    let first = first_tool.clone();
+    let next = next_tool.clone();
+    let earlier: Vec<_> = (1..=5)
+        .map(|n| {
+            let mut row = quote_history_row(
+                n,
+                "assistant",
+                &format!("Older row {n}\n\n{}", "Filler paragraph\n\n".repeat(13)),
+            );
+            row["turnId"] = json!(format!("older-{n}"));
+            row
+        })
+        .collect();
+    let (steps_tx, mut steps_rx) = mpsc::unbounded_channel();
+    channel.handle("ios.hostQuery", move |mut call| {
+        let data = call.take_data();
+        let phase = response.load(Ordering::SeqCst);
+        let session = json!({"id":"active","title":"Active Chat","kind":"agent","revision":1,
+            "workspace":{"path":"/work"},"activity":"working","updatedAt":1,
+            "backend":{"kind":"model","connectionId":"conn","modelId":"model"}});
+        let value = match data["method"].as_str().unwrap() {
+            "list" => json!({"sessions":[session],"needsYouCount":0}),
+            "observe" => json!({"session":session,"through":20+phase,"run":{"turnId":"t1","runId":"work","state":"running"}}),
+            "models" => json!({"kind":"ready","choices":[]}),
+            "botOutbox" => json!({"isBot":false}),
+            "pendingInteractions" => json!({"entries":[]}),
+            "history" if data["input"]["view"] == "steps" => {
+                steps_tx.send((data["input"].clone(), call)).unwrap();
+                return;
+            }
+            "history" => {
+                let tool_end = if phase == 1 { &first } else { &next };
+                let mut group = group.clone();
+                group["work"] = json!({
+                    "end":{"position":tool_end["position"],"field":"body","offset":0},
+                    "kinds":[{"kind":"message"},{"kind":"tool","presentation":null}],
+                    "last":{"kind":"tool","presentation":null},
+                    "thoughts":0,"tools":phase.min(2),"messages":1,"imageCount":0,"images":[]
+                });
+                let mut rows = earlier.clone();
+                rows.push(group);
+                if phase > 1 {
+                    rows.push(quote_history_row(13, "assistant", &format!("Working answer {phase}")));
+                }
+                json!({"kind":"ready","through":20+phase,"chunks":rows,"before":null,"after":null})
+            }
+            method => panic!("unexpected query: {method}"),
+        };
+        call.resolve(json!({"value":value}));
+    });
+    let (watch_tx, mut watch_rx) = mpsc::unbounded_channel();
+    channel.handle("ios.subscribe", move |mut call| {
+        let data = call.take_data();
+        let handle = json!({"rootId":"root","subscriptionId":data["subscriptionId"],"generation":data["generation"]});
+        if data["method"] == "watch" { watch_tx.send(handle.clone()).unwrap(); }
+        call.resolve(handle);
+    });
+    channel.handle("ios.unsubscribe", |call| {
+        call.resolve(json!({"cancelled":true}))
+    });
+    channel.handle("ios.hostMutate", |mut call| {
+        assert_eq!(call.take_data()["method"], "send");
+        call.resolve(json!({"value":SendResult::Queued {
+            session_id:"active".into(), message_id:"queued".into(), revision:2, completion:None,
+        }}));
+    });
+    let mut config = engine_config(channel, tokio::runtime::Handle::current());
+    config.viewport = Size::new(px(390.), px(760.));
+    config.environment = Environment {
+        os: Os::MacOs,
+        reduce_motion: true,
+        ..Environment::default()
+    };
+    let mut app = Headless::start(config).unwrap();
+    app.wait_for("label:Conversation: Active Chat").unwrap();
+    app.press("label:Conversation: Active Chat").unwrap();
+    app.wait_for("label:Used 1 tool").unwrap();
+    assert!(!app.shows("Worker reported back"));
+    app.press("label:Used 1 tool").unwrap();
+    let (initial, read) = fixture_recv(&mut steps_rx).await;
+    assert_eq!(initial["position"]["position"], message["position"]);
+    assert_eq!(initial["through"], 21);
+    let page = |through, chunks| json!({"value":{"kind":"ready","through":through,"chunks":chunks,"before":null,"after":null}});
+    read.resolve(page(21, vec![message.clone(), first_tool.clone()]));
+    app.wait_for("text:Worker reported back").unwrap();
+    app.wait_for("text:Read source").unwrap();
+    app.scroll("id:chat-transcript", px(-1900.)).unwrap();
+    assert!(
+        app.screen()
+            .layout("label:Used 1 tool")
+            .unwrap()
+            .is_none_or(|layout| layout.clipped || layout.hidden)
+    );
+    app.scroll("id:chat-transcript", px(1900.)).unwrap();
+    app.wait_for("text:Read source").unwrap();
+    assert!(
+        steps_rx.try_recv().is_err(),
+        "recycling reread opened steps"
+    );
+
+    let watch = fixture_recv(&mut watch_rx).await;
+    let deliver = |app: &mut Headless, phase: u64| {
+        responses.store(phase, Ordering::SeqCst);
+        let through = 20 + phase;
+        let mut watch = watch.clone();
+        watch["item"] = json!({"kind":"events","through":through,"nextAfter":through,
+            "events":[{"sequence":through,"runId":Uuid::nil(),"turnId":"t1","fact":{"kind":"tool_settled"}}]});
+        app.send_host_event("ios.subscriptionItem", watch).unwrap();
+    };
+    deliver(&mut app, 2);
+    app.wait_for("text:Working answer 2").unwrap();
+    let (updated, first_page) = fixture_recv(&mut steps_rx).await;
+    assert_eq!(updated["through"], 22);
+    let mut partial = page(22, vec![message.clone(), first_tool.clone()]);
+    partial["value"]["after"] = history_cursor(&first_tool);
+    first_page.resolve(partial);
+    let (continuation, second_page) = fixture_recv(&mut steps_rx).await;
+    assert_eq!(continuation["position"]["kind"], "after");
+    assert_eq!(continuation["through"], 22);
+    for phase in 3..=4 {
+        deliver(&mut app, phase);
+        app.wait_for(&format!("text:Working answer {phase}"))
+            .unwrap();
+        app.wait_for("text:Read source").unwrap();
+        assert!(!app.shows("text:Loading…"));
+        assert!(
+            steps_rx.try_recv().is_err(),
+            "a newer tail preempted the in-flight steps page"
+        );
+    }
+    second_page.resolve(page(22, vec![next_tool.clone()]));
+    let (catchup, stale) = fixture_recv(&mut steps_rx).await;
+    assert_eq!(catchup["through"], 24);
+    app.wait_for("text:Verify source").unwrap();
+    assert!(!app.shows("text:Loading…"));
+    assert!(steps_rx.try_recv().is_err(), "more than one catch-up read");
+
+    responses.store(5, Ordering::SeqCst);
+    app.send_host_event("ios.hostState", connection(2)).unwrap();
+    assert!(app.settle());
+    let (reconnected, fresh) = fixture_recv(&mut steps_rx).await;
+    assert_eq!(reconnected["through"], 25);
+    stale.reject("outdated steps error");
+    fresh.resolve(page(
+        25,
+        vec![message, first_tool, tool(12, "Verified after reconnect")],
+    ));
+    app.wait_for("text:Verified after reconnect").unwrap();
+    assert!(!app.shows("outdated steps error"));
+
+    app.scroll("id:chat-transcript", px(-1200.)).unwrap();
+    app.type_text("label:Message composer", "Follow up")
+        .unwrap();
+    app.press("label:Queue message").unwrap();
+    let answer = "text:Working answer 5";
+    app.wait_until(
+        "sending returned to the latest answer",
+        Duration::from_secs(3),
+        |screen| {
+            screen
+                .layout(answer)
+                .unwrap()
+                .is_some_and(|layout| !layout.clipped && !layout.hidden)
+        },
+    )
+    .unwrap();
+    assert!(steps_rx.try_recv().is_err());
+
+    app.scroll("id:chat-transcript", px(-500.)).unwrap();
+    app.press("label:Chats").unwrap();
+    app.press("label:Conversation: Active Chat").unwrap();
+    app.wait_until(
+        "reopening showed the new tail",
+        Duration::from_secs(3),
+        |screen| {
+            screen
+                .layout(answer)
+                .unwrap()
+                .is_some_and(|layout| !layout.clipped && !layout.hidden)
+        },
+    )
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn chat_scroll_completes_previous_turn_and_keeps_the_visible_text_anchored() {
+    let channel = HostChannel::new();
+    channel.handle("ios.bootstrap", |call| {
+        let host = json!({"rootId":"root","hostName":"Host","generation":1,"endpoints":["agent"]});
+        call.resolve(json!({"revision":1,"hosts":[host],"active":host,
+            "connections":{"root":{"status":"connected","connection":host}}}));
+    });
+    let prefix = "Café in the missing prefix.\n\n".repeat(18);
+    let suffix = format!(
+        "Reading marker\n\n{}Newest paragraph",
+        "Visible reply paragraph.\n\n".repeat(32)
+    );
+    let mut visible = quote_history_row(23, "assistant", &suffix);
+    visible["turnId"] = json!("latest");
+    visible["offset"] = json!(prefix.len());
+    visible["totalBytes"] = json!(prefix.len() + suffix.len());
+    let cursor = |row: &Value| {
+        json!({
+            "position": row["position"], "field": row["field"], "offset": row["offset"],
+        })
+    };
+    let page = |rows: Vec<Value>, before: Value| {
+        json!({
+            "kind":"ready","through":30,"chunks":rows,"before":before,"after":null,
+        })
+    };
+    let boundary = cursor(&visible);
+    let tail = page(vec![visible.clone()], boundary.clone());
+    let (history_tx, mut history_rx) = mpsc::unbounded_channel();
+    channel.handle("ios.hostQuery", move |mut call| {
+        let data = call.take_data();
+        let session = json!({"id":"paged","title":"Paged Chat","kind":"agent","revision":1,
+            "workspace":{"path":"/work"},"activity":"idle","updatedAt":1});
+        let value = match data["method"].as_str().unwrap() {
+            "list" => json!({"sessions":[session],"needsYouCount":0}),
+            "observe" => json!({"session":session,"through":31,"run":null}),
+            "gitWorkspaceDiff" => json!({"patch":"","truncated":false}),
+            "models" => json!({"kind":"ready","choices":[]}),
+            "botOutbox" => json!({"isBot":false}),
+            "pendingInteractions" => json!({"entries":[]}),
+            "history" => {
+                let input = data["input"].clone();
+                if input["position"]["kind"] == "tail" {
+                    assert_eq!(input["view"], "chat");
+                    tail.clone()
+                } else {
+                    history_tx.send((input, call)).unwrap();
+                    return;
+                }
+            }
+            method => panic!("unexpected query: {method}"),
+        };
+        call.resolve(json!({"value":value}));
+    });
+    channel.handle("ios.subscribe", |mut call| {
+        let data = call.take_data();
+        call.resolve(
+            json!({"rootId":"root","subscriptionId":data["subscriptionId"],"generation":1}),
+        );
+    });
+    let mut config = engine_config(channel, tokio::runtime::Handle::current());
+    config.viewport = Size::new(px(390.), px(844.));
+    config.environment = Environment {
+        os: Os::Ios,
+        reduce_motion: true,
+        ..Environment::default()
+    };
+    let mut app = Headless::start(config).unwrap();
+    app.wait_for("label:Conversation: Paged Chat").unwrap();
+    app.press("label:Conversation: Paged Chat").unwrap();
+    app.wait_for("text:Newest paragraph").unwrap();
+    assert!(
+        history_rx.try_recv().is_err(),
+        "opening the chat fetched older history"
+    );
+    app.scroll("id:chat-transcript", px(-1600.)).unwrap();
+    let (abandoned_input, abandoned) = fixture_recv(&mut history_rx).await;
+    app.press("label:Files & Changes").unwrap();
+    app.wait_for("text:No uncommitted changes").unwrap();
+    let mut older_fragment = visible.clone();
+    older_fragment["offset"] = json!(0);
+    older_fragment["text"] = json!(prefix);
+    abandoned.resolve(json!({"value":page(vec![older_fragment.clone()], cursor(&older_fragment))}));
+    assert!(app.settle());
+    assert!(
+        history_rx.try_recv().is_err(),
+        "covered Chat continued paging"
+    );
+    app.press("label:Chat").unwrap();
+    app.wait_for("text:Reading marker").unwrap();
+    assert!(!app.shows("Café in the missing prefix."));
+    app.scroll("id:chat-transcript", px(230.)).unwrap();
+    app.scroll("id:chat-transcript", px(-230.)).unwrap();
+    let (input, failed) = fixture_recv(&mut history_rx).await;
+    assert_eq!(input, abandoned_input);
+    assert_eq!(input["view"], "chat");
+    assert_eq!(
+        input["through"], 30,
+        "use the history fence, not the observation"
+    );
+    assert_eq!(input["position"]["cursor"], boundary);
+    failed.reject("older history unavailable");
+    app.wait_for("id:chat-transcript >> label:Retry").unwrap();
+    app.scroll("id:chat-transcript", px(210.)).unwrap();
+    app.scroll("id:chat-transcript", px(-340.)).unwrap();
+    assert!(
+        history_rx.try_recv().is_err(),
+        "scroll retried a failed page"
+    );
+    app.press("id:chat-transcript >> label:Retry").unwrap();
+    let (retry_input, retry) = fixture_recv(&mut history_rx).await;
+    assert_eq!(retry_input, input);
+    assert!(app.settle());
+    let marker_y = |app: &Headless| {
+        app.screen()
+            .layout("text:Reading marker")
+            .unwrap()
+            .expect("reading marker is still mounted")
+            .bounds
+            .origin
+            .y
+            .0
+    };
+    let before = marker_y(&app);
+    visible["offset"] = json!(0);
+    visible["text"] = json!(prefix);
+    let mut latest_prompt = quote_history_row(14, "user", "Latest question");
+    latest_prompt["turnId"] = json!("latest");
+    let mut prior_end = quote_history_row(13, "assistant", " is complete.");
+    prior_end["offset"] = json!(14);
+    prior_end["totalBytes"] = json!(27);
+    prior_end["finalOutput"] = json!(true);
+    prior_end["foldedWork"] =
+        json!({"thoughts":1,"tools":1,"messages":0,"imageCount":0,"images":[]});
+    let prior_cursor = cursor(&prior_end);
+    let mut first_page = vec![prior_end.clone(), latest_prompt];
+    first_page.extend((15..22).map(|sequence| {
+        let mut step = quote_history_row(sequence, "tool_call", "");
+        step["turnId"] = json!("latest");
+        step["tool"] = json!({"toolUseId":format!("call-{sequence}"),"call":{"name":"Read"}});
+        step
+    }));
+    // Supply the tool-heavy page separately: a single drag must cross it.
+    let raw_work = first_page.split_off(2);
+    let work_cursor = cursor(&raw_work[0]);
+    retry.resolve(json!({"value":page([raw_work, vec![visible]].concat(), work_cursor.clone())}));
+    let (next, work) = fixture_recv(&mut history_rx).await;
+    assert_eq!(next["position"]["cursor"], work_cursor);
+    work.resolve(json!({"value":page(first_page, prior_cursor.clone())}));
+    let (next, earlier) = fixture_recv(&mut history_rx).await;
+    assert_eq!(next["position"]["cursor"], prior_cursor);
+    prior_end["offset"] = json!(0);
+    prior_end["text"] = json!("Previous reply");
+    let prompt = quote_history_row(2, "user", "Previous question");
+    let mut oldest = quote_history_row(1, "assistant", "Even older reply");
+    oldest["turnId"] = json!("older");
+    let oldest_cursor = cursor(&oldest);
+    earlier.resolve(json!({"value":page(vec![oldest, prompt.clone(), prior_end.clone()], oldest_cursor.clone())}));
+    app.wait_for_gone(
+        "id:chat-transcript >> text:Loading…",
+        Duration::from_secs(2),
+    )
+    .unwrap();
+    assert!(app.settle());
+    let after = marker_y(&app);
+    assert!(
+        (after - before).abs() <= 24.,
+        "reading marker jumped from {before} to {after}"
+    );
+    assert!(
+        history_rx.try_recv().is_err(),
+        "paging continued beyond a complete prior Turn"
+    );
+    app.scroll("id:chat-transcript", px(-1100.)).unwrap();
+    let (next, start) = fixture_recv(&mut history_rx).await;
+    assert_eq!(next["position"]["cursor"], oldest_cursor);
+    start.resolve(json!({"value":page(vec![], Value::Null)}));
+    app.wait_for("text:Previous question").unwrap();
+    app.wait_for("text:Previous reply is complete.").unwrap();
+    assert!(
+        history_rx.try_recv().is_err(),
+        "collapsed work was fetched before opening it"
+    );
+
+    app.press("label:Thought process · 1 tool").unwrap();
+    let (turn, turn_page) = fixture_recv(&mut history_rx).await;
+    assert_eq!(turn["view"], "turn");
+    assert_eq!(turn["position"]["position"], prior_end["position"]);
+    let mut thought = quote_history_row(3, "assistant", "Recovered thought");
+    thought["field"] = json!("thinking");
+    let mut group = thought.clone();
+    group["text"] = json!("");
+    group["totalBytes"] = json!(0);
+    group["work"] = json!({"end":cursor(&thought),"kinds":[{"kind":"thought"}],"last":{"kind":"thought"},
+        "thoughts":1,"tools":1,"messages":0,"imageCount":0,"images":[]});
+    turn_page.resolve(json!({"value":page(vec![prompt, group, prior_end], Value::Null)}));
+    let (steps, step_page) = fixture_recv(&mut history_rx).await;
+    assert_eq!(steps["view"], "steps");
+    assert_eq!(steps["position"]["position"], thought["position"]);
+    let mut tool = quote_history_row(4, "tool_call", "");
+    tool["tool"] = json!({"toolUseId":"search","call":{"name":"Search source"}});
+    step_page.resolve(json!({"value":page(vec![thought, tool], Value::Null)}));
+    app.wait_for("text:Recovered thought").unwrap();
+    app.wait_for("text:Search source").unwrap();
 }
 
 fn side_history_rows() -> (Value, Value) {
@@ -4271,25 +5338,44 @@ async fn chat_quote_draft_sends_ordered_excerpts_without_text_and_renders_histor
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn assistant_turn_with_tools_has_one_copy_and_quote_action_for_all_bodies() {
-    let mut tool = quote_history_row(2, "assistant", "");
-    tool["tool"] = json!({"toolUseId":"work","call":{"name":"Shell"}});
-    let (mut app, mut sends) = quote_chat_fixture(
-        vec![
-            quote_history_row(1, "assistant", "**First** answer"),
-            tool,
-            quote_history_row(3, "assistant", "Second answer"),
-        ],
+async fn folded_turn_copies_and_quotes_all_prose_even_before_expansion() {
+    let prompt = quote_history_row(1, "user", "Summarize the work");
+    let first = quote_history_row(2, "assistant", "**First** answer");
+    let mut tool = quote_history_row(3, "tool_call", "");
+    tool["tool"] = json!({"toolUseId":"work","call":{"name":"Search sources"}});
+    let mut group = tool.clone();
+    group["tool"] = Value::Null;
+    group["work"] = json!({
+        "end":{"position":tool["position"],"field":"body","offset":0},
+        "kinds":[{"kind":"tool","presentation":null}],"last":{"kind":"tool","presentation":null},
+        "thoughts":0,"tools":1,"messages":0,"imageCount":0,"images":[]
+    });
+    let mut last = quote_history_row(4, "assistant", "Second answer");
+    last["finalOutput"] = json!(true);
+    let mut folded = last.clone();
+    folded["foldedWork"] = json!({"thoughts":0,"tools":1,"messages":0,"imageCount":0,"images":[]});
+    let (mut app, mut sends) = quote_chat_fixture_with_work(
+        vec![prompt.clone(), folded],
         vec![],
         None,
+        Some((vec![prompt, first, group, last], vec![tool])),
     );
     app.press("label:Conversation: Quotes Chat").unwrap();
     app.wait_for("text:Second answer").unwrap();
+    assert!(!app.shows("First answer"));
     app.press("role:button[Copy reply]").unwrap();
+    assert!(app.settle());
     assert_eq!(
         app.screen().clipboard(),
         Some("**First** answer\n\nSecond answer")
     );
+    assert!(
+        !app.shows("First answer"),
+        "copy opened the user's disclosure"
+    );
+    app.press("label:Used 1 tool").unwrap();
+    app.wait_for("text:Search sources").unwrap();
+    app.wait_for("text:First answer").unwrap();
     app.press("role:button[Quote]").unwrap();
     app.press("label:Send message").unwrap();
     let (send, receipt) = sends.try_recv().unwrap();
@@ -4314,13 +5400,12 @@ async fn chat_boundary_reply_gains_whole_turn_actions_only_after_earlier_history
     let mut choose_quote = watch_quote_menus(&mut app);
     app.press("label:Conversation: Quotes Chat").unwrap();
     app.wait_for("text:Second answer").unwrap();
-    app.wait_for("label:Load earlier messages").unwrap();
     assert!(!app.shows("role:button[Copy reply]"));
     assert!(!app.shows("role:button[Quote]"));
     assert!(choose_quote(&mut app, "text:Second answer", Some("Second")));
     app.wait_for("label:Remove quote: Second").unwrap();
 
-    app.press("label:Load earlier messages").unwrap();
+    pull_at_transcript_start(&mut app);
     app.wait_for("text:First answer").unwrap();
     app.press("role:button[Copy reply]").unwrap();
     assert_eq!(
@@ -4355,6 +5440,7 @@ async fn chat_quote_limit_disables_the_seventeenth_quote() {
         vec![],
         None,
     );
+    app.set_viewport(Size::new(px(390.), px(1900.))).unwrap();
     app.press("label:Conversation: Quotes Chat").unwrap();
     app.wait_for("text:Excerpt 17").unwrap();
     for n in 0..16 {
@@ -5672,9 +6758,9 @@ async fn room_watch_keeps_the_boundary_and_ignores_pagination_from_an_old_connec
                 }
                 match query_phase.load(std::sync::atomic::Ordering::SeqCst) {
                     0 => json!({"kind":"room","page":{"items":[message(2,"m2","Initial room message")],"through":0,"before":"m2"}}),
-                    1 => json!({"kind":"room","page":{"items":[message(3,"m3","Live room message")],"through":1,"before":"m3"}}),
+                    1 => json!({"kind":"room","page":{"items":[message(2,"m2","Initial room message"),message(3,"m3","Live room message")],"through":1,"before":"m3"}}),
                     2 => json!({"kind":"room","page":{"items":[message(4,"m4","Reconnected room message")],"through":2,"before":"m4"}}),
-                    _ => json!({"kind":"room","page":{"items":[message(5,"m5","Updated room after reconnect")],"through":3,"before":"m5"}}),
+                    _ => json!({"kind":"room","page":{"items":[message(4,"m4","Reconnected room message"),message(5,"m5","Updated room after reconnect")],"through":3,"before":"m5"}}),
                 }
             }
             method => {
@@ -5723,7 +6809,7 @@ async fn room_watch_keeps_the_boundary_and_ignores_pagination_from_an_old_connec
     app.wait_for("label:Conversation: Release Room").unwrap();
     app.press("label:Conversation: Release Room").unwrap();
     app.wait_for("text:Initial room message").unwrap();
-    app.press("label:Load earlier messages").unwrap();
+    pull_at_transcript_start(&mut app);
     let (input, earlier, value) = earlier_rx.try_recv().unwrap();
     assert_eq!(input["input"]["position"]["messageId"], "m2");
     assert_eq!(input["input"]["through"], 0);
@@ -5749,7 +6835,7 @@ async fn room_watch_keeps_the_boundary_and_ignores_pagination_from_an_old_connec
     assert_eq!(input["message"], "Hi Room");
     assert!(input.get("quotes").is_none());
     app.wait_for("text:Initial room message").unwrap();
-    app.press("label:Load earlier messages").unwrap();
+    pull_at_transcript_start(&mut app);
     let (data, stale, page) = earlier_rx.try_recv().unwrap();
     assert_eq!(data["input"]["position"]["messageId"], "m1");
     phase.store(2, std::sync::atomic::Ordering::SeqCst);
@@ -5764,7 +6850,14 @@ async fn room_watch_keeps_the_boundary_and_ignores_pagination_from_an_old_connec
     stale.resolve(json!({"value":page}));
     assert!(app.settle());
     assert!(!app.shows("Stale page from first connection"));
-    app.wait_for("label:Load earlier messages").unwrap();
+    assert!(
+        !app.shows("Initial room message"),
+        "a disjoint Room tail retained the old window"
+    );
+    assert!(
+        !app.shows("Earlier room message"),
+        "a disjoint Room tail retained the old window"
+    );
     let new_watch = fixture_recv(&mut watch_rx).await;
     let deliver = |app: &mut Headless, mut handle: Value| {
         handle["item"] = json!({"kind":"room","through":3,"revision":3});
@@ -5866,7 +6959,7 @@ async fn agent_history_merges_overlapping_byte_ranges_and_coalesces_tail_refresh
     app.wait_for("label:Conversation: Agent History").unwrap();
     app.press("label:Conversation: Agent History").unwrap();
     app.wait_for(&format!("text:/^{original}$/")).unwrap();
-    app.press("label:Load earlier messages").unwrap();
+    pull_at_transcript_start(&mut app);
     app.wait_for("text:Earlier user message").unwrap();
     app.wait_for("text:/^Imported user prefix and continuation$/")
         .unwrap();
@@ -5906,6 +6999,28 @@ async fn agent_history_merges_overlapping_byte_ranges_and_coalesces_tail_refresh
     assert!(
         tail_rx.try_recv().is_err(),
         "burst should schedule just one catch-up query"
+    );
+    app.host()
+        .send("ios.subscriptionItem", delivery(13))
+        .unwrap();
+    let gap = fixture_recv(&mut tail_rx).await;
+    let mut new_tail = history(
+        2,
+        168,
+        "Later text after missing bytes",
+        Some(json!({"fixture":"new-edge"})),
+    );
+    new_tail["chunks"][0]["totalBytes"] = json!(198);
+    gap.resolve(json!({"value":new_tail}));
+    app.wait_for("text:Later text after missing bytes").unwrap();
+    assert!(
+        !app.shows("Earlier user message"),
+        "tail with a byte gap kept the old window"
+    );
+    assert!(!app.shows(&final_text));
+    assert!(
+        !app.shows("role:button[Copy reply]"),
+        "a disconnected fragment was offered as a complete reply"
     );
     assert!(unexpected.try_recv().is_err());
 }
