@@ -178,6 +178,7 @@ import {
   type WorkspaceBrowserProps,
 } from '../../../../products/maka/workbench/app/WorkspaceBrowser';
 import { createBotWorkers } from '../../../../products/maka/workbench/app/botWorkers';
+import { createScopedCatalog } from '../../../../products/maka/workbench/app/scopedCatalog';
 import { appUpdater } from '../../../../products/maka/workbench/app/appUpdater';
 import {
   applicationMenu,
@@ -1583,6 +1584,63 @@ export function createConversationUi(
     () => botSession() ?? null,
     () => platform.idiom !== 'terminal',
   );
+  // Waiting conversations across all depths, subscribed only while needsYouCount > 0,
+  // so waiting children can bubble under their visible parent row without extra cost at rest.
+  const waitingChildren = createScopedCatalog(
+    host,
+    () =>
+      platform.idiom !== 'terminal' && browsing.filter() === 'all' && browsing.needsYouCount() > 0
+        ? { kind: 'all' }
+        : null,
+    { filter: 'needs_you', rootsOnly: false },
+  );
+  // Top-level visible root of the currently open child conversation so the sidebar
+  // highlights the owning thread without inserting temporary rows.
+  const selectedRoot = signal<string | null>(null);
+  effect(() => {
+    const id = selected();
+    const listed = browsing.sessions();
+    if (!id) {
+      selectedRoot.set(null);
+      return;
+    }
+    if (listed.some((session) => session.id === id)) {
+      selectedRoot.set(id);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      const seen = new Set<string>([id]);
+      let cursor: string | null = id;
+      let hops = 0;
+      try {
+        while (cursor && hops < 8) {
+          hops += 1;
+          const sessionIdToCheck: string = cursor;
+          const observed = await host.query('agent', 'observe', { sessionId: sessionIdToCheck });
+          if (!alive || cancelled) return;
+          const parent: string | null = observed.session.parentSessionId;
+          if (!parent) {
+            selectedRoot.set(observed.session.id);
+            return;
+          }
+          if (browsing.sessions().some((session) => session.id === parent)) {
+            selectedRoot.set(parent);
+            return;
+          }
+          if (seen.has(parent)) break;
+          seen.add(parent);
+          cursor = parent;
+        }
+      } catch {
+        // Parent chain unavailable; leave sidebar highlight cleared.
+      }
+      if (alive && !cancelled) selectedRoot.set(null);
+    })();
+    cleanup(() => {
+      cancelled = true;
+    });
+  });
   const refreshBotSession = async () => {
     const head = await host.query('agent', 'botOutbox', { limit: 0 });
     if (alive) botSession.set(head.sessionId ?? null);
@@ -2174,7 +2232,6 @@ export function createConversationUi(
   // and stepping between conversations skips them as the browser does.
   const collapsedGroups = signal<ReadonlySet<string>>(new Set());
   const expandedProjects = signal<ReadonlySet<string>>(new Set());
-  const foldedFamilies = signal<ReadonlySet<string>>(new Set());
   const stepSession = (step: 1 | -1) => {
     const current = overlay();
     if (switching() || busy() || (current && current.kind !== 'sessions')) return;
@@ -2189,20 +2246,18 @@ export function createConversationUi(
       platform.idiom !== 'terminal' &&
       browsing.filter() === 'all' &&
       sidebarPreferences.sortMode() === 'time';
+    const anchor = visible.some((s) => s.id === selected()) ? selected() : selectedRoot();
     const rows = browserOrder(
       byTime
         ? groupConversationsByTime(visible)
         : groupConversations(visible, browsing.projects(), false),
       collapsedGroups(),
-      selected(),
+      anchor,
       platform.idiom === 'terminal' ? undefined : expandedProjects(),
-      platform.idiom === 'terminal' || browsing.filter() !== 'all' || byTime
-        ? undefined
-        : foldedFamilies(),
     );
     // A side question opens beside its conversation, so stepping onto one would step back.
     const sides = new Set(visible.filter((session) => session.branch?.side).map(({ id }) => id));
-    const index = rows.indexOf(selected() ?? '');
+    const index = rows.indexOf(anchor ?? '');
     const direction = index === -1 ? 1 : step;
     let at = index === -1 ? 0 : index + step;
     while (at >= 0 && at < rows.length && sides.has(rows[at])) at += direction;
@@ -2295,6 +2350,8 @@ export function createConversationUi(
     openBot: (sessionId) => invokeCommand({ id: 'bot', sessionId }),
     botSession,
     botWorkers: botWorkers.sessions,
+    waitingChildren,
+    selectedRoot,
     settings: (sessionId) => invokeCommand({ id: 'settings', sessionId }),
     search: (sessionId) => invokeCommand({ id: 'sessions', sessionId }),
     canOpenBeside: () => !!shell()?.openBeside,
@@ -2302,7 +2359,6 @@ export function createConversationUi(
     openBeside: (sessionId) => shell()?.openBeside?.(sessionId),
     collapsedGroups,
     expandedProjects,
-    foldedFamilies,
   };
   let wasDocked = shell()?.sidebarDocked();
   let previousWidth = windowSize().width;
@@ -3116,9 +3172,6 @@ export function createConversationUi(
                     resources.selectWorktree({ sessionId: id(), worktreePath })
                   }
                   sources={() => resources.sources(id())}
-                  childSessions={() =>
-                    browsing.sessions().filter((s) => s.parentSessionId === id())
-                  }
                   openChangesWithWorktree={
                     workspace()
                       ? (worktreePath) => resources.openChanges({ sessionId: id(), worktreePath })

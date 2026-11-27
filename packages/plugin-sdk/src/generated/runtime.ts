@@ -7586,7 +7586,7 @@ export interface AgentList {
    */
   includeArchived?: boolean;
   /**
-   * Only conversations without a parent; omitted queries still include children.
+   * Only conversations without a parent and explicitly pinned ones; omitted queries still include all children.
    */
   rootsOnly?: boolean;
   position: AgentSessionPosition;
@@ -7870,10 +7870,15 @@ export interface AgentSession {
   labels: string[];
   workspace: AgentWorkspace;
   revision: number;
+  createdAt?: number;
   updatedAt: number;
   archived: boolean;
   pinned: boolean;
   hasUnread: boolean;
+  /**
+   * Whether at least one direct unarchived child conversation is currently working.
+   */
+  hasActiveChildren?: boolean;
   /**
    * Exact durable visible tail accepted by markRead; independent of preview clocks.
    */

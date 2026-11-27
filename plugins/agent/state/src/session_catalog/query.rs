@@ -90,14 +90,29 @@ const CANDIDATE_FILTERS: &str = "AND (?4 IS NULL OR s.id=?4)
  AND (?14 IN(0,1)
   OR (?14=2 AND COALESCE(json_extract(k.lineage,'$.origin.side'),json_extract(k.lineage,'$.branch.side'))=1
    AND COALESCE(json_extract(k.lineage,'$.origin.parent_session_id'),json_extract(k.lineage,'$.branch.parent_session_id'))=?15))";
-const FILTER: &str =
-    "(?11=0 OR json_extract(configuration,'$.parentSessionId') IS NULL) AND (?12=0 OR needs_you=1)";
-const COLUMNS: &str = "id,revision,created_at,updated_at,archived,configuration,binding_id,workspace_json,permission_epoch,metadata_epoch,control_revision,read_message,lineage,has_unread,tail,message_at,preview,pending_since,run,terminal,stopped,run_blocked,run_unknown,run_cleanup,late_sequence,working,blocked,unknown_effects,cleanup_pending,late_evidence,index_gap,latest_schema,control_schema,source_run,source_unread,is_room";
+const FILTER: &str = "(?11=0 OR json_extract(configuration,'$.parentSessionId') IS NULL OR unpinned=0) AND (?12=0 OR needs_you=1)";
+// Active direct children that are actually running (not blocked on a pending interaction).
+// Driven by the small partial index `agent_catalog_runs_live_only`, so cost is O(live runs).
+const ACTIVE_PARENTS_CTE: &str = ", active_parents AS MATERIALIZED (
+ SELECT DISTINCT json_extract(cs.configuration,'$.parentSessionId') AS parent_id
+ FROM agent_catalog_runs w INDEXED BY agent_catalog_runs_live_only
+ JOIN session_control cs ON cs.id=w.session
+ JOIN session_creations cr ON cr.session_id=cs.id AND cr.ready=1 AND cr.visible=1
+ WHERE w.owner=?1 AND w.live=1
+   AND cs.id>=?2 AND cs.id<?3 AND substr(cs.id,1,length(?2))=?2
+   AND cs.archived=0
+   AND json_extract(cs.configuration,'$.parentSessionId') IS NOT NULL
+   AND NOT EXISTS(SELECT 1 FROM session_retirements d WHERE d.session_id=cs.id AND d.remove_session=1)
+   AND NOT EXISTS(SELECT 1 FROM agent_interaction_pending p JOIN agent_interaction_requests q ON q.request=p.request WHERE p.session=cs.id AND q.run=w.run)
+)";
+const COLUMNS: &str = "id,revision,created_at,updated_at,archived,configuration,binding_id,workspace_json,permission_epoch,metadata_epoch,control_revision,read_message,lineage,has_unread,tail,message_at,preview,pending_since,run,terminal,stopped,run_blocked,run_unknown,run_cleanup,late_sequence,working,blocked,unknown_effects,cleanup_pending,late_evidence,index_gap,latest_schema,control_schema,source_run,source_unread,is_room,EXISTS(SELECT 1 FROM active_parents ap WHERE ap.parent_id=selected.id) AS has_active_children";
 const SELECTION_PARAMS: usize = 15;
 const RECORD_BUCKETS: [usize; 4] = [8, 32, 128, 256];
 
 static BASE_SQL: LazyLock<String> =
     LazyLock::new(|| BASE.replace("{CANDIDATE_FILTERS}", CANDIDATE_FILTERS));
+static RECORD_BASE_SQL: LazyLock<String> =
+    LazyLock::new(|| format!("{}{ACTIVE_PARENTS_CTE}", *BASE_SQL));
 static KEY_SQL: LazyLock<String> = LazyLock::new(|| {
     format!(
         "{} SELECT unpinned,recency,id FROM selected WHERE {FILTER} AND id=?16",
@@ -133,7 +148,7 @@ WHERE NOT EXISTS(SELECT 1 FROM session_retirements d WHERE d.session_id=s.id AND
        OR (typeof(json_extract(source_summary.summary_json,'$.version'))='integer'
            AND json_extract(source_summary.summary_json,'$.version')!=?16))
   {CANDIDATE_FILTERS}
-  AND (?11=0 OR json_extract(s.configuration,'$.parentSessionId') IS NULL)
+  AND (?11=0 OR json_extract(s.configuration,'$.parentSessionId') IS NULL OR s.catalog_unpinned=0)
   AND (?12=0 OR EXISTS(
       SELECT 1 FROM agent_interaction_pending p
       JOIN agent_interaction_requests q ON q.request=p.request
@@ -153,7 +168,7 @@ static PENDING_COUNT_SQL: LazyLock<String> = LazyLock::new(|| {
 static SINGLE_RECORD_SQL: LazyLock<String> = LazyLock::new(|| {
     format!(
         "{} SELECT {COLUMNS} FROM selected WHERE {FILTER} AND id=?16",
-        *BASE_SQL
+        *RECORD_BASE_SQL
     )
 });
 static RECORD_BUCKET_SQL: LazyLock<[String; 4]> = LazyLock::new(|| {
@@ -164,7 +179,7 @@ static RECORD_BUCKET_SQL: LazyLock<[String; 4]> = LazyLock::new(|| {
             .join(",");
         format!(
             "{} SELECT {COLUMNS} FROM selected WHERE {FILTER} AND id IN ({slots}) ORDER BY unpinned,recency,id",
-            *BASE_SQL
+            *RECORD_BASE_SQL
         )
     })
 });
@@ -394,7 +409,7 @@ impl Selection {
             }
             let sql = format!(
                 "{} SELECT {COLUMNS} FROM selected WHERE {FILTER} AND id IN ({}) ORDER BY unpinned,recency,id",
-                *BASE_SQL,
+                *RECORD_BASE_SQL,
                 slots.join(",")
             );
             c.prepare(&sql)?
@@ -466,6 +481,7 @@ struct Raw {
     source_run: Option<String>,
     source_unread: bool,
     is_room: bool,
+    has_active_children: bool,
 }
 impl Raw {
     fn read(r: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
@@ -506,6 +522,7 @@ impl Raw {
             source_run: r.get(33)?,
             source_unread: r.get(34)?,
             is_room: r.get(35)?,
+            has_active_children: r.get(36)?,
         })
     }
     fn decode(self) -> Result<Record, StoreError> {
@@ -602,6 +619,7 @@ impl Raw {
         };
         Ok(Record {
             is_room: self.is_room,
+            has_active_children: self.has_active_children,
             metadata: SessionRecord {
                 id: self.id,
                 revision,
@@ -1166,6 +1184,203 @@ mod tests {
                 .pending_session_count,
             0
         );
+        root.close().await.unwrap();
+    }
+
+    struct SeedChildHierarchy {
+        owner: String,
+    }
+    impl Statement for SeedChildHierarchy {
+        type Output = ();
+        type Value = ();
+        fn execute(self, c: &Connection) -> Result<Prepared<()>, StoreError> {
+            // sess-01: root; sess-02: unpinned child; sess-03: pinned child; sess-04: second unpinned child.
+            c.execute(
+                "UPDATE session_control SET configuration=?1 WHERE id='sess-02'",
+                [r#"{"parentSessionId":"sess-01"}"#],
+            )?;
+            c.execute(
+                "UPDATE session_control SET configuration=?1 WHERE id='sess-03'",
+                [r#"{"parentSessionId":"sess-01","pinned":true}"#],
+            )?;
+            c.execute(
+                "UPDATE session_control SET configuration=?1 WHERE id='sess-04'",
+                [r#"{"parentSessionId":"sess-01"}"#],
+            )?;
+            // Start a live working run on sess-02.
+            let run = Uuid::now_v7().to_string();
+            c.execute(
+                "INSERT OR IGNORE INTO contents(id,content_sha256,payload) VALUES(9002,'seed-active-child',CAST('{}' AS BLOB))",
+                [],
+            )?;
+            c.execute(
+                "INSERT INTO agent_run_specs(run,schema_version,owner,session,spec_content_id) VALUES(?1,?2,?3,'sess-02',9002)",
+                rusqlite::params![run, SCHEMA_VERSION, self.owner],
+            )?;
+            c.execute(
+                "INSERT INTO agent_catalog_runs(run,owner,session,admission_sequence,live) VALUES(?1,?2,'sess-02',1,1)",
+                rusqlite::params![run, self.owner],
+            )?;
+            Ok(Prepared {
+                value: (),
+                changed: true,
+                notification: Notification::default(),
+            })
+        }
+        fn committed(_: ()) {}
+        fn isolated_rejection(_: &StoreError) -> bool {
+            false
+        }
+    }
+
+    struct SetLive {
+        session: &'static str,
+        live: i64,
+    }
+    impl Statement for SetLive {
+        type Output = ();
+        type Value = ();
+        fn execute(self, c: &Connection) -> Result<Prepared<()>, StoreError> {
+            c.execute(
+                "UPDATE agent_catalog_runs SET live=?1 WHERE session=?2",
+                rusqlite::params![self.live, self.session],
+            )?;
+            Ok(Prepared {
+                value: (),
+                changed: true,
+                notification: Notification::default(),
+            })
+        }
+        fn committed(_: ()) {}
+        fn isolated_rejection(_: &StoreError) -> bool {
+            false
+        }
+    }
+
+    struct ExplainRecordPlan(Vec<SqlValue>);
+    impl Query for ExplainRecordPlan {
+        type Output = Vec<String>;
+        fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+            let mut stmt = c.prepare(&format!("EXPLAIN QUERY PLAN {}", *SINGLE_RECORD_SQL))?;
+            let mut rows = stmt.query(params_from_iter(self.0))?;
+            let mut details = Vec::new();
+            while let Some(row) = rows.next()? {
+                details.push(row.get::<_, String>(3)?);
+            }
+            Ok(details)
+        }
+    }
+
+    #[tokio::test]
+    async fn roots_only_includes_pinned_children_and_tracks_active_children() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, data, catalog) = seeded(dir.path(), 4).await;
+        let owner = catalog.owner_key().unwrap();
+        data.write(SeedChildHierarchy {
+            owner: owner.clone(),
+        })
+        .await
+        .unwrap();
+
+        let filter = Filter {
+            base: CatalogFilter {
+                roots_only: true,
+                archived_only: false,
+                include_archived: false,
+            },
+            needs_you_only: false,
+            room: None,
+            side: SideQuestions::Hidden,
+        };
+
+        // roots_only admits root sess-01 and explicitly pinned child sess-03, excluding unpinned children.
+        let page = catalog
+            .page(
+                CatalogScope::Profile,
+                None,
+                Position::Start,
+                filter.clone(),
+                32,
+            )
+            .await
+            .unwrap();
+        let ids: Vec<&str> = page
+            .sessions
+            .iter()
+            .map(|r| r.metadata.id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["sess-03", "sess-01"]);
+        let root_row = page
+            .sessions
+            .iter()
+            .find(|r| r.metadata.id == "sess-01")
+            .unwrap();
+        assert!(root_row.has_active_children);
+
+        // If the only live child is waiting on an interaction rather than running, has_active_children is false.
+        data.write(SetLive {
+            session: "sess-02",
+            live: 0,
+        })
+        .await
+        .unwrap();
+        data.write(SeedPending {
+            owner: owner.clone(),
+            session: "sess-04",
+        })
+        .await
+        .unwrap();
+        let page = catalog
+            .page(
+                CatalogScope::Profile,
+                None,
+                Position::Start,
+                filter.clone(),
+                32,
+            )
+            .await
+            .unwrap();
+        let root_row = page
+            .sessions
+            .iter()
+            .find(|r| r.metadata.id == "sess-01")
+            .unwrap();
+        assert!(!root_row.has_active_children);
+
+        // Once the pending interaction clears while the run stays live, has_active_children flips back to true.
+        data.write(ClearPending { session: "sess-04" })
+            .await
+            .unwrap();
+        let page = catalog
+            .page(
+                CatalogScope::Profile,
+                None,
+                Position::Start,
+                filter.clone(),
+                32,
+            )
+            .await
+            .unwrap();
+        let root_row = page
+            .sessions
+            .iter()
+            .find(|r| r.metadata.id == "sess-01")
+            .unwrap();
+        assert!(root_row.has_active_children);
+
+        // Verify the active_parents CTE uses the partial index agent_catalog_runs_live_only.
+        let mut selection = Selection::new(&catalog, &CatalogScope::Profile, &filter).unwrap();
+        selection.values.push("sess-01".to_owned().into());
+        let plan = data
+            .query(ExplainRecordPlan(selection.values))
+            .await
+            .unwrap();
+        assert!(
+            plan.iter()
+                .any(|line| line.contains("agent_catalog_runs_live_only")),
+            "expected partial index agent_catalog_runs_live_only in plan, got: {plan:#?}"
+        );
+
         root.close().await.unwrap();
     }
 }

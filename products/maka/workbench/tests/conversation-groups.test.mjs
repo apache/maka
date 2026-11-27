@@ -20,18 +20,18 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  attachBubbledChildren,
   browserOrder,
-  foldableFamilies,
   groupConversations,
   groupConversationsByTime,
   groupWorkspace,
-  unfoldedSessions,
 } from '../app/conversationGroups.ts';
 
 const session = (id, path, options = {}) => ({
   id,
   parentSessionId: options.parent ?? null,
   pinned: options.pinned ?? false,
+  archived: options.archived ?? false,
   workspace: { projectId: options.project ?? null, path },
 });
 const project = (id, archived = false) => ({ reference: { id }, archived });
@@ -40,7 +40,7 @@ test('groups list pinned conversations, then projects in catalog order, then oth
   const groups = groupConversations(
     [
       session('pin', '/a', { pinned: true, project: 'p' }),
-      session('child', '/b', { parent: 'root' }),
+      session('pinned-child', '/b', { pinned: true, parent: 'root' }),
       session('inProject', '/a', { project: 'p' }),
       session('root', '/b'),
     ],
@@ -50,15 +50,68 @@ test('groups list pinned conversations, then projects in catalog order, then oth
   assert.deepEqual(
     groups.map((group) => [group.key, group.sessions]),
     [
-      ['pinned', ['pin']],
+      ['pinned', ['pin', 'pinned-child']],
       ['project:p', ['inProject']],
       ['project:empty', []],
-      ['path:/b', ['root', 'child']],
+      ['path:/b', ['root']],
     ],
   );
   assert.equal(groups[0].project, null);
   assert.equal(groups[3].path, '/b');
-  assert.deepEqual([...groups[3].nested], ['child']);
+  assert.equal(groups[0].nested.size, 0);
+});
+
+test('waiting children bubble one level under their visible ancestor without duplicating pinned rows or adding orphans', () => {
+  const base = groupConversations(
+    [
+      session('pinned-parent', '/a', { pinned: true, project: 'p' }),
+      session('pinned-child', '/a', { pinned: true, parent: 'pinned-parent', project: 'p' }),
+      session('root', '/a', { project: 'p' }),
+    ],
+    [project('p')],
+    false,
+  );
+  const groups = attachBubbledChildren(base, [
+    session('wait-under-pinned', '/a', { parent: 'pinned-parent' }),
+    session('pinned-child', '/a', { pinned: true, parent: 'pinned-parent' }),
+    session('wait-direct', '/a', { parent: 'root' }),
+    session('wait-grandchild', '/a', { parent: 'wait-direct' }),
+    session('wait-orphan', '/a', { parent: 'off-page-parent' }),
+    session('wait-archived', '/a', { parent: 'root', archived: true }),
+  ]);
+  assert.deepEqual(
+    groups.map((group) => [group.key, group.sessions, [...group.nested]]),
+    [
+      ['pinned', ['pinned-parent', 'wait-under-pinned', 'pinned-child'], ['wait-under-pinned']],
+      ['project:p', ['root', 'wait-direct', 'wait-grandchild'], ['wait-direct', 'wait-grandchild']],
+    ],
+  );
+});
+
+test('bubbled children do not consume the six-conversation project preview limit', () => {
+  const tops = ['t1', 't2', 't3', 't4', 't5', 't6', 't7'];
+  const base = groupConversations(
+    [
+      session('t0', '/a', { project: 'x' }),
+      ...tops.map((id) => session(id, '/a', { project: 'x' })),
+    ],
+    [project('x')],
+    false,
+  );
+  const groups = attachBubbledChildren(base, [
+    session('w1', '/a', { parent: 't0' }),
+    session('w2', '/a', { parent: 't0' }),
+  ]);
+  assert.deepEqual(browserOrder(groups, new Set(), null, new Set()), [
+    't0',
+    'w1',
+    'w2',
+    't1',
+    't2',
+    't3',
+    't4',
+    't5',
+  ]);
 });
 
 test('project order is independent of conversation recency and stepping follows the preview', () => {
@@ -140,87 +193,6 @@ test('mixed pinned groups have no creation workspace; missing projects reuse an 
   );
   assert.equal(groupWorkspace(groups[0]), null);
   assert.deepEqual(groupWorkspace(groups[1]), { kind: 'session', sessionId: 'missing' });
-});
-
-test('a conversation that created three or more can fold them', () => {
-  const [group] = groupConversations(
-    [
-      session('big', '/a'),
-      session('b1', '/a', { parent: 'big' }),
-      session('b2', '/a', { parent: 'b1' }),
-      session('b3', '/a', { parent: 'big' }),
-      session('small', '/a'),
-      session('s1', '/a', { parent: 'small' }),
-      session('s2', '/a', { parent: 'small' }),
-    ],
-    [],
-    false,
-  );
-  assert.deepEqual([...foldableFamilies(group)], [['big', ['b1', 'b2', 'b3']]]);
-  assert.deepEqual(unfoldedSessions(group, new Set()), group.sessions);
-  assert.deepEqual(unfoldedSessions(group, new Set(['big', 'small'])), [
-    'big',
-    'small',
-    's1',
-    's2',
-  ]);
-  // Stepping skips a folded family but starts from a folded current row.
-  assert.deepEqual(browserOrder([group], new Set(), null, undefined, new Set(['big'])), [
-    'big',
-    'small',
-    's1',
-    's2',
-  ]);
-  assert.deepEqual(browserOrder([group], new Set(), 'b2', undefined, new Set(['big'])), [
-    'big',
-    'b2',
-    'small',
-    's1',
-    's2',
-  ]);
-  // Without fold state, as in the terminal, nothing folds.
-  assert.deepEqual(browserOrder([group], new Set(), null), group.sessions);
-});
-
-test('a folded family stays hidden within a project limit', () => {
-  const groups = groupConversations(
-    [
-      session('p', '/a', { project: 'x' }),
-      ...['c1', 'c2', 'c3', 'c4', 'c5', 'c6'].map((id) =>
-        session(id, '/a', { project: 'x', parent: 'p' }),
-      ),
-      session('q', '/a', { project: 'x' }),
-    ],
-    [project('x')],
-    false,
-  );
-  assert.deepEqual(browserOrder(groups, new Set(), null, new Set(), new Set(['p'])), ['p', 'q']);
-});
-
-test('an open family does not use up its project limit', () => {
-  const tops = ['t1', 't2', 't3', 't4', 't5', 't6', 't7'];
-  const groups = groupConversations(
-    [
-      session('t0', '/a', { project: 'x' }),
-      ...['c1', 'c2', 'c3', 'c4'].map((id) => session(id, '/a', { project: 'x', parent: 't0' })),
-      ...tops.map((id) => session(id, '/a', { project: 'x' })),
-    ],
-    [project('x')],
-    false,
-  );
-  // Six top-level conversations show, each with what it created.
-  assert.deepEqual(browserOrder(groups, new Set(), null, new Set(), new Set()), [
-    't0',
-    'c1',
-    'c2',
-    'c3',
-    'c4',
-    't1',
-    't2',
-    't3',
-    't4',
-    't5',
-  ]);
 });
 
 test('chronological view keeps pinned first, preserves Host order, and buckets by local calendar day', () => {

@@ -19,31 +19,36 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { nestCreated, workspaceSessions } from '../app/sessionNesting.ts';
+import { descendsFrom, visibleAncestor, workspaceSessions } from '../app/sessionNesting.ts';
 
 const session = (id, parentSessionId = null) => ({ id, parentSessionId });
 
-test('conversations follow the conversation that created them, one level in', () => {
-  const { order, nested } = nestCreated([
-    session('child', 'parent'),
-    session('other'),
-    session('parent'),
-    session('grandchild', 'child'),
+test('visibleAncestor walks parent links to the nearest visible row and guards against cycles', () => {
+  const parents = new Map([
+    ['child', 'parent'],
+    ['grandchild', 'child'],
+    ['a', 'b'],
+    ['b', 'a'],
+    ['orphan', 'missing'],
   ]);
-  assert.deepEqual(order, ['other', 'parent', 'child', 'grandchild']);
-  assert.deepEqual([...nested].sort(), ['child', 'grandchild']);
+  const visible = new Set(['parent']);
+  assert.equal(visibleAncestor('child', visible, parents), 'parent');
+  assert.equal(visibleAncestor('grandchild', visible, parents), 'parent');
+  assert.equal(visibleAncestor('a', visible, parents), null);
+  assert.equal(visibleAncestor('orphan', visible, parents), null);
 });
 
-test('a conversation whose creator is not in the group stays where it is', () => {
-  const { order, nested } = nestCreated([session('a', 'elsewhere'), session('b')]);
-  assert.deepEqual(order, ['a', 'b']);
-  assert.equal(nested.size, 0);
-});
-
-test('a creation cycle leaves every conversation listed once', () => {
-  const { order } = nestCreated([session('a', 'b'), session('b', 'a'), session('c')]);
-  assert.deepEqual([...order].sort(), ['a', 'b', 'c']);
-  assert.equal(new Set(order).size, 3);
+test('descendsFrom detects descendants across multiple levels and stops on cycles', () => {
+  const parents = new Map([
+    ['worker', 'bot'],
+    ['helper', 'worker'],
+    ['a', 'b'],
+    ['b', 'a'],
+  ]);
+  assert.equal(descendsFrom('worker', 'bot', parents), true);
+  assert.equal(descendsFrom('helper', 'bot', parents), true);
+  assert.equal(descendsFrom('a', 'bot', parents), false);
+  assert.equal(descendsFrom('worker', null, parents), false);
 });
 
 test("the Bot's workers and what they created leave the list; others stay", () => {

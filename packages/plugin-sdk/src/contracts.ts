@@ -965,7 +965,7 @@ export const contracts: {
               },
               rootsOnly: {
                 description:
-                  'Only conversations without a parent; omitted queries still include children.',
+                  'Only conversations without a parent and explicitly pinned ones; omitted queries still include all children.',
                 type: 'boolean',
                 default: false,
               },
@@ -1259,6 +1259,12 @@ export const contracts: {
                     format: 'uint64',
                     minimum: 0,
                   },
+                  createdAt: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    default: 0,
+                  },
                   updatedAt: {
                     type: 'integer',
                     format: 'uint64',
@@ -1272,6 +1278,12 @@ export const contracts: {
                   },
                   hasUnread: {
                     type: 'boolean',
+                  },
+                  hasActiveChildren: {
+                    description:
+                      'Whether at least one direct unarchived child conversation is currently working.',
+                    type: 'boolean',
+                    default: false,
                   },
                   tailMessageId: {
                     description:
@@ -2941,6 +2953,12 @@ export const contracts: {
                     format: 'uint64',
                     minimum: 0,
                   },
+                  createdAt: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    default: 0,
+                  },
                   updatedAt: {
                     type: 'integer',
                     format: 'uint64',
@@ -2954,6 +2972,12 @@ export const contracts: {
                   },
                   hasUnread: {
                     type: 'boolean',
+                  },
+                  hasActiveChildren: {
+                    description:
+                      'Whether at least one direct unarchived child conversation is currently working.',
+                    type: 'boolean',
+                    default: false,
                   },
                   tailMessageId: {
                     description:
@@ -8119,6 +8143,12 @@ export const contracts: {
                     format: 'uint64',
                     minimum: 0,
                   },
+                  createdAt: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    default: 0,
+                  },
                   updatedAt: {
                     type: 'integer',
                     format: 'uint64',
@@ -8132,6 +8162,12 @@ export const contracts: {
                   },
                   hasUnread: {
                     type: 'boolean',
+                  },
+                  hasActiveChildren: {
+                    description:
+                      'Whether at least one direct unarchived child conversation is currently working.',
+                    type: 'boolean',
+                    default: false,
                   },
                   tailMessageId: {
                     description:
@@ -12122,6 +12158,12 @@ export const contracts: {
                     format: 'uint64',
                     minimum: 0,
                   },
+                  createdAt: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    default: 0,
+                  },
                   updatedAt: {
                     type: 'integer',
                     format: 'uint64',
@@ -12135,6 +12177,12 @@ export const contracts: {
                   },
                   hasUnread: {
                     type: 'boolean',
+                  },
+                  hasActiveChildren: {
+                    description:
+                      'Whether at least one direct unarchived child conversation is currently working.',
+                    type: 'boolean',
+                    default: false,
                   },
                   tailMessageId: {
                     description:
@@ -12914,6 +12962,12 @@ export const contracts: {
                     format: 'uint64',
                     minimum: 0,
                   },
+                  createdAt: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    default: 0,
+                  },
                   updatedAt: {
                     type: 'integer',
                     format: 'uint64',
@@ -12927,6 +12981,12 @@ export const contracts: {
                   },
                   hasUnread: {
                     type: 'boolean',
+                  },
+                  hasActiveChildren: {
+                    description:
+                      'Whether at least one direct unarchived child conversation is currently working.',
+                    type: 'boolean',
+                    default: false,
                   },
                   tailMessageId: {
                     description:
@@ -20988,6 +21048,12 @@ export const contracts: {
                     format: 'uint64',
                     minimum: 0,
                   },
+                  createdAt: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    default: 0,
+                  },
                   updatedAt: {
                     type: 'integer',
                     format: 'uint64',
@@ -21001,6 +21067,12 @@ export const contracts: {
                   },
                   hasUnread: {
                     type: 'boolean',
+                  },
+                  hasActiveChildren: {
+                    description:
+                      'Whether at least one direct unarchived child conversation is currently working.',
+                    type: 'boolean',
+                    default: false,
                   },
                   tailMessageId: {
                     description:
@@ -22197,6 +22269,12 @@ export const contracts: {
                     format: 'uint64',
                     minimum: 0,
                   },
+                  createdAt: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    default: 0,
+                  },
                   updatedAt: {
                     type: 'integer',
                     format: 'uint64',
@@ -22210,6 +22288,12 @@ export const contracts: {
                   },
                   hasUnread: {
                     type: 'boolean',
+                  },
+                  hasActiveChildren: {
+                    description:
+                      'Whether at least one direct unarchived child conversation is currently working.',
+                    type: 'boolean',
+                    default: false,
                   },
                   tailMessageId: {
                     description:
@@ -24164,7 +24248,7 @@ export const contracts: {
               },
               rootsOnly: {
                 description:
-                  'Only conversations without a parent; omitted queries still include children.',
+                  'Only conversations without a parent and explicitly pinned ones; omitted queries still include all children.',
                 type: 'boolean',
                 default: false,
               },
@@ -24458,6 +24542,12 @@ export const contracts: {
                     format: 'uint64',
                     minimum: 0,
                   },
+                  createdAt: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    default: 0,
+                  },
                   updatedAt: {
                     type: 'integer',
                     format: 'uint64',
@@ -24471,6 +24561,12 @@ export const contracts: {
                   },
                   hasUnread: {
                     type: 'boolean',
+                  },
+                  hasActiveChildren: {
+                    description:
+                      'Whether at least one direct unarchived child conversation is currently working.',
+                    type: 'boolean',
+                    default: false,
                   },
                   tailMessageId: {
                     description:
@@ -29973,6 +30069,12 @@ export const contracts: {
                     format: 'uint64',
                     minimum: 0,
                   },
+                  createdAt: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    default: 0,
+                  },
                   updatedAt: {
                     type: 'integer',
                     format: 'uint64',
@@ -29986,6 +30088,12 @@ export const contracts: {
                   },
                   hasUnread: {
                     type: 'boolean',
+                  },
+                  hasActiveChildren: {
+                    description:
+                      'Whether at least one direct unarchived child conversation is currently working.',
+                    type: 'boolean',
+                    default: false,
                   },
                   tailMessageId: {
                     description:
@@ -31915,6 +32023,12 @@ export const contracts: {
                     format: 'uint64',
                     minimum: 0,
                   },
+                  createdAt: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    default: 0,
+                  },
                   updatedAt: {
                     type: 'integer',
                     format: 'uint64',
@@ -31928,6 +32042,12 @@ export const contracts: {
                   },
                   hasUnread: {
                     type: 'boolean',
+                  },
+                  hasActiveChildren: {
+                    description:
+                      'Whether at least one direct unarchived child conversation is currently working.',
+                    type: 'boolean',
+                    default: false,
                   },
                   tailMessageId: {
                     description:
@@ -33257,6 +33377,12 @@ export const contracts: {
                     format: 'uint64',
                     minimum: 0,
                   },
+                  createdAt: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    default: 0,
+                  },
                   updatedAt: {
                     type: 'integer',
                     format: 'uint64',
@@ -33270,6 +33396,12 @@ export const contracts: {
                   },
                   hasUnread: {
                     type: 'boolean',
+                  },
+                  hasActiveChildren: {
+                    description:
+                      'Whether at least one direct unarchived child conversation is currently working.',
+                    type: 'boolean',
+                    default: false,
                   },
                   tailMessageId: {
                     description:
@@ -37046,6 +37178,12 @@ export const contracts: {
                     format: 'uint64',
                     minimum: 0,
                   },
+                  createdAt: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    default: 0,
+                  },
                   updatedAt: {
                     type: 'integer',
                     format: 'uint64',
@@ -37059,6 +37197,12 @@ export const contracts: {
                   },
                   hasUnread: {
                     type: 'boolean',
+                  },
+                  hasActiveChildren: {
+                    description:
+                      'Whether at least one direct unarchived child conversation is currently working.',
+                    type: 'boolean',
+                    default: false,
                   },
                   tailMessageId: {
                     description:
@@ -44962,6 +45106,12 @@ export const contracts: {
                     format: 'uint64',
                     minimum: 0,
                   },
+                  createdAt: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    default: 0,
+                  },
                   updatedAt: {
                     type: 'integer',
                     format: 'uint64',
@@ -44975,6 +45125,12 @@ export const contracts: {
                   },
                   hasUnread: {
                     type: 'boolean',
+                  },
+                  hasActiveChildren: {
+                    description:
+                      'Whether at least one direct unarchived child conversation is currently working.',
+                    type: 'boolean',
+                    default: false,
                   },
                   tailMessageId: {
                     description:
@@ -47374,6 +47530,12 @@ export const contracts: {
                     format: 'uint64',
                     minimum: 0,
                   },
+                  createdAt: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    default: 0,
+                  },
                   updatedAt: {
                     type: 'integer',
                     format: 'uint64',
@@ -47387,6 +47549,12 @@ export const contracts: {
                   },
                   hasUnread: {
                     type: 'boolean',
+                  },
+                  hasActiveChildren: {
+                    description:
+                      'Whether at least one direct unarchived child conversation is currently working.',
+                    type: 'boolean',
+                    default: false,
                   },
                   tailMessageId: {
                     description:
@@ -53697,6 +53865,12 @@ export const contracts: {
                     format: 'uint64',
                     minimum: 0,
                   },
+                  createdAt: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    default: 0,
+                  },
                   updatedAt: {
                     type: 'integer',
                     format: 'uint64',
@@ -53710,6 +53884,12 @@ export const contracts: {
                   },
                   hasUnread: {
                     type: 'boolean',
+                  },
+                  hasActiveChildren: {
+                    description:
+                      'Whether at least one direct unarchived child conversation is currently working.',
+                    type: 'boolean',
+                    default: false,
                   },
                   tailMessageId: {
                     description:

@@ -115,6 +115,7 @@ pub struct Status {
 pub struct Record {
     pub metadata: SessionRecord,
     pub is_room: bool,
+    pub has_active_children: bool,
     pub control_revision: u64,
     pub status: Status,
     pub read_state: ReadState,

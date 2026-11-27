@@ -20,56 +20,41 @@
 type Nestable = { id: string; parentSessionId: string | null };
 
 /**
- * One workspace group's conversations with each one another conversation in
- * the group created moved under the first of its line there, one level in,
- * in their own order. The browser shows creation one level deep, not a tree.
+ * Resolve the nearest ancestor of `id` that is present in `visible`, walking
+ * parent links through `parents` while guarding against cycles.
  */
-export function nestCreated(sessions: readonly Nestable[]): {
-  order: string[];
-  nested: ReadonlySet<string>;
-} {
-  const parents = new Map(sessions.map((session) => [session.id, session.parentSessionId]));
-  const roots = new Map<string, string | null>();
-  const rootOf = (id: string) => {
-    const path: string[] = [];
-    const seen = new Set<string>();
-    let at = id;
-    let root: string | null;
-    for (;;) {
-      if (roots.has(at)) {
-        root = roots.get(at)!;
-        break;
-      }
-      if (seen.has(at)) {
-        root = null;
-        break;
-      }
-      seen.add(at);
-      path.push(at);
-      const parent = parents.get(at);
-      if (!parent || !parents.has(parent)) {
-        root = at;
-        break;
-      }
-      at = parent;
-    }
-    for (const member of path) roots.set(member, root);
-    return root ?? id;
-  };
-  const children = new Map<string, string[]>();
-  const nested = new Set<string>();
-  for (const { id } of sessions) {
-    const root = rootOf(id);
-    if (root === id) continue;
-    nested.add(id);
-    const siblings = children.get(root);
-    if (siblings) siblings.push(id);
-    else children.set(root, [id]);
+export function visibleAncestor(
+  id: string,
+  visible: ReadonlySet<string>,
+  parents: ReadonlyMap<string, string | null>,
+): string | null {
+  const seen = new Set<string>([id]);
+  let at = parents.get(id) ?? null;
+  while (at !== null) {
+    if (visible.has(at)) return at;
+    if (seen.has(at)) return null;
+    seen.add(at);
+    at = parents.get(at) ?? null;
   }
-  const order = sessions
-    .filter(({ id }) => !nested.has(id))
-    .flatMap(({ id }) => [id, ...(children.get(id) ?? [])]);
-  return { order, nested };
+  return null;
+}
+
+/** Whether `id` descends from `ancestor` through `parents`, guarding against cycles. */
+export function descendsFrom(
+  id: string,
+  ancestor: string | null,
+  parents: ReadonlyMap<string, string | null>,
+): boolean {
+  if (ancestor === null) return false;
+  const seen = new Set<string>([id]);
+  let at = parents.get(id) ?? null;
+  while (at !== null) {
+    if (at === ancestor) return true;
+    if (seen.has(at)) return false;
+    seen.add(at);
+    at = parents.get(at) ?? null;
+  }
+  return false;
 }
 
 /** The desktop's ordinary list puts Bot workers under its own entry; inbox and archive keep them. */
@@ -83,26 +68,5 @@ export function workspaceSessions<T extends Nestable>(
   sessions = sessions.filter((session) => session.id !== ancestor);
   if (!desktop || filter !== 'all') return [...sessions];
   const parents = new Map(sessions.map((session) => [session.id, session.parentSessionId]));
-  const verdicts = new Map<string, boolean>();
-  const descends = (id: string): boolean => {
-    const path: string[] = [];
-    let at: string | null | undefined = parents.get(id);
-    let result = false;
-    while (at != null && path.length <= sessions.length) {
-      if (at === ancestor) {
-        result = true;
-        break;
-      }
-      const known = verdicts.get(at);
-      if (known !== undefined) {
-        result = known;
-        break;
-      }
-      path.push(at);
-      at = parents.get(at);
-    }
-    for (const member of path) verdicts.set(member, result);
-    return result;
-  };
-  return sessions.filter((session) => !descends(session.id));
+  return sessions.filter((session) => !descendsFrom(session.id, ancestor, parents));
 }

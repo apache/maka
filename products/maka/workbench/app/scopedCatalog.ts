@@ -20,12 +20,18 @@
 import { cleanup, effect, signal } from 'nsh';
 import type {
   AgentSession,
+  AgentSessionFilter,
   AgentSessionListScope,
   AgentSessionPage,
 } from '../../../../packages/plugin-sdk/src/index.js';
 import type { Host } from './host';
 import { assembleChildren } from './botTranscriptCore';
 import { isObservationCancelled } from './text';
+
+export type ScopedCatalogOptions = {
+  filter?: AgentSessionFilter;
+  rootsOnly?: boolean;
+};
 
 /**
  * The conversations of one catalog scope, kept current by the Host's catalog stream: the
@@ -34,20 +40,34 @@ import { isObservationCancelled } from './text';
 export function createScopedCatalog(
   host: Pick<Host, 'query' | 'subscribe'>,
   scoped: () => AgentSessionListScope | null,
+  options?: ScopedCatalogOptions,
 ) {
+  const filter = options?.filter ?? 'all';
+  const rootsOnly = options?.rootsOnly;
   const children = signal<readonly AgentSession[]>([]);
   let shown = '';
   effect(() => {
     const scope = scoped();
-    if (!scope) return;
+    if (!scope) {
+      if (shown !== '') {
+        shown = '';
+        children.set([]);
+      }
+      return;
+    }
+    if (shown !== '') {
+      shown = '';
+      children.set([]);
+    }
     let stopped = false;
     let stream: { next(): Promise<AgentSessionPage | null>; close(): Promise<void> } | null = null;
     void (async () => {
       for (let reconnects = 0; !stopped; ) {
         try {
           const opened = await host.subscribe('agent', 'catalog', {
-            filter: 'all',
+            filter,
             includeArchived: false,
+            ...(rootsOnly !== undefined ? { rootsOnly } : {}),
             scope,
             position: { kind: 'start' },
           });
@@ -68,8 +88,9 @@ export function createScopedCatalog(
                   page,
                   (previous) =>
                     host.query('agent', 'list', {
-                      filter: 'all',
+                      filter,
                       includeArchived: false,
+                      ...(rootsOnly !== undefined ? { rootsOnly } : {}),
                       scope,
                       position: {
                         kind: 'after',

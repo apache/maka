@@ -261,6 +261,10 @@
       "plugins/agent/state/migrations/0066_compress_cells_and_usage.sql": {
         "version": 66,
         "sha384": "3a227c1d1eebff049e7c83c65ce83400a71cf6ed236d07a902f76f08c56913d3c4e7a591d55301e32a2d905b02c3334a"
+      },
+      "plugins/agent/state/migrations/0067_catalog_live_runs_index.sql": {
+        "version": 67,
+        "sha384": "ba3edfc423b5363554af4e0a3c7a9bce6b0101216e097d4bc855bd99891e14a15ba091b1b1f25b6ad91439acdac8f48a"
       }
     },
     "checkpoint-repository": {

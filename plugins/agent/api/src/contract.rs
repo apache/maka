@@ -252,7 +252,7 @@ pub struct List {
     /// Include archived conversations alongside active ones.
     #[serde(default)]
     pub include_archived: bool,
-    /// Only conversations without a parent; omitted queries still include children.
+    /// Only conversations without a parent and explicitly pinned ones; omitted queries still include all children.
     #[serde(default)]
     pub roots_only: bool,
     pub position: SessionPosition,
@@ -928,10 +928,15 @@ pub struct Session {
     pub labels: Vec<String>,
     pub workspace: Workspace,
     pub revision: u64,
+    #[serde(default)]
+    pub created_at: u64,
     pub updated_at: u64,
     pub archived: bool,
     pub pinned: bool,
     pub has_unread: bool,
+    /// Whether at least one direct unarchived child conversation is currently working.
+    #[serde(default)]
+    pub has_active_children: bool,
     /// Exact durable visible tail accepted by markRead; independent of preview clocks.
     #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<String>")]
     pub tail_message_id: Option<String>,
