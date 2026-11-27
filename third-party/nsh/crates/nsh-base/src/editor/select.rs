@@ -257,9 +257,7 @@ impl State {
     /// The block selection dragged from `from` to `to`, points of the rows'
     /// box.
     pub(crate) fn block_selection(&self, from: Pt<Points>, to: Pt<Points>) -> Selections {
-        let lh = self.line_height().0.max(1.0);
-        let rows = self.display.row_count();
-        let row_of = |y: Points| ((y.0 / lh).floor().max(0.0) as usize).min(rows.saturating_sub(1));
+        let row_of = |y: Points| self.display.row_at_y(y);
         let before = self.buffer.snapshot();
         let layout = self.display.layout(&before);
         let indent = |row: usize| self.display.row(row).indent;

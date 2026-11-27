@@ -248,18 +248,10 @@ pub(crate) struct ShaderState {
 
 impl ShaderState {
     fn new(surface: Weak<Surface>) -> Self {
-        let layer = CALayer::new();
-        // Clipped to its rounded corners ([`crate::decor`] sets them).
-        layer.setMasksToBounds(true);
-        // SAFETY: an immutable Core Animation constant.
-        layer.setContentsGravity(unsafe { kCAGravityResize });
-        // Above the background, its gradients and inset shadows, below the
-        // borders behind the children and the children.
-        layer.setZPosition(crate::decor::BEHIND + 0.75);
         ShaderState {
             surface,
             view: surface_view(),
-            layer,
+            layer: fill_layer(),
             ticking: false,
             hidden: false,
             role: ShaderRole::Fill,
@@ -1778,6 +1770,20 @@ fn show_frame(
     (more, showed)
 }
 
+/// A layer showing frames under a view's children, as a background
+/// ([`crate::decor`] shapes it: a shader's fill, a GPU view's).
+pub(crate) fn fill_layer() -> Retained<CALayer> {
+    let layer = CALayer::new();
+    // Clipped to its rounded corners ([`crate::decor`] sets them).
+    layer.setMasksToBounds(true);
+    // SAFETY: an immutable Core Animation constant.
+    layer.setContentsGravity(unsafe { kCAGravityResize });
+    // Above the background, its gradients and inset shadows, below the
+    // borders behind the children and the children.
+    layer.setZPosition(crate::decor::BEHIND + 0.75);
+    layer
+}
+
 /// A shader view whose frames go to IOSurfaces ([`display_frame`]).
 fn surface_view() -> ShaderView {
     let mut view = ShaderView::default();
@@ -1790,14 +1796,27 @@ fn surface_view() -> ShaderView {
 /// else (no Metal device) the pixels read back, as a CGImage, whose colours
 /// Core Animation matches on the main thread.
 fn display_frame(layer: &CALayer, view: &ShaderView) {
-    let contents = match view.surface() {
-        Some(surface) => Some(surface_object(surface)),
-        None => frame_image(view.frame())
-            .as_deref()
-            .map(crate::decor::image_object),
-    };
-    // SAFETY: an IOSurface and a CGImage are valid `contents` objects (none
-    // clears it).
+    match view.surface() {
+        Some(surface) => show_surface(layer, surface),
+        None => show_pixels(layer, view.frame()),
+    }
+}
+
+/// Shows an IOSurface in `layer` (the window server shows it as it is),
+/// without Core Animation's implicit animation.
+pub(crate) fn show_surface(layer: &CALayer, surface: &objc2_io_surface::IOSurfaceRef) {
+    let contents = surface_object(surface);
+    // SAFETY: an IOSurface is a valid `contents` object.
+    crate::surface::quiet(|| unsafe { layer.setContents(Some(&contents)) });
+}
+
+/// Shows a frame read back in `layer`, as a CGImage (an empty one clears
+/// it), without Core Animation's implicit animation.
+pub(crate) fn show_pixels(layer: &CALayer, frame: &Frame) {
+    let contents = frame_image(frame)
+        .as_deref()
+        .map(crate::decor::image_object);
+    // SAFETY: a CGImage is a valid `contents` object (none clears it).
     crate::surface::quiet(|| unsafe { layer.setContents(contents.as_deref()) });
 }
 

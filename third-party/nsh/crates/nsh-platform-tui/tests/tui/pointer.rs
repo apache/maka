@@ -181,6 +181,62 @@ fn dragging_scroll_content_reveals_later_rows_without_pressing_them() {
 }
 
 #[test]
+fn a_selection_area_copies_list_items_with_their_markers() {
+    use std::sync::Arc;
+
+    use nsh_core::clipboard::{ClipboardBackend, MemoryClipboard};
+    use nsh_platform_tui::{AppOptions, AppView, Input, Modifiers, MouseButton::Left};
+    let clipboard = Arc::new(MemoryClipboard::default());
+    let (tx, rx) = crossbeam_channel::unbounded();
+    let mut options = AppOptions::default();
+    options.clipboard = Some(clipboard.clone());
+    options.cache = nsh_platform_tui::CacheOptions::off();
+    options.wake = Some(Arc::new(move || {
+        let _ = tx.send(());
+    }));
+    let mut view = AppView::new(options);
+    // A list as `TextView` draws one: each marker a text selection leaves
+    // out, beside its item (#3284).
+    let code = nsh_bundler::compile_module(
+        "App.tsx",
+        r#"
+        import { mount, View, Text } from "nsh";
+        mount(() => <View selectable>
+            <View style={{ flexDirection: "row" }}>
+                <Text style={{ userSelect: "none" }}>•</Text>
+                <Text>one</Text>
+            </View>
+            <View style={{ flexDirection: "row" }}>
+                <Text style={{ userSelect: "none" }}>•</Text>
+                <Text>two</Text>
+            </View>
+        </View>);
+    "#,
+        &[],
+    )
+    .unwrap();
+    let mut terminal = Terminal::new(TestBackend::new(40, 8)).unwrap();
+    view.load(Bundle::source(code)).unwrap();
+    draw_until(&mut view, &mut terminal, &rx, "two");
+    view.handle(mouse(MouseKind::Down(Left), 1, 0));
+    view.handle(mouse(MouseKind::Move, 4, 1));
+    view.handle(mouse(MouseKind::Up(Left), 4, 1));
+    terminal
+        .draw(|frame| view.render(frame, frame.area()))
+        .unwrap();
+    view.handle(Input::Key {
+        key: "c".into(),
+        modifiers: Modifiers {
+            ctrl: true,
+            shift: true,
+            ..Default::default()
+        },
+        release: false,
+    });
+    assert_eq!(clipboard.text().as_deref(), Some("• one\n• two"));
+}
+
+#[test]
 fn a_selection_area_copies_across_texts_and_keeps_wide_graphemes_whole() {
     use std::sync::Arc;
 
@@ -237,7 +293,7 @@ fn a_selection_area_copies_across_texts_and_keeps_wide_graphemes_whole() {
         },
         release: false,
     });
-    assert_eq!(clipboard.text().as_deref(), Some("界🙂B\nla"));
+    assert_eq!(clipboard.text().as_deref(), Some("界🙂B\n\nla"));
     view.set_focused(false);
     terminal
         .draw(|frame| view.render(frame, frame.area()))

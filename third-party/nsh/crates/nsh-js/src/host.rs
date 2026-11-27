@@ -10,7 +10,7 @@ use std::{
 
 use nsh_core::{
     EventKind, EventPayload, NodeId, Op, PayloadValue, TouchPhase, js::Limits,
-    platform::Environment, time::Instant,
+    platform::Environment, selection::ListItemKey, time::Instant,
 };
 use rquickjs::{
     AsyncRuntime, CatchResultExt, Ctx, Function, Module, Persistent, Promise, Value, function::Opt,
@@ -67,7 +67,10 @@ pub(crate) struct Shared {
     /// sockets), handed to their calls' `System`.
     pub(crate) system_quotas: nsh_core::element::Quotas,
     /// The VM's scheduler, for native transports that start its I/O runtime.
-    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    #[cfg_attr(
+        not(all(not(target_arch = "wasm32"), feature = "websocket")),
+        allow(dead_code)
+    )]
     pub(crate) scheduler: std::rc::Weak<Scheduler>,
     /// The VM's state of the runtime's Rust modules (`process`'s
     /// children), closed when the VM goes.
@@ -630,6 +633,13 @@ impl Host {
                         | EventKind::PressUp,
                         EventPayload::None,
                     ) => payload_object(&cx, &EventPayload::Press(nsh_core::PressEvent::default())),
+                    // A selectable view's `onSelectionChange`: the ends of
+                    // the selection in the list items, each `{ key, offset }`.
+                    (EventKind::SelectionChange, EventPayload::Map(fields))
+                        if fields.iter().any(|(k, _)| *k == "text") =>
+                    {
+                        text_selection(&cx, fields)
+                    }
                     // A video's `onLoad`: `{ duration, size }` of the
                     // platforms' `duration`, `width` and `height`.
                     (EventKind::Load, EventPayload::Map(fields))
@@ -702,6 +712,27 @@ impl Host {
             });
             self.run_jobs();
         });
+    }
+
+    /// What row `index` of virtual list `list` is called: the key of a
+    /// `List`'s item (`keyExtractor`, else the item's `key` or `id`, else
+    /// its index), where a selection across the list starts and ends
+    /// (`onSelectionChange`'s `anchor` and `focus`).
+    /// [`ListItemKey::NotMine`] for a list that is not the runtime's;
+    /// [`ListItemKey::Failed`] when the list has no key for the row: a
+    /// `keyExtractor` that throws (reported as an uncaught exception) or
+    /// gives neither a string nor a number, a row past the items, or a VM
+    /// that stopped.
+    pub fn list_item_key(&self, list: NodeId, index: u32) -> ListItemKey {
+        self.guarded(Phase::Call, || {
+            self.cx.with(|cx| {
+                crate::list::row_key(cx.as_raw().as_ptr(), list, index).unwrap_or_else(|()| {
+                    self.report::<()>(&cx, Err(rquickjs::Error::Exception));
+                    ListItemKey::Failed
+                })
+            })
+        })
+        .unwrap_or(ListItemKey::Failed)
     }
 
     /// Resolves the promises of finished (or interrupted) native animations.
@@ -1333,6 +1364,32 @@ fn grant_user_files(raw: *mut qjs::JSContext, event: EventKind, payload: &EventP
     nsh_core::runtime::grant_user_files(&crate::dom::shared(raw).system_locals, uris);
 }
 
+/// A selectable view's `onSelectionChange` event: the payload's fields,
+/// the ends' keys and offsets ([`nsh_core::selection::ITEM_FIELDS`]) as
+/// `anchor` and `focus` objects (`{ key, offset }`).
+fn text_selection<'js>(
+    cx: &Ctx<'js>,
+    fields: &[(&'static str, nsh_core::PayloadValue)],
+) -> rquickjs::Result<Value<'js>> {
+    let ends = nsh_core::selection::ITEM_FIELDS;
+    let obj = rquickjs::Object::new(cx.clone())?;
+    for (key, value) in fields {
+        if !ends.iter().any(|(k, o)| key == k || key == o) {
+            obj.set(*key, payload_value(cx, value)?)?;
+        }
+    }
+    let field = |name: &str| fields.iter().find(|(k, _)| *k == name).map(|(_, v)| v);
+    for ((key, offset), name) in ends.into_iter().zip(["anchor", "focus"]) {
+        if let (Some(key), Some(offset)) = (field(key), field(offset)) {
+            let end = rquickjs::Object::new(cx.clone())?;
+            end.set("key", payload_value(cx, key)?)?;
+            end.set("offset", payload_value(cx, offset)?)?;
+            obj.set(name, end)?;
+        }
+    }
+    Ok(obj.into_value())
+}
+
 /// The JS object handed to event handlers.
 fn payload_object<'js>(cx: &Ctx<'js>, payload: &EventPayload) -> rquickjs::Result<Value<'js>> {
     let obj = rquickjs::Object::new(cx.clone())?;
@@ -1619,6 +1676,22 @@ fn payload_object<'js>(cx: &Ctx<'js>, payload: &EventPayload) -> rquickjs::Resul
                 o.set("pressure", p.pressure)?;
                 o.set("tiltX", p.tilt_x)?;
                 o.set("tiltY", p.tilt_y)?;
+                o.set("eraser", p.eraser)?;
+                o.set("barrel", p.barrel)?;
+                let coalesced = rquickjs::Array::new(cx.clone())?;
+                for (j, c) in p.coalesced.iter().enumerate() {
+                    let s = rquickjs::Object::new(cx.clone())?;
+                    s.set("pageX", c.page.x.0)?;
+                    s.set("pageY", c.page.y.0)?;
+                    s.set("locationX", c.location.x.0)?;
+                    s.set("locationY", c.location.y.0)?;
+                    s.set("pressure", c.pressure)?;
+                    s.set("tiltX", c.tilt_x)?;
+                    s.set("tiltY", c.tilt_y)?;
+                    s.set("timestamp", c.timestamp)?;
+                    coalesced.set(j, s)?;
+                }
+                o.set("coalesced", coalesced)?;
                 o.set("timestamp", touch.timestamp)?;
                 points.set(i, o)?;
             }
@@ -3084,7 +3157,11 @@ const report = (v) => text(String(v));
             report(new Date(Date.UTC(2026, 6, 4, 16, 0)).toLocaleTimeString("en-US", {{ timeZone: "America/New_York" }}));
             report(new Intl.DateTimeFormat("en-US", {{ timeZone: "America/New_York", timeStyle: "long" }}).format(Date.UTC(2026, 6, 4, 16, 0)));
             report(new Intl.DateTimeFormat("de", {{ timeZone: "America/New_York", timeStyle: "long" }}).format(Date.UTC(2026, 0, 1)));
-            try {{ new Intl.DateTimeFormat("en", {{ timeZone: "Europe/Berlin" }}); }} catch (e) {{ report(e.name); }}
+            // A zone the app doesn't ship is a RangeError, unless it is the
+            // machine's own: local time is always there to name.
+            const local = new Intl.DateTimeFormat().resolvedOptions().timeZone;
+            const unshipped = ["Pacific/Chatham", "America/Sao_Paulo"].find((zone) => zone !== local);
+            try {{ new Intl.DateTimeFormat("en", {{ timeZone: unshipped }}); }} catch (e) {{ report(e.name); }}
             "#
         ))
         .unwrap();

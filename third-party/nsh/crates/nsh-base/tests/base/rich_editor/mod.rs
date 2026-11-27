@@ -4,6 +4,7 @@
 //! pastes as blocks, a node view renders an atom, undo takes typing
 //! back, and lists' items show their markers.
 
+mod code_highlight;
 mod commands;
 mod composition;
 mod content_size;
@@ -768,4 +769,113 @@ fn char_point(app: &Headless, line: &str, i: usize) -> Point<Points> {
         px(advance * (i as f32 + 0.5)),
         px(paragraph.content.size.height.0 / 2.0),
     )
+}
+
+/// An editor whose node and mark parts have typed styles
+/// (`StyleRefinement`, as a Rust app types them), each later part over the
+/// one before: paragraphs red; headings green but those of level 2 blue
+/// (`heading[level=2]` comes after `heading`); italic text red, bold text
+/// blue (bold ranks after italic); mentions and `chip`s (an inline node
+/// view) red but those with the attribute blue.
+#[component]
+fn TypedStyles(props: HarnessProps) -> impl IntoElement {
+    use nsh_base::rich_editor::view::{PartStyles, RichEditorStyles};
+    use nsh_core::element::StyleRefinement;
+
+    let color = |c: u32| StyleRefinement::default().text_color(rgb(c)).into();
+    let mut styles = RichEditorStyles::default();
+    styles.nodes = Some(PartStyles(
+        [
+            ("paragraph".to_owned(), color(0xff0000)),
+            ("heading".to_owned(), color(0x00ff00)),
+            ("heading[level=2]".to_owned(), color(0x0000ff)),
+            ("mention".to_owned(), color(0xff0000)),
+            ("mention[label=Alice]".to_owned(), color(0x0000ff)),
+            ("chip".to_owned(), color(0xff0000)),
+            ("chip[kind=x]".to_owned(), color(0x0000ff)),
+        ]
+        .into(),
+    ));
+    styles.marks = Some(PartStyles(
+        [
+            ("italic".to_owned(), color(0xff0000)),
+            ("bold".to_owned(), color(0x0000ff)),
+        ]
+        .into(),
+    ));
+    view()
+        .child(
+            view().test_id("editor").w(px(600.0)).h(px(400.0)).child(
+                rich_editor()
+                    .editor(props.session.clone().expect("a session"))
+                    .styles(styles)
+                    .size_full(),
+            ),
+        )
+        .child(text("Ready"))
+}
+
+/// A session of `doc` in the starter schema with Tiptap's `mention` and an
+/// inline atom `chip` with a `kind`, drawn by [`TagView`].
+fn typed_session(doc: Value) -> EditorSession {
+    use nsh_base::rich_editor::model::AttrSpec;
+
+    let mut spec = starter::schema_spec();
+    let mut chip = NodeSpec::default();
+    chip.group = Some("inline".into());
+    chip.inline = true;
+    chip.atom = true;
+    let mut kind = AttrSpec::default();
+    kind.default = Some(json!(""));
+    chip.attrs = vec![("kind".into(), kind)];
+    spec.nodes.push(("chip".into(), chip));
+    spec.nodes.push(mention_node("mention", "@"));
+    let schema = Schema::new(spec).unwrap();
+    let plugins = starter::plugins(&schema);
+    let doc = schema.node_from_json(&doc).unwrap();
+    let state =
+        EditorState::create(EditorStateConfig::new(schema).doc(doc).plugins(plugins)).unwrap();
+    EditorSession::new(state, NodeViews::new().with("chip", Arc::new(TagView)))
+}
+
+#[test]
+fn typed_node_and_mark_styles_reach_their_text_the_later_winning() {
+    let doc = json!({"type": "doc", "content": [
+        {"type": "heading", "attrs": {"level": 1}, "content": [{"type": "text", "text": "Top"}]},
+        {"type": "heading", "attrs": {"level": 2}, "content": [{"type": "text", "text": "Sub"}]},
+        {"type": "paragraph", "content": [
+            {"type": "text", "text": "plain "},
+            {"type": "text", "text": "loud", "marks": [{"type": "bold"}]},
+            {"type": "text", "text": " both", "marks": [{"type": "bold"}, {"type": "italic"}]},
+            {"type": "text", "text": " "},
+            {"type": "mention", "attrs": {"id": "a", "label": "Alice"}},
+            {"type": "text", "text": " "},
+            {"type": "chip", "attrs": {"kind": "x"}},
+        ]},
+    ]});
+    let mut config = EngineConfig {
+        viewport: Size::new(px(800.0), px(900.0)),
+        ..EngineConfig::new(nsh_testing::windowed_root_with::<TypedStyles>(move || {
+            HarnessProps {
+                session: Some(typed_session(doc.clone())),
+            }
+        }))
+    };
+    config.environment.os = Os::Linux;
+    config.environment.idiom = Idiom::Desktop;
+    let mut app = Headless::start(config).expect("the engine starts");
+    see(&mut app, "Ready");
+    let color = |selector: &str| app.screen().span_style(selector).unwrap().color;
+    let (red, green, blue) = (
+        nsh_core::Color(0xff00_00ff),
+        nsh_core::Color(0x00ff_00ff),
+        nsh_core::Color(0x0000_ffff),
+    );
+    assert_eq!(color("id:editor >> text:plain"), red);
+    assert_eq!(color("id:editor >> text:loud"), blue);
+    assert_eq!(color("id:editor >> text:both"), blue);
+    assert_eq!(color("id:editor >> text:Top"), green);
+    assert_eq!(color("id:editor >> text:Sub"), blue);
+    assert_eq!(color("id:editor >> text:@Alice"), blue);
+    assert_eq!(color("id:tag >> text:/^Tag/"), blue);
 }

@@ -6,7 +6,7 @@ mod common;
 pub mod document;
 mod extension;
 mod formula;
-mod highlight;
+pub(crate) mod highlight;
 mod html;
 mod markdown;
 mod marks;
@@ -17,6 +17,8 @@ mod parts;
 mod selection;
 mod tex_text;
 mod view;
+
+pub(crate) use self::parts::merge_styles;
 
 /// Makes formulas typeset in a web runtime: the gate of its side module
 /// (`nsh_feature_math`), which holds what this reaches and nothing else does.
@@ -29,8 +31,8 @@ pub use self::{
         Inline, ListItem, Table, TableCell,
     },
     extension::{
-        MarkdownExtension, MarkdownOptions, MarkdownPlugin, MarkdownPlugins, ParseContext, Parser,
-        mdast,
+        ConversionId, MarkdownExtension, MarkdownOptions, MarkdownPlugin, MarkdownPlugins,
+        ParseContext, Parser, mdast,
     },
     marks::{TextViewMark, TextViewMarkPressEvent, TextViewMarksMatchEvent},
     parts::{PartStyle, TextViewClasses, TextViewPart, TextViewParts, TextViewStyles},
@@ -38,8 +40,8 @@ pub use self::{
     view::{
         CodeHighlighter, TextView, TextViewApi, TextViewCodeAction, TextViewCodeActionEvent,
         TextViewElement, TextViewEvent, TextViewHeading, TextViewHeadingsEvent,
-        TextViewImageContext, TextViewImageFlow, TextViewLabels, TextViewLinkPressEvent,
-        TextViewLinkTarget, TextViewLinks, TextViewMath, TextViewProps,
+        TextViewImageContext, TextViewImageFlow, TextViewImageLink, TextViewLabels,
+        TextViewLinkPressEvent, TextViewLinkTarget, TextViewLinks, TextViewMath, TextViewProps,
         TextViewScrollToBlockOptions, TextViewSelectionEvent, TextViewTaskPressEvent,
         TextViewVisibleBlocksEvent, text_view,
     },

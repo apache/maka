@@ -700,7 +700,7 @@ fn props(input: DeriveInput) -> syn::Result<TokenStream2> {
                 specs.push(quote! {
                     #ui::PropSpec {
                         name: #js,
-                        ts: ::std::format!("(value: {}) => JSX.Element", #ui::ts_of::<#t>()(types)),
+                        ts: ::std::format!("({}) => JSX.Element", #ui::render_params_of::<#t>()(types)),
                         optional: true,
                         doc: #field_doc,
                         kind: #ui::PropKind::Renderer,

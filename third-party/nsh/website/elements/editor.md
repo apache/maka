@@ -60,7 +60,9 @@ fn code() -> impl IntoElement {
 
 The editor fills the box the app gives it (`flex-1`, a height) and scrolls its text inside: vertically always,
 sideways when lines are longer than the box, or not at all with `softWrap`, where long lines wrap at the editor's
-width.
+width. Code and Latin text wrap at spaces, so operators such as `->` and paths stay whole. Chinese, Japanese and
+Korean text wraps where Unicode's line breaking rules allow, as text elsewhere does: between characters, and never
+before closing punctuation such as `，` or `）` or after opening punctuation such as `「`.
 
 ## The text
 
@@ -316,7 +318,11 @@ async function lint(text: string) {
 
 `decorations` style ranges the app chooses: semantic highlighting from a language server, the statement being run, the
 lines a review changed. A decoration's `class` and `style` style its text; `lineClass` and `lineStyle` style the rows
-of its lines, behind the text. Like diagnostics, they stay on their text through edits until the app sets new ones.
+of its lines, behind the text; its `label` shows a text in its range's place ([Labels](#labels)). Like diagnostics,
+they stay on their text through edits until the app sets new ones. While an input method composes, its text shows in
+place in the row, which keeps its decorations: the text after it moves aside with its own, and the composed text is
+styled as it will be once committed (inside a decoration that continues on both sides of the caret, not one that
+starts or ends there).
 
 ```tsx
 const range = (line: number, start: number, end: number) => ({ start: { line, column: start }, end: { line, column: end } });
@@ -328,6 +334,31 @@ const range = (line: number, start: number, end: number) => ({ start: { line, co
   decorations={[
     { range: range(4, 0, 0), lineClass: "bg-green-500/10" },
     { range: range(7, 6, 18), class: "underline text-blue-600" },
+  ]}
+  class="flex-1"
+/>
+```
+
+### Fonts
+
+A decoration's `fontFamily` and `fontSize` set the font of its text, so a Markdown notes app built on `Editor` shows
+inline code and code blocks in a monospaced font and its headings larger. The editor measures the text in that font:
+carets, selections, presses and soft wrap follow it. A row is as tall as its largest text needs, the editor's
+`lineHeight` grown in proportion to the size (a 26 point heading in a 13 point editor with 20 point rows takes a row of
+40), and never shorter than `lineHeight`. Where decorations with fonts overlap, the innermost one's family and size
+win, each on its own (an inner `fontFamily` keeps an outer `fontSize`). Set the font here rather than with `class` or
+`style`, which the editor does not measure. In a terminal the text keeps its Cells.
+
+```tsx
+<Editor
+  value={notes()}
+  onChange={({ value }) => notes.set(value)}
+  fontFamily="Inter"
+  fontSize={15}
+  lineHeight={24}
+  decorations={[
+    { range: range(0, 0, 14), fontSize: 22, class: "font-semibold" },
+    { range: range(2, 8, 20), fontFamily: "Menlo", class: "bg-zinc-500/10" },
   ]}
   class="flex-1"
 />
@@ -381,6 +412,31 @@ const kinds: Record<string, EditorToken> = { keyword: "keyword", function: "titl
   language="ts"
   highlighting={false}
   decorations={semanticTokens().map((t) => ({ range: range(t.line, t.start, t.end), token: kinds[t.type] }))}
+  class="flex-1"
+/>
+```
+
+### Labels
+
+A decoration's `label` shows a text in place of its range's: a date written as `⏰ 2026-11-25 09:00` shown as a
+"Tomorrow 09:00" chip, a link's source shown as its title. `labelClass` and `labelStyle` style the label's box (a
+background, rounded corners, padding), which sits in the row centered on the text and as wide as it is laid out. Its
+text is in the font a decoration's `fontFamily` / `fontSize` sets around it (a date in a heading is the heading's size),
+unless `labelClass` sets another. While
+the editor has the focus and a caret or a selection touches the range (inside it or at either end), the range's text
+shows instead, so the caret moves through it and edits it as any text; when the caret leaves, the label comes back.
+The text stays the document's: copying, undo, search and screen readers read it. A label shows on a range on one line
+that is not empty; a range overlapping an earlier labeled one shows its text.
+
+```tsx
+<Editor
+  value={note()}
+  onChange={({ value }) => note.set(value)}
+  decorations={reminders(note()).map((r) => ({
+    range: r.range,
+    label: r.relative, // "Tomorrow 09:00"
+    labelClass: "px-1.5 rounded-md bg-amber-500/15 text-amber-700",
+  }))}
   class="flex-1"
 />
 ```
@@ -585,6 +641,17 @@ app sizes it, and `scrollBeyondLastLine` lets the text scroll on past its last l
 default), not at all (`false`) or a number of rows. As the caret moves, `cursorSurroundingLines` rows stay in view
 around it. Dragging a selection past the editor's edges scrolls on, faster the farther out the pointer goes.
 
+In a container with rounded corners, or under bars floating over the editor, `scrollbarInset` keeps the scroll bars
+that far from the editor's edges, as a [scroll view's](./scroll.md) does; the text still scrolls under them. The
+vertical bar and the overview ruler keep within its top, bottom and right, the horizontal bar (without `softWrap`)
+within its left, right and bottom.
+
+```tsx
+<View class="flex-1 overflow-hidden rounded-xl border border-border">
+  <Editor defaultValue={source()} language="rust" scrollbarInset={{ top: 8, bottom: 8 }} class="flex-1" />
+</View>
+```
+
 `showWhitespaces` shows a `·` for each space and a `→` for each tab (the `whitespace` part), and `rulers` draws a
 line at each of its columns (the `ruler` part), as guides of a line's length.
 
@@ -597,6 +664,28 @@ line at each of its columns (the `ruler` part), as guides of a line's length.
   rulers={[72]}
   showWhitespaces
 />
+```
+
+`onScroll({ offset, contentSize, size })` reports where the text is scrolled, with the keys of a
+[`Scroll`](./scroll.md)'s: `offset` is `scrollOffset()`, `contentSize` what the text scrolls over and `size` the
+viewport. Without `softWrap` the content is as wide as the viewport plus how far the text scrolls sideways; wrapped, it
+is as wide as the viewport and `offset.x` is 0. It fires once the editor is laid out and again when one of them
+changes: a scroll, a resize, an edit or a fold that changes the content's size. An editor under a title draws a line
+or a fade at its top edge once the text scrolls under it:
+
+```tsx
+const scrolled = signal(false);
+
+<View style={{ flex: 1 }}>
+  <View class={scrolled() ? "h-px bg-border" : "h-px"} />
+  <Editor
+    defaultValue={notes()}
+    language="markdown"
+    softWrap
+    onScroll={({ offset }) => scrolled.set(offset.y > 0)}
+    style={{ flex: 1 }}
+  />
+</View>
 ```
 
 ## Methods
@@ -772,12 +861,13 @@ with the user's text size (`fontScale()`), and the rows grow with it.
 | `activeLine` | `.active_line(..)` | `boolean` | `true` | The rows of the lines with a caret are highlighted. |
 | `indentGuides` | `.indent_guides(..)` | `boolean` | `true` | The guides of indentation. |
 | `scrollBeyondLastLine` | `.scroll_beyond_last_line(..)` | `boolean \| number` | `true` | The text scrolls on past its last line: up to a screen (`true`), not at all (`false`) or that many rows. |
+| `scrollbarInset` | `.scrollbar_inset(EdgeInsets { .. })` | `Partial<Edges>` | | Keeps the scroll bars this far from the editor's edges ([Size and scrolling](#size-and-scrolling)). |
 | `fontFamily` | `.font_family(..)` | `string` | the theme's `font-mono` | The font the text is drawn and measured in. |
 | `fontSize` | `.font_size(..)` | `number` | `13` | The font size, in points. |
 | `lineHeight` | `.line_height(..)` | `number` | `20` | The height of a row, in points; in a terminal a row is one Cell. |
 | `search` | `.search(..)` | `EditorSearch` | | What to find ([Find and replace](#find-and-replace)). |
 | `diagnostics` | `.diagnostics(..)` | `EditorDiagnostic[]` | `[]` | Problems to mark ([Diagnostics](#diagnostics)). |
-| `decorations` | `.decorations(..)` | `EditorDecoration[]` | `[]` | Ranges the app styles ([Decorations](#decorations)). |
+| `decorations` | `.decorations(..)` | `EditorDecoration[]` | `[]` | Ranges the app styles or shows as labels ([Decorations](#decorations)). |
 | `gutterDecorationsWidth` | `.gutter_decorations_width(..)` | `number` | `3` | The width of the gutter's strip of decorations' marks, in points. |
 | `classes` | `.classes(..)` | `EditorClasses` | `{}` | Tailwind classes by part. |
 | `styles` | `.styles(..)` | `EditorStyles` | `{}` | Inline styles by part, over the classes. |
@@ -812,6 +902,7 @@ with the user's text size (`fontScale()`), and the rows grow with it.
 | `onInlineCompletionRequest` | `.on_inline_completion_request(\|event: &EditorInlineCompletionRequest\| ..)` | Typing paused: `{ id, offset, position }`, for an inline completion. |
 | `onDefinitionRequest` | `.on_definition_request(\|event: &EditorDefinitionRequest\| ..)` | The editor asks for a definition: `{ id, position, offset, range, trigger }` ([Go to definition](#go-to-definition-and-code-actions)). |
 | `onCodeActionRequest` | `.on_code_action_request(\|event: &EditorCodeActionRequest\| ..)` | The user asked for code actions: `{ range, position, bounds? }`. |
+| `onScroll` | `.on_scroll(\|e: &EditorEvent\| ..)` | The text scrolled, or it or the viewport changed size: `{ offset, contentSize, size }`, as a `Scroll`'s (`EditorEvent::Scroll(offset, content_size, size)` in Rust). It fires once the editor is laid out and again when one of them changes ([Size and scrolling](#size-and-scrolling)). |
 
 ## Accessibility
 

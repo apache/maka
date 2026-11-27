@@ -22,11 +22,11 @@
 //! app's or all notifications off in Settings, which is what `denied` is, so
 //! the permission is never `default` and asking asks nothing.
 //!
-//! The press reaches [`Activator`], on the UI thread (COM calls an apartment's
-//! objects through its message loop). The class is registered with COM on
-//! every start ([`start`]), before the window opens: a toast left in the
-//! notification center by an earlier run would otherwise start a second
-//! process when pressed.
+//! [`Activator`] delivers presses on the UI thread that owns the listener,
+//! running directly when COM calls on that thread and posting otherwise.
+//! The class is registered with COM on every start ([`start`]), before the
+//! window opens: a toast left in the notification center by an earlier run
+//! would otherwise start a second process when pressed.
 
 use std::{
     cell::{Cell, RefCell},
@@ -70,14 +70,14 @@ use windows::{
             Shell::{ITaskbarList3, TaskbarList},
             WindowsAndMessaging::{
                 CreateIconIndirect, DestroyIcon, GA_ROOT, GetAncestor, HICON, ICONINFO, IsIconic,
-                RegisterWindowMessageW, SM_CXSMICON, SW_RESTORE, SetForegroundWindow, ShowWindow,
+                RegisterWindowMessageW, SM_CXSMICON, SW_RESTORE, SW_SHOWNOACTIVATE, ShowWindow,
             },
         },
     },
     core::{BOOL, GUID, HSTRING, IUnknown, Interface, PCWSTR, Ref, Result, implement, w},
 };
 
-use crate::surface::Surface;
+use crate::{surface::Surface, window::UiThread};
 
 /// The group of every toast: a toast is found by its tag and group.
 const GROUP: &str = "nsh";
@@ -129,7 +129,10 @@ pub(crate) fn start(id: &str, name: &str, icon: Option<&Path>) {
     }
     APP.with(|app| *app.borrow_mut() = Some((id.to_owned(), name.to_owned())));
     ICON.with(|i| *i.borrow_mut() = icon.and_then(|icon| std::path::absolute(icon).ok()));
-    let factory: IClassFactory = Factory.into();
+    let factory: IClassFactory = Factory {
+        ui: UiThread::current(),
+    }
+    .into();
     // SAFETY: a valid class id and factory. The registration lasts as the
     // process does, so its cookie is not kept.
     let registered = unsafe {
@@ -147,6 +150,12 @@ pub(crate) fn start(id: &str, name: &str, icon: Option<&Path>) {
 
 /// Applies `command`, reporting to `surface`. On the UI thread.
 pub(crate) fn command(surface: &Rc<Surface>, command: &NotificationCommand) {
+    #[cfg(test)]
+    ON_COMMAND.with(|hook| {
+        if let Some(f) = &*hook.borrow() {
+            f();
+        }
+    });
     match command {
         NotificationCommand::SetBadge(count) => {
             BADGE.set(*count);
@@ -180,6 +189,12 @@ pub(crate) fn command(surface: &Rc<Surface>, command: &NotificationCommand) {
         }
         _ => {}
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Called as a notification command runs, for tests.
+    pub(crate) static ON_COMMAND: RefCell<Option<Box<dyn Fn()>>> = const { RefCell::new(None) };
 }
 
 /// The message the shell sends a window when its taskbar button is made: the
@@ -425,7 +440,9 @@ fn class_key(class: &GUID) -> String {
 
 /// Makes the app's [`Activator`]s for COM.
 #[implement(IClassFactory)]
-struct Factory;
+struct Factory {
+    ui: UiThread,
+}
 
 impl IClassFactory_Impl for Factory_Impl {
     fn CreateInstance(
@@ -437,7 +454,7 @@ impl IClassFactory_Impl for Factory_Impl {
         if outer.is_some() {
             return Err(windows::Win32::Foundation::CLASS_E_NOAGGREGATION.into());
         }
-        let activator: INotificationActivationCallback = Activator.into();
+        let activator: INotificationActivationCallback = Activator { ui: self.ui }.into();
         // SAFETY: COM's output pointer and the interface it asks for.
         unsafe { activator.query(interface, object) }.ok()
     }
@@ -449,7 +466,9 @@ impl IClassFactory_Impl for Factory_Impl {
 
 /// Hears the presses of the app's toasts.
 #[implement(INotificationActivationCallback)]
-struct Activator;
+struct Activator {
+    ui: UiThread,
+}
 
 impl INotificationActivationCallback_Impl for Activator_Impl {
     fn Activate(
@@ -467,7 +486,14 @@ impl INotificationActivationCallback_Impl for Activator_Impl {
         };
         // The toast's `launch` (`toast_xml`); a toast of no id is not NSH's.
         if let Some(id) = from_hex(&arguments).filter(|id| !id.is_empty()) {
-            pressed(id);
+            // Run synchronously when COM is already on the UI thread (STA) so
+            // foreground activation happens before Activate returns; marshal
+            // otherwise (e.g. MTA RPC worker thread).
+            if self.ui.is_current() {
+                pressed(id);
+            } else {
+                self.ui.invoke(move || pressed(id));
+            }
         }
         Ok(())
     }
@@ -481,14 +507,19 @@ fn pressed(id: String) {
         PRESSES.with(|p| p.borrow_mut().push(id));
         return;
     };
-    let window = root(&surface);
-    // SAFETY: plain calls on the app's window. The system lets the process a
-    // toast activates take the foreground.
-    unsafe {
-        if IsIconic(window).as_bool() {
-            let _ = ShowWindow(window, SW_RESTORE);
+    if let Some(window) = crate::app_window::activation_target(&surface, root(&surface)) {
+        // SAFETY: plain calls on the chosen window.
+        unsafe {
+            if IsIconic(window).as_bool() {
+                let command = if crate::window::in_background() {
+                    SW_SHOWNOACTIVATE
+                } else {
+                    SW_RESTORE
+                };
+                let _ = ShowWindow(window, command);
+            }
         }
-        let _ = SetForegroundWindow(window);
+        crate::window::set_foreground(window);
     }
     surface.event(
         ROOT_ID,
@@ -777,5 +808,56 @@ mod tests {
             // SAFETY: the icon just made.
             unsafe { DestroyIcon(icon) }.unwrap();
         }
+    }
+
+    #[test]
+    fn activator_delivers_presses_on_the_ui_thread_both_inline_and_across_threads() {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            DispatchMessageW, MSG, PM_REMOVE, PeekMessageW,
+        };
+
+        let ui = UiThread::current();
+        assert!(ui.is_current());
+        LISTENER.with(|l| *l.borrow_mut() = None);
+        PRESSES.with(|p| p.borrow_mut().clear());
+
+        // Calling Activate on the UI thread delivers synchronously without
+        // waiting for the message loop.
+        let inline: INotificationActivationCallback = Activator { ui }.into();
+        let inline_arg = HSTRING::from(hex("inline-press"));
+        // SAFETY: valid null-terminated string and empty user-input slice.
+        unsafe { inline.Activate(PCWSTR::null(), &inline_arg, &[]) }.unwrap();
+        assert_eq!(
+            PRESSES.with(|p| std::mem::take(&mut *p.borrow_mut())),
+            vec!["inline-press".to_owned()]
+        );
+
+        // Calling Activate from another thread posts to the UI thread's
+        // dispatcher window.
+        std::thread::spawn(move || {
+            assert!(!ui.is_current());
+            let off_thread: INotificationActivationCallback = Activator { ui }.into();
+            let arg = HSTRING::from(hex("cross-thread-press"));
+            // SAFETY: valid null-terminated string and empty user-input slice.
+            unsafe { off_thread.Activate(PCWSTR::null(), &arg, &[]) }.unwrap();
+        })
+        .join()
+        .unwrap();
+
+        assert!(
+            PRESSES.with(|p| p.borrow().is_empty()),
+            "cross-thread press waits for the UI message loop"
+        );
+        let mut msg = MSG::default();
+        // SAFETY: pumping queued messages on this thread.
+        unsafe {
+            while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+                DispatchMessageW(&msg);
+            }
+        }
+        assert_eq!(
+            PRESSES.with(|p| std::mem::take(&mut *p.borrow_mut())),
+            vec!["cross-thread-press".to_owned()]
+        );
     }
 }

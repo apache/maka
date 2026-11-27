@@ -24,7 +24,7 @@ use std::{
 use anyhow::{Context as _, bail};
 use serde::{Deserialize, Serialize};
 
-use crate::{runtime, self_update, ui};
+use crate::{runtime, self_update, self_update::Channel, ui};
 
 /// A component of the distribution.
 #[derive(Debug)]
@@ -70,7 +70,7 @@ pub(crate) const COMPONENTS: &[Component] = &[
         what: "iOS runtimes (`--target ios`, `catalyst`, `nsh package --target ios`)",
         paths: &["runtime/ios"],
         per_host: true,
-        hosts: Some(&["macos-arm64"]),
+        hosts: Some(&["macos-arm64", "macos-x86_64"]),
     },
     Component {
         name: "web",
@@ -209,7 +209,20 @@ pub(crate) fn ensure(root: &Path, name: &str, missing: &Path) -> anyhow::Result<
             component.what
         ));
     }
-    add(root, component)?;
+    match add(root, component) {
+        Err(err) if err.is::<OtherBuild>() && Channel::current() == Channel::Nightly => {
+            // The nightly release keeps only its latest build: a runtime
+            // built with this nsh is gone. Bring nsh up to that build (which
+            // adds its components again) and run the command with it.
+            ui::note(format!(
+                "{} on the nightly channel is newer than this nsh: updating nsh first",
+                component.what
+            ));
+            self_update::update(Some(Channel::Nightly))?;
+            rerun()?;
+        }
+        result => result?,
+    }
     if !missing.exists() {
         let file = missing.file_name().unwrap_or(missing.as_os_str());
         bail!("the component `{name}` holds no {}", file.to_string_lossy());
@@ -332,6 +345,29 @@ fn add_from(root: &Path, component: &Component, url: &str, label: &str) -> anyho
     result
 }
 
+/// A release's component built by another nsh than this one.
+#[derive(Debug)]
+struct OtherBuild;
+
+impl std::fmt::Display for OtherBuild {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the component was built by another nsh")
+    }
+}
+
+impl std::error::Error for OtherBuild {}
+
+/// Runs this command again with the nsh now installed in its place, and
+/// exits with its status.
+fn rerun() -> anyhow::Result<std::convert::Infallible> {
+    let exe = runtime::cli_exe()?;
+    let status = std::process::Command::new(&exe)
+        .args(std::env::args_os().skip(1))
+        .status()
+        .with_context(|| format!("run {}", exe.display()))?;
+    std::process::exit(status.code().unwrap_or(1));
+}
+
 /// Moves `component`'s paths from the unpacked archive `from` into the
 /// distribution at `root`, once its record says it was built with this CLI.
 fn install(root: &Path, component: &Component, from: &Path) -> anyhow::Result<()> {
@@ -343,15 +379,11 @@ fn install(root: &Path, component: &Component, from: &Path) -> anyhow::Result<()
     .with_context(|| format!("read {}", record_path.display()))?;
     if !record.matches_this_build() {
         let this = Record::this_build();
-        bail!(
+        return Err(anyhow::Error::new(OtherBuild).context(format!(
             "the release's `{}` was built from {} ({}), this nsh from {} ({}): \
              run `nsh update` and try again",
-            component.name,
-            record.version,
-            record.commit,
-            this.version,
-            this.commit
-        );
+            component.name, record.version, record.commit, this.version, this.commit
+        )));
     }
     for path in component.paths {
         let source = from.join(path);
@@ -512,7 +544,11 @@ mod tests {
             Component::named("web").unwrap().asset("linux-x86_64"),
             "nsh-web.tar.gz"
         );
-        assert!(!Component::named("ios").unwrap().for_host("linux-x86_64"));
+        let ios = Component::named("ios").unwrap();
+        assert!(!ios.for_host("linux-x86_64"));
+        assert!(ios.for_host("macos-arm64"));
+        assert!(ios.for_host("macos-x86_64"));
+        assert_eq!(ios.asset("macos-x86_64"), "nsh-ios-macos-x86_64.tar.gz");
         assert!(Component::named("nope").is_err());
     }
 

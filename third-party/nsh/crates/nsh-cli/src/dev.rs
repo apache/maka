@@ -305,12 +305,7 @@ impl DevSession {
         if self.release {
             match build::compile(&self.entry, true) {
                 Ok(built) => {
-                    self.server.serve_files(
-                        built
-                            .assets
-                            .iter()
-                            .map(|asset| (asset.path.clone(), asset.source.clone())),
-                    );
+                    self.note_web_view(built.native_use.as_ref().is_none_or(|u| u.web_view));
                     self.watch_files.replace(built.watch_files.clone());
                     self.serve_assets(&built);
                     let capabilities = built.capabilities_json();
@@ -336,12 +331,9 @@ impl DevSession {
         }
         match build::compile_hot(&self.entry) {
             Ok((built, hot)) => {
-                self.server.serve_files(
-                    built
-                        .assets
-                        .iter()
-                        .map(|asset| (asset.path.clone(), asset.source.clone())),
-                );
+                // The compiled `<WebView>` passes the tag `webview` to
+                // `element` (`nsh_bundler::NativeUse::web_view`).
+                self.note_web_view(built.code.contains("webview"));
                 self.watch_files.replace(built.watch_files.clone());
                 self.serve_assets(&built);
                 let summary = self.summary(&built);
@@ -379,6 +371,17 @@ impl DevSession {
             }
             Err(err) => self.failed(err),
         }
+    }
+
+    /// Tells a Rust app's Linux development host whether the app may make
+    /// a web view: by its bundle (`bundle`), or as `nsh.json` keeps
+    /// `webview` ([`crate::rust_app::set_dev_bundle_web_view`]).
+    fn note_web_view(&self, bundle: bool) {
+        let kept = || {
+            crate::package::read_config(&self.entry)
+                .is_ok_and(|c| c.features.iter().any(|f| f == "webview"))
+        };
+        crate::rust_app::set_dev_bundle_web_view(bundle || kept());
     }
 
     /// What the line of a good build says after its path.

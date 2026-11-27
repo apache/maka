@@ -121,7 +121,7 @@ pub fn element_bits(tag: crate::Tag) -> u32 {
             Tag::WebView => on::WEBVIEW,
             Tag::Video => on::VIDEO,
             Tag::InputAccessory => on::INPUT_ACCESSORY,
-            Tag::View => on::VIEW,
+            Tag::View | Tag::GpuView => on::VIEW,
             Tag::Shader => on::VIEW | on::SHADER,
             Tag::ShaderEffect => on::VIEW | on::SHADER | on::EFFECT,
             Tag::ShaderTransition => on::VIEW | on::SHADER | on::TRANSITION,
@@ -687,6 +687,14 @@ export interface CaretEvent {
   pageBounds: Bounds;
 }
 
+/** One end of a selection across a list's items: `onSelectionChange`'s `anchor` and `focus`. */
+export interface TextSelectionEndpoint {
+  /** The item's key, as the list names it (`keyExtractor`, else the item's `key` or `id`, else its index). */
+  key: string;
+  /** Where the end is in the item's text, as a copy of the whole item gives it (UTF-16 units). */
+  offset: number;
+}
+
 /** What the user pasted into an input: the payload of `onPaste`. The platform read the clipboard as the user pasted; the app never reads it for this. */
 export interface PasteEvent {
   /** The plain text, `""` when there was none. */
@@ -837,7 +845,7 @@ pub const EVENTS: &[(EventKind, u32, &str, &str)] = &[
         EventKind::FileDrop,
         on::ALL,
         "(e: { uris: string[]; mimeTypes: string[]; pagePosition?: { x: number; y: number }; files: { file: File | null; name: string; type: string; size: number; status: \"read\" | \"tooLarge\" }[] }) => void",
-        "Local file URLs dropped on this destination (desktops, iOS, Android and the Web), with each one's MIME type by its name (`\"\"` when the name says none); `pagePosition`: where, in the window's coordinates, on backends that know it (Linux, iOS, Android, Web). On the Web `uris` is empty and `files` holds the dropped regular files with their contents (`status` `\"tooLarge\"` past 512 MiB a drop; at most 100); elsewhere `files` is empty.",
+        "Local file URLs dropped on this destination (desktops, iOS, Android and the Web), with each one's MIME type by its name (`\"\"` when the name says none); `pagePosition`: where, in the window's coordinates as a mouse event's (macOS, Windows, Linux, iOS, Android and the Web; absent on the GPUI backend). On the Web `uris` is empty and `files` holds the dropped regular files with their contents (`status` `\"tooLarge\"` past 512 MiB a drop; at most 100); elsewhere `files` is empty.",
     ),
     (
         EventKind::Layout,
@@ -1037,8 +1045,8 @@ pub const EVENTS: &[(EventKind, u32, &str, &str)] = &[
     (
         EventKind::SelectionChange,
         on::VIEW,
-        "(e: { text: string; start?: number; bounds?: Bounds; pageBounds?: Bounds }) => void",
-        "The selection across the texts of a `selectable` view changed: `text` is what a copy would give, empty once nothing is selected; `start` is where it starts in the view's whole text (UTF-16 units) when the platform knows it; `bounds` is the box around the selected text in the view and `pageBounds` in the root view it is in, as of the event (an `Overlay`'s `anchor`: a bar of actions on the selection), while something is selected and the platform knows them. Only the outermost selectable view of an area reports it.",
+        "(e: { text: string; start?: number; bounds?: Bounds; pageBounds?: Bounds; anchor?: TextSelectionEndpoint; focus?: TextSelectionEndpoint }) => void",
+        "The selection across the texts of a `selectable` view changed: `text` is what a copy would give, empty once nothing is selected; `start` is where it starts in the view's whole text (UTF-16 units) when the platform knows it; `bounds` is the box around the selected text in the view and `pageBounds` in the root view it is in, as of the event (an `Overlay`'s `anchor`: a bar of actions on the selection), while something is selected and the platform knows them. `anchor` (where the selection started) and `focus` (where it goes now, before `anchor` when the user selected backward) name the `List` item each end is in by its key, with the offset in that item's text, while something is selected and the end is in a list item. Only the outermost selectable view of an area reports it.",
     ),
     (
         EventKind::Paste,

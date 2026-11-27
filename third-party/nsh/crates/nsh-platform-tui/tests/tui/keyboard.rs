@@ -1213,8 +1213,14 @@ fn right_and_return_open_a_submenu_at_its_first_item_and_left_and_escape_leave_i
 fn DocumentLinks() -> impl IntoElement {
     let pressed = signal(Vec::<String>::new());
     let after = signal(false);
+    // The status lines come first: a focused link's destination
+    // shows below it and covers what follows.
     view()
         .flex_1()
+        .child(text(move || {
+            format!("Pressed: {}", pressed.get().join(" "))
+        }))
+        .child(text(move || format!("After focused: {}", after.get())))
         .child(
             nsh_base::text_view()
                 .markdown("Read [the guide](https://example.com/guide) or [the notes](#notes).")
@@ -1229,10 +1235,6 @@ fn DocumentLinks() -> impl IntoElement {
                 .on_focus(move || after.set(true))
                 .child(text("After")),
         )
-        .child(text(move || {
-            format!("Pressed: {}", pressed.get().join(" "))
-        }))
-        .child(text(move || format!("After focused: {}", after.get())))
 }
 
 #[test]

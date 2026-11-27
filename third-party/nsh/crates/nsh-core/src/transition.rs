@@ -31,9 +31,9 @@
 use std::sync::Arc;
 
 use crate::{
-    AttributedText, Bounds, BoxShadow, Color, Corners, Edges, Filter, KeyframeAnimation, Keyframes,
-    LayoutCurve, LayoutProperty, LayoutTransition, Points, Transform, Transition, TransitionProps,
-    ViewStyle,
+    AttributedText, Bounds, BoxShadow, Color, Corners, Edges, Filter, Gradient, KeyframeAnimation,
+    Keyframes, LayoutCurve, LayoutProperty, LayoutTransition, Points, Transform, Transition,
+    TransitionProps, ViewStyle,
     geometry::{Percentage, Point, Radians, Size, deg},
 };
 
@@ -845,7 +845,7 @@ fn lerp_points(a: Points, b: Points, t: f32) -> Points {
 
 /// Interpolates colors in premultiplied RGBA, as CSS does, so that
 /// transparent ends do not pass through black.
-fn lerp_color(a: Color, b: Color, t: f32) -> Color {
+pub(crate) fn lerp_color(a: Color, b: Color, t: f32) -> Color {
     if a == b {
         return a;
     }
@@ -946,6 +946,21 @@ fn blur_radius(style: &ViewStyle) -> Option<Points> {
     }
 }
 
+fn mask_images(s: &ViewStyle) -> &[Gradient] {
+    s.effects.as_deref().map_or(&[], |e| &e.mask_images)
+}
+
+/// The mask layers `t` of the way from `a` to `b`, layer by layer; `None`
+/// when they do not interpolate (a different number of layers, or one
+/// pair that [`Gradient::lerp`] cannot mix) and `b` applies at once. To or
+/// from `none` (no layers) it changes at once, as in CSS.
+fn lerp_masks(a: &[Gradient], b: &[Gradient], t: f32) -> Option<Vec<Gradient>> {
+    if a.is_empty() || a.len() != b.len() {
+        return None;
+    }
+    a.iter().zip(b).map(|(a, b)| a.lerp(b, t)).collect()
+}
+
 /// Whether the selected property groups have an interpolable change.
 fn differs(a: &ViewStyle, b: &ViewStyle, props: TransitionProps) -> bool {
     (props.has(TransitionProps::COLORS)
@@ -963,6 +978,10 @@ fn differs(a: &ViewStyle, b: &ViewStyle, props: TransitionProps) -> bool {
             && a.clip_path().is_some()
             && b.clip_path().is_some()
             && a.clip_path() != b.clip_path())
+        || (props.has(TransitionProps::MASK) && {
+            let (ma, mb) = (mask_images(a), mask_images(b));
+            ma != mb && lerp_masks(ma, mb, 0.0).is_some()
+        })
         || (props.has(TransitionProps::SHAPE)
             && (a.border_radius != b.border_radius
                 || a.corner_radius != b.corner_radius
@@ -1020,6 +1039,16 @@ fn lerp_style(
     {
         let effects = Arc::make_mut(out.effects.get_or_insert_with(Default::default));
         effects.clip_path = Some(a.lerp(b, t));
+    }
+    if props.has(TransitionProps::MASK) {
+        let (ma, mb) = (mask_images(from), mask_images(to));
+        if ma != mb
+            && let Some(masks) = lerp_masks(ma, mb, t)
+        {
+            let mut effects = out.effects.as_deref().cloned().unwrap_or_default();
+            effects.mask_images = masks;
+            out.effects = Some(Arc::new(effects));
+        }
     }
     if props.has(TransitionProps::SHAPE) {
         out.border_radius = lerp_points(from.border_radius, to.border_radius, t).max(Points::ZERO);
@@ -1478,6 +1507,83 @@ mod tests {
         let restyled = restyle(&old, &mut style, false).expect("the opacity transitions");
         assert_eq!(style.clip_path(), Some(&open));
         drop(restyled);
+    }
+
+    #[test]
+    fn a_mask_fades_in_stop_by_stop() {
+        use crate::geometry::DefiniteLength;
+        let masked = |mask: &str, properties: u8| {
+            let mut style = transitioning(properties);
+            style.effects = crate::effects::shared(crate::Effects {
+                mask_images: crate::css::gradients(mask).unwrap_or_default(),
+                ..Default::default()
+            });
+            style
+        };
+        let masks = |s: &ViewStyle| mask_images(s).to_vec();
+        // #3033: a fade that grows in from the bottom edge.
+        let whole = "linear-gradient(to bottom, black 100%, transparent 100%)";
+        let faded = "linear-gradient(to bottom, black 40%, transparent 100%)";
+        let old = masked(whole, TransitionProps::MASK);
+        let mut style = Box::new(masked(faded, TransitionProps::MASK));
+        let target = masks(&style);
+        let mut live = Live::default();
+        live.restyle(restyle(&old, &mut style, false).expect("it transitions"));
+        // The old mask shows until the first frame, then each stop moves on
+        // its own (linear, 150 ms).
+        assert_eq!(masks(&style), masks(&old));
+        let mut frame = Bounds::default();
+        live.step(1000.0, &mut frame, &mut style);
+        live.step(1075.0, &mut frame, &mut style);
+        let half = &mask_images(&style)[0];
+        let at = |i: usize| match half.stops[i].position {
+            Some(DefiniteLength::Fraction(p)) => p.0,
+            other => panic!("{other:?}"),
+        };
+        assert!(close(at(0), 0.7), "{}", at(0));
+        assert!(close(at(1), 1.0), "{}", at(1));
+        assert_eq!(half.stops[0].color, Color::BLACK);
+        assert_eq!(half.stops[1].color, Color::TRANSPARENT);
+        let step = live.step(1200.0, &mut frame, &mut style);
+        assert!(step.finished);
+        assert_eq!(masks(&style), target);
+
+        // Alpha moves too, in premultiplied RGBA: no grey halfway.
+        let a = crate::css::gradient("linear-gradient(black, black)").unwrap();
+        let b = crate::css::gradient("linear-gradient(black, transparent)").unwrap();
+        let mid = a.lerp(&b, 0.5).unwrap();
+        assert_eq!(mid.stops[1].color, Color::rgba(0, 0, 0, 128));
+        // The angle moves, and lengths with lengths.
+        let a = crate::css::gradient("linear-gradient(0deg, black 10px, transparent)").unwrap();
+        let b = crate::css::gradient("linear-gradient(90deg, black 30px, transparent)").unwrap();
+        let mid = a.lerp(&b, 0.5).unwrap();
+        assert_eq!(mid.kind, crate::GradientKind::Linear { angle: deg(45.0) });
+        assert_eq!(mid.stops[0].position, Some(Points(20.0).into()));
+
+        // Gradients that do not match change at once, as in CSS's discrete
+        // interpolation: another stop count, another kind, a fraction to a
+        // length, or to and from `none`; and so does a mask not named.
+        for (from, to) in [
+            (
+                whole,
+                "linear-gradient(to bottom, black, black 50%, transparent)",
+            ),
+            (whole, "radial-gradient(black 40%, transparent)"),
+            (
+                whole,
+                "linear-gradient(to bottom, black 20px, transparent 100%)",
+            ),
+            ("none", faded),
+            (faded, "none"),
+        ] {
+            let mut style = Box::new(masked(to, TransitionProps::ALL));
+            assert!(
+                restyle(&masked(from, TransitionProps::ALL), &mut style, false).is_none(),
+                "{from} -> {to}"
+            );
+        }
+        let mut style = Box::new(masked(faded, TransitionProps::OPACITY));
+        assert!(restyle(&masked(whole, TransitionProps::OPACITY), &mut style, false).is_none());
     }
 
     #[test]

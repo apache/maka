@@ -4338,7 +4338,7 @@ json-strip-comments@3.1.2 (Apache-2.0)
 kurbo@0.13.1 (Apache-2.0 OR MIT)
 lru-slab@0.1.3 (MIT OR Apache-2.0 OR Zlib); authors declared by package: Benjamin Saunders <ben.e.saunders@gmail.com>
 nohash-hasher@0.2.0 (Apache-2.0 OR MIT); authors declared by package: Parity Technologies <admin@parity.io>
-nsh-js@0.7.0 (Apache-2.0)
+nsh-js@0.7.2 (Apache-2.0)
 ntapi@0.4.3 (Apache-2.0 OR MIT); authors declared by package: MSxDOS <melcodos@gmail.com>
 numtoa@0.2.4 (MIT OR Apache-2.0); authors declared by package: Michael Aaron Murphy <mmstickman@gmail.com>
 opentelemetry-http@0.32.0 (Apache-2.0)
@@ -4478,7 +4478,7 @@ https://crates.io/api/v1/crates/zeroize/1.9.2/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/zeroize_derive/1.5.0/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/zune-core/0.5.1/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/zune-jpeg/0.5.15/download :: LICENSE-APACHE
-https://github.com/longbridge/nsh#3f8ecd8b3c55ad6274c6babbf7ee55c4cd4ae359 (adapted; third-party/nsh/crates/nsh-js) :: third_party/llrt-types/LICENSE
+https://github.com/longbridge/nsh#708105de3c4e94eac4c7c49e2e931b0c3af55124 (adapted; third-party/nsh/crates/nsh-js) :: third_party/llrt-types/LICENSE
 https://raw.githubusercontent.com/dudykr/ddbase/19f6487518dbebbc198346bfb979313ef457199e/LICENSE
 https://raw.githubusercontent.com/dudykr/ddbase/d46ef439d30d2b64eb87d4e197929548b51b21be/LICENSE
 https://raw.githubusercontent.com/google/flatbuffers/7e163021e59cca4f8e1e35a7c828b5c6b7915953/LICENSE
@@ -31608,9 +31608,9 @@ For these and/or other purposes and motivations, and without any expectation of 
 
 ================================================================================
 
-nsh-base@0.7.0 (Apache-2.0)
+nsh-base@0.7.2 (Apache-2.0)
 
-https://github.com/longbridge/nsh#3f8ecd8b3c55ad6274c6babbf7ee55c4cd4ae359 (adapted; third-party/nsh/crates/nsh-base) :: fonts/katex.LICENSE.txt
+https://github.com/longbridge/nsh#708105de3c4e94eac4c7c49e2e931b0c3af55124 (adapted; third-party/nsh/crates/nsh-base) :: fonts/katex.LICENSE.txt
 
 The KaTeX fonts in katex.pack.zst (KaTeX_*.ttf of https://github.com/KaTeX/KaTeX,
 unmodified, packed in one zstd-compressed file):
@@ -31710,9 +31710,9 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
 
 ================================================================================
 
-nsh-base@0.7.0 (Apache-2.0)
+nsh-base@0.7.2 (Apache-2.0)
 
-https://github.com/longbridge/nsh#3f8ecd8b3c55ad6274c6babbf7ee55c4cd4ae359 (adapted; third-party/nsh/crates/nsh-base) :: src/emoji_picker/emoji.LICENSE.txt
+https://github.com/longbridge/nsh#708105de3c4e94eac4c7c49e2e931b0c3af55124 (adapted; third-party/nsh/crates/nsh-base) :: src/emoji_picker/emoji.LICENSE.txt
 
 emoji.tsv is generated from emojibase-data (https://github.com/milesj/emojibase),
 whose names and keywords come from the Unicode Common Locale Data Repository.
@@ -31785,22 +31785,23 @@ authorization of the copyright holder.
 
 ================================================================================
 
-nsh-base@0.7.0 (Apache-2.0)
-nsh-bundler@0.7.0 (Apache-2.0)
-nsh-core@0.7.0 (Apache-2.0)
-nsh-engine@0.7.0 (Apache-2.0)
-nsh-i18n@0.7.0 (Apache-2.0)
-nsh-js@0.7.0 (Apache-2.0)
-nsh-macros@0.7.0 (Apache-2.0)
-nsh-package@0.7.0 (Apache-2.0)
-nsh-platform-apple@0.7.0 (Apache-2.0)
-nsh-platform-linux@0.7.0 (Apache-2.0)
-nsh-platform-macos@0.7.0 (Apache-2.0)
-nsh-platform-tui@0.7.0 (Apache-2.0)
-nsh-platform-windows@0.7.0 (Apache-2.0)
-nsh-updater@0.7.0 (Apache-2.0)
+nsh-base@0.7.2 (Apache-2.0)
+nsh-bundler@0.7.2 (Apache-2.0)
+nsh-core@0.7.2 (Apache-2.0)
+nsh-engine@0.7.2 (Apache-2.0)
+nsh-i18n@0.7.2 (Apache-2.0)
+nsh-js@0.7.2 (Apache-2.0)
+nsh-macros@0.7.2 (Apache-2.0)
+nsh-package@0.7.2 (Apache-2.0)
+nsh-platform-apple@0.7.2 (Apache-2.0)
+nsh-platform-linux@0.7.2 (Apache-2.0)
+nsh-platform-macos@0.7.2 (Apache-2.0)
+nsh-platform-tui@0.7.2 (Apache-2.0)
+nsh-platform-windows@0.7.2 (Apache-2.0)
+nsh-updater@0.7.2 (Apache-2.0)
 
 https://raw.githubusercontent.com/longbridge/nsh/3f8ecd8b3c55ad6274c6babbf7ee55c4cd4ae359/LICENSE-APACHE
+https://raw.githubusercontent.com/longbridge/nsh/708105de3c4e94eac4c7c49e2e931b0c3af55124/LICENSE-APACHE
 https://raw.githubusercontent.com/longbridge/nsh/d01cd3cce6645391c65a379d6230c2d2e651d55f/LICENSE-APACHE
 
 Copyright 2026 Longbridge <https://longbridge.com>

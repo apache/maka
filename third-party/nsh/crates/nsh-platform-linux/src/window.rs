@@ -547,6 +547,7 @@ fn open(surface: &Rc<Surface>, view: &NshView, open: &OpenWindow) {
     let options = &open.options;
     let window = gtk::Window::new();
     window.add_css_class("nsh-window");
+    crate::surface::reveal_on_frames(window.upcast_ref());
     let main = main_window(surface);
     if let Some(app) = main.as_ref().and_then(|w| w.application()) {
         window.set_application(Some(&app));
@@ -634,6 +635,8 @@ fn connect(surface: &Rc<Surface>, id: NodeId, window: &gtk::Window, view: &NshVi
     crate::key_focus::watch(surface, window);
     // The app's shortcuts, with the focus in its content first.
     crate::keymap::attach(surface, view);
+    // File drops into this window when any view listens to `onFileDrop`.
+    crate::file_drop::attach(surface, view);
     // The keyboard scrolls its scroll views.
     crate::scroll::watch_keys(surface, window, view);
     // The mouse's back button goes back in it, as Escape does.
@@ -705,11 +708,18 @@ fn connect(surface: &Rc<Surface>, id: NodeId, window: &gtk::Window, view: &NshVi
         gdk_surface.connect_enter_monitor(move |_, _| f());
         if let Some(toplevel) = gdk_surface.downcast_ref::<gdk::Toplevel>() {
             let f = follow(weak.clone());
-            toplevel.connect_state_notify(move |_| f());
+            toplevel.connect_state_notify(move |_| {
+                f();
+                // Minimized, suspended or focused: the app's state.
+                crate::system::lifecycle_changed();
+            });
         }
     });
     let weak = Rc::downgrade(surface);
     window.connect_map(move |_| {
+        // The host's window never shows: the app's own windows tell whether
+        // it is in the background (`lifecycle()`).
+        crate::system::lifecycle_changed();
         let weak = weak.clone();
         // After GTK set the surface's own input region.
         glib::idle_add_local_once(move || {
@@ -718,6 +728,7 @@ fn connect(surface: &Rc<Surface>, id: NodeId, window: &gtk::Window, view: &NshVi
             }
         });
     });
+    window.connect_unmap(|_| crate::system::lifecycle_changed());
     let weak = Rc::downgrade(surface);
     window.connect_close_request(move |_| {
         let Some(surface) = weak.upgrade() else {
@@ -859,8 +870,24 @@ pub(crate) fn batch_applied(surface: &Rc<Surface>) {
     }
 }
 
+/// The engine laid root `id` out at `size`, and applied the batch that
+/// came of it: a window still opening at that size has its first frame,
+/// even when its content was in the commit that opened it and nothing
+/// changed since (no batch follows to show it).
+pub(crate) fn laid_out(surface: &Rc<Surface>, id: NodeId, size: Size<Points>) {
+    let ready = surface
+        .windows
+        .borrow()
+        .get(&id)
+        .is_some_and(|w| w.pending.is_some() && w.reported == Some(size));
+    if ready {
+        show_first(surface, id);
+    }
+}
+
 /// Whether a window of the app's own is still opening, hidden until its
-/// first frame ([`batch_applied`], or [`FIRST_FRAME`] after it opened).
+/// first frame ([`batch_applied`] or [`laid_out`], or [`FIRST_FRAME`]
+/// after it opened).
 /// Its views are not drawn until it shows, so they have no place on screen
 /// to act on: the test agent waits for it (`nsh_testing::agent::Native::opening`).
 #[cfg(any(feature = "dev", test))]
@@ -969,6 +996,29 @@ fn apply_scheme(surface: &Surface, id: NodeId) {
     };
     root.remove_css_class(remove);
     root.add_css_class(add);
+    let controls = surface
+        .windows
+        .borrow()
+        .get(&id)
+        .and_then(|w| w.controls.clone());
+    if let Some((start, end)) = controls {
+        controls_scheme(&start, main_dark(surface));
+        controls_scheme(&end, main_dark(surface));
+    }
+}
+
+/// The window buttons over a hidden title bar take the color of the app's
+/// surface under them: they are not in a header bar, so the theme gives
+/// them no title bar colors of their own (white icons on a light surface
+/// with Yaru).
+pub(crate) fn controls_scheme(controls: &gtk::WindowControls, dark: bool) {
+    let (add, remove) = if dark {
+        ("nsh-on-dark", "nsh-on-light")
+    } else {
+        ("nsh-on-light", "nsh-on-dark")
+    };
+    controls.remove_css_class(remove);
+    controls.add_css_class(add);
 }
 
 /// Whether the app's content is dark (its appearance).
@@ -1110,6 +1160,7 @@ fn update_header(surface: &Rc<Surface>, id: NodeId) {
                 controls.set_valign(gtk::Align::Start);
                 controls.set_margin_start(MARGIN);
                 controls.set_margin_end(MARGIN);
+                controls_scheme(&controls, main_dark(surface));
                 overlay.add_overlay(&controls);
                 controls
             };
@@ -2268,6 +2319,19 @@ pub(crate) fn removed(surface: &Rc<Surface>, view: &NshView) -> bool {
     true
 }
 
+/// Whether one of the app's own windows shows: mapped, neither minimized
+/// nor suspended. The host's window never shows under the desktop window
+/// model, so these tell whether the app is in the background
+/// ([`crate::system::lifecycle`]). False while the registry changes (a
+/// window opening or closing), whose window maps or unmaps after it.
+pub(crate) fn any_shown(surface: &Surface) -> bool {
+    surface.windows.try_borrow().is_ok_and(|windows| {
+        windows
+            .values()
+            .any(|w| w.window.is_mapped() && crate::system::not_hidden(w.window.upcast_ref()))
+    })
+}
+
 /// The app's primary window: the oldest of its own windows still open
 /// that was given a size. `None` while it shows none.
 fn primary_window(surface: &Surface) -> Option<NodeId> {
@@ -2479,6 +2543,7 @@ fn launcher_params(app_id: &str, progress: Option<WindowProgress>, urgent: bool)
 #[cfg(test)]
 mod tests {
     use nsh_core::desktop::ProgressState;
+    use nsh_engine::Lifecycle;
 
     use super::*;
 
@@ -2657,7 +2722,8 @@ mod tests {
     }
 
     /// A window of the app's own is opening until the commit after the one
-    /// that opened it is mounted, or until its wait for that runs out.
+    /// that opened it is mounted, or the engine laid it out at its size,
+    /// or until its wait for that runs out.
     #[test]
     fn a_new_window_is_opening_until_its_first_frame() {
         crate::gtk_test::run(|| {
@@ -2671,14 +2737,26 @@ mod tests {
             assert!(opening(&surface));
             batch_applied(&surface);
             assert!(!opening(&surface));
-            // Without another commit, it shows after `FIRST_FRAME`.
+            // Without another commit, it shows once the engine laid it
+            // out at its size, not at a size it no longer has.
             let second = NshView::new(41, nsh_core::ViewKind::View);
             open(&surface, &second, &OpenWindow::default());
+            batch_applied(&surface);
+            assert!(opening(&surface));
+            let size = surface.windows.borrow()[&41].reported.expect("sized");
+            laid_out(&surface, 41, Size::new(Points(1.0), Points(1.0)));
+            assert!(opening(&surface));
+            laid_out(&surface, 41, size);
+            assert!(!opening(&surface));
+            // Nor that, it shows after `FIRST_FRAME`.
+            let third = NshView::new(42, nsh_core::ViewKind::View);
+            open(&surface, &third, &OpenWindow::default());
             batch_applied(&surface);
             assert!(opening(&surface));
             assert!(crate::gtk_test::wait_until(|| !opening(&surface)));
             assert!(removed(&surface, &view));
             assert!(removed(&surface, &second));
+            assert!(removed(&surface, &third));
         });
     }
 
@@ -2709,6 +2787,37 @@ mod tests {
             assert!(removed(&surface, &first));
             assert!(removed(&surface, &second));
             assert!(focused, "a click focuses a field in the first window");
+        });
+    }
+
+    /// Window Model v2 keeps the host window hidden: the app is in the
+    /// background (`lifecycle()`) only while none of its own windows shows,
+    /// and the environment follows as they show and hide.
+    #[test]
+    fn the_app_shows_while_one_of_its_windows_does() {
+        crate::gtk_test::run(|| {
+            let surface = crate::gtk_test::surface();
+            crate::system::follow_lifecycle_for_test(&surface);
+            let reported = || surface.environment.get().lifecycle;
+            assert!(!surface.root.is_mapped(), "the host never shows");
+            assert_eq!(crate::system::lifecycle(&surface), Lifecycle::Background);
+            let view = NshView::new(40, nsh_core::ViewKind::View);
+            open(&surface, &view, &OpenWindow::default());
+            let window = surface.windows.borrow()[&40].window.clone();
+            assert_eq!(crate::system::lifecycle(&surface), Lifecycle::Background);
+            window.present();
+            assert!(crate::gtk_test::wait_until(|| window.is_mapped()));
+            assert_ne!(crate::system::lifecycle(&surface), Lifecycle::Background);
+            assert_ne!(reported(), Lifecycle::Background);
+            window.set_visible(false);
+            assert!(crate::gtk_test::wait_until(|| !window.is_mapped()));
+            assert_eq!(reported(), Lifecycle::Background);
+            window.present();
+            assert!(crate::gtk_test::wait_until(|| window.is_mapped()));
+            assert_ne!(reported(), Lifecycle::Background);
+            // Closing the last one leaves the app in the background.
+            assert!(removed(&surface, &view));
+            assert_eq!(reported(), Lifecycle::Background);
         });
     }
 

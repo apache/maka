@@ -218,6 +218,15 @@
     `ERR_NSH_QUOTA_EXCEEDED`; `invalid_name`: a `TypeError`), so an app branches on `code` whichever transport answers.
     `host.post` is synchronous and throws the name's `TypeError` or `ERR_ACCESS_DENIED`. *Posts* (`host.post`) reach the same handler with nothing to answer (`HostCall::is_post`); without a
     handler they are dropped.
+  - *Caller-scoped events* (`HostCall::sender`, Rust only for now): a handler that answers over time (sign-in
+    progress, a long request) sends its events to the engine that made the call or post alone. The sender holds the
+    attachment's `Caller` (the engine's queue and a closed flag); `HostSender::send` puts `Message::CallerEvent` on
+    that queue, delivered like `HostEvent`, and returns `Ok(false)` once the caller is closed. The caller closes when
+    another engine attaches (a reload), when its attachment drops, or when the engine starts to stop
+    (`request_shutdown` / `shutdown`); a call made by an engine that no longer runs the view gets a closed sender.
+    `CallerEvent`s are never moved to `HostInbox`: what the stopped engine did not read is dropped with it, not
+    given to the next app. `HostSender::closed()` is a runtime-agnostic future that resolves on close, so a handler
+    can stop the work and wake its waiters.
   - *Threads*: the main thread never waits for JS and JS never waits for the main thread. Rust handlers run on the
     engine thread and must not block it; the SDKs' glue hops to the main thread (iOS: `DispatchQueue.main` in
     `embed.rs`; Android: `NshView.hostMessage`, called over JNI on the engine thread, posts to the UI thread), where
@@ -438,7 +447,8 @@ NSH draws (`src/layers.rs`).
   from a `nsh dev` server and reloads it on every change, as `connectDevServer` on iOS and Android: the server's
   assets, logs forwarded to the developer's terminal, the status line and the error overlay over the view, the reload
   key. The embedding app's `on_error` keeps hearing the app's errors next to the overlay; connecting again replaces
-  the session. `crates/gpui/nsh-platform-gpui/examples/embed.rs` takes a dev server's URL.
+  the session. `dev` keeps the optional parts the app's build chose ([features.md](features.md)), so an app
+  importing a part its release leaves out fails here as it would there. `crates/gpui/nsh-platform-gpui/examples/embed.rs` takes a dev server's URL.
 - **Errors.** `AppView::on_app_error` hears every error of the app (also logged) as an `AppError` (`nsh_engine`,
   re-exported): its `kind` (`Load`: the bundle did not start; `Uncaught`: an exception escaped a callback, the app goes
   on; `Stopped`: the VM was stopped, reported once; `HotUpdate`; `Asset`), `is_fatal()` (`Load` or `Stopped`: no JS

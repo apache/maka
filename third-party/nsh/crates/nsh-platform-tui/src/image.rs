@@ -541,6 +541,13 @@ impl ImageStore {
                 .is_some_and(|entry| entry.picture.is_some())
     }
 
+    pub(crate) fn hides(&self, id: NodeId) -> bool {
+        self.entries
+            .get(&id)
+            .is_some_and(|entry| entry.picture.is_some())
+            && !self.shows(id)
+    }
+
     pub(crate) fn finish(&mut self, buffer: &mut Buffer) {
         for (index, color) in self.kitty_placeholders.drain(..) {
             if let Some(cell) = buffer.content.get_mut(index)

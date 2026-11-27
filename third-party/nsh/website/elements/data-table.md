@@ -203,6 +203,21 @@ select.
 Screen readers get a grid (named by `accessibilityLabel`) of column headers and cells, the selected ones said to be
 selected.
 
+### Dragging a range of cells
+
+Enable both `cellSelectable` and `cellRangeSelectable` to drag a rectangle with the mouse. Hold Shift to extend
+from the previous anchor. The table scrolls when the pointer reaches an edge during a drag.
+`selectOnModifierPress={false}` still leaves modified presses to the app.
+
+`onSelectionChange` and the ref's `selection()` report `{ row, column, range: { start, end, active? } }`.
+The range includes both endpoints, each a zero-based data row and column definition index. The columns between
+them follow their order on screen. `active` defaults to `start`, and the outer `row` and `column` name that
+active cell. Set a range through `selection` or `select()`. Arrow keys move from the active cell, and the copy
+shortcut copies that cell.
+
+Style the range with `selectionFill` and `selectionOutline`. The table uses `rowHeaderHighlighted` and
+`headerCellSelected` on the row and column headers within the range.
+
 ## Keyboard
 
 Pressing the table, or reaching it with Tab (macOS, the web), gives it the keyboard until another press, the focus
@@ -383,7 +398,7 @@ parts provide the table's structure and alignment; their classes supply the appe
 | `headerContent` | The label and sort button's layout row; set their gap here |
 | `headerCellDragging` | The dragged title, after `headerCell` |
 | `headerCellSorted` | The title of the column the table is sorted by, after `headerCell` |
-| `headerCellSelected` | The title of the selected column, after `headerCell` |
+| `headerCellSelected` | The title of the selected column or one within the selected range, after `headerCell` |
 | `sortIndicator` | The sort button of a sortable column |
 | `sortAscending`, `sortDescending` | Its two chevrons; `selected:` applies to the sorted direction |
 | `resizeHandle` | The line at a column's trailing edge that a drag resizes |
@@ -399,6 +414,9 @@ parts provide the table's structure and alignment; their classes supply the appe
 | `cellColumnSelected` | The cells of the selected column, after `cell` |
 | `rowHeader` | The row header cells, the row numbers |
 | `rowHeaderCorner` | The corner above the row headers |
+| `rowHeaderHighlighted` | A row number within the selected range, after `rowHeader` |
+| `selectionFill` | The fill of the selected range, excluding the active cell |
+| `selectionOutline` | The outline of the selected range |
 | `fixedEdge` | The line between the fixed columns and the columns that scroll under them: at the trailing edge of those at the left, the leading edge of those at the right |
 | `empty` | The box of the `empty` slot |
 
@@ -419,6 +437,7 @@ parts provide the table's structure and alignment; their classes supply the appe
 | `rowSelectable` | `.row_selectable(..)` | `boolean` | `true` | Presses and keys select rows. |
 | `columnSelectable` | `.column_selectable(..)` | `boolean` | `true` | A title's press selects its column, and the horizontal keys move between columns. |
 | `cellSelectable` | `.cell_selectable(..)` | `boolean` | `false` | Presses and keys select cells. |
+| `cellRangeSelectable` | `.cell_range_selectable(..)` | `boolean` | `false` | With `cellSelectable`, enables mouse range drags and Shift extension. |
 | `selectOnModifierPress` | `.select_on_modifier_press(..)` | `boolean` | `true` | A press with Shift or the command key held selects the row, cell or title. |
 | `selection` | `.selection(..)` | `DataTableSelection` | | What is selected, when the app sets it. |
 | `loopSelection` | `.loop_selection(..)` | `boolean` | `true` | The arrow keys go around the ends. |
@@ -447,7 +466,7 @@ parts provide the table's structure and alignment; their classes supply the appe
 
 | Event | Rust | Description |
 |---|---|---|
-| `onSelectionChange` | `.on_selection_change(\|selection: &Option<DataTableSelection>\| ..)` | The user changed the selection: `{ selection }`, a `{ row?, column? }` or `null`. |
+| `onSelectionChange` | `.on_selection_change(\|selection: &Option<DataTableSelection>\| ..)` | The user changed the selection: `{ selection }`, a `{ row?, column?, range? }` or `null`. |
 | `onRowPress` | `.on_row_press(\|event: &DataTablePress\| ..)` | A row or cell was pressed: `{ row, column?, clicks, shift, control, alt, platform }`. |
 | `onColumnPress` | `.on_column_press(\|event: &DataTableColumnPress\| ..)` | A title was pressed: `{ column, clicks, shift, control, alt, platform }`. |
 | `onDoublePress` | `.on_double_press(\|target: &DataTableTarget\| ..)` | A row, cell or title was pressed twice: `{ target }`, a `{ row?, column? }`. |

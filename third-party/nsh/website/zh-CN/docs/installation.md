@@ -81,7 +81,7 @@ nsh component remove gpui
 |---|---|---|
 | `android` | Android 运行时（`--target android`） | 所有平台 |
 | `android-symbols` | Android 运行时的符号，用于崩溃报告和 `ndk-stack` | 所有平台 |
-| `ios` | iOS 和 Mac Catalyst 运行时（`--target ios`、`catalyst`） | Apple silicon 的 macOS |
+| `ios` | iOS 和 Mac Catalyst 运行时（`--target ios`、`catalyst`、`nsh package --target ios`）。Intel Mac 上只有模拟器和 Mac Catalyst 的运行时（`--target ios`、`catalyst`、`nsh package --target ios-simulator`），用 Intel 上最后能运行的 Xcode 16.4 的 iOS 18 SDK 构建；没有真机运行器，因此不能 `nsh package --target ios` | macOS（Apple silicon 和 Intel） |
 | `web` | Web 运行时（`--target web`） | 所有平台 |
 | `gpui` | [GPUI](./gpui.md) 开发宿主（`--target gpui`） | 所有平台，各自构建 |
 | `tui` | 终端开发宿主（`--target tui`） | 所有平台，各自构建 |
@@ -234,7 +234,7 @@ sdkmanager "platforms;android-35" "build-tools;35.0.1" "platform-tools"
 
 - **GTK 4.14** 及以上；构建运行时还需要它们的开发包和 clang：`libgtk-4-dev clang`（Debian、Ubuntu 24.04 及以上）、`gtk4 clang`（Arch）、`gtk4-devel clang`（Fedora）。
 - Web 视图及下载决策需要 **WebKitGTK 6.0**（2.42 及以上）：构建运行时需要 `libwebkitgtk-6.0-dev`（Debian、Ubuntu）、`webkitgtk-6.0`（Arch）、`webkitgtk6.0-devel`（Fedora），应用运行的机器上也需要它。没有它时，`cargo xtask dist` 构建的运行时中 Web 视图为占位视图。
-- **GStreamer** 1.14 及以上，用于视频和声音：构建运行时需要 `libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev`（Debian、Ubuntu）、`gstreamer gst-plugins-base`（Arch）、`gstreamer1-devel gstreamer1-plugins-base-devel`（Fedora），以及应用要播放的视频和音频格式对应的插件。开发包供 `Sound` 使用（feature `sound`）：不启用它的 Rust 应用只需 GTK 即可构建。
+- **GStreamer** 1.14 及以上，用于视频和声音：应用运行的机器上需要它的 base 插件，以及应用要播放的视频和音频格式对应的插件。构建时不需要它；没有它时应用照常启动，加载声音会失败并写明缺少哪个库。
 
 见 [Linux](./linux.md)。
 

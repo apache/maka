@@ -567,6 +567,7 @@ impl<M: TextEngine> Core<M> {
                     | Kind::Native
                     | Kind::Canvas
                     | Kind::Shader
+                    | Kind::GpuView
                     | Kind::Scroll
                     | Kind::List
                     | Kind::Stack

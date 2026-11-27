@@ -53,7 +53,7 @@ dist\nsh\runtime\windows\nsh-windows-host --bundle build\bundle.nshc --window-si
 
 `--fps`（`nsh run App.tsx --target windows --fps`、`nsh test --target windows --fps`、宿主的 `--fps`、Rust 应用在
 `run_app` 中用 `AppOptions { fps: true, .. }`、环境变量 `NSH_FPS=1`，或应用自己调用 `setFpsEnabled(true)`）每秒输出一行性能监视器读数（target `nsh::fps`）：显示的帧数与显示器刷新率、
-主线程每帧的耗时及其各阶段（`tick`、`drain`、`paint`、`present`、`canvas`）、引擎的 commit、CPU 和内存，格式与其他桌面平台一致
+主线程每帧的耗时及其各阶段（`tick`、`drain`、`paint`、`present`、`canvas`）、引擎的 commit、CPU 和内存，以及每帧重绘了窗口的多少（`drawn`：每帧重绘像素占窗口的平均比例；`whole`：整窗重绘的帧数），格式与其他桌面平台一致
 （毫秒，依次为 mean/p50/p95/max）。`nsh test --fps -v` 会显示这些读数，`examples/gallery/tools/perf.py` 会读取它们
 （[性能报告](./performance-report.md#windowswin32direct2d)）。请测量 release 构建；监视器关闭时没有任何开销。
 
@@ -187,7 +187,7 @@ QuickJS 字节码是受信任的输入，只能从你自己应用的文件中加
 
 - **`WebView`**：位于 3D 变换（透视）视图内的网页不显示；网页上方的 `backdropFilter` 不会模糊网页。`baseUrl`
   只接受 `http(s)` 地址。自带窗口的原生组件始终位于 NSH 绘制的所有内容之上。
-- **视频**：只能播放已安装解码器支持的格式；没有封面图（poster）；开启 `controls` 时控制栏始终显示。
+- **视频**：只能播放已安装解码器支持的格式；开启 `controls` 时控制栏始终显示。
 - **`mixBlendMode` 和 `backdropFilter`** 会绘制，但在带 `filter` 或 3D 变换的视图内部不生效；`borderCurve: "continuous"`
   绘制为圆形圆角。
 - **文本**：头部和中间省略号只用于单行（多行时改为尾部省略号）；彩色 emoji 只支持 COLR 字体；小型大写字母只在字体提供时可用。

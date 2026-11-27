@@ -2,7 +2,13 @@
 //! extensions, declared ([`MarkdownExtension`], from TS too) or written in
 //! Rust ([`MarkdownPlugin`]).
 
-use std::{fmt, sync::Arc};
+use std::{
+    fmt,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+};
 
 /// Re-export of the Markdown syntax tree plugins read (`markdown-rs`'s).
 pub use markdown::mdast;
@@ -184,11 +190,32 @@ pub trait MarkdownPlugin: Send + Sync + 'static {
     }
 }
 
-/// What a [`MarkdownPlugin`] reads with: the source and the parser, for the
-/// node's children.
+/// What a [`MarkdownPlugin`] reads with: the source, the parser, for the
+/// node's children, and the conversion it is part of.
 pub struct ParseContext<'a> {
     pub(crate) source: &'a str,
     pub(crate) reader: &'a mut dyn ReadChildren,
+    pub(crate) conversion: ConversionId,
+}
+
+/// Which conversion of Markdown into a document a [`ParseContext`] is part
+/// of: one [`Parser::markdown`] call, or one text a [`super::TextView`]
+/// reads. Every callback of a conversion has the same id, and every
+/// conversion a new one, also of the same text at the same address and in
+/// views that share their plugins.
+///
+/// A plugin keeps what it derives from a conversion's source under its id,
+/// to work it out once rather than in every callback. The id says nothing
+/// about the order or number of the callbacks, nor of conversions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ConversionId(u64);
+
+impl ConversionId {
+    /// An id no conversion had.
+    pub(crate) fn next() -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        Self(NEXT.fetch_add(1, Ordering::Relaxed))
+    }
 }
 
 /// The parser's side of a [`ParseContext`].
@@ -207,6 +234,15 @@ impl<'a> ParseContext<'a> {
     pub fn node_source(&self, node: &mdast::Node) -> Option<&'a str> {
         let position = node.position()?;
         self.source.get(position.start.offset..position.end.offset)
+    }
+
+    /// The conversion this is part of: the same in every callback of it,
+    /// in the nodes a plugin reads with [`Self::blocks`] and
+    /// [`Self::inlines`], the parts of a long text, a `:::` container's
+    /// content and footnotes; another in a conversion a callback starts
+    /// ([`Parser::markdown`] inside it) and in each text a view reads.
+    pub fn conversion_id(&self) -> ConversionId {
+        self.conversion
     }
 
     /// Block nodes `nodes` read as the parser reads them.

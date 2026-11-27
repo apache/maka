@@ -35,14 +35,15 @@
 //! - the screen reader: the AT-SPI bus's `ScreenReaderEnabled`;
 //! - the OS version: the kernel's major and minor version (distributions
 //!   number their releases in incomparable ways, some not at all);
-//! - the app's state, from GDK's toplevel states, followed on the root's
-//!   map and unmap and its toplevel's `state` ([`lifecycle_changed`]):
-//!   background while the surface's window is not shown (the root
-//!   unmapped, the window minimized, or suspended: on another workspace or
-//!   covered, where the compositor says so), active while one of the
-//!   app's windows has the focus, inactive otherwise; background too from
-//!   the moment the session may end (signing out, shutting down:
-//!   [`crate::session`]);
+//! - the app's state, from GDK's toplevel states, followed on the map and
+//!   unmap of the root and of the app's own windows and on their
+//!   toplevels' `state` ([`lifecycle_changed`]): background while neither
+//!   the surface's window nor one of the app's own windows is shown (the
+//!   host's window never shows under the desktop window model; a window
+//!   unmapped, minimized, or suspended: on another workspace or covered,
+//!   where the compositor says so), active while one of the app's windows
+//!   has the focus, inactive otherwise; background too from the moment the
+//!   session may end (signing out, shutting down: [`crate::session`]);
 //! - the wake count (`wakeCount()`): one more for every surface when
 //!   systemd's `logind` reports the end of a sleep
 //!   (`org.freedesktop.login1.Manager`'s `PrepareForSleep` with `false`,
@@ -408,16 +409,20 @@ pub(crate) fn lifecycle_changed() {
     }
 }
 
-/// The app's state as `surface` sees it.
-fn lifecycle(surface: &Surface) -> Lifecycle {
-    let hidden = gdk::ToplevelState::MINIMIZED | gdk::ToplevelState::SUSPENDED;
-    let shown = surface.root.is_mapped()
-        && surface
-            .root
-            .native()
-            .and_then(|n| toplevel_state(&n))
-            .is_none_or(|s| !s.intersects(hidden));
+/// The app's state as `surface` sees it: shown while its root shows or,
+/// as the host's window never shows under the desktop window model, while
+/// one of the app's own windows does ([`crate::window::any_shown`]).
+pub(crate) fn lifecycle(surface: &Surface) -> Lifecycle {
+    let shown = surface.root.is_mapped() && surface.root.native().is_none_or(|n| not_hidden(&n))
+        || crate::window::any_shown(surface);
     lifecycle_of(shown, crate::session::ending(), app_focused)
+}
+
+/// Whether `native`'s toplevel is neither minimized nor suspended (or not
+/// realized yet).
+pub(crate) fn not_hidden(native: &gtk::Native) -> bool {
+    let hidden = gdk::ToplevelState::MINIMIZED | gdk::ToplevelState::SUSPENDED;
+    toplevel_state(native).is_none_or(|s| !s.intersects(hidden))
 }
 
 /// Whether one of the app's windows has the focus.
@@ -500,6 +505,11 @@ pub(crate) fn environment_applied(surface: &Surface) {
     root.add_css_class(add);
     // The app's windows of its own follow it.
     crate::window::schemes_applied(surface);
+    if let Some((start, end)) = crate::chrome::window_controls(surface) {
+        let dark = crate::window::main_dark(surface);
+        crate::window::controls_scheme(&start, dark);
+        crate::window::controls_scheme(&end, dark);
+    }
     // The menu bar's menus are outside the root.
     if let Some(slot) = crate::chrome::menu_bar_slot(surface) {
         slot.remove_css_class(remove);
@@ -955,7 +965,7 @@ pub(crate) fn command(surface: &Rc<Surface>, _id: NodeId, command: &Command) {
         // The app's address: this platform keeps none.
         | Command::SetAppUrl(_)
         | Command::PushAppUrl(_) => {}
-        other => log::debug!("linux: command {other:?} is not supported"),
+        other => nsh_core::platform::warn_unsupported("linux", &other),
     }
 }
 
@@ -1563,7 +1573,7 @@ fn read_clipboard(surface: &Rc<Surface>, id: u32, has_only: bool) {
 
 /// `Clipboard.write`: `text` and `html` offered together, the HTML as
 /// `text/html` and the text in GDK's text formats.
-fn set_clipboard_html(text: &str, html: &str) {
+pub(crate) fn set_clipboard_html(text: &str, html: &str) {
     let Some(display) = gdk::Display::default() else {
         return;
     };
@@ -1832,6 +1842,13 @@ pub(crate) fn set_appearance(surface: &Rc<Surface>, appearance: nsh_core::platfo
     if surface.appearance.replace(appearance) != appearance {
         update(surface, self::appearance());
     }
+}
+
+/// Tests: `surface` follows the app's state ([`lifecycle_changed`]), as
+/// [`watch_environment`] makes it without installing the system watchers.
+#[cfg(test)]
+pub(crate) fn follow_lifecycle_for_test(surface: &Rc<Surface>) {
+    SYSTEM.with(|s| s.borrow_mut().surfaces.push(Rc::downgrade(surface)));
 }
 
 /// Tests: the system's color scheme is now dark (or light), as the

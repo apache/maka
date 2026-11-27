@@ -23,6 +23,7 @@ import CoreClearSelection from "./core-clear-selection";
 import CoreRef from "./core-ref";
 import CoreResource from "./core-resource";
 import CoreReveal from "./core-reveal";
+import CoreGpuView from "./core-gpu-view";
 import CoreShader from "./core-shader";
 import CoreShaderEffects from "./core-shader-effects";
 import AssetImports from "./asset-imports";
@@ -54,6 +55,7 @@ const cases: Record<string, () => JSX.Element> = {
   "core-ref": CoreRef,
   "core-resource": CoreResource,
   "core-reveal": CoreReveal,
+  "core-gpu-view": CoreGpuView,
   "core-shader": CoreShader,
   "core-shader-effects": CoreShaderEffects,
   "module-url": ModuleUrl,

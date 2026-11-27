@@ -39,7 +39,9 @@
 //! it; then the components' lists let its content go before it reads
 //! there, and it is the first cell a new item takes. The
 //! header, footer and empty placeholder are cells with a role
-//! (`slot="header"`, ...) and are never recycled. Each cell is a Taffy root
+//! (`slot="header"`, ...) and are never recycled. A list under
+//! `display: none` has no size and is not updated: it keeps its window
+//! and its bound cells until it shows again. Each cell is a Taffy root
 //! of its own (its width follows the list's cross axis), so scrolling
 //! relays out dirty cells only.
 //!
@@ -101,6 +103,12 @@ const LEAD_DECAY: f32 = 0.75;
 const END_THRESHOLD: f32 = 1.0;
 /// Default `loadMoreAtStartThreshold`, in viewports.
 const START_THRESHOLD: f32 = 1.0;
+/// With `maintainVisibleContentPosition={{ animated }}`: how far the end
+/// must move away at once, in viewports, for the list to animate there
+/// rather than jump. Text streaming into the last row moves it a line or
+/// two per commit and keeps following at once: an animation restarted on
+/// every commit would lag behind it.
+const ANIMATED_FOLLOW_STEP: f32 = 0.25;
 
 /// Which of a list's load-more events a window update raises
 /// ([`ListState::update_window`]).
@@ -413,6 +421,13 @@ pub(super) struct ListState {
     /// a list that is not inverted follows the end of its content while
     /// it is within this distance of it.
     pub(super) follow_end: Option<f32>,
+    /// `maintainVisibleContentPosition`'s `animated`: with `follow_end`, an
+    /// end that moves away by [`ANIMATED_FOLLOW_STEP`] or more at once is
+    /// followed by an animated scroll pinned to the end.
+    follow_end_animated: bool,
+    /// [`ListState::anchor_end`] left a large step of the end to an
+    /// animated scroll the core sends ([`ListState::take_animated_end`]).
+    animated_end: bool,
     /// Where the list rests ([`ListAlignment`]; an inverted list ignores it).
     pub(super) alignment: ListAlignment,
     /// `stickyHeaderIndices`, sorted.
@@ -556,6 +571,8 @@ impl ListState {
             horizontal: false,
             inverted: false,
             follow_end: None,
+            follow_end_animated: false,
+            animated_end: false,
             alignment: ListAlignment::Top,
             sticky: Vec::new(),
             kept: Vec::new(),
@@ -975,6 +992,19 @@ impl ListState {
                 .filter(|&(_, next_from_top)| next_from_top < self.viewport)
                 .unwrap_or((index, from_top)),
         )
+    }
+
+    /// Whether `row`, which the viewport's start (at `natural`) cuts
+    /// through, lies above the row [`Self::reading_anchor`] keeps in place:
+    /// more than a pixel's rounding of it is past the start and the next
+    /// row starts in view. A row taller than the viewport is the anchor
+    /// itself.
+    fn cut_above_a_row_in_view(&self, row: u32, natural: f32) -> bool {
+        let next = (row + 1) * self.columns;
+        self.viewport > 0.0
+            && next < self.count
+            && self.item_at(row * self.columns) - natural < -PIN_SLACK
+            && self.item_at(next) - natural < self.viewport
     }
 
     /// The row the viewport starts in, by its first item, and how far
@@ -1895,7 +1925,8 @@ impl ListState {
         }
     }
 
-    pub(super) fn set_follow_end(&mut self, threshold: Option<f32>) {
+    pub(super) fn set_follow_end(&mut self, threshold: Option<f32>, animated: bool) {
+        self.follow_end_animated = animated;
         if self.parent {
             self.ignored |= if threshold.is_some() {
                 ignored::FOLLOW_END
@@ -1962,9 +1993,16 @@ impl ListState {
         }
     }
 
-    /// Records a measured size. Returns the change if the item lies
-    /// entirely before the viewport (the caller scrolls by it so the
-    /// visible content stays put).
+    /// Records a measured size. Returns the change if the item's row lies
+    /// above the visible rows (the caller scrolls by it so the visible
+    /// content stays put): entirely before the viewport, or, measured for
+    /// the first time, cut by the viewport's start with the next row
+    /// starting in view, the row a change of the items keeps in place
+    /// ([`Self::reading_anchor`]). A row is measured in the layout that
+    /// first shows it, so one cut at its first measurement was never seen
+    /// (rows inserted right after a cut row): its estimate only placed it.
+    /// A row already measured is being read and keeps its start, the rows
+    /// below it moving.
     pub(super) fn measured(&mut self, i: u32, size: f32) -> f32 {
         let idx = i as usize;
         if idx >= self.sizes.len() || self.sizes[idx] == size {
@@ -1981,7 +2019,10 @@ impl ListState {
             })
         };
         let natural = self.measuring_natural_offset() - forwarded;
-        let above_viewport = row_start < natural && row_start + before <= natural;
+        let unseen = self.sizes[idx].is_nan();
+        let above_viewport = row_start < natural
+            && (row_start + before <= natural
+                || (unseen && self.cut_above_a_row_in_view(row, natural)));
         let keep = above_viewport && self.keeps_visible_rows_at(natural);
         self.sizes[idx] = size;
         let delta = self.row_size(row) - before;
@@ -2140,8 +2181,14 @@ impl ListState {
     /// `kept` is how far this commit's measurements moved the offset to keep
     /// the visible rows in place: that move says nothing about where the user
     /// is, so a list at its end is still at its end.
+    ///
+    /// With `follow_end_animated`, a step of [`ANIMATED_FOLLOW_STEP`] or more
+    /// is left to an animated scroll to the end
+    /// ([`ListState::take_animated_end`]), and while that scroll is in flight
+    /// its pin follows the end, not this.
     pub(super) fn anchor_end(&mut self, kept: f32) -> f32 {
         self.measured_scroll = 0.0;
+        self.animated_end = false;
         let revealing = std::mem::take(&mut self.revealing);
         if self.viewport <= 0.0 {
             return 0.0;
@@ -2190,6 +2237,18 @@ impl ListState {
                 return 0.0;
             }
             let delta = end - self.offset;
+            if self.follow_end_animated && self.follow_end.is_some() && !opening {
+                if self.animating_to_end() {
+                    // The scroll in flight lands at the end: a jump under it
+                    // would cut it short.
+                    return 0.0;
+                }
+                if delta >= self.viewport * ANIMATED_FOLLOW_STEP {
+                    // The platform animates there from where the list is.
+                    self.animated_end = true;
+                    return 0.0;
+                }
+            }
             self.offset = end;
             return delta;
         }
@@ -2202,6 +2261,25 @@ impl ListState {
         self.anchored_end = end;
         self.offset += delta;
         delta
+    }
+
+    /// Whether the last [`ListState::anchor_end`] left the end to an animated
+    /// scroll, once: the core pins the end and sends the scroll.
+    pub(super) fn take_animated_end(&mut self) -> bool {
+        std::mem::take(&mut self.animated_end)
+    }
+
+    /// An animated scroll to the end is in flight (`scrollToEnd` or a
+    /// large step of the end followed with `follow_end_animated`).
+    fn animating_to_end(&self) -> bool {
+        matches!(
+            self.pin,
+            Some(Pin::Following {
+                target: PinTarget::End,
+                animating: true,
+                ..
+            })
+        )
     }
 
     /// The last row is not measured yet but will be: the window reaches it.
@@ -2831,6 +2909,81 @@ mod tests {
         }
     }
 
+    /// Measures item `i` as a layout does: scrolls by what keeps the
+    /// visible rows in place.
+    fn measure(l: &mut ListState, i: u32, size: f32) -> f32 {
+        let scroll = l.measured(i, size);
+        l.offset += scroll;
+        l.anchor_end(scroll);
+        scroll
+    }
+
+    /// A row the viewport's start cuts through, measured for the first
+    /// time, counts as above the visible rows, as for a change of the items
+    /// ([`ListState::reading_anchor`]): measured smaller or larger than its
+    /// estimate, the first row that starts in view stays where it is.
+    #[test]
+    fn a_row_cut_by_the_viewport_measured_keeps_the_rows_below() {
+        for (size, scroll) in [(46.0, -4.0), (80.0, 30.0)] {
+            // Row 20 at the top with 30 of its 50 points scrolled past; row
+            // 21 starts 20 points down.
+            let mut l = list(100, 50.0, 400.0);
+            l.offset = 1030.0;
+            assert_eq!(measure(&mut l, 20, size), scroll, "{size}");
+            assert_eq!(l.item_at(21) - l.offset, 20.0, "{size}");
+        }
+        // A row inserted right after the cut row (now above the viewport,
+        // the rows below kept in place) is cut in turn, and measured
+        // smaller than its estimate: the rows below still stay.
+        let mut l = with_cells(100, 1030.0);
+        l.splice(21, 0, 1);
+        l.take_splice_anchor();
+        assert_eq!(l.item_at(22) - l.offset, 20.0);
+        assert!(l.item_at(21) < l.offset);
+        assert_eq!(measure(&mut l, 21, 46.0), -4.0);
+        assert_eq!(l.item_at(22) - l.offset, 20.0);
+    }
+
+    /// A row the viewport's start cuts through that was measured before
+    /// is being read: measured again (its content changed), it keeps its
+    /// start and the rows below it move.
+    #[test]
+    fn a_measured_row_cut_by_the_viewport_keeps_its_start() {
+        let mut l = list(100, 50.0, 400.0);
+        measure(&mut l, 20, 50.0);
+        l.offset = 1010.0;
+        assert_eq!(measure(&mut l, 20, 180.0), 0.0);
+        assert_eq!(l.item_at(20) - l.offset, -10.0);
+        assert_eq!(l.item_at(21) - l.offset, 170.0);
+    }
+
+    #[test]
+    fn rows_measured_in_or_below_the_first_row_in_view_move_the_rows_below() {
+        // A row whole in view: the rows below it move.
+        let mut l = list(100, 50.0, 400.0);
+        l.offset = 1030.0;
+        assert_eq!(measure(&mut l, 22, 30.0), 0.0);
+        assert_eq!(l.item_at(21) - l.offset, 20.0);
+        assert_eq!(l.item_at(23) - l.offset, 100.0);
+        // At its start the list stays there.
+        let mut l = list(100, 50.0, 400.0);
+        assert_eq!(measure(&mut l, 0, 30.0), 0.0);
+        assert_eq!((l.offset, l.item_at(1)), (0.0, 30.0));
+        // A row starting at the viewport's start, a pixel's rounding away,
+        // shows whole: the rows below it move.
+        let mut l = list(100, 50.0, 400.0);
+        l.offset = 1000.5;
+        assert_eq!(measure(&mut l, 20, 46.0), 0.0);
+        assert_eq!(l.item_at(21) - l.offset, 45.5);
+        // A row taller than the viewport, no row starting in view: it is
+        // the anchor itself, and the rows below it move.
+        let mut l = list(100, 50.0, 400.0);
+        measure(&mut l, 20, 600.0);
+        l.offset = 1100.0;
+        assert_eq!(measure(&mut l, 20, 550.0), 0.0);
+        assert_eq!((l.offset, l.item_at(21)), (1100.0, 1550.0));
+    }
+
     #[test]
     fn load_more_fires_once_per_count() {
         let mut l = list(10, 50.0, 400.0);
@@ -3259,7 +3412,7 @@ mod tests {
     #[test]
     fn lists_follow_the_end_within_the_threshold() {
         let mut l = list(100, 50.0, 400.0);
-        l.set_follow_end(Some(10.0));
+        l.set_follow_end(Some(10.0), false);
         assert_eq!(l.anchor_end(0.0), 0.0, "starts where it is");
         // At the end: the last item grows by 30, the list follows.
         l.offset = 5000.0 - 400.0;
@@ -3274,7 +3427,7 @@ mod tests {
         // A child list first corrects overestimated rows above the reader;
         // its remaining rows then make the containing row taller overall.
         let mut child = list(20, 50.0, 400.0);
-        child.set_follow_end(Some(10.0));
+        child.set_follow_end(Some(10.0), false);
         child.anchor_end(0.0);
         child.reported(600.0, 0);
         child.anchor_by(-100.0);
@@ -3285,7 +3438,7 @@ mod tests {
         // An insertion before a reader well away from the end keeps its
         // source in view; the correction itself is no reason to follow end.
         let mut prepended = list(20, 50.0, 400.0);
-        prepended.set_follow_end(Some(10.0));
+        prepended.set_follow_end(Some(10.0), false);
         prepended.anchor_end(0.0);
         prepended.reported(100.0, 0);
         prepended.splice(0, 0, 12);
@@ -3305,15 +3458,15 @@ mod tests {
         // while scrolled up it keeps what is visible.
         m.offset = 5030.0 - 400.0;
         m.splice(100, 0, 1);
-        m.set_follow_end(Some(10.0));
+        m.set_follow_end(Some(10.0), false);
         assert_eq!(m.anchor_end(0.0), 50.0);
         assert_eq!(m.offset, 5080.0 - 400.0);
 
-        m.set_follow_end(None);
+        m.set_follow_end(None, false);
         m.offset = 1000.0;
         m.anchor_end(0.0);
         m.splice(101, 0, 1);
-        m.set_follow_end(Some(10.0));
+        m.set_follow_end(Some(10.0), false);
         assert_eq!(m.anchor_end(0.0), 0.0);
     }
 
@@ -4139,7 +4292,7 @@ mod tests {
         // Sticky rows stay: they stick to the view around the list.
         assert!(!l.inverted && l.sticky_enabled());
         assert_eq!(l.ignored, ignored::INVERTED);
-        l.set_follow_end(Some(10.0));
+        l.set_follow_end(Some(10.0), false);
         assert_eq!(l.follow_end, None);
         assert_ne!(l.ignored & ignored::FOLLOW_END, 0);
     }
@@ -4148,7 +4301,7 @@ mod tests {
     fn back_to_its_own_scroll_view_a_list_gets_back_what_parent_mode_set_aside() {
         let mut l = list(100, 50.0, 400.0);
         l.set_inverted(true);
-        l.set_follow_end(Some(10.0));
+        l.set_follow_end(Some(10.0), false);
         l.set_parent(true);
         l.set_parent(false);
         assert!(l.inverted);

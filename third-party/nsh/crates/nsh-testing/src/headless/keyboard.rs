@@ -110,7 +110,7 @@ impl Headless {
     /// Sends key `keys` without settling, except a Back transition must
     /// finish before its release is reported. True ends a typed-ahead batch
     /// after that Back transition; the caller settles the remaining events.
-    fn send_key(&mut self, keys: &str) -> Result<bool, String> {
+    pub(super) fn send_key(&mut self, keys: &str) -> Result<bool, String> {
         self.input_with(nsh_core::platform::InputModality::Keyboard);
         let stroke = Keystroke::parse(keys, self.environment.os).map_err(|e| e.to_string())?;
         // A text input the newest modal over its window covers (the app
@@ -280,6 +280,12 @@ impl Headless {
                     break 'defaults;
                 }
                 if let Some(input) = input {
+                    // Select All (Cmd+A on Apple, Ctrl+A elsewhere) selects
+                    // the whole text, as the platforms' fields do.
+                    if Keystroke::parse("mod+a", self.environment.os).is_ok_and(|a| a == stroke) {
+                        self.select_all(input);
+                        break 'defaults;
+                    }
                     let multiline = self.screen.input(input).is_some_and(|i| i.config.multiline);
                     match stroke.key {
                         keymap::Key::Enter

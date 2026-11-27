@@ -209,10 +209,7 @@ impl Block {
             Block::CodeBlock(code) => out.push_str(code.code.trim_end_matches('\n')),
             Block::Math { tex, .. } => out.push_str(tex),
             Block::Table(table) => {
-                for (i, row) in std::iter::once(&table.head)
-                    .chain(table.rows.iter())
-                    .enumerate()
-                {
+                for (i, row) in table.all_rows().enumerate() {
                     if i > 0 {
                         out.push('\n');
                     }
@@ -475,7 +472,8 @@ pub struct Table {
     /// The alignment of each column.
     #[serde(default)]
     pub align: Vec<ColumnAlign>,
-    /// The header row's cells.
+    /// The header row's cells; none when the table has no header (an
+    /// HTML table without `<th>` cells).
     pub head: Vec<TableCell>,
     /// The body's rows, each as many cells as the header (Markdown fills
     /// or cuts them to its width).
@@ -484,6 +482,12 @@ pub struct Table {
 }
 
 impl Table {
+    /// Its rows, the header first when it has one.
+    pub(crate) fn all_rows(&self) -> impl Iterator<Item = &Vec<TableCell>> {
+        let head = (!self.head.is_empty()).then_some(&self.head);
+        head.into_iter().chain(&self.rows)
+    }
+
     /// The number of columns.
     pub fn columns(&self) -> usize {
         let width = |row: &Vec<TableCell>| row.iter().map(TableCell::span).sum::<usize>();
@@ -896,7 +900,7 @@ const TABLE: &str = "/** A table. */
 export interface TextViewTable {
   /** The alignment of each column. */
   align?: (\"none\" | \"left\" | \"center\" | \"right\")[];
-  /** The header row's cells. */
+  /** The header row's cells; empty when the table has none (an HTML table without `<th>` cells). */
   head: { content: TextViewInline[]; colspan?: number }[];
   /** The body's rows. */
   rows?: { content: TextViewInline[]; colspan?: number }[][];

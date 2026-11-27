@@ -107,8 +107,30 @@ pub(crate) fn package(
         );
     }
     let runtime = runtime::package_web()?;
+    // Linked for the app: the parts of `nsh/base`, the standard modules
+    // and the app's own UI sets it does not use are left out.
+    let linkable =
+        fs::read(&runtime.wasm).with_context(|| format!("read {}", runtime.wasm.display()))?;
+    // A runtime whose crates call JS through wasm-bindgen: it runs on the
+    // main module once it is split ([`link`]).
+    let bindgen = crate::bindgen::needs(&linkable)
+        .with_context(|| format!("read {}", runtime.wasm.display()))?
+        .map(|version| BindgenRun::next_to(&runtime.wasm, version))
+        .transpose()?;
+    // `--shared-runtime`: the runtime's shared form, the same bytes for
+    // every app on this NSH version wherever it is packaged, which the
+    // browser downloads once when the apps serve it from one place
+    // (`--asset-url`). nsh's own runtime only: an app with Rust components
+    // or wasm-bindgen glue has one of its own.
+    let shared = options.shared_runtime;
+    if shared && (built.rust_root || bindgen.is_some()) {
+        bail!(
+            "--shared-runtime needs nsh's own runtime: an app with Rust components or wasm-bindgen glue has a runtime of its own"
+        );
+    }
     let dir = options.out.join(name);
     let step = ui::Step::start(format!("packaging {}", ui::path(&dir)));
+
     if dir.exists() {
         fs::remove_dir_all(&dir).with_context(|| format!("remove {}", dir.display()))?;
     }
@@ -135,19 +157,19 @@ pub(crate) fn package(
     // shows (the app's code is minified as it is bundled).
     let js = nsh_bundler::minify_module("nsh.js", &js).map_err(anyhow::Error::msg)?;
     let js = site.add("nsh.js", js.as_bytes())?;
-    // Linked for the app: the parts of `nsh/base`, the standard modules
-    // and the app's own UI sets it does not use are left out.
-    let linkable =
-        fs::read(&runtime.wasm).with_context(|| format!("read {}", runtime.wasm.display()))?;
     // The gates the entry needs are linked into `nsh.wasm`; each other one
     // an app's chunks use is a side module of its own, which the page
     // loads before the first chunk that needs it runs (`chunkSides`), after
     // the side modules of the code it shares with other gates (`sides`).
+    // A shared runtime (`--shared-runtime`) links none: every
+    // gate is a side module, the same for every app, and the page loads
+    // those the entry needs before the app starts (`entrySides`).
     let mut sides = serde_json::Map::new();
     let mut published = BTreeSet::new();
+    let entry_sides: Vec<String>;
     // An app with Rust components of its own has a runtime built for it,
     // linkable as nsh's own, with a gate per UI set (`nsh_ui_set_*`).
-    let (linked, has_math, has_emoji) = {
+    let (linked, glue, has_math, has_emoji) = {
         let plan = GatePlan::of(built);
         if let Some(whole) = &plan.whole {
             ui::warn(whole);
@@ -156,21 +178,12 @@ pub(crate) fn package(
         let has_emoji =
             plan.main.iter().any(|g| g == EMOJI_GATE) || plan.lazy().contains(&EMOJI_GATE);
         let exports = prune::exports(&linkable)?;
-        let rust_part = |name: &str| built.rust_root && rust_on_demand(name);
-        let keep: Vec<&str> = exports
-            .iter()
-            .map(String::as_str)
-            .filter(|name| {
-                !is_gate(name) || (!rust_part(name) && plan.main.iter().any(|g| g == name))
-            })
-            .collect();
-        let mut lazy: Vec<&str> = plan
-            .lazy()
-            .into_iter()
-            .filter(|gate| exports.iter().any(|e| e == gate))
-            .collect();
-        lazy.extend(exports.iter().map(String::as_str).filter(|n| rust_part(n)));
-        let split = link(&linkable, runtime.glue.is_some(), &keep, &lazy)?;
+        let (keep, lazy) = if shared {
+            shared_split(&exports)
+        } else {
+            app_split(built, &plan, &linkable, &exports)?
+        };
+        let (split, glue) = link(&linkable, &keep, &lazy, bindgen.as_ref())?;
         for side in &split.sides {
             let file = side_file_name(&side.gates);
             let url = site.add(&format!("{file}.wasm"), &side.bytes)?;
@@ -180,10 +193,11 @@ pub(crate) fn package(
             sides.insert(side.name.clone(), side_entry(side, &url));
         }
         chunk_sides = plan.chunk_sides(&published);
+        entry_sides = plan.entry_sides(&published, built.rust_root);
         // A runtime published whole has the typesetter in its main module.
         let has_math = published.contains(MATH_GATE)
             || (split.sides.is_empty() && exports.iter().any(|e| e == MATH_GATE));
-        (split.main, has_math, has_emoji)
+        (split.main, glue, has_math, has_emoji)
     };
     let wasm = site.add("nsh.wasm", &linked)?;
     // What the runtime fetches when it first needs it: the syntaxes it
@@ -211,11 +225,13 @@ pub(crate) fn package(
     }
     // The wasm-bindgen glue of a runtime whose crates call JS through
     // wasm-bindgen (`crate::bindgen`).
-    let glue = runtime
-        .glue
+    let glue = glue
         .as_deref()
         .map(|path| publish_glue(&site, path))
         .transpose()?;
+    if let Some(run) = &bindgen {
+        run.remove_output()?;
+    }
     // A Rust app has no code of its own besides its runtime: the page
     // mounts its root. Chunk id -> URL: the page hands the map to the
     // runtime, which fetches lazy chunks on demand. Static entry
@@ -284,6 +300,12 @@ pub(crate) fn package(
     if linked {
         app["linked"] = true.into();
     }
+    // Requested with the main module while the page is parsed: the side
+    // modules the entry needs and those they import from.
+    let entry_side_urls = side_urls(&sides, &entry_sides);
+    if !entry_sides.is_empty() {
+        app["entrySides"] = entry_sides.into();
+    }
     let style = site.add("nsh-page.css", page_style(appearance).as_bytes())?;
     let prefetch = site.add("nsh-prefetch.js", PAGE_PREFETCH.as_bytes())?;
     let start = site.add("nsh-start.js", PAGE_START.as_bytes())?;
@@ -302,6 +324,7 @@ pub(crate) fn package(
         icons: &icons,
         runtime: &site.module(&js),
         wasm: &wasm,
+        entry_sides: &entry_side_urls,
         glue: glue.as_deref(),
         code: &code,
         fonts: &fonts
@@ -351,6 +374,91 @@ pub(crate) fn package(
     Ok(())
 }
 
+/// What a shared runtime (`--shared-runtime`) keeps in its main
+/// module and splits off, whatever the app uses: every export but the
+/// gates, and every gate, in order. The same for every app on one
+/// runtime, so are its modules; the app's own gates are its `entrySides`.
+fn shared_split(exports: &[String]) -> (Vec<&str>, Vec<&str>) {
+    let (mut lazy, keep): (Vec<&str>, Vec<&str>) = exports
+        .iter()
+        .map(String::as_str)
+        .partition(|name| is_gate(name));
+    lazy.sort_unstable();
+    (keep, lazy)
+}
+
+/// What a runtime linked for `built` (not a shared one) by `plan` keeps in
+/// its main module and splits off, of `exports`, those of `linkable`:
+/// every export but the gates, and the gates of `plan.main`; each gate a
+/// chunk loads later is lazy ([`GatePlan::lazy`]).
+///
+/// A Rust app's runtime splits off the gates it loads on demand
+/// ([`rust_on_demand`]) whatever the plan, and leaves out those the app
+/// never needs, with the code only they reach ([`prune::unused_gates`]),
+/// rather than publishing side modules no page loads.
+fn app_split<'a>(
+    built: &Built,
+    plan: &GatePlan,
+    linkable: &[u8],
+    exports: &'a [String],
+) -> anyhow::Result<(Vec<&'a str>, Vec<&'a str>)> {
+    let rust_part = |name: &str| built.rust_root && rust_on_demand(name);
+    let mut keep: Vec<&str> = exports
+        .iter()
+        .map(String::as_str)
+        .filter(|name| !is_gate(name) || (!rust_part(name) && plan.main.iter().any(|g| g == name)))
+        .collect();
+    let mut lazy: Vec<&str> = plan
+        .lazy()
+        .into_iter()
+        .filter_map(|gate| exports.iter().find(|e| *e == gate).map(String::as_str))
+        .collect();
+    lazy.extend(exports.iter().map(String::as_str).filter(|n| rust_part(n)));
+    if built.rust_root {
+        let unused = prune::unused_gates(linkable)?;
+        if !unused.is_empty() {
+            ui::debug(format!(
+                "web runtime: left out the gates the app does not need: {}",
+                unused.join(", ")
+            ));
+            let used = |name: &&str| !unused.iter().any(|u| u == name);
+            keep.retain(used);
+            lazy.retain(used);
+        }
+    }
+    Ok((keep, lazy))
+}
+
+/// The URLs of side modules `names` of the page's `sides`, each after the
+/// side modules it imports from (`needs`), each once.
+fn side_urls(sides: &serde_json::Map<String, serde_json::Value>, names: &[String]) -> Vec<String> {
+    fn visit(
+        sides: &serde_json::Map<String, serde_json::Value>,
+        name: &str,
+        seen: &mut BTreeSet<String>,
+        urls: &mut Vec<String>,
+    ) {
+        if !seen.insert(name.to_owned()) {
+            return;
+        }
+        let Some(side) = sides.get(name) else { return };
+        for need in side["needs"].as_array().into_iter().flatten() {
+            if let Some(need) = need.as_str() {
+                visit(sides, need, seen, urls);
+            }
+        }
+        if let Some(url) = side["url"].as_str() {
+            urls.push(url.to_owned());
+        }
+    }
+    let mut seen = BTreeSet::new();
+    let mut urls = Vec::new();
+    for name in names {
+        visit(sides, name, &mut seen, &mut urls);
+    }
+    urls
+}
+
 /// The page's entry for side module `side`, published at `url` (its
 /// `sides`): `{ url, gate?, needs, onDemand }`. The gates of the entry and
 /// of the chunks it imports statically are in the main module
@@ -358,7 +466,9 @@ pub(crate) fn package(
 /// imported later (`chunkSides`, the page's `prepareChunk`) or the first
 /// formula (`loadData("math")`) needs: every one is `onDemand`, which
 /// `prefetchSides` and `preloadSides` leave alone, and is fetched by the
-/// load that needs it, after the side modules it `needs`.
+/// load that needs it, after the side modules it `needs`. In a shared
+/// runtime the entry's gates are side modules too, which the page loads
+/// before the app starts (`entrySides`).
 fn side_entry(side: &prune::split::Side, url: &str) -> serde_json::Value {
     let mut entry = serde_json::json!({ "url": url, "needs": side.needs, "onDemand": true });
     if let Some(gate) = &side.gate {
@@ -392,23 +502,85 @@ const SHADER_GATE: &str = "nsh_feature_shader";
 const EMOJI_FILE: &str = "nsh-emoji.bin";
 
 /// The modules published for an app from its linkable runtime: the main
-/// module with `keep` and side modules for `lazy` ([`split::split`]). A
-/// runtime wasm-bindgen ran on (`bindgen`) is published whole, every gate
-/// in it: wasm-bindgen rewrites the module and keeps the `linking` and
-/// `reloc.*` sections of the one it read, which no longer describe it.
+/// module with `keep` and side modules for `lazy` ([`split::split`]).
+///
+/// A runtime whose crates call JS through wasm-bindgen (`bindgen`) is split
+/// the same way first: wasm-bindgen rewrites the module it reads and keeps
+/// its `linking` and `reloc.*` sections, which then no longer describe it.
+/// It runs on the main module alone, which keeps what it reads and
+/// rewrites, and must still have what the side modules import from it
+/// ([`split::check_processed`]). Its glue is returned with the modules.
 pub(crate) fn link(
     linkable: &[u8],
-    bindgen: bool,
     keep: &[&str],
     lazy: &[&str],
-) -> anyhow::Result<prune::split::Split> {
-    if bindgen {
-        return Ok(prune::split::Split {
-            main: prune::unlinked(linkable)?,
-            sides: Vec::new(),
-        });
+    bindgen: Option<&BindgenRun>,
+) -> anyhow::Result<(prune::split::Split, Option<PathBuf>)> {
+    let mut split = split::split(linkable, keep, lazy, bindgen.is_some())?;
+    let Some(run) = bindgen else {
+        return Ok((split, None));
+    };
+    let input = run.out.join(format!("{}-split.wasm", run.name));
+    fs::write(&input, &split.main).with_context(|| format!("write {}", input.display()))?;
+    let glue = crate::bindgen::process(&input, &run.version, &run.out, &run.name);
+    let _ = fs::remove_file(&input);
+    let glue = glue?;
+    let output = run.out.join(format!("{}.wasm", run.name));
+    let processed = fs::read(&output).with_context(|| format!("read {}", output.display()));
+    let main = processed.and_then(|processed| {
+        split::check_processed(&split.main, &processed)?;
+        prune::unlinked(&processed)
+    });
+    match main {
+        Ok(main) => split.main = main,
+        Err(error) => {
+            let _ = run.remove_output();
+            return Err(error);
+        }
     }
-    split::split(linkable, keep, lazy)
+    Ok((split, Some(glue)))
+}
+
+/// Where wasm-bindgen runs on a runtime's main module ([`link`]): the
+/// version the runtime records, and the directory and name of its output
+/// (`bindgen::process`).
+pub(crate) struct BindgenRun {
+    version: String,
+    out: PathBuf,
+    name: String,
+}
+
+impl BindgenRun {
+    /// Its output next to the runtime `wasm`, named after it:
+    /// `<runtime>-main.wasm`, `<runtime>-main-bindgen.js`.
+    pub(crate) fn next_to(wasm: &Path, version: String) -> anyhow::Result<Self> {
+        let out = wasm.parent().context("the web runtime has no directory")?;
+        let stem = wasm
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .context("the web runtime has no name")?;
+        Ok(BindgenRun {
+            version,
+            out: out.to_owned(),
+            name: format!("{stem}-main"),
+        })
+    }
+
+    /// Removes what [`link`] had wasm-bindgen write: the module, the glue
+    /// and its snippets, once the package has them.
+    pub(crate) fn remove_output(&self) -> anyhow::Result<()> {
+        let glue = self.out.join(format!("{}-bindgen.js", self.name));
+        let dir = crate::bindgen::output_dir(&glue);
+        for file in [self.out.join(format!("{}.wasm", self.name)), glue] {
+            if file.exists() {
+                fs::remove_file(&file).with_context(|| format!("remove {}", file.display()))?;
+            }
+        }
+        if dir.exists() {
+            fs::remove_dir_all(&dir).with_context(|| format!("remove {}", dir.display()))?;
+        }
+        Ok(())
+    }
 }
 
 /// `nsh.json` `web.base`: a path from the host's root, ending in `/` (one
@@ -818,6 +990,20 @@ impl GatePlan {
             set.insert(MATH_GATE);
         }
         set.into_iter().collect()
+    }
+
+    /// The page's `entrySides`: the gates of `main` that have a side module
+    /// of those `published`, which the page loads before the app starts.
+    /// None but in a shared runtime, whose main module has no gate, and
+    /// none in a Rust app's runtime (`rust_root`): the gates it splits off
+    /// ([`rust_on_demand`]) load when the app first makes a component of
+    /// their part by name or first shows a shader.
+    fn entry_sides(&self, published: &BTreeSet<String>, rust_root: bool) -> Vec<String> {
+        self.main
+            .iter()
+            .filter(|gate| published.contains(*gate) && !(rust_root && rust_on_demand(gate)))
+            .cloned()
+            .collect()
     }
 
     /// The page's map, chunk id -> the side modules (named by their gates)
@@ -1680,6 +1866,9 @@ struct PageParts<'a> {
     /// The module specifier of `nsh.js`.
     runtime: &'a str,
     wasm: &'a str,
+    /// URLs of the side modules the entry needs (`entrySides`), each after
+    /// those it imports from ([`side_urls`]).
+    entry_sides: &'a [String],
     /// URL of the wasm-bindgen glue, if the runtime has one.
     glue: Option<&'a str>,
     code: &'a str,
@@ -1761,6 +1950,7 @@ fn page(parts: &PageParts<'_>) -> String {
     let urls: Vec<&str> = [parts.wasm, parts.code]
         .into_iter()
         .filter(|url| !url.is_empty())
+        .chain(parts.entry_sides.iter().map(String::as_str))
         .chain(parts.fonts.iter().map(String::as_str))
         .collect();
     let urls = serde_json::json!(urls).to_string().replace("</", "<\\/");
@@ -1858,6 +2048,54 @@ mod tests {
         // What the engine runs from the start stays in the main module.
         assert!(!rust_on_demand("nsh_std_zlib"));
         assert!(!rust_on_demand(&ui_set_gate("app/charts")));
+    }
+
+    #[test]
+    fn a_rust_app_loads_a_part_when_it_first_makes_one_of_its_components() {
+        let marker = nsh_core::element::__private::BY_NAME_MARKER;
+        let wasm = prune::tests::module_named(
+            "nsh_part_plot",
+            &format!("nsh_core::element::component::{marker}"),
+        );
+        let exports = prune::exports(&wasm).unwrap();
+        let built = crate::build::rust_root();
+        // Not known what a Rust app uses: every gate is the entry's.
+        let plan = GatePlan::of(&built);
+        assert!(plan.main.iter().any(|g| g == "nsh_part_plot"));
+        let (keep, lazy) = app_split(&built, &plan, &wasm, &exports).unwrap();
+        assert_eq!(keep, ["a"]);
+        assert_eq!(lazy, ["nsh_part_plot"]);
+        // Its side modules wait for their first use, not for the start.
+        let published = BTreeSet::from(["nsh_part_plot".to_owned(), SHADER_GATE.to_owned()]);
+        assert!(plan.entry_sides(&published, true).is_empty());
+        // Another app's entry gates with side modules (a shared runtime's)
+        // load before it starts.
+        assert_eq!(
+            plan.entry_sides(&published, false),
+            ["nsh_part_plot", SHADER_GATE]
+        );
+    }
+
+    #[test]
+    fn a_rust_app_leaves_out_the_gates_it_never_needs() {
+        // No component made by name. The runtime calls no JS through
+        // wasm-bindgen, which makes no difference.
+        let wasm =
+            prune::tests::module_named("nsh_part_plot", "nsh_core::element::component::missing_x");
+        let exports = prune::exports(&wasm).unwrap();
+        let built = crate::build::rust_root();
+        let plan = GatePlan::of(&built);
+        let (keep, lazy) = app_split(&built, &plan, &wasm, &exports).unwrap();
+        assert_eq!(keep, ["a"]);
+        assert!(lazy.is_empty());
+
+        // Another app's runtime keeps the gates its plan has.
+        let mut tsx = crate::build::rust_root();
+        tsx.rust_root = false;
+        let plan = GatePlan::of(&tsx);
+        let (keep, lazy) = app_split(&tsx, &plan, &wasm, &exports).unwrap();
+        assert_eq!(keep, ["nsh_part_plot", "a"]);
+        assert!(lazy.is_empty());
     }
 
     #[test]
@@ -2276,33 +2514,6 @@ mod tests {
     }
 
     #[test]
-    fn a_runtime_wasm_bindgen_ran_on_is_published_whole() {
-        // `run`, a function `() -> ()` that returns at once.
-        let mut module = b"\0asm\x01\0\0\0".to_vec();
-        module.extend([1, 4, 1, 0x60, 0, 0]);
-        module.extend([3, 2, 1, 0]);
-        module.extend([7, 7, 1, 3, b'r', b'u', b'n', 0, 0]);
-        module.extend([10, 4, 1, 2, 0, 0x0b]);
-        // The linker's sections of the module wasm-bindgen read, which it
-        // keeps: their symbol names function 7, which it removed.
-        let mut runtime = module.clone();
-        runtime.extend([0, 19, 7]);
-        runtime.extend(b"linking");
-        runtime.extend([2, 8, 8, 1, 0, 0, 7, 3, b'r', b'u', b'n']);
-        runtime.extend([0, 13, 10]);
-        runtime.extend(b"reloc.CODE");
-        runtime.extend([3, 0]);
-        let error = link(&runtime, false, &["run"], &[]).err().unwrap();
-        assert_eq!(
-            error.to_string(),
-            "a symbol names function 7, which the web runtime does not have"
-        );
-        let published = link(&runtime, true, &["run"], &[]).unwrap();
-        assert_eq!(published.main, module);
-        assert!(published.sides.is_empty());
-    }
-
-    #[test]
     fn a_plan_that_keeps_every_gate_says_why_and_where() {
         let chunk = |id: &str, uses: nsh_bundler::NativeUse| crate::build::BuiltChunk {
             id: id.to_owned(),
@@ -2413,6 +2624,93 @@ mod tests {
         assert_eq!(plan.main, linked_gates(built.native_use.as_ref()));
         built.entry_native_use = None;
         assert!(GatePlan::of(&built).chunks.is_empty());
+    }
+
+    #[test]
+    fn a_shared_runtime_splits_off_every_gate_whatever_the_app_uses() {
+        let exports: Vec<String> = [
+            "nsh_start",
+            "nsh_std_zlib",
+            "nsh_part_menu",
+            "nsh_pump",
+            "nsh_part_core",
+            "nsh_feature_shader",
+            "nsh_set_dark",
+        ]
+        .map(String::from)
+        .to_vec();
+        let (keep, lazy) = shared_split(&exports);
+        // `nsh_set_*` reads like a gate but is not one.
+        assert_eq!(keep, ["nsh_start", "nsh_pump", "nsh_set_dark"]);
+        assert_eq!(
+            lazy,
+            [
+                "nsh_feature_shader",
+                "nsh_part_core",
+                "nsh_part_menu",
+                "nsh_std_zlib"
+            ]
+        );
+    }
+
+    #[test]
+    fn the_entry_side_modules_load_after_what_they_import_each_once() {
+        let sides = serde_json::json!({
+            "nsh_part_core": { "url": "nsh-core.1.wasm", "needs": ["nsh_shared_a"], "gate": "nsh_part_core" },
+            "nsh_part_menu": { "url": "nsh-menu.2.wasm", "needs": ["nsh_shared_a", "nsh_shared_b"], "gate": "nsh_part_menu" },
+            "nsh_shared_a": { "url": "nsh-core~menu.3.wasm", "needs": [] },
+            "nsh_shared_b": { "url": "nsh-menu~overlays.4.wasm", "needs": ["nsh_shared_a"] },
+        });
+        let sides = sides.as_object().unwrap();
+        let names = ["nsh_part_core", "nsh_part_menu", "nsh_part_none"].map(String::from);
+        assert_eq!(
+            side_urls(sides, &names),
+            [
+                "nsh-core~menu.3.wasm",
+                "nsh-core.1.wasm",
+                "nsh-menu~overlays.4.wasm",
+                "nsh-menu.2.wasm"
+            ]
+        );
+        assert!(side_urls(sides, &[]).is_empty());
+    }
+
+    #[test]
+    fn the_page_requests_the_entry_side_modules_with_the_main_module() {
+        let app = serde_json::json!({ "code": "app.1.js", "entrySides": ["nsh_part_core"] });
+        let html = page(&PageParts {
+            name: "Shared",
+            appearance: Appearance::System,
+            base: None,
+            icons: &Icons::default(),
+            runtime: "./nsh.0123456789.js",
+            wasm: "nsh.0123456789.wasm",
+            entry_sides: &[
+                "nsh-core~menu.3.wasm".to_owned(),
+                "nsh-core.1.wasm".to_owned(),
+            ],
+            glue: None,
+            code: "app.1.js",
+            fonts: &[],
+            app: &app,
+            connect: None,
+            style: "nsh-page.1.css",
+            prefetch: "nsh-prefetch.1.js",
+            start: "nsh-start.1.js",
+        });
+        let fetches = html
+            .lines()
+            .find(|line| line.starts_with("<script type=\"application/json\" id=\"nsh-fetch\">"))
+            .unwrap_or_default();
+        assert!(
+            fetches.contains(
+                "[\"nsh.0123456789.wasm\",\"app.1.js\",\"nsh-core~menu.3.wasm\",\"nsh-core.1.wasm\"]"
+            ),
+            "{fetches}"
+        );
+        // The page's script loads them before the app starts.
+        assert!(PAGE_START.contains("player.loadSides(app.entrySides, app.sides)"));
+        assert!(PAGE_START.contains("prefetched:"));
     }
 
     #[test]
@@ -2699,6 +2997,7 @@ mod tests {
             icons: &icons,
             runtime: "./nsh.0123456789.js",
             wasm: "nsh.0123456789.wasm",
+            entry_sides: &[],
             glue,
             code: "app.1.js",
             fonts: &[],
@@ -2850,6 +3149,7 @@ mod tests {
             icons: &Icons::default(),
             runtime: "./nsh.0123456789.js",
             wasm: "nsh.0123456789.wasm",
+            entry_sides: &[],
             glue: None,
             code: "app.1.js",
             fonts: &[],
@@ -2877,6 +3177,7 @@ mod tests {
             icons: &Icons::default(),
             runtime: "./nsh.0123456789.js",
             wasm: "nsh.0123456789.wasm",
+            entry_sides: &[],
             glue: None,
             code: "app.1.js",
             fonts: &["assets/f.1.ttf".to_owned()],
@@ -3350,6 +3651,7 @@ mod tests {
                 icons: &icons,
                 runtime: &runtime,
                 wasm: &at("nsh.1111111111.wasm"),
+                entry_sides: &[],
                 glue: Some(&at("nsh-bindgen.2222222222.js")),
                 code: &at("app.3333333333.js"),
                 fonts: &[at("assets/fonts/Inter.4444444444.ttf")],

@@ -333,7 +333,20 @@ struct ContinuousShadow {
     inset: bool,
 }
 
+/// How long a resized shadow's size holds still before it is baked.
+const SETTLED: std::time::Duration = std::time::Duration::from_millis(150);
+
 impl ContinuousShadow {
+    /// The same shadow of a box of another size.
+    fn resized(&self, other: &Self) -> bool {
+        self.inset == other.inset
+            && self.color == other.color
+            && self.params == other.params
+            && self.shape.radii == other.shape.radii
+            && self.shape.continuous == other.shape.continuous
+            && (self.shape.w != other.shape.w || self.shape.h != other.shape.h)
+    }
+
     fn append(self, snapshot: &gtk::Snapshot, widget: &gtk::Widget) {
         // A retained BlurNode still runs its GPU passes on every snapshot.
         // Render immutable decoration once, without downloading its pixels.
@@ -341,6 +354,9 @@ impl ContinuousShadow {
         // movement and ancestor opacity are applied by the parent snapshot.
         thread_local! {
             static SHADOWS: RefCell<VecDeque<(ContinuousShadow, f32, gsk::RenderNode, usize)>> =
+                const { RefCell::new(VecDeque::new()) };
+            /// Shadows recently drawn without a baked image.
+            static SEEN: RefCell<VecDeque<(ContinuousShadow, f32)>> =
                 const { RefCell::new(VecDeque::new()) };
         }
         let native = widget.native();
@@ -376,6 +392,56 @@ impl ContinuousShadow {
                 let entry = shadows.remove(ix).unwrap();
                 snapshot.append_node(&entry.2);
                 shadows.push_front(entry);
+                return;
+            }
+            // Baking renders offscreen and waits for it on the main thread
+            // (a window-sized shadow takes ~20 ms). A resizing view's shadow
+            // has a new shape every frame and would be baked every frame,
+            // never reused. While the same shadow was just drawn at another
+            // size, an outer shadow is GSK's outset shadow of the
+            // round-cornered box, which GSK draws from a cached nine slice
+            // at any size (blurring the continuous shape is a full-size
+            // offscreen per frame); the corners differ by a few blurred
+            // pixels. A redraw once the size holds still bakes the exact one.
+            let resizing = SEEN.with_borrow_mut(|seen| {
+                if let Some(ix) = seen
+                    .iter()
+                    .position(|(key, cached_scale)| *key == self && *cached_scale == scale)
+                {
+                    seen.remove(ix);
+                    return false;
+                }
+                let resizing = seen
+                    .iter()
+                    .any(|(key, cached_scale)| *cached_scale == scale && key.resized(&self));
+                if seen.len() >= 64 {
+                    seen.pop_back();
+                }
+                seen.push_front((self.clone(), scale));
+                resizing
+            });
+            if resizing {
+                if self.inset {
+                    draw_continuous_inset_shadow(snapshot, &self.shape, &self.color, self.params);
+                } else {
+                    let s = &self.shape;
+                    let corner = |(h, v): (f32, f32)| graphene::Size::new(h, v);
+                    let outline = gsk::RoundedRect::new(
+                        graphene::Rect::new(s.x, s.y, s.w, s.h),
+                        corner(s.radii[0]),
+                        corner(s.radii[1]),
+                        corner(s.radii[2]),
+                        corner(s.radii[3]),
+                    );
+                    let (dx, dy, spread, blur) = self.params;
+                    snapshot.append_outset_shadow(&outline, &self.color, dx, dy, spread, blur);
+                }
+                let weak = widget.downgrade();
+                gtk::glib::timeout_add_local_once(SETTLED, move || {
+                    if let Some(widget) = weak.upgrade() {
+                        widget.queue_draw();
+                    }
+                });
                 return;
             }
             let drawing = gtk::Snapshot::new();
@@ -1323,6 +1389,35 @@ mod tests {
                     previous = Some(cached);
                 }
             }
+            // A resizing view's shadow has a new shape every frame: after the
+            // first size it is GSK's outset shadow, never an offscreen render
+            // per frame; drawn again at a size that held still, it is baked.
+            let resized = |width: f32| ContinuousShadow {
+                shape: Shape::new((0.0, 0.0, width, 100.0), [20.0; 4], true),
+                color: rgba(RED),
+                params: (-3.0, 0.0, 0.0, 18.0),
+                inset: false,
+            };
+            let node = |key: ContinuousShadow| {
+                let drawing = gtk::Snapshot::new();
+                key.append(&drawing, view.upcast_ref());
+                drawing.to_node().unwrap()
+            };
+            assert_eq!(
+                node(resized(120.0)).node_type(),
+                gsk::RenderNodeType::TextureNode
+            );
+            for step in 1..8 {
+                let width = 120.0 + step as f32 * 7.5;
+                assert_eq!(
+                    node(resized(width)).node_type(),
+                    gsk::RenderNodeType::OutsetShadowNode
+                );
+            }
+            assert_eq!(
+                node(resized(172.5)).node_type(),
+                gsk::RenderNodeType::TextureNode
+            );
             // An ancestor/widget scale must bypass an otherwise matching
             // image, so zooming does not magnify a low-resolution shadow.
             view.allocate(200, 100, -1, Some(gsk::Transform::new().scale(1.5, 1.5)));

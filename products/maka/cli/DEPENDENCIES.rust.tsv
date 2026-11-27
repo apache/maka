@@ -820,21 +820,21 @@ noq@1.5.0		X										X
 normpath@1.5.2		X										X								
 notify-types@2.3.1		X										X								
 notify@9.0.0								X												
-nsh-base@0.7.0		X																		
-nsh-bundler@0.7.0		X																		
-nsh-core@0.7.0		X																		
-nsh-engine@0.7.0		X																		
-nsh-i18n@0.7.0		X																		
-nsh-js@0.7.0		X																		
-nsh-macros@0.7.0		X																		
-nsh-package@0.7.0		X																		
-nsh-platform-apple@0.7.0		X																		
-nsh-platform-linux@0.7.0		X																		
-nsh-platform-macos@0.7.0		X																		
-nsh-platform-tui@0.7.0		X																		
-nsh-platform-windows@0.7.0		X																		
-nsh-terminal@0.7.0		X																		
-nsh-updater@0.7.0		X																		
+nsh-base@0.7.2		X																		
+nsh-bundler@0.7.2		X																		
+nsh-core@0.7.2		X																		
+nsh-engine@0.7.2		X																		
+nsh-i18n@0.7.2		X																		
+nsh-js@0.7.2		X																		
+nsh-macros@0.7.2		X																		
+nsh-package@0.7.2		X																		
+nsh-platform-apple@0.7.2		X																		
+nsh-platform-linux@0.7.2		X																		
+nsh-platform-macos@0.7.2		X																		
+nsh-platform-tui@0.7.2		X																		
+nsh-platform-windows@0.7.2		X																		
+nsh-terminal@0.7.2		X																		
+nsh-updater@0.7.2		X																		
 ntapi@0.4.3		X										X								
 nu-ansi-term@0.50.3												X								
 num_cpus@1.17.0		X										X								

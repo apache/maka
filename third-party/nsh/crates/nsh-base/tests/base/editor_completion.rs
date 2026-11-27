@@ -8,8 +8,8 @@ use std::time::Duration;
 
 use nsh_base::editor::{
     Editor, EditorApi, EditorCommand, EditorCompletionAcceptEvent, EditorCompletionItem,
-    EditorCompletionKind, EditorCompletionRequest, EditorCompletionTrigger, EditorEdit,
-    EditorInlineCompletionRequest, EditorPosition, EditorRange, editor,
+    EditorCompletionKind, EditorCompletionRequest, EditorCompletionTrigger, EditorDecoration,
+    EditorEdit, EditorInlineCompletionRequest, EditorPosition, EditorRange, EditorToken, editor,
 };
 use nsh_core::{
     PayloadValue, Size,
@@ -28,6 +28,11 @@ struct HarnessProps {
     answer: bool,
     /// The inline completion answering every inline request.
     inline: Option<String>,
+    /// Columns of the first line the app colors as a keyword (a
+    /// decoration's token), from and to.
+    keyword: Vec<u32>,
+    /// The editor's placeholder.
+    placeholder: Option<String>,
 }
 
 fn props(text: &str) -> HarnessProps {
@@ -35,6 +40,8 @@ fn props(text: &str) -> HarnessProps {
         text: text.into(),
         answer: true,
         inline: None,
+        keyword: Vec::new(),
+        placeholder: None,
     }
 }
 
@@ -81,7 +88,23 @@ fn Harness(props: HarnessProps) -> impl IntoElement {
             .on_press(move || api(&*f))
     };
     let el = editor()
+        .placeholder(props.placeholder.clone().map(SharedString::from))
         .default_value(props.text.clone())
+        .decorations(
+            props
+                .keyword
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|&[from, to]| {
+                    let mut keyword = EditorDecoration::default();
+                    keyword.range =
+                        EditorRange::new(EditorPosition::new(0, from), EditorPosition::new(0, to));
+                    keyword.token = Some(EditorToken::Keyword);
+                    keyword
+                })
+                .collect::<Vec<_>>(),
+        )
         .completion(true)
         .completion_trigger_characters(vec![SharedString::from(".")])
         .inline_completion_delay(50.0)
@@ -180,6 +203,15 @@ fn value(text: &str) -> String {
     format!("Value {text:?}")
 }
 
+/// How many texts on screen read `row` whole (a row of the editor).
+fn rows(app: &Headless, row: &str) -> usize {
+    app.screen()
+        .texts()
+        .iter()
+        .filter(|t| t.trim() == row)
+        .count()
+}
+
 fn typed(app: &mut Headless, text: &str) {
     app.type_text("id:editor", text).unwrap();
 }
@@ -228,7 +260,8 @@ fn composing_changes_nothing_and_asks_nothing_until_it_commits() {
     // is composed.
     compose(&mut app, true, "da");
     sink_text(&mut app, "da");
-    see(&mut app, "da");
+    // The composition shows in its row.
+    see(&mut app, "x da");
     see(&mut app, &value("x "));
     assert!(app.shows("Requests 0"));
     assert!(app.shows("Inline -"));
@@ -236,7 +269,8 @@ fn composing_changes_nothing_and_asks_nothing_until_it_commits() {
     sink_text(&mut app, "大");
     compose(&mut app, false, "");
     see(&mut app, &value("x 大"));
-    gone(&mut app, "da");
+    see(&mut app, "x 大");
+    gone(&mut app, "x da");
     app.wait(Duration::from_millis(100)).unwrap();
     assert!(app.shows("Requests 0"));
     assert!(app.shows("Inline -"));
@@ -253,9 +287,11 @@ fn a_cancelled_composition_leaves_the_text() {
     typed(&mut app, "");
     compose(&mut app, true, "da");
     sink_text(&mut app, "da");
+    see(&mut app, "dax");
     sink_text(&mut app, "");
     compose(&mut app, false, "");
-    gone(&mut app, "da");
+    gone(&mut app, "dax");
+    see(&mut app, "x");
     see(&mut app, &value("x "));
     assert!(app.shows("Requests 0"));
 }
@@ -284,9 +320,93 @@ fn a_composition_inside_a_row_moves_what_follows_aside() {
     typed(&mut app, "");
     app.press_key("right").unwrap();
     compose(&mut app, true, "da");
-    see(&mut app, "da");
-    see(&mut app, "b cd");
+    see(&mut app, "adab cd");
     see(&mut app, &value("ab cd"));
+}
+
+#[test]
+fn a_composition_keeps_the_decorations_of_its_row() {
+    // `cd` is a keyword the app colors; the composition goes in at its
+    // start, outside it.
+    let mut app = start(HarnessProps {
+        keyword: vec![3, 5],
+        ..props("ab cd")
+    });
+    typed(&mut app, "");
+    let color = |app: &Headless, word: &str| {
+        app.screen()
+            .span_style(&format!("id:editor >> text:{word}"))
+            .map(|style| style.color)
+    };
+    let (plain, keyword) = (color(&app, "ab").unwrap(), color(&app, "cd").unwrap());
+    assert_ne!(plain, keyword);
+    for _ in 0..3 {
+        app.press_key("right").unwrap();
+    }
+    compose(&mut app, true, "da");
+    see(&mut app, "ab dacd");
+    // The row shows `cd` once, still colored, after the composition, which
+    // is plain as its commit will be.
+    assert_eq!(rows(&app, "ab dacd"), 1);
+    assert_eq!(rows(&app, "cd"), 0);
+    assert_eq!(color(&app, "cd"), Ok(keyword));
+    assert_eq!(color(&app, "da"), Ok(plain));
+    let underlined = app
+        .screen()
+        .span_style("id:editor >> text:da")
+        .map(|style| style.decoration.underline);
+    assert_eq!(underlined, Ok(true));
+    see(&mut app, &value("ab cd"));
+    // Cancelled: the row is as it was.
+    sink_text(&mut app, "da");
+    sink_text(&mut app, "");
+    compose(&mut app, false, "");
+    see(&mut app, "ab cd");
+    assert_eq!(rows(&app, "ab cd"), 1);
+    assert_eq!(color(&app, "cd"), Ok(keyword));
+    see(&mut app, &value("ab cd"));
+    // Committed: the text shows once, in the text, `cd` still colored.
+    compose(&mut app, true, "da");
+    sink_text(&mut app, "da");
+    sink_text(&mut app, "大");
+    compose(&mut app, false, "");
+    see(&mut app, &value("ab 大cd"));
+    see(&mut app, "ab 大cd");
+    assert_eq!(rows(&app, "ab 大cd"), 1);
+    assert!(!app.shows("ab dacd"));
+    assert_eq!(color(&app, "cd"), Ok(keyword));
+    assert_eq!(color(&app, "大"), Ok(plain));
+}
+
+#[test]
+fn a_composition_follows_the_caret_to_another_line() {
+    let mut app = start(props("ab cd\nef"));
+    typed(&mut app, "");
+    compose(&mut app, true, "da");
+    see(&mut app, "daab cd");
+    // The caret moves down while composing: the composition goes along,
+    // the line it left shows its own text again.
+    app.press_key("down").unwrap();
+    see(&mut app, "daef");
+    assert_eq!(rows(&app, "ab cd"), 1);
+    assert_eq!(rows(&app, "daab cd"), 0);
+    see(&mut app, &value("ab cd\nef"));
+}
+
+#[test]
+fn a_composition_hides_the_placeholder() {
+    let mut app = start(HarnessProps {
+        placeholder: Some("Write something".into()),
+        ..props("")
+    });
+    typed(&mut app, "");
+    see(&mut app, "Write something");
+    compose(&mut app, true, "da");
+    see(&mut app, "da");
+    gone(&mut app, "Write something");
+    // Cancelled, the text is empty again.
+    compose(&mut app, false, "");
+    see(&mut app, "Write something");
 }
 
 #[test]

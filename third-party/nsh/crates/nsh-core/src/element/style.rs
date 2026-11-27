@@ -3247,6 +3247,13 @@ pub trait Styled: Sized {
         transition(self, TransitionProps::CLIP_PATH)
     }
 
+    /// Changes of the mask animate (CSS's `transition-property:
+    /// mask-image`): gradients of the same shape and stop count move stop
+    /// by stop; any other change applies at once.
+    fn transition_mask(self) -> Self {
+        transition(self, TransitionProps::MASK)
+    }
+
     /// Changes jump.
     fn transition_none(mut self) -> Self {
         self.style().push(Declaration::TransitionNone);

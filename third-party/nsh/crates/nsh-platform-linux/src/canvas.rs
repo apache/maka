@@ -21,6 +21,16 @@
 //! ([`Raster::prefix`]), copied back into the area, and only the operations
 //! from there on paint (the ones before it still set the state).
 //!
+//! A drawing panned by an animated `translate` before anything it paints
+//! ([`pan_op`]: a map, a tree view) is rasterized past the view by
+//! [`PAN_MARGIN`] ([`Panned`]): a frame in which only the pan moved shows
+//! the same textures moved, in whole pixels, so panning costs no replay;
+//! nearing the edge, the strips that come in are replayed on a worker
+//! thread ([`Recentre`]) while the frames keep moving what was drawn, then
+//! the pixels are moved over and the strips pasted around them (a drawing
+//! with images does this on the main thread). Other slots changing (a
+//! zoom) replay what shows.
+//!
 //! A canvas out of sight (outside a clipping ancestor or the window) is not
 //! drawn: what changed waits, its animations stop asking for frames, and
 //! every frame after layout draws those that came into sight ([`reveal`]).
@@ -110,7 +120,15 @@ pub(crate) struct CanvasState {
     /// it on ([`prefix_path_needed`]).
     split: usize,
     split_path: bool,
+    /// The operation that pans the whole drawing ([`pan_op`]), when one
+    /// does: its raster then moves with the pan on the GPU ([`Panned`]).
+    pan: Option<usize>,
+    /// The panned drawing rasterized ([`draw_panned`]).
+    panned: RefCell<Option<Panned>>,
     dirty: Cell<Damage>,
+    /// While `dirty` is a `Rect`: the [`DAMAGE_TILE`] cells it is made of
+    /// (empty for "all of the rect").
+    dirty_tiles: RefCell<DirtyTiles>,
     /// Out of sight with something to draw ([`reveal`]).
     hidden: Cell<bool>,
     /// Finds what animated slots paint, and the slots that changed (reused).
@@ -128,7 +146,10 @@ impl Default for CanvasState {
             raster: RefCell::new(None),
             split: 0,
             split_path: true,
+            pan: None,
+            panned: RefCell::new(None),
             dirty: Cell::new(Damage::All),
+            dirty_tiles: RefCell::default(),
             hidden: Cell::new(false),
             scan: DamageScan::default(),
             changed: Vec::new(),
@@ -173,6 +194,7 @@ pub(crate) fn reveal() {
         shown
     });
     for view in shown {
+        log::debug!("canvas {:?}: in sight, drawn", view.state().id);
         if let Some(c) = view.state().canvas.as_ref() {
             c.hidden.set(false);
         }
@@ -209,6 +231,88 @@ pub(crate) fn in_sight(view: &NshView) -> bool {
 /// The side of a canvas' tiles, in pixels.
 const TILE: i32 = 256;
 
+/// The side of the cells, in view points, a partial redraw is tracked in:
+/// separate changes redraw their own cells, not the box around them all.
+const DAMAGE_TILE: f32 = 64.0;
+/// Cells tracked before a partial redraw falls back to the box around them.
+const MAX_DAMAGE_TILES: usize = 64;
+
+/// The [`DAMAGE_TILE`] cells (column, row) that changed, sorted; empty
+/// when the damaged rect is to be redrawn whole (none tracked, or too many).
+#[derive(Default)]
+struct DirtyTiles {
+    cells: Vec<(i32, i32)>,
+    overflow: bool,
+}
+
+impl DirtyTiles {
+    /// Marks the cells `areas` cover.
+    fn add(&mut self, areas: &[nsh_core::geometry::Bounds<nsh_core::geometry::Points>]) {
+        for a in areas {
+            if self.overflow {
+                return;
+            }
+            let (x0, y0) = (a.origin.x.0, a.origin.y.0);
+            let (x1, y1) = (x0 + a.size.width.0, y0 + a.size.height.0);
+            let cell = |v: f32| (v / DAMAGE_TILE).floor() as i32;
+            let (c0, c1, r0, r1) = (cell(x0), cell(x1 - 0.001), cell(y0), cell(y1 - 0.001));
+            if ((c1 - c0 + 1) as i64) * ((r1 - r0 + 1) as i64) > MAX_DAMAGE_TILES as i64 {
+                self.overflow = true;
+                self.cells.clear();
+                return;
+            }
+            for r in r0..=r1 {
+                for c in c0..=c1 {
+                    if let Err(i) = self.cells.binary_search(&(r, c)) {
+                        self.cells.insert(i, (r, c));
+                    }
+                }
+            }
+            if self.cells.len() > MAX_DAMAGE_TILES {
+                self.overflow = true;
+                self.cells.clear();
+            }
+        }
+    }
+
+    fn clear(&mut self) {
+        self.cells.clear();
+        self.overflow = false;
+    }
+
+    /// The areas to redraw within `rect` (x0, y0, x1, y1 in points): runs
+    /// of dirty cells along each row, clipped to it; `rect` itself when no
+    /// cells are tracked.
+    fn areas(&self, [x0, y0, x1, y1]: [f64; 4]) -> Vec<[f64; 4]> {
+        if self.overflow || self.cells.is_empty() {
+            return vec![[x0, y0, x1, y1]];
+        }
+        let t = DAMAGE_TILE as f64;
+        let mut out: Vec<[f64; 4]> = Vec::new();
+        let mut cells = self.cells.iter().peekable();
+        while let Some(&(r, c)) = cells.next() {
+            let mut end = c;
+            while cells
+                .peek()
+                .is_some_and(|&&(r2, c2)| r2 == r && c2 == end + 1)
+            {
+                end += 1;
+                cells.next();
+            }
+            let a = [
+                (c as f64 * t).max(x0),
+                (r as f64 * t).max(y0),
+                ((end + 1) as f64 * t).min(x1),
+                ((r + 1) as f64 * t).min(y1),
+            ];
+            if a[0] < a[2] && a[1] < a[3] {
+                out.push(a);
+            }
+        }
+        out
+    }
+}
+
 /// The tiles of a surface `pw` × `ph` pixels: their areas (x, y, width,
 /// height), row by row.
 fn tiles((pw, ph): (i32, i32)) -> impl Iterator<Item = [i32; 4]> {
@@ -244,6 +348,7 @@ pub(crate) fn set(surface: &Rc<Surface>, view: &NshView, drawing: Arc<Drawing>) 
         c.text.borrow_mut().trim();
         c.split = first_animated(&drawing.ops);
         c.split_path = prefix_path_needed(&drawing.ops, c.split);
+        c.pan = pan_op(&drawing.ops, c.split);
         c.drawing = Some(drawing);
         c.dirty.set(Damage::All);
     }
@@ -295,7 +400,9 @@ pub(crate) fn set_args(view: &NshView, values: &[(u16, AnimationValue)]) {
             scan,
             changed,
             dirty,
+            dirty_tiles,
             hidden,
+            pan,
             ..
         }) = state.canvas.as_mut()
         else {
@@ -310,23 +417,60 @@ pub(crate) fn set_args(view: &NshView, values: &[(u16, AnimationValue)]) {
         if changed.is_empty() {
             return;
         }
-        let ops = drawing.as_ref().map_or(&[][..], |d| &d.ops[..]);
-        let is_changed = |s: u16| changed.contains(&s);
-        let before = scan.damage(ops, |s| slot_number(args, s), is_changed);
-        for &(k, value) in values {
-            let i = k as usize;
-            if args.len() <= i {
-                args.resize(i + 1, None);
+        let pan_slots = pan.and_then(|i| match drawing.as_ref()?.ops.get(i)? {
+            CanvasOp::Translate(x, y) => Some([*x, *y]),
+            _ => None,
+        });
+        if let Some(slots) = pan_slots {
+            // Only the pan's slots changed: its raster moves, nothing is
+            // drawn again; others (a zoom) draw what shows again
+            // ([`draw_panned`]).
+            let own = |k: u16| slots.iter().any(|v| matches!(v, Num::Slot(s) if *s == k));
+            if !changed.iter().all(|&k| own(k)) {
+                dirty.set(Damage::All);
+                dirty_tiles.borrow_mut().clear();
             }
-            args[i] = Some(value);
+            for &(k, value) in values {
+                let i = k as usize;
+                if args.len() <= i {
+                    args.resize(i + 1, None);
+                }
+                args[i] = Some(value);
+            }
+            true
+        } else {
+            let ops = drawing.as_ref().map_or(&[][..], |d| &d.ops[..]);
+            let is_changed = |s: u16| changed.contains(&s);
+            let before = scan.damage(ops, |s| slot_number(args, s), is_changed);
+            let mut tiles = dirty_tiles.borrow_mut();
+            if matches!(before, Damage::Rect(_)) {
+                tiles.add(scan.areas());
+            }
+            for &(k, value) in values {
+                let i = k as usize;
+                if args.len() <= i {
+                    args.resize(i + 1, None);
+                }
+                args[i] = Some(value);
+            }
+            let damage = match before {
+                Damage::All => Damage::All,
+                _ => {
+                    let after = scan.damage(ops, |s| slot_number(args, s), is_changed);
+                    if matches!(after, Damage::Rect(_)) {
+                        tiles.add(scan.areas());
+                    }
+                    before.union(after)
+                }
+            };
+            let total = dirty.get().union(damage);
+            if !matches!(total, Damage::Rect(_)) {
+                tiles.clear();
+            }
+            dirty.set(total);
+            // Out of sight, it is drawn when it comes into sight.
+            damage != Damage::None && !hidden.get()
         }
-        let damage = match before {
-            Damage::All => Damage::All,
-            _ => before.union(scan.damage(ops, |s| slot_number(args, s), is_changed)),
-        };
-        dirty.set(dirty.get().union(damage));
-        // Out of sight, it is drawn when it comes into sight.
-        damage != Damage::None && !hidden.get()
     };
     if damage {
         view.changed();
@@ -359,13 +503,40 @@ pub(crate) fn draw(snapshot: &gtk::Snapshot, view: &NshView, state: &ViewState, 
         (w as f64 * scale).ceil() as i32,
         (h as f64 * scale).ceil() as i32,
     );
+    if let Some(pan) = canvas.pan {
+        if !in_sight(view) {
+            hide(view, canvas);
+            return;
+        }
+        let started = crate::fps::measuring().then(nsh_core::time::Instant::now);
+        let drawn = draw_panned(
+            snapshot,
+            view,
+            canvas,
+            drawing,
+            pan,
+            (w, h),
+            (pw, ph),
+            scale,
+        );
+        if let Some(started) = started {
+            crate::fps::rasterized(started.elapsed());
+        }
+        if let Err(e) = drawn {
+            log::warn!("canvas: {e}");
+        }
+        return;
+    }
     let mut raster = canvas.raster.borrow_mut();
     let fits = raster
         .as_ref()
         .is_some_and(|r| r.scale == scale && r.surface.width() == pw && r.surface.height() == ph);
     if (!fits || canvas.dirty.get() != Damage::None) && !in_sight(view) {
-        if !canvas.hidden.replace(true) {
-            HIDDEN.with(|h| h.borrow_mut().push(view.downgrade()));
+        hide(view, canvas);
+        // What it showed until now stays: a canvas misjudged out of sight
+        // for a frame shows its last pixels, not nothing, until revealed.
+        if let Some(raster) = &*raster {
+            append_tiles(snapshot, raster);
         }
         return;
     }
@@ -373,9 +544,18 @@ pub(crate) fn draw(snapshot: &gtk::Snapshot, view: &NshView, state: &ViewState, 
         _ if !fits => Damage::All,
         damage => damage,
     };
+    let cells = std::mem::take(&mut *canvas.dirty_tiles.borrow_mut());
     if damage != Damage::None {
         let started = crate::fps::measuring().then(nsh_core::time::Instant::now);
-        let rasterized = rasterize(canvas, drawing, raster.take(), damage, (pw, ph), scale);
+        let rasterized = rasterize(
+            canvas,
+            drawing,
+            raster.take(),
+            damage,
+            &cells,
+            (pw, ph),
+            scale,
+        );
         if let Some(started) = started {
             crate::fps::rasterized(started.elapsed());
         }
@@ -388,11 +568,37 @@ pub(crate) fn draw(snapshot: &gtk::Snapshot, view: &NshView, state: &ViewState, 
         }
     }
     if let Some(raster) = &*raster {
-        let s = scale as f32;
-        for (texture, area) in raster.tiles.iter().zip(tiles((pw, ph))) {
-            let [x, y, w, h] = area.map(|v| v as f32 / s);
-            snapshot.append_texture(texture, &graphene::Rect::new(x, y, w, h));
-        }
+        append_tiles(snapshot, raster);
+    }
+}
+
+/// Appends `raster`'s tiles at the size it was drawn at.
+fn append_tiles(snapshot: &gtk::Snapshot, raster: &Raster) {
+    let s = raster.scale as f32;
+    let size = (raster.surface.width(), raster.surface.height());
+    for (texture, area) in raster.tiles.iter().zip(tiles(size)) {
+        let [x, y, w, h] = area.map(|v| v as f32 / s);
+        snapshot.append_texture(texture, &graphene::Rect::new(x, y, w, h));
+    }
+}
+
+/// Puts canvas `view`, out of sight with something to draw, in [`HIDDEN`]
+/// and asks its window for a frame: [`reveal`] runs only in a frame's
+/// layout, and an idle window starts none, so a canvas judged out of sight
+/// in the last frame of a change (a selection re-tinting an icon) would
+/// otherwise wait for whatever moves next.
+fn hide(view: &NshView, canvas: &CanvasState) {
+    if canvas.hidden.replace(true) {
+        return;
+    }
+    log::debug!(
+        "canvas {:?}: out of sight at {:?}, drawn when it shows",
+        view.state().id,
+        view.state().frame
+    );
+    HIDDEN.with(|h| h.borrow_mut().push(view.downgrade()));
+    if let Some(clock) = view.frame_clock() {
+        clock.request_phase(gdk::FrameClockPhase::LAYOUT);
     }
 }
 
@@ -404,9 +610,24 @@ fn rasterize(
     drawing: &Drawing,
     old: Option<Raster>,
     damage: Damage,
+    cells: &DirtyTiles,
     (pw, ph): (i32, i32),
     scale: f64,
 ) -> Result<Raster, String> {
+    // The areas redrawn, in view points: the dirty cells within the
+    // damaged rect, or the rect.
+    let areas: Vec<[f64; 4]> = match damage {
+        Damage::Rect(area) => {
+            let r = [
+                area.origin.x.0 as f64,
+                area.origin.y.0 as f64,
+                (area.origin.x.0 + area.size.width.0) as f64,
+                (area.origin.y.0 + area.size.height.0) as f64,
+            ];
+            cells.areas(r)
+        }
+        _ => Vec::new(),
+    };
     // A full replay draws into the surfaces it had, cleared, when they
     // fit: no new allocations (pages the kernel must map) per drawing.
     let fits = old
@@ -435,13 +656,10 @@ fn rasterize(
         // those before it, kept.
         let mut kept = None;
         let mut spare = spare;
-        if let Damage::Rect(area) = damage {
-            cr.rectangle(
-                area.origin.x.0 as f64,
-                area.origin.y.0 as f64,
-                area.size.width.0 as f64,
-                area.size.height.0 as f64,
-            );
+        if let Damage::Rect(_) = damage {
+            for &[x0, y0, x1, y1] in &areas {
+                cr.rectangle(x0, y0, x1 - x0, y1 - y0);
+            }
             cr.clip();
             match &prefix {
                 Some(prefix) => {
@@ -494,27 +712,30 @@ fn rasterize(
     }
     let mut surface = surface;
     surface.flush();
-    // The area redrawn, in whole pixels (all of it for a full replay).
-    let [x0, y0, x1, y1] = match damage {
-        Damage::Rect(area) => {
-            let px = |v: f32, round: fn(f64) -> f64, max: i32| {
-                (round(v as f64 * scale) as i32).clamp(0, max)
-            };
-            [
-                px(area.origin.x.0, f64::floor, pw),
-                px(area.origin.y.0, f64::floor, ph),
-                px(area.origin.x.0 + area.size.width.0, f64::ceil, pw),
-                px(area.origin.y.0 + area.size.height.0, f64::ceil, ph),
-            ]
-        }
-        _ => [0, 0, pw, ph],
+    // The areas redrawn, in whole pixels (all of it for a full replay).
+    let px = |v: f64, round: fn(f64) -> f64, max: i32| (round(v * scale) as i32).clamp(0, max);
+    let redrawn: Vec<[i32; 4]> = match damage {
+        Damage::Rect(_) => areas
+            .iter()
+            .map(|&[x0, y0, x1, y1]| {
+                [
+                    px(x0, f64::floor, pw),
+                    px(y0, f64::floor, ph),
+                    px(x1, f64::ceil, pw),
+                    px(y1, f64::ceil, ph),
+                ]
+            })
+            .collect(),
+        _ => vec![[0, 0, pw, ph]],
     };
     let data = surface.data().map_err(|e| e.to_string())?;
     let stride = data.len() / ph.max(1) as usize;
     let mut old = kept.unwrap_or_default().into_iter();
     let tiles = tiles((pw, ph))
         .map(|[x, y, w, h]| {
-            let touched = x < x1 && x + w > x0 && y < y1 && y + h > y0;
+            let touched = redrawn
+                .iter()
+                .any(|&[x0, y0, x1, y1]| x < x1 && x + w > x0 && y < y1 && y + h > y0);
             match old.next() {
                 Some(texture) if !touched => texture,
                 _ => memory_texture(&data, stride, [x, y, w, h]),
@@ -528,6 +749,527 @@ fn rasterize(
         tiles,
         prefix,
     })
+}
+
+/// How far past the view a panned canvas is rasterized, in pixels on each
+/// side: panning within it only moves the raster.
+const PAN_MARGIN: i32 = 512;
+
+/// A panned drawing rasterized past the view by [`PAN_MARGIN`] on each
+/// side, at the pan `at` (the translation its operation made then, in
+/// points): a frame shows it moved by how far the pan went since, in whole
+/// pixels (so it stays sharp), clipped to the view.
+struct Panned {
+    surface: cairo::ImageSurface,
+    /// A surface of the same size to move the pixels into on re-centering.
+    spare: Option<cairo::ImageSurface>,
+    scale: f64,
+    /// The view's size in pixels it was made for.
+    size: (i32, i32),
+    at: (f64, f64),
+    /// The pixels drawn at `at` (x0, y0, x1, y1): all of the surface, or
+    /// only the view's part after a frame that drew it again (a zoom).
+    valid: [i32; 4],
+    tiles: Vec<gdk::Texture>,
+    /// Strips being replayed on a worker thread for a re-centering
+    /// ([`Recentre`]).
+    pending: Option<Recentre>,
+}
+
+/// A re-centering of a [`Panned`] raster whose incoming strips a worker
+/// thread replays, so a fast pan keeps moving the textures it has instead
+/// of waiting a frame on the replay: when they come back, the pixels that
+/// stay are moved over and the strips pasted around them.
+struct Recentre {
+    /// The pan the strips are drawn at.
+    at: (f64, f64),
+    /// How far the raster moves, in pixels, and where its moved pixels
+    /// land (x0, y0, x1, y1).
+    shift: (i32, i32),
+    moved: [i32; 4],
+    strips: std::sync::mpsc::Receiver<Result<Vec<Strip>, String>>,
+}
+
+/// A replayed strip: its area of the surface (x0, y0, x1, y1), and its
+/// ARGB32 pixels with their stride.
+type Strip = ([i32; 4], Vec<u8>, usize);
+
+/// The operation of `ops` that pans everything the drawing paints, if one
+/// does: the first one reading a slot (`split`) is a `translate`, nothing
+/// before it paints, transforms or clips, and nothing after it reads its
+/// slots, sets the transform or paints outside the `save` it is in. When
+/// only its slots change, moving the raster shows what a replay at the new
+/// pan would; other slots (a zoom) draw it again.
+fn pan_op(ops: &[CanvasOp], split: usize) -> Option<usize> {
+    let CanvasOp::Translate(x, y) = ops.get(split)? else {
+        return None;
+    };
+    if !matches!(x, Num::Slot(_)) && !matches!(y, Num::Slot(_)) {
+        return None;
+    }
+    let mut depth = 0i32;
+    for op in &ops[..split] {
+        match op {
+            CanvasOp::Save => depth += 1,
+            CanvasOp::Restore => depth -= 1,
+            CanvasOp::Translate(..)
+            | CanvasOp::Scale(..)
+            | CanvasOp::Rotate(_)
+            | CanvasOp::Transform(_)
+            | CanvasOp::SetTransform(_)
+            | CanvasOp::Clip(..) => return None,
+            op if op.paints() => return None,
+            _ => {}
+        }
+    }
+    let rest = &ops[split + 1..];
+    let own = |k: u16| [x, y].iter().any(|v| matches!(v, Num::Slot(s) if *s == k));
+    if DamageScan::default().damage(rest, |_| 0.0, own) != Damage::None {
+        return None;
+    }
+    let pan_depth = depth;
+    let mut below = false;
+    for op in rest {
+        match op {
+            CanvasOp::Save => depth += 1,
+            CanvasOp::Restore => {
+                depth -= 1;
+                below |= depth < pan_depth;
+            }
+            CanvasOp::SetTransform(_) => return None,
+            op if below && op.paints() => return None,
+            _ => {}
+        }
+    }
+    Some(split)
+}
+
+/// Draws a panned canvas ([`pan_op`]): rasterizes it when it is new, and
+/// when the pan nears the edge of what was rasterized moves the pixels
+/// that stay and replays only the strips that come in; otherwise only
+/// moves the textures.
+#[allow(clippy::too_many_arguments)]
+fn draw_panned(
+    snapshot: &gtk::Snapshot,
+    widget: &NshView,
+    canvas: &CanvasState,
+    drawing: &Drawing,
+    pan: usize,
+    (w, h): (f32, f32),
+    (pw, ph): (i32, i32),
+    scale: f64,
+) -> Result<(), String> {
+    let CanvasOp::Translate(x, y) = drawing.ops[pan] else {
+        return Err("a pan that is not a translate".into());
+    };
+    let n = |v: Num| v.get(|s| slot_number(&canvas.args, s)) as f64;
+    let now = (n(x), n(y));
+    let m = PAN_MARGIN;
+    let (sw, sh) = (pw + 2 * m, ph + 2 * m);
+    let view = [m, m, m + pw, m + ph];
+    let mut panned = canvas.panned.borrow_mut();
+    let redraw = canvas.dirty.replace(Damage::None) != Damage::None;
+    let fits = panned
+        .as_ref()
+        .is_some_and(|p| p.scale == scale && p.size == (pw, ph));
+    if !fits || redraw {
+        // A new drawing, size or scale, or other slots than the pan's (a
+        // zoom): only what shows is drawn now, as before; the margin is
+        // drawn when the pan first needs it.
+        let surface = match panned.take() {
+            Some(p) if fits => p.surface,
+            _ => {
+                let s = cairo::ImageSurface::create(cairo::Format::ARgb32, sw, sh)
+                    .map_err(|e| format!("image surface {sw}x{sh}: {e}"))?;
+                s.set_device_scale(scale, scale);
+                s
+            }
+        };
+        let px = |v: i32| v as f64 / scale;
+        replay_area(
+            canvas,
+            drawing,
+            pan,
+            &surface,
+            now,
+            scale,
+            Some([px(m), px(m), px(pw), px(ph)]),
+        )?;
+        *panned = Some(Panned {
+            tiles: Vec::new(),
+            surface,
+            spare: None,
+            scale,
+            size: (pw, ph),
+            at: now,
+            valid: view,
+            pending: None,
+        });
+    }
+    let p = panned.as_mut().expect("rasterized above");
+    // How far the pan went since, in whole pixels.
+    let mut shift = (
+        ((now.0 - p.at.0) * scale).round() as i32,
+        ((now.1 - p.at.1) * scale).round() as i32,
+    );
+    // Strips replayed on the worker for a re-centering: move the pixels
+    // that stay and paste them around.
+    let done = match &p.pending {
+        Some(r) => match r.strips.try_recv() {
+            Ok(strips) => Some(strips),
+            Err(std::sync::mpsc::TryRecvError::Empty) => None,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(Err("worker died".into())),
+        },
+        None => None,
+    };
+    if let Some(strips) = done {
+        let r = p.pending.take().expect("pending above");
+        let strips = strips?;
+        let target = spare_surface(p.spare.take(), (sw, sh), scale)?;
+        paste(&target, &p.surface, r.shift, r.moved, strips, scale)?;
+        p.spare = Some(std::mem::replace(&mut p.surface, target));
+        p.at = r.at;
+        p.valid = [0, 0, sw, sh];
+        p.tiles.clear();
+        shift = (
+            ((now.0 - p.at.0) * scale).round() as i32,
+            ((now.1 - p.at.1) * scale).round() as i32,
+        );
+    }
+    // The surface's pixels the view shows moved by `shift`.
+    let needed = [m - shift.0, m - shift.1, m - shift.0 + pw, m - shift.1 + ph];
+    let covered = |v: [i32; 4]| {
+        v[0] <= needed[0] && v[1] <= needed[1] && needed[2] <= v[2] && needed[3] <= v[3]
+    };
+    let v = p.valid;
+    // Images are kept as surfaces of this thread: such a drawing re-centres
+    // here.
+    let threaded = !drawing
+        .ops
+        .iter()
+        .any(|op| matches!(op, CanvasOp::DrawImage { .. }));
+    let far = shift.0.abs() > m / 4 || shift.1.abs() > m / 4 || !covered(p.valid);
+    if threaded && far && p.pending.is_none() {
+        // Re-centre on the pan early, on a worker: the margin left covers
+        // the frames its strips take. A pan faster than that (or a jump)
+        // shows the edge of what was drawn until they come, rather than
+        // holding the frame on the replay.
+        let at = (
+            p.at.0 + shift.0 as f64 / scale,
+            p.at.1 + shift.1 as f64 / scale,
+        );
+        let moved = [
+            (v[0] + shift.0).max(0),
+            (v[1] + shift.1).max(0),
+            (v[2] + shift.0).min(sw),
+            (v[3] + shift.1).min(sh),
+        ];
+        let bands = bands_around(moved, (sw, sh));
+        let (tx, rx) = std::sync::mpsc::channel();
+        let drawing = canvas.drawing.clone().expect("drawing above");
+        let args = canvas.args.clone();
+        let weak: glib::SendWeakRef<NshView> = widget.downgrade().into();
+        std::thread::Builder::new()
+            .name("nsh-canvas-pan".into())
+            .spawn(move || {
+                let started = std::time::Instant::now();
+                let strips = render_strips(&drawing, &args, pan, at, scale, &bands);
+                log::debug!(
+                    target: "nsh::perf",
+                    "canvas: pan strips replayed in {:.2} ms (worker)",
+                    started.elapsed().as_secs_f64() * 1000.0
+                );
+                if tx.send(strips).is_ok() {
+                    glib::MainContext::default().invoke(move || {
+                        if let Some(view) = weak.upgrade() {
+                            view.queue_draw();
+                        }
+                    });
+                }
+            })
+            .map_err(|e| format!("canvas worker: {e}"))?;
+        p.pending = Some(Recentre {
+            at,
+            shift,
+            moved,
+            strips: rx,
+        });
+    } else if !threaded && (shift.0.abs() > m / 2 || shift.1.abs() > m / 2 || !covered(p.valid)) {
+        // A drawing with images: re-centre now.
+        let started = std::time::Instant::now();
+        let at = (
+            p.at.0 + shift.0 as f64 / scale,
+            p.at.1 + shift.1 as f64 / scale,
+        );
+        let target = spare_surface(p.spare.take(), (sw, sh), scale)?;
+        let moved = [
+            (v[0] + shift.0).max(0),
+            (v[1] + shift.1).max(0),
+            (v[2] + shift.0).min(sw),
+            (v[3] + shift.1).min(sh),
+        ];
+        replay_panned(
+            canvas, drawing, pan, &target, at, scale, &p.surface, shift, moved,
+        )?;
+        log::debug!(
+            target: "nsh::perf",
+            "canvas: panned {shift:?} px, re-centred in {:.2} ms",
+            started.elapsed().as_secs_f64() * 1000.0
+        );
+        p.spare = Some(std::mem::replace(&mut p.surface, target));
+        p.at = at;
+        p.valid = [0, 0, sw, sh];
+        p.tiles.clear();
+        shift = (0, 0);
+    }
+    if p.tiles.is_empty() {
+        p.surface.flush();
+        let data = p.surface.data().map_err(|e| e.to_string())?;
+        let stride = data.len() / sh.max(1) as usize;
+        p.tiles = tiles((sw, sh))
+            .map(|area| memory_texture(&data, stride, area))
+            .collect();
+    }
+    let s = scale as f32;
+    let (ox, oy) = ((shift.0 - m) as f32 / s, (shift.1 - m) as f32 / s);
+    snapshot.push_clip(&graphene::Rect::new(0.0, 0.0, w, h));
+    for (texture, area) in p.tiles.iter().zip(tiles((sw, sh))) {
+        let [x, y, tw, th] = area.map(|v| v as f32 / s);
+        let (x, y) = (x + ox, y + oy);
+        if x >= w || y >= h || x + tw <= 0.0 || y + th <= 0.0 {
+            continue;
+        }
+        snapshot.append_texture(texture, &graphene::Rect::new(x, y, tw, th));
+    }
+    snapshot.pop();
+    Ok(())
+}
+
+/// Moves the pixels of `old` by `shift` into `surface`, where they cover
+/// `moved`, and replays the panned drawing at `at` around them, each band
+/// under a clip of one rectangle (Cairo's fast path).
+#[allow(clippy::too_many_arguments)]
+fn replay_panned(
+    canvas: &CanvasState,
+    drawing: &Drawing,
+    pan: usize,
+    surface: &cairo::ImageSurface,
+    at: (f64, f64),
+    scale: f64,
+    old: &cairo::ImageSurface,
+    (dx, dy): (i32, i32),
+    [x0, y0, x1, y1]: [i32; 4],
+) -> Result<(), String> {
+    let (sw, sh) = (surface.width(), surface.height());
+    let px = |v: i32| v as f64 / scale;
+    let bands = if x1 <= x0 || y1 <= y0 {
+        vec![[0, 0, sw, sh]]
+    } else {
+        old.flush();
+        let cr = cairo::Context::new(surface).map_err(|e| e.to_string())?;
+        cr.set_operator(cairo::Operator::Source);
+        cr.set_source_surface(old, px(dx), px(dy))
+            .map_err(|e| e.to_string())?;
+        cr.paint().map_err(|e| e.to_string())?;
+        drop(cr);
+        vec![
+            [0, 0, sw, y0],
+            [0, y1, sw, sh],
+            [0, y0, x0, y1],
+            [x1, y0, sw, y1],
+        ]
+    };
+    for [bx0, by0, bx1, by1] in bands {
+        if bx1 > bx0 && by1 > by0 {
+            let area = [px(bx0), px(by0), px(bx1 - bx0), px(by1 - by0)];
+            replay_area(canvas, drawing, pan, surface, at, scale, Some(area))?;
+        }
+    }
+    Ok(())
+}
+
+/// Replays a panned drawing into `surface` with its pan at `at`, into
+/// `area` (cleared first; points of the surface) or all of it.
+fn replay_area(
+    canvas: &CanvasState,
+    drawing: &Drawing,
+    pan: usize,
+    surface: &cairo::ImageSurface,
+    at: (f64, f64),
+    scale: f64,
+    area: Option<[f64; 4]>,
+) -> Result<(), String> {
+    let cr = cairo::Context::new(surface).map_err(|e| e.to_string())?;
+    if let Some([x, y, w, h]) = area {
+        cr.rectangle(x, y, w, h);
+        cr.clip();
+        cr.set_operator(cairo::Operator::Clear);
+        cr.paint().map_err(|e| e.to_string())?;
+    }
+    let mut text = canvas.text.borrow_mut();
+    replay_pan_ops(
+        &cr,
+        (&canvas.args, &canvas.images, &mut text),
+        drawing,
+        pan,
+        at,
+        scale,
+    );
+    drop(cr);
+    surface.flush();
+    Ok(())
+}
+
+/// The images and text layouts a replay reads, with the slots' values.
+type ReplayInputs<'a> = (
+    &'a [Option<AnimationValue>],
+    &'a FxHashMap<Arc<str>, Option<CanvasBitmap>>,
+    &'a mut TextCache,
+);
+
+/// Replays a panned drawing onto `cr` (at the surface's origin) with its
+/// pan at `at`.
+fn replay_pan_ops(
+    cr: &cairo::Context,
+    (args, images, text): ReplayInputs,
+    drawing: &Drawing,
+    pan: usize,
+    at: (f64, f64),
+    scale: f64,
+) {
+    cr.set_operator(cairo::Operator::Over);
+    cr.set_source_rgba(0.0, 0.0, 0.0, 0.0);
+    // The view's origin lies the margin in.
+    let m = PAN_MARGIN as f64 / scale;
+    cr.translate(m, m);
+    let mut replay = Replay {
+        cr,
+        args,
+        images,
+        text,
+        scale,
+        base: cr.matrix(),
+        state: State::default(),
+        stack: Vec::new(),
+        has_path: false,
+        stash: None,
+    };
+    for (i, op) in drawing.ops.iter().enumerate() {
+        if i == pan {
+            replay.concat(cairo::Matrix::new(1.0, 0.0, 0.0, 1.0, at.0, at.1));
+        } else {
+            replay.op(op);
+        }
+    }
+    if let Err(e) = cr.status() {
+        log::warn!("canvas: cairo: {e}");
+    }
+}
+
+/// The parts of a `sw` × `sh` surface around `moved` (x0, y0, x1, y1),
+/// all of it when `moved` is empty: what a re-centering replays.
+fn bands_around([x0, y0, x1, y1]: [i32; 4], (sw, sh): (i32, i32)) -> Vec<[i32; 4]> {
+    if x1 <= x0 || y1 <= y0 {
+        return vec![[0, 0, sw, sh]];
+    }
+    [
+        [0, 0, sw, y0],
+        [0, y1, sw, sh],
+        [0, y0, x0, y1],
+        [x1, y0, sw, y1],
+    ]
+    .into_iter()
+    .filter(|b| b[2] > b[0] && b[3] > b[1])
+    .collect()
+}
+
+/// Replays `bands` of a panned drawing at `at` each into a surface of its
+/// own (on a worker thread: the drawing has no images, and text gets
+/// layouts of its own).
+fn render_strips(
+    drawing: &Drawing,
+    args: &[Option<AnimationValue>],
+    pan: usize,
+    at: (f64, f64),
+    scale: f64,
+    bands: &[[i32; 4]],
+) -> Result<Vec<Strip>, String> {
+    let images = FxHashMap::default();
+    let mut text = TextCache::default();
+    let mut strips = Vec::with_capacity(bands.len());
+    for &[x0, y0, x1, y1] in bands {
+        let (w, h) = (x1 - x0, y1 - y0);
+        let mut surface = cairo::ImageSurface::create(cairo::Format::ARgb32, w, h)
+            .map_err(|e| format!("image surface {w}x{h}: {e}"))?;
+        surface.set_device_scale(scale, scale);
+        {
+            let cr = cairo::Context::new(&surface).map_err(|e| e.to_string())?;
+            cr.translate(-x0 as f64 / scale, -y0 as f64 / scale);
+            replay_pan_ops(&cr, (args, &images, &mut text), drawing, pan, at, scale);
+        }
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().map_err(|e| e.to_string())?.to_vec();
+        strips.push(([x0, y0, x1, y1], data, stride));
+    }
+    Ok(strips)
+}
+
+/// `spare`, or a new surface `sw` × `sh` at `scale`.
+fn spare_surface(
+    spare: Option<cairo::ImageSurface>,
+    (sw, sh): (i32, i32),
+    scale: f64,
+) -> Result<cairo::ImageSurface, String> {
+    match spare {
+        Some(s) => Ok(s),
+        None => {
+            let s = cairo::ImageSurface::create(cairo::Format::ARgb32, sw, sh)
+                .map_err(|e| format!("image surface {sw}x{sh}: {e}"))?;
+            s.set_device_scale(scale, scale);
+            Ok(s)
+        }
+    }
+}
+
+/// Moves the pixels of `old` by `shift` into `target` (where they cover
+/// `moved`) and pastes `strips` around them.
+fn paste(
+    target: &cairo::ImageSurface,
+    old: &cairo::ImageSurface,
+    (dx, dy): (i32, i32),
+    [x0, y0, x1, y1]: [i32; 4],
+    strips: Vec<Strip>,
+    scale: f64,
+) -> Result<(), String> {
+    let px = |v: i32| v as f64 / scale;
+    old.flush();
+    let cr = cairo::Context::new(target).map_err(|e| e.to_string())?;
+    cr.set_operator(cairo::Operator::Source);
+    if x1 > x0 && y1 > y0 {
+        cr.set_source_surface(old, px(dx), px(dy))
+            .map_err(|e| e.to_string())?;
+        cr.rectangle(px(x0), px(y0), px(x1 - x0), px(y1 - y0));
+        cr.fill().map_err(|e| e.to_string())?;
+    }
+    for ([bx0, by0, bx1, by1], data, stride) in strips {
+        let strip = cairo::ImageSurface::create_for_data(
+            data,
+            cairo::Format::ARgb32,
+            bx1 - bx0,
+            by1 - by0,
+            stride as i32,
+        )
+        .map_err(|e| e.to_string())?;
+        strip.set_device_scale(scale, scale);
+        cr.set_source_surface(&strip, px(bx0), px(by0))
+            .map_err(|e| e.to_string())?;
+        cr.rectangle(px(bx0), px(by0), px(bx1 - bx0), px(by1 - by0));
+        cr.fill().map_err(|e| e.to_string())?;
+    }
+    drop(cr);
+    target.flush();
+    Ok(())
 }
 
 /// A texture of the pixels of `area` (x, y, width, height) of an ARGB32
@@ -946,7 +1688,7 @@ impl Replay<'_> {
                 dest,
             } => self.image(
                 &image.uri,
-                image.density(),
+                || f64::from(image.density()),
                 source.map(|s| [s.origin.x.0, s.origin.y.0, s.size.width.0, s.size.height.0]),
                 dest,
             ),
@@ -1402,7 +2144,13 @@ impl Replay<'_> {
         });
     }
 
-    fn image(&mut self, uri: &str, density: f32, source: Option<[f32; 4]>, dest: &[Num; 4]) {
+    fn image(
+        &mut self,
+        uri: &str,
+        density: impl Fn() -> f64,
+        source: Option<[f32; 4]>,
+        dest: &[Num; 4],
+    ) {
         if self.state.singular {
             return;
         }
@@ -1424,9 +2172,10 @@ impl Replay<'_> {
         let [dx, dy, dw, dh] = dest.map(|v| self.n(v));
         // Missing sizes are the source's pixels over the file name's
         // density (`@3x`), as an `Image`'s: never the screen's.
-        let density = f64::from(density);
-        let dw = if dw.is_nan() { sw / density } else { dw };
-        let dh = if dh.is_nan() { sh / density } else { dh };
+        // Parsed only when a size is missing: a sprite sheet drawn with
+        // both sizes, thousands of times a frame, never needs it.
+        let dw = if dw.is_nan() { sw / density() } else { dw };
+        let dh = if dh.is_nan() { sh / density() } else { dh };
         if dw == 0.0 || dh == 0.0 {
             return;
         }
@@ -1805,7 +2554,16 @@ mod tests {
             Some(AnimationValue::Number(0.5)),
         ];
         let drawing = drawing.clone();
-        rasterize(canvas, &drawing, old, damage, (600, 80), 2.0).unwrap()
+        rasterize(
+            canvas,
+            &drawing,
+            old,
+            damage,
+            &DirtyTiles::default(),
+            (600, 80),
+            2.0,
+        )
+        .unwrap()
     }
 
     fn pixels(raster: &Raster) -> Vec<u8> {
@@ -1841,6 +2599,198 @@ mod tests {
         assert_eq!(pixels(&small), pixels(&fresh));
     }
 
+    #[test]
+    fn separate_changes_redraw_only_their_cells() {
+        use nsh_core::canvas::PathOp;
+        let c = Num::Const;
+        let dot = |x: f32| {
+            [
+                CanvasOp::BeginPath,
+                CanvasOp::Path(PathOp::Arc {
+                    x: c(x),
+                    y: c(20.0),
+                    radius: Num::Slot(0),
+                    start: c(0.0),
+                    end: c(TAU as f32),
+                    ccw: false,
+                }),
+                CanvasOp::Fill(None, FillRule::NonZero),
+            ]
+        };
+        let mut ops = vec![CanvasOp::FillStyle(Paint::Color(Color(0x2060ffff)))];
+        ops.extend(dot(20.0));
+        ops.extend(dot(280.0));
+        let drawing = Arc::new(Drawing {
+            ops,
+            ..Drawing::default()
+        });
+        let at = |radius: f32| {
+            let mut canvas = CanvasState::default();
+            canvas.split = first_animated(&drawing.ops);
+            canvas.split_path = prefix_path_needed(&drawing.ops, canvas.split);
+            canvas.args = vec![Some(AnimationValue::Number(radius))];
+            canvas
+        };
+        let size = (600, 80);
+        let first = rasterize(
+            &at(4.0),
+            &drawing,
+            None,
+            Damage::All,
+            &DirtyTiles::default(),
+            size,
+            2.0,
+        )
+        .unwrap();
+        let before = first.tiles.clone();
+        let mut scan = DamageScan::default();
+        let mut cells = DirtyTiles::default();
+        let old = scan.damage(&drawing.ops, |_| 4.0, |s| s == 0);
+        cells.add(scan.areas());
+        let new = scan.damage(&drawing.ops, |_| 9.0, |s| s == 0);
+        cells.add(scan.areas());
+        let damage = old.union(new);
+        // The box around both dots spans the canvas; their cells do not.
+        let Damage::Rect(rect) = damage else {
+            panic!("{damage:?}")
+        };
+        assert!(rect.size.width.0 > 250.0);
+        assert_eq!(cells.cells.len(), 2);
+        let partial =
+            rasterize(&at(9.0), &drawing, Some(first), damage, &cells, size, 2.0).unwrap();
+        // The middle tile (pixels 256..512) has neither dot: kept.
+        assert_ne!(partial.tiles[0], before[0]);
+        assert_eq!(partial.tiles[1], before[1]);
+        assert_ne!(partial.tiles[2], before[2]);
+        let full = rasterize(
+            &at(9.0),
+            &drawing,
+            None,
+            Damage::All,
+            &DirtyTiles::default(),
+            size,
+            2.0,
+        )
+        .unwrap();
+        assert_eq!(pixels(&partial), pixels(&full));
+    }
+
+    /// `cargo test -p nsh-platform-linux --release --lib tile_damage_bench -- --ignored --nocapture`:
+    /// a 1600 × 1000 chart (3000 static segments) with `dots` pulsing
+    /// markers spread over it, one frame of the pulse redrawn as the box
+    /// around every change vs only their cells.
+    #[test]
+    #[ignore]
+    fn tile_damage_bench() {
+        use nsh_core::canvas::PathOp;
+        let c = Num::Const;
+        for dots in [1usize, 2, 4, 8] {
+            let mut ops = vec![
+                CanvasOp::StrokeStyle(Paint::Color(Color(0x808080ff))),
+                CanvasOp::LineWidth(c(1.0)),
+                CanvasOp::BeginPath,
+            ];
+            let mut seed = 7u32;
+            let mut rnd = |m: f32| {
+                seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                (seed >> 8) as f32 / (1u32 << 24) as f32 * m
+            };
+            for _ in 0..3000 {
+                ops.push(CanvasOp::Path(PathOp::MoveTo(
+                    c(rnd(1600.0)),
+                    c(rnd(1000.0)),
+                )));
+                ops.push(CanvasOp::Path(PathOp::LineTo(
+                    c(rnd(1600.0)),
+                    c(rnd(1000.0)),
+                )));
+            }
+            ops.push(CanvasOp::Stroke(None));
+            ops.push(CanvasOp::FillStyle(Paint::Color(Color(0xff3030ff))));
+            for i in 0..dots {
+                // Spread along the diagonal: the box around them grows.
+                let t = (i as f32 + 0.5) / dots as f32;
+                ops.push(CanvasOp::BeginPath);
+                ops.push(CanvasOp::Path(PathOp::Arc {
+                    x: c(60.0 + t * 1480.0),
+                    y: c(40.0 + (1.0 - t) * 920.0),
+                    radius: Num::Slot(0),
+                    start: c(0.0),
+                    end: c(TAU as f32),
+                    ccw: false,
+                }));
+                ops.push(CanvasOp::Fill(None, FillRule::NonZero));
+            }
+            let drawing = Arc::new(Drawing {
+                ops,
+                ..Drawing::default()
+            });
+            let mut canvas = CanvasState::default();
+            canvas.split = first_animated(&drawing.ops);
+            canvas.split_path = prefix_path_needed(&drawing.ops, canvas.split);
+            let size = (1600, 1000);
+            let frames = 120;
+            let mut run = |tiled: bool| {
+                canvas.args = vec![Some(AnimationValue::Number(4.0))];
+                let mut raster = Some(
+                    rasterize(
+                        &canvas,
+                        &drawing,
+                        None,
+                        Damage::All,
+                        &DirtyTiles::default(),
+                        size,
+                        1.0,
+                    )
+                    .unwrap(),
+                );
+                let mut scan = DamageScan::default();
+                let started = std::time::Instant::now();
+                let mut pixels = 0f64;
+                for f in 0..frames {
+                    let (r0, r1) = (4.0 + (f % 8) as f32, 4.0 + ((f + 1) % 8) as f32);
+                    let mut cells = DirtyTiles::default();
+                    let a = scan.damage(&drawing.ops, |_| r0, |s| s == 0);
+                    if tiled {
+                        cells.add(scan.areas());
+                    }
+                    let b = scan.damage(&drawing.ops, |_| r1, |s| s == 0);
+                    if tiled {
+                        cells.add(scan.areas());
+                    }
+                    let damage = a.union(b);
+                    if let Damage::Rect(r) = damage {
+                        let rr = [
+                            r.origin.x.0 as f64,
+                            r.origin.y.0 as f64,
+                            (r.origin.x.0 + r.size.width.0) as f64,
+                            (r.origin.y.0 + r.size.height.0) as f64,
+                        ];
+                        pixels += cells
+                            .areas(rr)
+                            .iter()
+                            .map(|a| (a[2] - a[0]) * (a[3] - a[1]))
+                            .sum::<f64>();
+                    }
+                    canvas.args = vec![Some(AnimationValue::Number(r1))];
+                    raster = Some(
+                        rasterize(&canvas, &drawing, raster.take(), damage, &cells, size, 1.0)
+                            .unwrap(),
+                    );
+                }
+                (
+                    started.elapsed().as_secs_f64() * 1000.0 / frames as f64,
+                    pixels / frames as f64,
+                )
+            };
+            let (box_ms, box_px) = run(false);
+            let (cell_ms, cell_px) = run(true);
+            println!(
+                "dots={dots}: box {box_ms:.2} ms/frame, {box_px:.0} px; cells {cell_ms:.2} ms/frame, {cell_px:.0} px"
+            );
+        }
+    }
+
     /// The pixels of `ops` drawn on a fresh `w` × `h` canvas at scale 1.
     fn draw_ops(ops: Vec<CanvasOp>, (w, h): (i32, i32)) -> (Vec<u8>, usize) {
         let drawing = Drawing {
@@ -1848,7 +2798,16 @@ mod tests {
             ..Drawing::default()
         };
         let canvas = CanvasState::default();
-        let raster = rasterize(&canvas, &drawing, None, Damage::All, (w, h), 1.0).unwrap();
+        let raster = rasterize(
+            &canvas,
+            &drawing,
+            None,
+            Damage::All,
+            &DirtyTiles::default(),
+            (w, h),
+            1.0,
+        )
+        .unwrap();
         let mut surface = copy(&raster.surface, None, (w, h), 1.0).unwrap();
         let stride = surface.stride() as usize;
         let data = surface.data().map(|d| d.to_vec()).unwrap();
@@ -1915,8 +2874,16 @@ mod tests {
             );
             for scale in [1, 2] {
                 let size = (100 * scale, 40 * scale);
-                let raster =
-                    rasterize(&canvas, &drawing, None, Damage::All, size, scale as f64).unwrap();
+                let raster = rasterize(
+                    &canvas,
+                    &drawing,
+                    None,
+                    Damage::All,
+                    &DirtyTiles::default(),
+                    size,
+                    scale as f64,
+                )
+                .unwrap();
                 let mut surface = copy(&raster.surface, None, size, scale as f64).unwrap();
                 let stride = surface.stride() as usize;
                 let data = surface.data().map(|d| d.to_vec()).unwrap();
@@ -1993,5 +2960,175 @@ mod tests {
         let mut one = vec![255u8; 4];
         box_blur3(&mut one, 2, 2, 2, 0.3);
         assert_eq!(one, vec![255; 4]);
+    }
+
+    #[test]
+    fn a_leading_slot_translate_pans_the_whole_drawing() {
+        use nsh_core::canvas::{CanvasOp as Op, FillRule, Num::*, PathOp};
+        let dot = [
+            Op::BeginPath,
+            Op::Path(PathOp::MoveTo(Const(0.0), Const(0.0))),
+            Op::Fill(None, FillRule::NonZero),
+        ];
+        let pan = |pre: &[Op], post: &[Op]| {
+            let mut ops = pre.to_vec();
+            ops.push(Op::Translate(Slot(0), Slot(1)));
+            ops.extend_from_slice(&dot);
+            ops.extend_from_slice(post);
+            let split = first_animated(&ops);
+            pan_op(&ops, split)
+        };
+        assert_eq!(pan(&[], &[]), Some(0));
+        assert_eq!(pan(&[Op::Save], &[Op::Restore]), Some(1));
+        // Something painted before it, or a transform before it, stays put.
+        assert_eq!(pan(&dot, &[]), None);
+        assert_eq!(pan(&[Op::Scale(Const(2.0), Const(2.0))], &[]), None);
+        // Other slots after it (a zoom) may be read; its own may not, and
+        // painting outside its save does not pan.
+        assert_eq!(pan(&[], &[Op::Scale(Slot(2), Slot(2))]), Some(0));
+        let own = Op::FillRect([Slot(0), Const(0.0), Const(10.0), Const(10.0)]);
+        assert_eq!(pan(&[], &[own]), None);
+        assert_eq!(
+            pan(&[Op::Save], &[Op::Restore, dot[0].clone(), dot[2].clone()]),
+            None
+        );
+        assert_eq!(
+            pan(
+                &[],
+                &[Op::SetTransform([
+                    Const(1.0),
+                    Const(0.0),
+                    Const(0.0),
+                    Const(1.0),
+                    Const(0.0),
+                    Const(0.0)
+                ])]
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn strips_from_a_worker_match_a_full_replay() {
+        use nsh_core::canvas::{CanvasOp as Op, Num::*};
+        let mut ops = vec![Op::Translate(Slot(0), Slot(1))];
+        for i in 0..40 {
+            let (x, y) = (
+                (i * 97 % 1400) as f32 - 300.0,
+                (i * 53 % 900) as f32 - 200.0,
+            );
+            ops.push(Op::FillRect([Const(x), Const(y), Const(37.0), Const(23.0)]));
+        }
+        let drawing = Drawing {
+            ops,
+            ..Drawing::default()
+        };
+        let canvas = CanvasState::default();
+        let (sw, sh) = (2 * PAN_MARGIN + 64, 2 * PAN_MARGIN + 48);
+        let surface = |at: (f64, f64)| {
+            let s = spare_surface(None, (sw, sh), 1.0).unwrap();
+            replay_area(&canvas, &drawing, 0, &s, at, 1.0, None).unwrap();
+            s
+        };
+        let old = surface((0.0, 0.0));
+        let shift = (150, -90);
+        let at = (150.0, -90.0);
+        let moved = [shift.0, 0, sw, sh + shift.1];
+        let strips = render_strips(&drawing, &[], 0, at, 1.0, &bands_around(moved, (sw, sh)));
+        let target = spare_surface(None, (sw, sh), 1.0).unwrap();
+        paste(&target, &old, shift, moved, strips.unwrap(), 1.0).unwrap();
+        let pixels = |s: cairo::ImageSurface| {
+            let mut s = copy(&s, None, (sw, sh), 1.0).unwrap();
+            s.data().map(|d| d.to_vec()).unwrap()
+        };
+        assert!(pixels(target) == pixels(surface(at)));
+    }
+
+    /// A square filled with `color`, the size of a 40-point canvas.
+    fn square(color: u32) -> Arc<Drawing> {
+        Arc::new(Drawing {
+            ops: vec![
+                CanvasOp::FillStyle(Paint::Color(Color(color))),
+                CanvasOp::FillRect([
+                    Num::Const(0.0),
+                    Num::Const(0.0),
+                    Num::Const(40.0),
+                    Num::Const(40.0),
+                ]),
+            ],
+            ..Drawing::default()
+        })
+    }
+
+    #[test]
+    fn a_canvas_redrawn_out_of_sight_keeps_its_pixels_and_shows_the_new_ones_once_in_sight() {
+        use nsh_core::{MountItem, ROOT_ID, ViewKind};
+        crate::gtk_test::run(|| {
+            let surface = crate::gtk_test::surface();
+            surface.root.state_mut().frame = crate::gtk_test::frame(0.0, 0.0, 200.0, 200.0);
+            let id = 9007;
+            crate::gtk_test::apply(
+                &surface,
+                &[
+                    MountItem::Create {
+                        id,
+                        kind: ViewKind::Canvas,
+                    },
+                    MountItem::Insert {
+                        parent: ROOT_ID,
+                        child: id,
+                        before: None,
+                    },
+                    MountItem::Frame {
+                        id,
+                        frame: crate::gtk_test::frame(10.0, 10.0, 40.0, 40.0),
+                    },
+                ],
+            );
+            let view = crate::gtk_test::view(&surface, id);
+            let _window = crate::gtk_test::show(&surface);
+            assert!(crate::gtk_test::wait_until(
+                || view.is_mapped() && view.width() > 0
+            ));
+            crate::canvas::set(&surface, &view, square(0xff0000ff));
+            let painted = |view: &NshView| {
+                let snapshot = gtk::Snapshot::new();
+                draw(&snapshot, view, &view.state(), 1.0);
+                snapshot.to_node().is_some()
+            };
+            assert!(painted(&view));
+            assert!(
+                view.state()
+                    .canvas
+                    .as_ref()
+                    .unwrap()
+                    .raster
+                    .borrow()
+                    .is_some()
+            );
+            // Moved out of the window and re-tinted: not drawn, but what it
+            // showed stays (no blank frame while misjudged out of sight).
+            crate::gtk_test::apply(
+                &surface,
+                &[MountItem::Frame {
+                    id,
+                    frame: crate::gtk_test::frame(500.0, 10.0, 40.0, 40.0),
+                }],
+            );
+            assert!(crate::gtk_test::wait_until(|| !in_sight(&view)));
+            crate::canvas::set(&surface, &view, square(0x00ff00ff));
+            assert!(painted(&view), "the last pixels are kept");
+            let hidden = |view: &NshView| view.state().canvas.as_ref().unwrap().hidden.get();
+            assert!(hidden(&view));
+            // Back in sight: a later frame draws the new drawing.
+            crate::gtk_test::apply(
+                &surface,
+                &[MountItem::Frame {
+                    id,
+                    frame: crate::gtk_test::frame(10.0, 10.0, 40.0, 40.0),
+                }],
+            );
+            assert!(crate::gtk_test::wait_until(|| !hidden(&view)));
+        });
     }
 }

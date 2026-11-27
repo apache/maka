@@ -104,8 +104,8 @@ the value at the field's end, its caret's Cell, the suffix as wide as the widest
 last blank Cell is the band's end). With `controlsRight`, `NumberInput` sets them side by side in a terminal, the
 decrement first.
 
-Tab always moves the focus on in a terminal: a component that takes Tab for itself elsewhere (a `DataTable`'s Tab
-moving its selection, as gpui-component's) leaves it to the focus there and moves with the arrows.
+A component that takes Tab for itself on the desktops keeps it in a terminal: a `DataTable`'s Tab moves its selection,
+as gpui-component's, and Escape (with nothing selected) gives up the keyboard so Tab moves the focus on.
 
 A primary press gives the focus to what it went down on as it comes up (while it is held the view shows the press):
 the focusable view under the pointer, or the nearest one around it (a card around the text pressed), and Tab goes
@@ -512,7 +512,8 @@ depends on `TerminalCapabilities::graphics`:
 
 - `Graphics::Blocks` (the default): each Cell is `▀`, its foreground the top pixel and its background the bottom
   one, at the terminal's depth; a transparent half is `▄` / `▀` over the surface, a translucent one mixed into the
-  surface's color (the terminal's background on the page). Below 256 colors the box stays blank.
+  surface's color (the terminal's background on the page). Below 256 colors the box shows the image's label in
+  brackets, dim (`render.rs` `stand_in`).
 - `Graphics::KittyPlaceholders` (24-bit color only): the fitted picture, `cols × cell width` by `rows × cell
   height` pixels (`cell_pixels`, at most 2048 a side), is PNG-encoded and transmitted once as a virtual placement
   (`ESC _ G a=T,U=1,f=100,q=2,i=ID,c=…,r=…`, base64 in 4096-byte chunks). Each Cell of the box is U+10EEEE with its

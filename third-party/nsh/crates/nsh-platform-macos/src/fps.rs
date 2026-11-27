@@ -36,7 +36,7 @@
 //!
 //! `fps 120/120 frame 1.21/1.10/2.40/3.90 gap 8.33/8.33/8.40/16.70 over 0%
 //! tick 0.40/… drain 0.30/… canvas 0.20/… commits 20 js 0.30/… core 0.50/…
-//! items 42 engine 3% cpu 24% gpu 9% mem 92.4 MB`: frames shown in the
+//! items 42 engine 3% cpu 24% gpu 9% mem 92.4 MB … gc 2/94.1`: frames shown in the
 //! second over the display's rate, the main thread's time per shown frame,
 //! the gaps between shown frames (one refresh while something moves), the
 //! share of frames over one refresh; its phases: `tick` (the display link:
@@ -45,8 +45,10 @@
 //! drawing on the main thread, per frame that drew any; Core Animation
 //! renders their commands on its own threads); the engine's commits with
 //! their JS and core time, mount items per commit, the engine thread's busy
-//! share, the process' CPU (percent of one core), GPU and physical footprint
-//! (milliseconds as mean/p50/p95/max).
+//! share, the process' CPU (percent of one core), GPU and physical footprint,
+//! what the app holds, and the engine's idle collections over the last
+//! 10 s: how many, and the longest in milliseconds (milliseconds as
+//! mean/p50/p95/max).
 
 use std::{
     cell::{Cell, RefCell},
@@ -580,7 +582,7 @@ fn log_line(s: &PerfSnapshot, phases: &[Stat; 3]) -> String {
     let percent = |v: Option<f32>| v.map_or_else(|| "-".to_owned(), |v| format!("{v:.0}%"));
     format!(
         "fps {:.0}/{:.0} frame {} gap {} over {:.0}% tick {} drain {} canvas {} commits {:.0} js {} core {} \
-         items {:.0} engine {:.0}% cpu {} gpu {} mem {} {}",
+         items {:.0} engine {:.0}% cpu {} gpu {} mem {} {} gc {}/{:.1}",
         s.fps,
         s.refresh_rate.unwrap_or(0.0),
         st(&s.frame),
@@ -609,6 +611,8 @@ fn log_line(s: &PerfSnapshot, phases: &[Stat; 3]) -> String {
                 m.node_ids
             ),
         ),
+        s.gc.count,
+        ms(s.gc.longest),
     )
 }
 
@@ -693,7 +697,8 @@ fn readings(s: &PerfSnapshot) -> String {
          CORE {}  {:.0} items\n\
          HOP  {}  eng {:.0}%\n\
          CPU {}  GPU {}  MEM {memory}\n\
-         HEAP {heap}",
+         HEAP {heap}\n\
+         GC   {} in 10s  longest {:.1}",
         s.fps,
         s.max_fps,
         stat(&s.tick_interval),
@@ -708,6 +713,8 @@ fn readings(s: &PerfSnapshot) -> String {
         s.engine_busy,
         percent(s.process.cpu),
         percent(s.process.gpu),
+        s.gc.count,
+        ms(s.gc.longest),
     )
 }
 
@@ -750,7 +757,8 @@ mod tests {
         let text = readings(&PerfSnapshot::default());
         assert!(text.starts_with("   0 FPS   max 0 · -"));
         assert!(text.contains("CPU -  GPU -  MEM -"));
-        assert!(text.ends_with("HEAP -"));
+        assert!(text.contains("HEAP -\n"));
+        assert!(text.ends_with("GC   0 in 10s  longest 0.0"));
     }
 
     #[test]
@@ -764,11 +772,24 @@ mod tests {
             }),
             ..PerfSnapshot::default()
         };
-        assert!(readings(&snapshot).ends_with("HEAP 85 MB  640.0k obj  NODES 6.1k/2.1M"));
+        assert!(readings(&snapshot).contains("HEAP 85 MB  640.0k obj  NODES 6.1k/2.1M\n"));
         let line = log_line(&snapshot, &Default::default());
         assert!(
-            line.ends_with("heap 85.0 MB objects 640000 nodes 6100 ids 2097152"),
+            line.ends_with("heap 85.0 MB objects 640000 nodes 6100 ids 2097152 gc 0/0.0"),
             "{line}"
         );
+    }
+
+    #[test]
+    fn readings_show_the_collections() {
+        let snapshot = PerfSnapshot {
+            gc: nsh_engine::perf::GcSample {
+                count: 2,
+                longest: Duration::from_micros(94_150),
+            },
+            ..PerfSnapshot::default()
+        };
+        assert!(readings(&snapshot).ends_with("GC   2 in 10s  longest 94.2"));
+        assert!(log_line(&snapshot, &Default::default()).ends_with(" gc 2/94.2"));
     }
 }

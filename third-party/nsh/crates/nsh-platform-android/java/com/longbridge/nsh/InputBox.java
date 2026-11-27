@@ -53,6 +53,8 @@ final class InputBox extends FrameLayout implements Node {
     /** The text as last reported or set. */
     private String known = "";
     private boolean multiline;
+    /** Not `readOnly`: the user (and `insertText`) can edit it. */
+    private boolean editable = true;
     /** What return does (`submitBehavior`, resolved by the core; encode.rs's codes). */
     private static final int SUBMIT_AND_BLUR = 1, NEWLINE = 2;
     private int submit = SUBMIT_AND_BLUR;
@@ -393,6 +395,7 @@ final class InputBox extends FrameLayout implements Node {
                    int submit, boolean rtl, int fontVariant) {
         boolean restart = this.submit != submit && multiline && configured;
         this.multiline = multiline;
+        this.editable = editable;
         this.submit = submit;
         edit.setTextSize(TypedValue.COMPLEX_UNIT_PX, fontSizeDp * mounter.density);
         edit.setTextColor(color);
@@ -824,6 +827,45 @@ final class InputBox extends FrameLayout implements Node {
         android.view.ActionMode m = textActions;
         textActions = null;
         if (m != null) m.finish();
+    }
+
+    /**
+     * `insertText`: {@code text} in place of the selection, as the user's edit. The change goes through the
+     * EditText's filters, so `maxLength` clips it and TextView's undo history records it as a step of its own (an
+     * edit from outside the keyboard is never merged into the typing before it); the text watcher reports it
+     * (`onChangeText`) and no key is reported. A composition in progress is committed first, as the text the
+     * keyboard composed stays. A single-line input gets the line breaks as spaces, as a paste does there.
+     */
+    void insertText(String text) {
+        if (!editable) {
+            android.util.Log.w("nsh", "insertText: the input is read-only");
+            return;
+        }
+        Editable content = edit.getText();
+        if (content == null) return;
+        if (BaseInputConnection.getComposingSpanStart(content) >= 0) {
+            BaseInputConnection.removeComposingSpans(content);
+            syncComposition();
+            // The keyboard drops the word it was composing rather than editing it on.
+            InputMethodManager imm = (InputMethodManager) getContext().getSystemService(Context.INPUT_METHOD_SERVICE);
+            if (imm != null) imm.restartInput(edit);
+        }
+        text = text.replace("\r\n", "\n").replace('\r', '\n');
+        if (!multiline) {
+            int end = text.length();
+            while (end > 0 && text.charAt(end - 1) == '\n') end--;
+            text = text.substring(0, end).replace('\n', ' ');
+        }
+        int a = Math.max(0, edit.getSelectionStart()), b = Math.max(0, edit.getSelectionEnd());
+        int start = Math.min(a, b), end = Math.max(a, b), before = content.length();
+        content.replace(start, end, text);
+        // The caret after what went in (as much as `maxLength` let in), as a paste leaves it: replacing a selection
+        // that starts at the replaced range would otherwise leave the new text selected, and the next insert would
+        // replace it.
+        int caret = Math.max(start, Math.min(content.length(), end + content.length() - before));
+        edit.setSelection(caret);
+        // An edit ends the EditText's toolbar, as its own paste does.
+        finishTextActions();
     }
 
     /** Selects {@code start..end} (clamped to the text). */

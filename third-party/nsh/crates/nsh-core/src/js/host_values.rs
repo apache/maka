@@ -1111,10 +1111,14 @@ pub(crate) fn deceleration<I: HostInput>(input: &I, _: &mut HostCx) -> Option<Sc
     }))
 }
 
-/// `maintainVisibleContentPosition`: `{ autoscrollToBottomThreshold }`.
+/// `maintainVisibleContentPosition`: `{ autoscrollToBottomThreshold, animated }`.
 pub(crate) fn visible_content<I: HostInput>(input: &I, _: &mut HostCx) -> Option<Prop> {
     Some(Prop::FollowEnd(
         points(input, "autoscrollToBottomThreshold").map(|t| t.max(Points::ZERO)),
+        input
+            .field("animated")
+            .and_then(|a| a.as_bool())
+            .unwrap_or(false),
     ))
 }
 

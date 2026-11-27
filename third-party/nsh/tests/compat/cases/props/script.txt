@@ -106,6 +106,11 @@ prop scroll:text:"Feed 9" contentOffset y=240
 expect Viewable: 0,1
 # A bottom-aligned list opens at its end: 10 items of 40 in 100.
 prop scroll:text:"Tail 9" contentOffset y=300
+# With `animated`, at the end of its 10 items (400 points in 200), an item
+# of 200 points added below brings the list to the new end.
+scroll scroll:text:"Reply 0" 0 200
+tap id:grow
+prop scroll:text:"Reply 9" contentOffset y=400
 covers [props] alignment
 covers [props] maintainVisibleContentPosition
 covers [props] viewabilityConfig

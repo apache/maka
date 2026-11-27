@@ -173,6 +173,14 @@ const page = signal({ start: 0, rows: load(0) });
 
 屏幕阅读器得到一个网格（名称来自 `accessibilityLabel`），由列标题和单元格组成，被选中的会读出为已选中。
 
+### 拖选单元格区域
+
+同时开启 `cellSelectable` 和 `cellRangeSelectable` 后，可以用鼠标拖选矩形区域。按住 Shift 可从原起点扩选，拖到视图边缘时表格会自动滚动。`selectOnModifierPress={false}` 时，带修饰键的按下仍交给应用处理。
+
+`onSelectionChange` 和表格引用的 `selection()` 都会返回 `{ row, column, range: { start, end, active? } }`。区域包含起点和终点，每个坐标包含零起始的行索引和列定义索引，区间内的列按屏幕上的顺序计算。`active` 缺省时使用 `start`，外层的 `row` 和 `column` 指向活动单元格。应用也可以通过 `selection` 或 `select()` 设置该区域。方向键从活动单元格移动，复制快捷键复制该单元格。
+
+用 `selectionFill` 和 `selectionOutline` 设置选区样式。表格自动为选区内的行号应用 `rowHeaderHighlighted`，为列标题应用 `headerCellSelected`。
+
 <a id="keyboard"></a>
 
 ## 键盘
@@ -339,7 +347,7 @@ const columns: DataTableColumn[] = [
 | `headerContent` | 标题文字和排序按钮的布局行，可设置两者的间距 |
 | `headerCellDragging` | 正在拖动的标题，排在 `headerCell` 之后 |
 | `headerCellSorted` | 表格当前排序所依据的列的标题，排在 `headerCell` 之后 |
-| `headerCellSelected` | 被选中列的标题，排在 `headerCell` 之后 |
+| `headerCellSelected` | 被选中列或选区内列的标题，排在 `headerCell` 之后 |
 | `sortIndicator` | 可排序列的排序按钮 |
 | `sortAscending`、`sortDescending` | 上下两个箭头，当前排序方向应用 `selected:` |
 | `resizeHandle` | 列尾部边缘供拖动调整的线 |
@@ -355,6 +363,9 @@ const columns: DataTableColumn[] = [
 | `cellColumnSelected` | 被选中列的单元格，排在 `cell` 之后 |
 | `rowHeader` | 行号单元格 |
 | `rowHeaderCorner` | 行号上方的角落 |
+| `rowHeaderHighlighted` | 选区内的行号，排在 `rowHeader` 之后 |
+| `selectionFill` | 选区填充，活动单元格除外 |
+| `selectionOutline` | 选区外框 |
 | `fixedEdge` | 固定列和在其下滚动的列之间的线：左侧固定列的尾部边缘，右侧固定列的起始边缘 |
 | `empty` | `empty` 插槽的盒子 |
 
@@ -377,6 +388,7 @@ const columns: DataTableColumn[] = [
 | `rowSelectable` | `.row_selectable(..)` | `boolean` | `true` | 按下和按键可以选择行。 |
 | `columnSelectable` | `.column_selectable(..)` | `boolean` | `true` | 按下标题会选中该列，左右键在列之间移动。 |
 | `cellSelectable` | `.cell_selectable(..)` | `boolean` | `false` | 按下和按键可以选择单元格。 |
+| `cellRangeSelectable` | `.cell_range_selectable(..)` | `boolean` | `false` | 与 `cellSelectable` 一起启用鼠标拖选和 Shift 扩选。 |
 | `selectOnModifierPress` | `.select_on_modifier_press(..)` | `boolean` | `true` | 按住 Shift 或命令键按下时选中行、单元格或标题。 |
 | `selection` | `.selection(..)` | `DataTableSelection` | | 当前选择，由应用设置。 |
 | `loopSelection` | `.loop_selection(..)` | `boolean` | `true` | 方向键在两端循环。 |
@@ -407,7 +419,7 @@ const columns: DataTableColumn[] = [
 
 | 事件 | Rust | 说明 |
 |---|---|---|
-| `onSelectionChange` | `.on_selection_change(\|selection: &Option<DataTableSelection>\| ..)` | 用户改变了选择：`{ selection }`，一个 `{ row?, column? }` 或 `null`。 |
+| `onSelectionChange` | `.on_selection_change(\|selection: &Option<DataTableSelection>\| ..)` | 用户改变了选择：`{ selection }`，一个 `{ row?, column?, range? }` 或 `null`。 |
 | `onRowPress` | `.on_row_press(\|event: &DataTablePress\| ..)` | 按下了一行或一个单元格：`{ row, column?, clicks, shift, control, alt, platform }`。 |
 | `onColumnPress` | `.on_column_press(\|event: &DataTableColumnPress\| ..)` | 按下了一个标题：`{ column, clicks, shift, control, alt, platform }`。 |
 | `onDoublePress` | `.on_double_press(\|target: &DataTableTarget\| ..)` | 一行、一个单元格或一个标题被连按两次：`{ target }`，一个 `{ row?, column? }`。 |

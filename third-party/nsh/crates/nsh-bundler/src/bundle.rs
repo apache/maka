@@ -12,7 +12,6 @@ use rolldown::{
     plugin::Pluginable,
 };
 use rolldown_common::{ChunkFilenamesOutputOption, CodeSplittingMode, Output};
-use rolldown_error::{EventKind, Severity};
 
 use crate::{app_dir::app_dir, compile, compile::strip_ansi, plugin};
 
@@ -33,9 +32,6 @@ pub struct BundleOptions {
     /// otherwise the bundle holds the whole app, dynamically imported
     /// modules included.
     pub split: bool,
-    /// Fail when a dependency cannot be resolved. Registered native modules
-    /// remain imports resolved by the host.
-    pub fail_on_unresolved_imports: bool,
     /// The UI sets the hosts serve, described (`nsh_base::registry()`
     /// and an app's own, as `SetDescription`s): their modules stay imports.
     pub ui_sets: Vec<nsh_core::element::description::SetDescription>,
@@ -105,6 +101,27 @@ impl BundleError {
             colored: message.clone(),
             plain: message,
         }
+    }
+
+    /// The imports nothing resolved, from a build's warnings: rolldown
+    /// keeps a bare one as an external import, which no host serves, so the
+    /// app would build and then fail to load. They fail the build instead.
+    fn unresolved(warnings: Vec<rolldown_error::BuildDiagnostic>) -> Result<(), Self> {
+        let unresolved: Vec<_> = warnings
+            .into_iter()
+            .filter(|w| matches!(w.kind(), rolldown_error::EventKind::UnresolvedImport))
+            .map(|w| w.with_severity(rolldown_error::Severity::Error))
+            .collect();
+        if unresolved.is_empty() {
+            return Ok(());
+        }
+        let mut error = Self::new(unresolved);
+        let hint = "\nA package resolves from a node_modules directory above the importing file; \
+                    nsh.json \"resolve\" \"alias\" maps an import to a file.";
+        for text in [&mut error.colored, &mut error.plain] {
+            *text = text.replace(", treating it as an external dependency", "") + hint;
+        }
+        Err(error)
     }
 }
 
@@ -295,6 +312,9 @@ struct ResolveSetup {
     /// Specifiers replaced: by a path or another specifier (`None`: an
     /// empty module).
     alias: Vec<(String, Vec<Option<String>>)>,
+    /// The Rust modules of the app's nshm (`nsh.lock`,
+    /// [`crate::nshm::modules`]): package and specifier.
+    nshm_modules: Vec<(String, String)>,
 }
 
 impl ResolveSetup {
@@ -369,7 +389,25 @@ impl ResolveSetup {
             self.alias
                 .push((specifier, vec![Some(file.to_string_lossy().into_owned())]));
         }
+        self.nshm_modules = crate::nshm::modules(dir).map_err(BundleError::other)?;
         Ok(self)
+    }
+
+    /// The Rust modules of the app's nshm this build's hosts do not serve
+    /// (`modules`, from its UI sets) and no alias stands in for, by
+    /// specifier, with their package: the target leaves them out.
+    fn left_out(
+        &self,
+        modules: &compile::NativeModules,
+    ) -> std::collections::BTreeMap<String, String> {
+        self.nshm_modules
+            .iter()
+            .filter(|(_, specifier)| {
+                !modules.contains(specifier)
+                    && !self.alias.iter().any(|(from, _)| from == specifier)
+            })
+            .map(|(package, specifier)| (specifier.clone(), package.clone()))
+            .collect()
     }
 
     /// Sets `options`' platform and resolution (`production`: the value of
@@ -699,6 +737,7 @@ pub async fn bundle_async(options: &BundleOptions) -> Result<Bundle, BundleError
     let main_window = main_window(&config_dir)?;
     let application = application(&config_dir)?;
     let resolve = ResolveSetup::read(&app)?.with_nshm(&app)?;
+    let modules = Arc::new(compile::NativeModules::new(&options.ui_sets));
     let asset_root = match &options.asset_root_from {
         Some(file) => {
             let file = dunce::canonicalize(file).map_err(|e| {
@@ -758,7 +797,8 @@ pub async fn bundle_async(options: &BundleOptions) -> Result<Bundle, BundleError
             entry: entry.clone(),
             natives: natives.clone(),
             preloads: None,
-            modules: Arc::new(compile::NativeModules::new(&options.ui_sets)),
+            left_out: Arc::new(resolve.left_out(&modules)),
+            modules,
         })],
     )
     .map_err(|e| BundleError::new(e.into_vec()))?;
@@ -770,17 +810,7 @@ pub async fn bundle_async(options: &BundleOptions) -> Result<Bundle, BundleError
             None => BundleError::new(e.into_vec()),
         }
     })?;
-    if options.fail_on_unresolved_imports {
-        let unresolved = output
-            .warnings
-            .into_iter()
-            .filter(|diagnostic| matches!(diagnostic.kind(), EventKind::UnresolvedImport))
-            .map(|diagnostic| diagnostic.with_severity(Severity::Error))
-            .collect::<Vec<_>>();
-        if !unresolved.is_empty() {
-            return Err(BundleError::new(unresolved));
-        }
-    }
+    BundleError::unresolved(output.warnings)?;
     let mut entry_chunk = None;
     let mut chunks = Vec::new();
     for asset in output.assets {
@@ -1150,6 +1180,7 @@ pub async fn bundle_hot_async(
     let capabilities = capabilities(&app)?;
     let links = app_links(&app)?;
     let resolve = ResolveSetup::read(&app)?.with_nshm(&app)?;
+    let modules = Arc::new(compile::NativeModules::new(ui_sets));
     let mut bundler_options = BundlerOptions {
         input: Some(vec![InputItem {
             import: entry.to_string_lossy().into_owned(),
@@ -1182,7 +1213,8 @@ pub async fn bundle_hot_async(
             entry: entry.clone(),
             natives: natives.clone(),
             preloads: Some(preloads.clone()),
-            modules: Arc::new(compile::NativeModules::new(ui_sets)),
+            left_out: Arc::new(resolve.left_out(&modules)),
+            modules,
             split: false,
         })],
     )
@@ -1193,6 +1225,7 @@ pub async fn bundle_hot_async(
             None => BundleError::new(e.into_vec()),
         }
     })?;
+    BundleError::unresolved(output.warnings)?;
     let mut modules = Vec::new();
     let mut entry_id = None;
     for asset in output.assets {
@@ -1784,6 +1817,158 @@ mod tests {
             module.is_some_and(|c| c.contains("plain build")),
             "{:?}",
             hot.modules
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A TSX nshm installed outside the app (`~/.nsh/nshms`) importing a
+    /// package: the walk up from it finds no `node_modules`, so the import
+    /// fails the build rather than staying an import the app cannot load;
+    /// `"resolve"` `"alias"` to the file of the app's installed package
+    /// resolves it, and the package's own imports, from the app.
+    #[test]
+    fn an_import_nothing_resolves_fails_the_build() {
+        let root = std::env::temp_dir().join(format!("nsh-unresolved-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let app = root.join("app");
+        let nshm = root.join("nshms/acme-ui/1.0.0");
+        for dir in [
+            app.join("node_modules/dates/dist"),
+            app.join("node_modules/helper"),
+            nshm.clone(),
+        ] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let files = [
+            (
+                app.join("App.tsx"),
+                "import { label } from \"acme-ui\";\nconsole.log(label());\n",
+            ),
+            (
+                app.join("node_modules/dates/package.json"),
+                r#"{ "name": "dates", "exports": { ".": "./dist/index.js" } }"#,
+            ),
+            (
+                app.join("node_modules/dates/dist/index.js"),
+                "import { h } from \"helper\";\nexport const fmt = () => \"dates build \" + h;\n",
+            ),
+            (
+                app.join("node_modules/helper/package.json"),
+                r#"{ "name": "helper", "main": "./index.js" }"#,
+            ),
+            (
+                app.join("node_modules/helper/index.js"),
+                "export const h = \"helper build\";\n",
+            ),
+            (
+                nshm.join("index.ts"),
+                "import { fmt } from \"dates\";\nexport const label = () => fmt();\n",
+            ),
+        ];
+        for (file, code) in files {
+            std::fs::write(file, code).unwrap();
+        }
+        let ui = nshm.join("index.ts");
+        let config = |aliases: &str| {
+            std::fs::write(
+                app.join("nsh.json"),
+                format!(r#"{{ "resolve": {{ "alias": {{ "acme-ui": {ui:?}{aliases} }} }} }}"#),
+            )
+            .unwrap();
+        };
+        let build = || {
+            bundle(&BundleOptions {
+                entry: app.join("App.tsx"),
+                ..Default::default()
+            })
+        };
+        config("");
+        let error = build().unwrap_err().plain;
+        assert!(
+            error.contains("dates") && error.contains("\"resolve\" \"alias\""),
+            "{error}"
+        );
+        assert!(!error.contains("external dependency"), "{error}");
+        let hot = bundle_hot(&app.join("App.tsx"), &[]).unwrap_err().plain;
+        assert!(hot.contains("dates"), "{hot}");
+        config(r#", "dates": "./node_modules/dates/dist/index.js""#);
+        let code = build().unwrap().code;
+        assert!(
+            code.contains("dates build") && code.contains("helper build"),
+            "{code}"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// An nshm's Rust module, which `nsh.lock` names: imported natively
+    /// where the build's hosts serve it, refused where its target leaves
+    /// it out (`nsh.json` `"dependencies"` `"targets"`), unless an alias
+    /// stands in for it there; an `import()` of it stays.
+    #[test]
+    fn a_left_out_nshm_module_takes_its_stand_in_or_fails_the_build() {
+        let dir = single(
+            "left-out-nshm",
+            "import * as speech from \"acme-speech\";\n\
+             import { mount, Text } from \"nsh\";\n\
+             mount(() => <Text>{String(speech.Speech)}</Text>);\n",
+        );
+        std::fs::write(
+            dir.join("stand-in.ts"),
+            "export const Speech = \"the stand-in\";\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join(crate::nshm::LOCK),
+            r#"{ "version": 2, "packages": [
+                { "name": "acme-speech-rs", "source": "crates.io", "version": "1.0.0", "module": "acme-speech" }
+            ] }"#,
+        )
+        .unwrap();
+        let with = |linked: bool| {
+            bundle(&BundleOptions {
+                entry: dir.join("App.tsx"),
+                ui_sets: if linked {
+                    vec![nsh_core::element::Registry::ui_set("acme-speech").into()]
+                } else {
+                    Vec::new()
+                },
+                ..Default::default()
+            })
+        };
+        let native = with(true).unwrap();
+        assert!(native.natives.iter().any(|n| n == "acme-speech"));
+        let error = with(false).unwrap_err().plain;
+        assert!(
+            error.contains("`acme-speech` is not linked for this target")
+                && error.contains("acme-speech-rs"),
+            "{error}"
+        );
+        std::fs::write(
+            dir.join("nsh.json"),
+            r#"{ "resolve": { "alias": { "acme-speech": "./stand-in.ts" } } }"#,
+        )
+        .unwrap();
+        // The module wins over the alias where it is linked.
+        let native = with(true).unwrap();
+        assert!(native.natives.iter().any(|n| n == "acme-speech"));
+        assert!(!native.code.contains("the stand-in"), "{}", native.code);
+        let stand_in = with(false).unwrap();
+        assert!(stand_in.natives.iter().all(|n| n != "acme-speech"));
+        assert!(stand_in.code.contains("the stand-in"), "{}", stand_in.code);
+        // Without the alias, an `import()` builds: it runs where linked.
+        std::fs::remove_file(dir.join("nsh.json")).unwrap();
+        std::fs::write(
+            dir.join("App.tsx"),
+            "import { mount, Text, platform } from \"nsh\";\n\
+             if (platform.os !== \"web\") import(\"acme-speech\").then((m) => console.log(m));\n\
+             mount(() => <Text>hi</Text>);\n",
+        )
+        .unwrap();
+        let dynamic = with(false).unwrap();
+        assert!(
+            dynamic.code.contains("import(\"acme-speech\")"),
+            "{}",
+            dynamic.code
         );
         let _ = std::fs::remove_dir_all(dir);
     }

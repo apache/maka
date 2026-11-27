@@ -416,6 +416,19 @@ impl From<TransitionShader> for NavShaderSpec {
 /// uniforms, the built-in `nsh.progress`.
 pub const PROGRESS_WORD: u32 = u32::MAX;
 
+/// The name of [`note_use`], which `nsh-cli` looks for in a web runtime's
+/// symbol table to know the app shows a shader (it then keeps the
+/// `nsh_feature_shader` gate). A test below fails when the two stop matching.
+pub const USE_MARKER: &str = "note_use";
+
+/// Called by everything an app makes a shader view or a shader transition
+/// with. It is never inlined and its own address escapes, so every such
+/// call keeps a reference to this one function.
+#[inline(never)]
+pub(crate) fn note_use() {
+    std::hint::black_box(note_use as fn());
+}
+
 /// The transitions' default program: a cross-fade from `sample_from` to
 /// `sample_to` over `nsh.progress`. `None` only in a web runtime linked
 /// without shaders ([`set_compile`]), which has no transition to run it
@@ -1407,6 +1420,15 @@ impl Packer<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn use_marker_names_the_function_shader_views_call() {
+        let name = std::any::type_name_of_val(&note_use);
+        assert!(
+            name.ends_with(&format!("::{USE_MARKER}")),
+            "{name} is not {USE_MARKER}: update nsh-cli's shader detection"
+        );
+    }
 
     const GRADIENT: &str = r#"
 struct Uniforms {
