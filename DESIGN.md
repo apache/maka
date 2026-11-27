@@ -107,6 +107,8 @@ Inspect UI changes in the native desktop renderer across both light and dark the
 | Settings hierarchy, menus, confirmations and new-chat sheet | Native navigation, menu and sheet transitions; system owns back gestures and dismissal |
 | Computer, room and inbox selection | Native segmented selection or shared pill color transition (150 ms); replace target-bound data without animating stale rows |
 | Drafts, progress and load failures | Keep form position, show progress/errors inline; no animation on streamed status updates |
+| First chat list, transcript, Pending and settings lists | Wait 150 ms before showing placeholders; one slow native opacity pulse per group, static under Reduce Motion. Swap to content without holding it back. |
+| Chats, transcript and Pending connection status | Inline text shimmer during dials and online backoff, solid under Reduce Motion; static offline state while waiting for a network. No transition or placeholder over cached chats. |
 | Conversation and Bot work | Desktop five-stroke mark (4 s) and native text shimmer; static mark and solid text under Reduce Motion |
 | Approval actions | Approval press at 0.96 scale with a short opacity transition; no scale under Reduce Motion |
 

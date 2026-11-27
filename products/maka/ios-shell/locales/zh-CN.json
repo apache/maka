@@ -137,6 +137,7 @@
   "Could not save the search API key.": "无法保存搜索 API 密钥。",
   "Could not send the message.": "无法发送消息。",
   "Could not sync Pending": "无法同步待处理请求",
+  "Could not sync chats": "无法同步聊天",
   "Could not update the conversation.": "无法更新会话。",
   "Could not update the message queue.": "无法更新消息队列。",
   "Create Room": "创建协作室",

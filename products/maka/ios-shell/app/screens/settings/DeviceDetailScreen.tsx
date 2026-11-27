@@ -78,9 +78,9 @@ export function DeviceDetailScreen(props: {
   const conn = () => activeHostInfo(props.rootId);
   const connState = () => hostConnectionState(props.rootId);
   const reconnecting = () => hostReconnectNotice(props.rootId);
-  const terminalError = () => {
+  const connectionError = () => {
     const state = connState();
-    return state.status === 'error' && state.autoReconnect === false ? state.error : undefined;
+    return state.status === 'error' && !reconnecting() ? state.error : undefined;
   };
 
   const subtitle = () => {
@@ -193,11 +193,11 @@ export function DeviceDetailScreen(props: {
                 detail={reconnecting()?.error}
               />
             </If>
-            <If when={terminalError() !== undefined}>
+            <If when={connectionError() !== undefined}>
               <BannerNotice
                 tone="destructive"
                 title={tr('Connection error')}
-                detail={terminalError()}
+                detail={connectionError()}
               />
             </If>
 

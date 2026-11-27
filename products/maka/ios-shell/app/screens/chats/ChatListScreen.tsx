@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { cleanup, effect, safeAreaInsets, Scroll, signal, Text, View, token } from 'nsh';
+import { cleanup, computed, effect, safeAreaInsets, Scroll, signal, Text, View, token } from 'nsh';
 import { SegmentedControl, isAvailable } from 'nsh/mobile';
 import { ThinkingMark, ShimmerText } from '../../ui/ThinkingMark';
 import { AlertDialog, ContextMenu, Input, NavPage, Sheet } from 'nsh/base';
@@ -30,11 +30,12 @@ import {
   currentRecoveryNotice,
   dismissDisconnectNotice,
   dismissRecoveryNotice,
-  hostById,
+  hostConnectionProgress,
   hostStatusKind,
   isHostConnected,
   openAddComputerFlow,
   savedHosts,
+  scopedConnection,
   showToast,
   selectedScopeRootId,
   selectScope,
@@ -45,6 +46,7 @@ import {
   pinnedSessions,
   recentSessions,
   refreshAllSessions,
+  retryFailedSessions,
   renameSession,
   sessionSearchQuery,
   hasMoreSessions,
@@ -57,6 +59,7 @@ import {
   workingSessions,
   filteredSessions,
   scopedBots,
+  scopedSessionLoad,
   openHostBot,
   roomMembers,
   type ScopedSession,
@@ -76,6 +79,8 @@ import {
   StatusDot,
   type ScopePillItem,
 } from '../../ui';
+import { ConnectionProgress } from '../../ui/ConnectionProgress';
+import { ListSkeleton } from '../../ui/Skeleton';
 import { NewChatSheet } from './NewChatSheet';
 
 function formatRelativeTime(timestampMs: number): string {
@@ -338,14 +343,26 @@ export function ChatListScreen(props: { onOpenSession: (item: ScopedSession) => 
     inCategory(pinnedSessions()).length > 0 ||
     inCategory(recentSessions()).length > 0;
 
-  const selectedOfflineHost = () => {
-    const scope = selectedScopeRootId();
-    if (scope === 'all') {
-      const hosts = savedHosts();
-      return hosts.length > 0 && hosts.every((h) => !isHostConnected(h.rootId)) ? hosts[0] : null;
-    }
-    const host = hostById(scope);
-    return host && !isHostConnected(host.rootId) ? host : null;
+  const connection = computed(() => scopedConnection(selectedScopeRootId()));
+  const connectionProgress = () => {
+    const { kind } = connection();
+    return kind === 'connecting' || kind === 'reconnecting' ? kind : null;
+  };
+  const offlineHost = () => {
+    const state = connection();
+    return state.kind === 'offline' ? state.host : null;
+  };
+  const initialLoading = () => {
+    const load = scopedSessionLoad();
+    return load.error === null && !load.hasItems && (load.loading || connectionProgress());
+  };
+  const refreshingEmptyList = () =>
+    !scopedSessionLoad().hasItems && scopedSessionLoad().refreshing && !initialLoading();
+  const disconnectWarning = () => {
+    const notice = currentDisconnectNotice();
+    const rootId = notice?.rootId;
+    if (rootId && hostConnectionProgress(rootId)) return null;
+    return notice;
   };
 
   const connectedNonAgentHost = () => {
@@ -609,6 +626,14 @@ export function ChatListScreen(props: { onOpenSession: (item: ScopedSession) => 
             </If>
           </If>
 
+          <If when={connectionProgress()}>
+            {(progress) => (
+              <View style={{ paddingHorizontal: spacing.pageX, marginBottom: 12 }}>
+                <ConnectionProgress kind={progress()} />
+              </View>
+            )}
+          </If>
+
           <If when={currentRecoveryNotice()}>
             <BannerNotice
               tone="info"
@@ -617,18 +642,28 @@ export function ChatListScreen(props: { onOpenSession: (item: ScopedSession) => 
             />
           </If>
 
-          <If when={currentDisconnectNotice()}>
+          <If when={disconnectWarning()}>
+            {(notice) => (
+              <BannerNotice
+                tone="warning"
+                title={tr('Computer disconnected')}
+                detail={notice().reason}
+                actionLabel={notice().rootId ? tr('Reconnect') : undefined}
+                onAction={
+                  notice().rootId ? () => void connectSavedHost(notice().rootId!) : undefined
+                }
+                onDismiss={dismissDisconnectNotice}
+              />
+            )}
+          </If>
+
+          <If when={scopedSessionLoad().error !== null}>
             <BannerNotice
               tone="warning"
-              title={tr('Computer disconnected')}
-              detail={currentDisconnectNotice()!.reason}
-              actionLabel={currentDisconnectNotice()!.rootId ? tr('Reconnect') : undefined}
-              onAction={
-                currentDisconnectNotice()!.rootId
-                  ? () => void connectSavedHost(currentDisconnectNotice()!.rootId!)
-                  : undefined
-              }
-              onDismiss={dismissDisconnectNotice}
+              title={tr('Could not sync chats')}
+              detail={scopedSessionLoad().error ?? undefined}
+              actionLabel={tr('Retry')}
+              onAction={retryFailedSessions}
             />
           </If>
 
@@ -657,10 +692,31 @@ export function ChatListScreen(props: { onOpenSession: (item: ScopedSession) => 
             onRequestRename={openRename}
           />
 
-          <If when={!hasAnySessions()}>
+          <If when={initialLoading()}>
+            <ListSkeleton />
+          </If>
+          <If when={refreshingEmptyList()}>
+            <Text
+              style={{
+                ...type.footnote,
+                color: token('muted-foreground'),
+                paddingHorizontal: spacing.pageX,
+              }}
+            >
+              {tr('Loading…')}
+            </Text>
+          </If>
+          <If
+            when={
+              !hasAnySessions() &&
+              !initialLoading() &&
+              !refreshingEmptyList() &&
+              scopedSessionLoad().error === null
+            }
+          >
             <View style={{ flex: 1, justifyContent: 'center', paddingBottom: 40 }}>
               <If
-                when={selectedOfflineHost()}
+                when={offlineHost()}
                 else={
                   <If
                     when={connectedNonAgentHost()}
@@ -706,15 +762,15 @@ export function ChatListScreen(props: { onOpenSession: (item: ScopedSession) => 
                 <EmptyState
                   icon="laptop"
                   tint="muted"
-                  title={tr('{name} is offline', { name: selectedOfflineHost()!.hostName })}
+                  title={tr('{name} is offline', { name: offlineHost()!.hostName })}
                   subtitle={tr('Reconnect to sync your conversations from this computer.')}
                   actionTitle={tr('Reconnect')}
-                  onAction={() => void connectSavedHost(selectedOfflineHost()!.rootId)}
+                  onAction={() => void connectSavedHost(offlineHost()!.rootId)}
                 />
               </If>
             </View>
           </If>
-          <If when={hasMoreSessions() || loadingMoreSessions()}>
+          <If when={!initialLoading() && (hasMoreSessions() || loadingMoreSessions())}>
             <View style={{ paddingHorizontal: spacing.pageX }}>
               <ActionButton
                 variant="quiet"

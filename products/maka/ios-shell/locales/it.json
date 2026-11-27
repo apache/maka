@@ -137,6 +137,7 @@
   "Could not save the search API key.": "Impossibile salvare la chiave API di ricerca.",
   "Could not send the message.": "Impossibile inviare il messaggio.",
   "Could not sync Pending": "Impossibile sincronizzare le richieste in sospeso",
+  "Could not sync chats": "Impossibile sincronizzare le chat",
   "Could not update the conversation.": "Impossibile aggiornare la conversazione.",
   "Could not update the message queue.": "Impossibile aggiornare la coda dei messaggi.",
   "Create Room": "Crea stanza",

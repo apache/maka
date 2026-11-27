@@ -123,7 +123,7 @@ export function markPhase(now: number): { phase: number; gone(at: number): void 
 export function ShimmerText(props: {
   text: string;
   style: object;
-  surface?: 'grouped-bg' | 'surface' | 'inline-card';
+  surface?: 'grouped-bg' | 'surface' | 'inline-card' | 'canvas';
 }) {
   const width = signal(0);
   const sweep = createAnimatedValue(0);

@@ -1471,6 +1471,426 @@ async fn fixture_recv<T>(rx: &mut mpsc::UnboundedReceiver<T>) -> T {
         .unwrap()
 }
 
+#[tokio::test]
+async fn first_load_waits_for_catalogs_and_history_without_hiding_cached_chats() {
+    use nsh_core::platform::{Lifecycle, NetworkKind};
+
+    fn state(revision: u64, connection: Value) -> Value {
+        json!({
+            "revision":revision,"devicePeerId":"phone",
+            "hosts":[{"rootId":"root","hostName":"Studio","peerId":"peer","endpoints":[]}],
+            "active":connection["connection"],
+            "connections":{"root":connection}
+        })
+    }
+
+    let channel = HostChannel::new();
+    let (bootstrap_tx, mut bootstraps) = mpsc::unbounded_channel();
+    channel.handle("ios.bootstrap", move |call| {
+        bootstrap_tx.send(call).unwrap();
+    });
+    let chat = json!({
+        "id":"chat","title":"Cached chat","kind":"agent","activity":"idle",
+        "workspace":{"path":"/work"},"revision":1
+    });
+    let observed = chat.clone();
+    let (chats_tx, mut chats_rx) = mpsc::unbounded_channel();
+    let (pending_tx, mut pending_rx) = mpsc::unbounded_channel();
+    let (history_tx, mut history_rx) = mpsc::unbounded_channel();
+    channel.handle("ios.hostQuery", move |mut call| {
+        let query = call.take_data();
+        let value = match query["method"].as_str().unwrap() {
+            "list" if query["input"]["filter"] == "needs_you" => {
+                pending_tx.send(call).unwrap();
+                return;
+            }
+            "list" => {
+                chats_tx.send(call).unwrap();
+                return;
+            }
+            "history" => {
+                history_tx.send(call).unwrap();
+                return;
+            }
+            "observe" => json!({"session":observed,"through":0,"run":null}),
+            "models" => json!({"kind":"ready","choices":[]}),
+            "pendingInteractions" => json!({"revision":0,"entries":[]}),
+            _ => json!({}),
+        };
+        call.resolve(json!({"value":value}));
+    });
+    channel.handle("ios.subscribe", |mut call| {
+        let input = call.take_data();
+        call.resolve(json!({
+            "subscriptionId":input["subscriptionId"],"rootId":"root","generation":1
+        }));
+    });
+    channel.handle("ios.unsubscribe", |call| {
+        call.resolve(json!({"cancelled":true}))
+    });
+
+    let mut config = engine_config(channel, tokio::runtime::Handle::current());
+    config.viewport = Size::new(px(390.), px(844.));
+    config.environment = Environment {
+        os: Os::MacOs,
+        lifecycle: Lifecycle::Active,
+        reduce_motion: true,
+        ..Environment::default()
+    };
+    config.environment.network.kind = NetworkKind::Wifi;
+    config.clock = nsh_engine::Clock::manual(std::time::SystemTime::UNIX_EPOCH);
+    let mut app = Headless::start(config).unwrap();
+    let skeleton = "role:progressbar[Loading…]";
+
+    fixture_recv(&mut bootstraps)
+        .await
+        .resolve(state(1, json!({"status":"connecting"})));
+    assert!(app.settle());
+    assert!(app.screen().matches("text:Connecting…").unwrap());
+    assert!(!app.screen().matches("text:Studio is offline").unwrap());
+    assert!(!app.screen().matches("text:No conversations yet").unwrap());
+    assert!(!app.screen().matches(skeleton).unwrap());
+    app.fast_forward(Duration::from_millis(149)).unwrap();
+    assert!(!app.screen().matches(skeleton).unwrap());
+    app.fast_forward(Duration::from_millis(1)).unwrap();
+    assert!(app.screen().matches(skeleton).unwrap());
+
+    app.press("label:Pending").unwrap();
+    app.wait_for("text:Connecting…").unwrap();
+    assert!(!app.screen().matches("text:All caught up").unwrap());
+    app.send_host_event(
+        "ios.hostState",
+        state(
+            2,
+            json!({"status":"connected","connection":{
+                "rootId":"root","hostName":"Studio","generation":1,"endpoints":["agent"]
+            }}),
+        ),
+    )
+    .unwrap();
+    let pending = fixture_recv(&mut pending_rx).await;
+    let chats = fixture_recv(&mut chats_rx).await;
+    app.wait_for_gone("text:Connecting…", Duration::from_secs(1))
+        .unwrap();
+    app.wait_for(skeleton).unwrap();
+    assert!(!app.screen().matches("text:All caught up").unwrap());
+    pending.resolve(json!({"value":{"revision":"p1","sessions":[],"after":null}}));
+    app.wait_for("text:All caught up").unwrap();
+    assert!(!app.screen().matches(skeleton).unwrap());
+
+    app.press("label:Chats").unwrap();
+    app.wait_for(skeleton).unwrap();
+    assert!(!app.screen().matches("text:No conversations yet").unwrap());
+    chats.resolve(json!({"value":{"revision":"c1","sessions":[chat],"after":null}}));
+    let chat_row = "label:Conversation: Cached chat";
+    app.wait_for(chat_row).unwrap();
+    assert!(!app.screen().matches(skeleton).unwrap());
+
+    app.press(chat_row).unwrap();
+    let abandoned = fixture_recv(&mut history_rx).await;
+    app.fast_forward(Duration::from_millis(70)).unwrap();
+    assert!(!app.screen().matches(skeleton).unwrap());
+    app.press("label:Chats").unwrap();
+    app.press(chat_row).unwrap();
+    let history = fixture_recv(&mut history_rx).await;
+    // Cross the previous visit's deadline, but not the new visit's.
+    app.fast_forward(Duration::from_millis(149)).unwrap();
+    assert!(!app.screen().matches(skeleton).unwrap());
+    app.fast_forward(Duration::from_millis(1)).unwrap();
+    assert!(app.screen().matches(skeleton).unwrap());
+    abandoned.resolve(json!({"value":{"kind":"ready","through":0,"before":null,"chunks":[]}}));
+    history.resolve(json!({"value":{
+        "kind":"ready","through":1,"before":null,
+        "chunks":[quote_history_row(1, "assistant", "Loaded transcript")]
+    }}));
+    app.wait_for("text:Loaded transcript").unwrap();
+    assert!(!app.screen().matches(skeleton).unwrap());
+    app.press("label:Chats").unwrap();
+
+    let mut lost = state(3, json!({"status":"offline","autoReconnect":true}));
+    lost["disconnectReason"] = json!("Transport closed");
+    lost["disconnectedRootId"] = json!("root");
+    app.send_host_event("ios.hostState", lost).unwrap();
+    app.wait_for("text:Reconnecting…").unwrap();
+    app.fast_forward(Duration::from_millis(150)).unwrap();
+    assert!(app.screen().matches(chat_row).unwrap());
+    assert!(!app.screen().matches(skeleton).unwrap());
+    assert!(!app.screen().matches("text:Computer disconnected").unwrap());
+
+    app.press(chat_row).unwrap();
+    app.wait_for("text:Reconnecting…").unwrap();
+    assert!(!app.screen().matches("text:Studio is offline").unwrap());
+    assert!(!app.screen().matches("label:Reconnect").unwrap());
+    assert!(!app.screen().matches("label:Message composer").unwrap());
+    app.press("label:Chats").unwrap();
+
+    app.press("label:Pending").unwrap();
+    app.wait_for("text:Reconnecting…").unwrap();
+    app.send_host_event(
+        "ios.hostState",
+        state(4, json!({"status":"offline","autoReconnect":false})),
+    )
+    .unwrap();
+    app.wait_for("text:Studio is offline").unwrap();
+    assert!(!app.screen().matches("text:Reconnecting…").unwrap());
+    assert!(!app.screen().matches("text:All caught up").unwrap());
+}
+
+#[tokio::test]
+async fn cold_reconnect_pauses_loading_in_airplane_mode_and_resumes_when_online() {
+    use nsh_core::platform::NetworkKind;
+
+    let host = json!({"rootId":"root","hostName":"Studio","peerId":"peer","endpoints":[]});
+    let initial = json!({"revision":1,"hosts":[host],"active":null,
+        "connections":{"root":{"status":"offline","autoReconnect":true}}});
+    let lost = json!({"revision":2,"hosts":[host],"active":null,
+        "disconnectedRootId":"root","disconnectReason":"Transport closed",
+        "connections":{"root":{"status":"error","error":"Transport closed","autoReconnect":true}}});
+    let channel = HostChannel::new();
+    channel.handle("ios.bootstrap", move |call| call.resolve(initial.clone()));
+    let (dial_tx, mut dial_rx) = mpsc::unbounded_channel();
+    channel.handle("ios.connectHost", move |mut call| {
+        dial_tx.send((call.take_data(), call)).unwrap();
+    });
+
+    let mut config = engine_config(channel, tokio::runtime::Handle::current());
+    config.viewport = Size::new(px(390.), px(844.));
+    config.environment.os = Os::MacOs;
+    config.environment.reduce_motion = true;
+    config.environment.network.kind = NetworkKind::Wifi;
+    config.clock = nsh_engine::Clock::manual(std::time::SystemTime::UNIX_EPOCH);
+    let mut app = Headless::start(config).unwrap();
+    let skeleton = "role:progressbar[Loading…]";
+
+    app.wait_for("text:Reconnecting…").unwrap();
+    assert!(!app.screen().matches("text:Studio is offline").unwrap());
+    app.wait_for(skeleton).unwrap();
+
+    app.send_host_event("ios.hostState", lost).unwrap();
+    app.press("label:Pending").unwrap();
+    app.wait_for(skeleton).unwrap();
+    app.set_environment("airplane mode", |env| env.network.kind = NetworkKind::None)
+        .unwrap();
+    app.wait_for("text:Studio is offline").unwrap();
+    app.fast_forward(Duration::from_secs(16)).unwrap();
+    assert!(dial_rx.try_recv().is_err());
+    assert!(!app.screen().matches("text:Reconnecting…").unwrap());
+    assert!(!app.screen().matches(skeleton).unwrap());
+
+    app.press("label:Chats").unwrap();
+    app.wait_for("text:Computer disconnected").unwrap();
+    app.wait_for("text:Transport closed").unwrap();
+    app.wait_for("text:Studio is offline").unwrap();
+    assert!(!app.screen().matches(skeleton).unwrap());
+    assert!(app.screen().matches("label:Reconnect").unwrap());
+
+    app.set_environment("Wi-Fi restored", |env| env.network.kind = NetworkKind::Wifi)
+        .unwrap();
+    app.wait_for("text:Reconnecting…").unwrap();
+    app.fast_forward(Duration::from_millis(150)).unwrap();
+    let (dial, _in_flight) = fixture_recv(&mut dial_rx).await;
+    assert_eq!(dial, json!({"rootId":"root","automatic":true}));
+}
+
+#[tokio::test]
+async fn catalog_retry_survives_peer_reconnect_and_a_cached_empty_catalog() {
+    use nsh_core::platform::NetworkKind;
+
+    let a = json!({"rootId":"a","hostName":"Studio","peerId":"peer-a","endpoints":["agent"]});
+    let b = json!({"rootId":"b","hostName":"Backup Mac","peerId":"peer-b","endpoints":[]});
+    let initial = json!({
+        "revision":1,"hosts":[a,b],"filter":{"kind":"all_computers"},
+        "connections":{
+            "a":{"status":"connected","connection":{
+                "rootId":"a","hostName":"Studio","generation":1,"endpoints":["agent"]
+            }},
+            "b":{"status":"offline","autoReconnect":true}
+        }
+    });
+    let channel = HostChannel::new();
+    let boot = initial.clone();
+    channel.handle("ios.bootstrap", move |call| call.resolve(boot.clone()));
+    channel.handle("ios.setFilter", |call| call.resolve(Value::Null));
+    let (list_tx, mut lists) = mpsc::unbounded_channel();
+    channel.handle("ios.hostQuery", move |mut call| {
+        let input = call.take_data();
+        match input["method"].as_str().unwrap() {
+            "list" if input["input"]["filter"] == "all" => {
+                list_tx.send((input["rootId"].clone(), call)).unwrap();
+            }
+            "list" => call.resolve(json!({"value":{"revision":"p1","sessions":[],"after":null}})),
+            _ => call.resolve(json!({"value":{}})),
+        }
+    });
+    let (watch_tx, mut watches) = mpsc::unbounded_channel();
+    channel.handle("ios.subscribe", move |mut call| {
+        let input = call.take_data();
+        if input["method"] == "catalog" && input["input"]["filter"] == "all" {
+            watch_tx.send((input, call)).unwrap();
+        } else {
+            call.resolve(json!({
+                "subscriptionId":input["subscriptionId"],"rootId":input["rootId"],"generation":10
+            }));
+        }
+    });
+    channel.handle("ios.unsubscribe", |call| {
+        call.resolve(json!({"cancelled":true}))
+    });
+
+    let mut config = engine_config(channel, tokio::runtime::Handle::current());
+    config.viewport = Size::new(px(390.), px(844.));
+    config.environment.os = Os::MacOs;
+    config.environment.reduce_motion = true;
+    config.environment.network.kind = NetworkKind::Wifi;
+    config.clock = nsh_engine::Clock::manual(std::time::SystemTime::UNIX_EPOCH);
+    let mut app = Headless::start(config).unwrap();
+
+    let (watch, open) = fixture_recv(&mut watches).await;
+    open.resolve(json!({"subscriptionId":watch["subscriptionId"],"rootId":"a","generation":11}));
+    let (_, first) = fixture_recv(&mut lists).await;
+    first.reject("Studio catalog unavailable");
+    app.wait_for("text:Reconnecting…").unwrap();
+    app.wait_for("text:Could not sync chats").unwrap();
+    app.wait_for("label:Retry").unwrap();
+    assert!(!app.screen().matches("text:No conversations yet").unwrap());
+
+    app.press("label:Backup Mac").unwrap();
+    let mut stale = initial.clone();
+    stale["revision"] = json!(2);
+    stale["filter"] = json!({"kind":"single_computer","root_id":"a"});
+    stale["hosts"][1]["hostName"] = json!("Backup renamed");
+    app.send_host_event("ios.hostState", stale.clone()).unwrap();
+    app.wait_for("label:Backup renamed").unwrap();
+    assert!(app.screen().matches("text:Reconnecting…").unwrap());
+    assert!(!app.screen().matches("label:Retry").unwrap());
+
+    app.press("label:All").unwrap();
+    app.wait_for("text:Reconnecting…").unwrap();
+    app.press("label:Retry").unwrap();
+    let (root, retry) = fixture_recv(&mut lists).await;
+    assert_eq!(root, "a");
+    let empty = json!({"value":{"revision":"c1","sessions":[],"after":null}});
+    stale["revision"] = json!(3);
+    stale["connections"]["b"] = json!({"status":"offline","autoReconnect":false});
+    app.send_host_event("ios.hostState", stale.clone()).unwrap();
+    retry.resolve(empty.clone());
+    app.wait_for("text:No conversations yet").unwrap();
+
+    let mut lost = stale.clone();
+    lost["revision"] = json!(4);
+    lost["connections"]["a"] = json!({"status":"offline","autoReconnect":false});
+    app.send_host_event("ios.hostState", lost).unwrap();
+    app.wait_for("text:Studio is offline").unwrap();
+    stale["revision"] = json!(5);
+    stale["connections"]["a"]["connection"]["generation"] = json!(2);
+    app.send_host_event("ios.hostState", stale).unwrap();
+    let (_, reopen) = fixture_recv(&mut watches).await;
+    reopen.reject("Catalog watch unavailable");
+    let (_, refresh) = fixture_recv(&mut lists).await;
+    app.wait_for("text:Loading…").unwrap();
+    assert!(!app.screen().matches("text:No conversations yet").unwrap());
+    refresh.reject("Reconnected catalog unavailable");
+    app.wait_for("text:Could not sync chats").unwrap();
+    app.wait_for("text:Reconnected catalog unavailable")
+        .unwrap();
+    assert!(!app.screen().matches("text:No conversations yet").unwrap());
+    assert!(!app.screen().matches("role:progressbar[Loading…]").unwrap());
+
+    app.press("label:Retry").unwrap();
+    let (watch, reopen) = fixture_recv(&mut watches).await;
+    reopen.resolve(json!({"subscriptionId":watch["subscriptionId"],"rootId":"a","generation":12}));
+    let (root, retry) = fixture_recv(&mut lists).await;
+    assert_eq!(root, "a");
+    retry.resolve(empty);
+    app.wait_for("text:No conversations yet").unwrap();
+    assert!(!app.screen().matches("label:Retry").unwrap());
+}
+
+#[tokio::test]
+async fn catalog_watch_can_be_repaired_after_a_successful_list_retry() {
+    fn page(revision: &str, id: &str, title: &str) -> Value {
+        json!({"revision":revision,"after":null,"sessions":[{
+            "id":id,"title":title,"kind":"agent","activity":"idle","revision":1
+        }]})
+    }
+
+    let channel = HostChannel::new();
+    channel.handle("ios.bootstrap", |call| {
+        let host =
+            json!({"rootId":"root","hostName":"Studio","generation":1,"endpoints":["agent"]});
+        call.resolve(json!({"revision":1,"hosts":[host],"active":host,
+            "connections":{"root":{"status":"connected","connection":host}}}));
+    });
+    let (list_tx, mut lists) = mpsc::unbounded_channel();
+    channel.handle("ios.hostQuery", move |mut call| {
+        let input = call.take_data();
+        match input["method"].as_str().unwrap() {
+            "list" if input["input"]["filter"] == "all" => list_tx.send(call).unwrap(),
+            "list" => {
+                call.resolve(json!({"value":{"revision":"pending","sessions":[],"after":null}}))
+            }
+            _ => call.resolve(json!({"value":{}})),
+        }
+    });
+    let (watch_tx, mut watches) = mpsc::unbounded_channel();
+    channel.handle("ios.subscribe", move |mut call| {
+        let input = call.take_data();
+        let handle = json!({
+            "subscriptionId":input["subscriptionId"],"rootId":"root","generation":2
+        });
+        if input["method"] == "catalog" && input["input"]["filter"] == "all" {
+            watch_tx.send((handle, call)).unwrap();
+        } else {
+            call.resolve(handle);
+        }
+    });
+
+    let mut config = engine_config(channel, tokio::runtime::Handle::current());
+    config.viewport = Size::new(px(390.), px(844.));
+    config.environment.os = Os::MacOs;
+    config.environment.reduce_motion = true;
+    let mut app = Headless::start(config).unwrap();
+
+    let (_, original_watch) = fixture_recv(&mut watches).await;
+    fixture_recv(&mut lists).await.reject("Initial list failed");
+    app.wait_for("text:Initial list failed").unwrap();
+    app.press("label:Retry").unwrap();
+    fixture_recv(&mut lists)
+        .await
+        .resolve(json!({"value":page("c1", "existing", "Existing chat")}));
+    let existing = "label:Conversation: Existing chat";
+    app.wait_for(existing).unwrap();
+    assert!(!app.screen().matches("label:Retry").unwrap());
+
+    original_watch.reject("Catalog subscription timed out");
+    app.wait_for("text:Catalog subscription timed out").unwrap();
+    assert!(app.screen().matches(existing).unwrap());
+    app.press("label:Retry").unwrap();
+    let (handle, repair) = fixture_recv(&mut watches).await;
+    repair.resolve(handle.clone());
+    app.send_host_event(
+        "ios.subscriptionItem",
+        json!({
+            "subscriptionId":handle["subscriptionId"],"rootId":"root","generation":handle["generation"],
+            "item":page("c2", "new", "Pushed chat")
+        }),
+    )
+    .unwrap();
+    app.wait_for("label:Conversation: Pushed chat").unwrap();
+    assert!(!app.screen().matches("label:Retry").unwrap());
+
+    let mut ended = handle;
+    ended["error"] = json!("Catalog stream closed");
+    app.send_host_event("ios.subscriptionEnded", ended).unwrap();
+    app.wait_for("text:Catalog stream closed").unwrap();
+    assert!(
+        app.screen()
+            .matches("label:Conversation: Pushed chat")
+            .unwrap()
+    );
+    assert!(app.screen().matches("label:Retry").unwrap());
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stopped_catalog_watch_unsubscribes_when_setup_replies_late() {
     let host = json!({"rootId":"root","hostName":"Late Host","generation":1,"endpoints":["agent"]});
@@ -1522,7 +1942,7 @@ async fn stopped_catalog_watch_unsubscribes_when_setup_replies_late() {
     app.send_host_event(
         "ios.hostState",
         json!({"revision":2,"hosts":[host],"active":null,
-        "connections":{"root":{"status":"offline"}}}),
+        "connections":{"root":{"status":"offline","autoReconnect":false}}}),
     )
     .unwrap();
     app.wait_for("text:Late Host is offline").unwrap();
@@ -1867,7 +2287,7 @@ async fn catalog_pagination_keeps_chats_and_pending_on_the_current_snapshot() {
     assert_eq!(failed_query["input"]["position"]["revision"], "chats-1");
     failed_reply.reject("chat second page unavailable");
     app.wait_for("text:chat second page unavailable").unwrap();
-    app.press("label:Load more chats").unwrap();
+    app.press("label:Retry").unwrap();
     let (retry_query, retry_reply) = fixture_recv(&mut page_rx).await;
     assert_eq!(
         retry_query["input"]["position"],
@@ -3234,7 +3654,7 @@ async fn side_chat_connection_change_discards_only_the_unsubmitted_side_draft() 
     fx.app
         .send_host_event("ios.hostState", side_host_state(2, None))
         .unwrap();
-    fx.app.wait_for("label:Reconnect").unwrap();
+    fx.app.wait_for("text:Reconnecting…").unwrap();
     fx.app.wait_for("text:Main Chat").unwrap();
 
     fx.app
@@ -3294,7 +3714,7 @@ async fn side_chat_late_fork_receipt_keeps_child_draft_after_disconnect() {
     fx.app
         .send_host_event("ios.hostState", side_host_state(2, None))
         .unwrap();
-    fx.app.wait_for("label:Reconnect").unwrap();
+    fx.app.wait_for("text:Reconnecting…").unwrap();
     let old_catalog = fx.subscription("catalog", Some("side_questions")).await;
     let side = side_session("new-side", "Keep this question", &Value::Null);
     fork.resolve(json!({"value":{"kind":"forked","session":side}}));

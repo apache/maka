@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { cleanup, computed, effect, signal, untracked } from 'nsh';
+import { cleanup, computed, effect, signal, untracked, type Signal } from 'nsh';
 import {
   hasAgentEndpoint,
   hostMutate,
@@ -63,7 +63,8 @@ interface SessionSnapshot {
 type SessionWindow =
   | { kind: 'ready'; snapshot: SessionSnapshot }
   | { kind: 'reading'; snapshot?: SessionSnapshot; revision: string; limit: number }
-  | { kind: 'failed' | 'interrupted'; snapshot?: SessionSnapshot; limit: number };
+  | { kind: 'loadingHead' | 'interrupted'; snapshot?: SessionSnapshot; limit: number }
+  | { kind: 'failed'; snapshot?: SessionSnapshot; limit: number; error: string };
 
 const sessionsByHost = signal<Record<string, SessionWindow>>({});
 type BotOutbox = ServiceMethods['agent']['botOutbox']['output'];
@@ -109,15 +110,15 @@ const loading = signal(false);
 const searchQuery = signal('');
 const showArchived = signal(false);
 
-const activeSubscriptions = new Map<
-  string,
-  {
-    connectionGeneration: number;
-    stop: (() => void)[];
-    headRequest?: object;
-    botRequest?: object;
-  }
->();
+interface SessionSubscription {
+  connectionGeneration: number;
+  stopCatalog?: () => void;
+  catalogWatchError: Signal<string | null>;
+  stopBot: () => void;
+  headRequest?: object;
+  botRequest?: object;
+}
+const activeSubscriptions = new Map<string, SessionSubscription>();
 let subSeq = 0;
 let initialized = false;
 
@@ -233,8 +234,7 @@ async function readSessionWindow(
     setWindow(rootId, { kind: 'ready', snapshot: { catalog, items } });
   } catch (cause) {
     if (!current()) return;
-    setWindow(rootId, { kind: 'failed', snapshot, limit });
-    showToast(cause instanceof Error ? cause.message : String(cause));
+    setWindow(rootId, { kind: 'failed', snapshot, limit, error: errorMessage(cause) });
   }
 }
 
@@ -302,52 +302,71 @@ export function watchSideQuestions(item: ScopedSession, enabled: () => boolean) 
   return { sessions, error };
 }
 
+const errorMessage = (cause: unknown) => (cause instanceof Error ? cause.message : String(cause));
+
 function applySessionPage(rootId: string, hostName: string, page: AgentSessionPage) {
   const previous = sessionsByHost()[rootId];
-  if (
-    (previous?.kind === 'ready' && previous.snapshot.catalog.revision === page.revision) ||
-    (previous?.kind === 'reading' && previous.revision === page.revision)
-  )
-    return;
+  if (previous?.kind === 'reading' && previous.revision === page.revision) return;
+  const snapshot = previous?.snapshot;
   // Rebuild only the range already requested, and swap it in as one revision.
   const limit =
-    previous && previous.kind !== 'ready'
-      ? previous.limit
-      : (previous?.snapshot?.catalog.pages ?? 1);
+    previous && previous.kind !== 'ready' ? previous.limit : (snapshot?.catalog.pages ?? 1);
+  if (snapshot && snapshot.catalog.revision === page.revision && snapshot.catalog.pages >= limit) {
+    if (previous?.kind !== 'ready') setWindow(rootId, { kind: 'ready', snapshot });
+    return;
+  }
   return readSessionWindow(rootId, hostName, limit, { kind: 'head', page });
 }
+
+export const scopedSessionLoad = computed(() => {
+  const scope = selectedScopeRootId();
+  const windows = sessionsByHost();
+  let hasItems = false;
+  let loading = false;
+  let refreshing = false;
+  let error: string | null = null;
+  for (const { rootId } of savedHosts()) {
+    if (scope !== 'all' && scope !== rootId) continue;
+    const window = windows[rootId];
+    if (window?.snapshot?.items.length) hasItems = true;
+    const connection = activeHostInfo(rootId);
+    if (!connection || !hasAgentEndpoint(connection)) continue;
+    if (window?.kind === 'failed') error ??= window.error;
+    else if (!window?.snapshot) loading = true;
+    else if (window.kind === 'loadingHead' || window.kind === 'reading') refreshing = true;
+    const sub = activeSubscriptions.get(rootId);
+    if (sub?.connectionGeneration === connection.generation) error ??= sub.catalogWatchError();
+  }
+  return { hasItems, loading, refreshing, error };
+});
 
 function scopedWindows() {
   const scope = selectedScopeRootId();
   const byHost = sessionsByHost();
-  return connectedHosts().flatMap(({ host: { rootId }, connection }) => {
-    const window = byHost[rootId];
-    return window && (scope === 'all' || scope === rootId) && hasAgentEndpoint(connection)
-      ? [[rootId, window] as const]
+  return connectedHosts().flatMap(({ host, connection }) => {
+    const window = byHost[host.rootId];
+    return window && (scope === 'all' || scope === host.rootId) && hasAgentEndpoint(connection)
+      ? [{ host, window }]
       : [];
   });
 }
 
 export const hasMoreSessions = () =>
   scopedWindows().some(
-    ([, window]) =>
-      window.kind === 'failed' ||
+    ({ window }) =>
       window.kind === 'interrupted' ||
-      window.snapshot?.catalog.after != null,
+      (window.kind === 'ready' && window.snapshot.catalog.after != null),
   );
 export const loadingMoreSessions = () =>
-  scopedWindows().some(([, window]) => window.kind === 'reading');
+  scopedWindows().some(({ window }) => window.kind === 'reading');
 
 export async function loadMoreSessions() {
   if (loadingMoreSessions()) return;
   await Promise.all(
-    scopedWindows().map(([rootId, window]) => {
-      const host = hostById(rootId);
-      if (!host) return;
-      if (window.kind === 'failed' || window.kind === 'interrupted')
-        return refreshHostSessions(rootId, host.hostName);
+    scopedWindows().map(({ host: { rootId, hostName }, window }) => {
+      if (window.kind === 'interrupted') return refreshHostSessions(rootId, hostName);
       if (window.kind === 'ready' && window.snapshot.catalog.after)
-        return readSessionWindow(rootId, host.hostName, window.snapshot.catalog.pages + 1, {
+        return readSessionWindow(rootId, hostName, window.snapshot.catalog.pages + 1, {
           kind: 'extend',
           window: window.snapshot.catalog,
         });
@@ -355,15 +374,55 @@ export async function loadMoreSessions() {
   );
 }
 
+export function retryFailedSessions() {
+  for (const {
+    host: { rootId, hostName },
+    window,
+  } of scopedWindows()) {
+    const sub = activeSubscriptions.get(rootId);
+    if (window.kind === 'failed') void refreshHostSessions(rootId, hostName);
+    else if (sub && sub.catalogWatchError() !== null) watchSessionCatalog(rootId, hostName, sub);
+  }
+}
+
+function watchSessionCatalog(rootId: string, hostName: string, sub: SessionSubscription) {
+  if (sub.stopCatalog) return;
+  sub.stopCatalog = watchHost<AgentSessionPage>(
+    rootId,
+    sub.connectionGeneration,
+    'catalog:' + rootId + ':' + ++subSeq,
+    'catalog',
+    catalogInput('all'),
+    (page) => {
+      if (showArchived()) return;
+      sub.headRequest = undefined;
+      void applySessionPage(rootId, hostName, page);
+    },
+    (cause) => {
+      sub.stopCatalog = undefined;
+      sub.catalogWatchError.set(errorMessage(cause));
+    },
+    () => sub.catalogWatchError.set(null),
+  );
+}
+
 export async function refreshHostSessions(rootId: string, hostName: string) {
   const sub = activeSubscriptions.get(rootId);
   if (!sub) return;
+  watchSessionCatalog(rootId, hostName, sub);
   const request = {};
   sub.headRequest = request;
   sub.botRequest = request;
   const current = () =>
     activeSubscriptions.get(rootId) === sub &&
     activeHostInfo(rootId)?.generation === sub.connectionGeneration;
+  const previous = sessionsByHost()[rootId];
+  if (previous?.kind !== 'reading') {
+    const snapshot = previous?.snapshot;
+    const limit =
+      previous && previous.kind !== 'ready' ? previous.limit : (snapshot?.catalog.pages ?? 1);
+    setWindow(rootId, { kind: 'loadingHead', snapshot, limit });
+  }
   const filter = sessionFilter();
   await Promise.all([
     listSessionPage(rootId, filter)
@@ -372,8 +431,18 @@ export async function refreshHostSessions(rootId: string, hostName: string) {
           return applySessionPage(rootId, hostName, page);
       })
       .catch((cause) => {
-        if (current() && sub.headRequest === request)
+        if (!current() || sub.headRequest !== request) return;
+        const window = sessionsByHost()[rootId];
+        if (window?.kind === 'loadingHead') {
+          setWindow(rootId, {
+            kind: 'failed',
+            snapshot: window.snapshot,
+            limit: window.limit,
+            error: errorMessage(cause),
+          });
+        } else {
           console.warn('Could not refresh sessions', cause);
+        }
       }),
     hostQuery<BotOutbox>('agent', 'botOutbox', { limit: 0 }, undefined, rootId)
       .then((outbox) => {
@@ -633,9 +702,10 @@ export function startSessionsStore() {
     for (const [rootId, sub] of activeSubscriptions) {
       if (roots.has(rootId) && roots.get(rootId) === sub.connectionGeneration) continue;
       activeSubscriptions.delete(rootId);
-      for (const stop of sub.stop) stop();
+      sub.stopCatalog?.();
+      sub.stopBot();
       const window = untracked(() => sessionsByHost()[rootId]);
-      if (window?.kind === 'reading') {
+      if (window?.kind === 'reading' || window?.kind === 'loadingHead') {
         setWindow(rootId, {
           kind: 'interrupted',
           snapshot: window.snapshot,
@@ -652,31 +722,10 @@ export function startSessionsStore() {
       connection: { generation },
     } of current) {
       if (activeSubscriptions.has(rootId)) continue;
-      const sub: {
-        connectionGeneration: number;
-        stop: (() => void)[];
-        headRequest?: object;
-        botRequest?: object;
-      } = {
+      const sub: SessionSubscription = {
         connectionGeneration: generation,
-        stop: [],
-      };
-      activeSubscriptions.set(rootId, sub);
-      sub.stop.push(
-        watchHost<AgentSessionPage>(
-          rootId,
-          generation,
-          'catalog:' + rootId + ':' + ++subSeq,
-          'catalog',
-          catalogInput('all'),
-          (page) => {
-            if (showArchived()) return;
-            sub.headRequest = undefined;
-            void applySessionPage(rootId, hostName, page);
-          },
-          (cause) => console.warn('Could not watch catalog', cause),
-        ),
-        watchHost<BotOutbox>(
+        catalogWatchError: signal<string | null>(null),
+        stopBot: watchHost<BotOutbox>(
           rootId,
           generation,
           'bot:' + rootId + ':' + ++subSeq,
@@ -688,7 +737,8 @@ export function startSessionsStore() {
           },
           (cause) => console.warn('Could not watch Bot outbox', cause),
         ),
-      );
+      };
+      activeSubscriptions.set(rootId, sub);
       untracked(() => void refreshHostSessions(rootId, hostName));
     }
   });

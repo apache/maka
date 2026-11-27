@@ -108,6 +108,7 @@ export function SubagentsSettingsScreen(
       title={tr('Subagents')}
       work={work}
       ready={ready()}
+      initialList={!snapshot()}
       reload={reload}
     >
       <InsetGroup>

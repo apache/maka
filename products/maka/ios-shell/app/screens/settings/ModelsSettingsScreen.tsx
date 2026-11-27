@@ -161,6 +161,7 @@ export function ModelsSettingsScreen(
       title={tr('Models & Connections')}
       work={work}
       ready={ready()}
+      initialList={!data()}
       reload={reload}
     >
       <InsetGroup>

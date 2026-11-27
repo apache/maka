@@ -118,6 +118,7 @@ export function SkillsSettingsScreen(
       title={tr('Skills')}
       work={work}
       ready={!!inventory()}
+      initialList
       reload={reload}
     >
       <InsetGroup>

@@ -22,6 +22,7 @@
   "Could not confirm whether the message was sent. Check the conversation or queue before retrying.": "無法確認訊息是否已傳送，重試前請先查看對話記錄或隊列。",
   "Could not save the proxy password.": "無法儲存代理密碼。",
   "Could not update the message queue.": "無法更新訊息隊列。",
+  "Could not sync chats": "無法同步對話",
   "Default sandbox mode": "預設沙盒模式",
   "Device name is too long.": "裝置名稱太長。",
   "Direct connection discovery · Port {port}": "直接連接偵測 · 端口 {port}",

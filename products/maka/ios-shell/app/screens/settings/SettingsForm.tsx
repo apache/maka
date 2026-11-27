@@ -26,6 +26,8 @@ import type { SettingsWork } from '../../state/settings/rpc';
 import { type } from '../../theme/tokens';
 import { ActionButton, BannerNotice, GroupDivider, GroupRow, ScreenHeader } from '../../ui';
 
+import { ListSkeleton } from '../../ui/Skeleton';
+
 export interface SettingsPageProps {
   rootId: string;
   onBack: () => void;
@@ -38,6 +40,7 @@ export function SettingsForm(
     title: string;
     work: SettingsWork;
     ready: boolean;
+    initialList?: boolean;
     reload: () => void;
     dirty?: boolean;
     save?: () => void;
@@ -104,11 +107,18 @@ export function SettingsForm(
           />
         </If>
         <If when={props.work.busy()}>
-          <View style={{ paddingHorizontal: 16, paddingBottom: 12 }}>
-            <Text style={{ ...type.footnote, color: token('muted-foreground') }}>
-              {props.ready ? tr('Working…') : tr('Loading…')}
-            </Text>
-          </View>
+          <If
+            when={props.initialList && !props.ready}
+            else={
+              <View style={{ paddingHorizontal: 16, paddingBottom: 12 }}>
+                <Text style={{ ...type.footnote, color: token('muted-foreground') }}>
+                  {props.ready ? tr('Working…') : tr('Loading…')}
+                </Text>
+              </View>
+            }
+          >
+            <ListSkeleton compact />
+          </If>
         </If>
         <If when={props.ready}>
           {props.children}
