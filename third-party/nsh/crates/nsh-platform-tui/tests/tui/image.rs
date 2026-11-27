@@ -297,7 +297,7 @@ fn an_icon_sized_picture_is_left_out_and_its_label_closes_up() {
     let (mut view, rx) = surface();
     let mut terminal = Terminal::new(TestBackend::new(12, 3)).unwrap();
     view.load(App::Rust(Root::new::<IconRow>(|| ()))).unwrap();
-    draw_until(&mut view, &mut terminal, &rx, "Jason");
+    draw_until(&mut view, &mut terminal, &rx, "▀");
     let buffer = terminal.backend().buffer();
     let row = |y: u16| -> String { (0..12).map(|x| buffer[(x, y)].symbol()).collect() };
     // Half blocks would show the icon only as a blot of color.

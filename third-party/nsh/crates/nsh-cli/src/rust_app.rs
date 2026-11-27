@@ -4866,28 +4866,40 @@ mod tests {
     #[test]
     fn every_published_nsh_crate_is_patched() {
         let checkout = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let mut published = Vec::new();
-        for dir in [checkout.join("crates"), checkout.join("crates/gpui")] {
-            for entry in std::fs::read_dir(&dir).unwrap().flatten() {
-                let name = entry.file_name().to_string_lossy().into_owned();
-                let Ok(manifest) = std::fs::read_to_string(entry.path().join("Cargo.toml")) else {
-                    continue;
-                };
-                if name.starts_with("nsh-")
-                    && name != "nsh-cli"
-                    && !manifest.contains("publish = false")
-                {
-                    published.push(name);
-                }
-            }
-        }
-        published.sort();
-        let mut patched: Vec<String> = super::NSH_CRATES
+        let output = std::process::Command::new(super::cargo())
+            .args([
+                "metadata",
+                "--no-deps",
+                "--format-version",
+                "1",
+                "--manifest-path",
+            ])
+            .arg(checkout.join("Cargo.toml"))
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let metadata: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        let mut published: Vec<_> = metadata["packages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|package| package["publish"] != serde_json::json!([]))
+            .map(|package| package["name"].as_str().unwrap())
+            .filter(|name| name.starts_with("nsh-") && *name != "nsh-cli")
+            .collect();
+        // Upstream publishes these from a separate workspace omitted from Maka's checkout.
+        published.extend(["nsh-gpui-host", "nsh-platform-gpui"]);
+        published.sort_unstable();
+        let mut patched: Vec<_> = super::NSH_CRATES
             .iter()
             .chain(super::OWN_NSHM)
-            .map(|name| name.to_string())
+            .copied()
             .collect();
-        patched.sort();
+        patched.sort_unstable();
         assert_eq!(published, patched);
     }
 
