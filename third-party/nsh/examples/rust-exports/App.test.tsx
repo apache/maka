@@ -22,3 +22,12 @@ test("the class keeps its state in Rust", async () => {
   await app.waitFor("Accrued: $116.15");
   expect(app.texts()).toContain("Savings: $116.15");
 });
+
+test("a Rust component reads string children and their updates", async () => {
+  const app = await open("./TextChild.tsx");
+  expect(app.shows("**Literal**")).toBe(true);
+  expect(app.shows("**First**")).toBe(true);
+  await app.press("Update child");
+  await app.waitFor("**Second**");
+  expect(app.shows("**First**")).toBe(false);
+});

@@ -150,6 +150,7 @@ input().auto_fill(AutoFill::OneTimeCode).keyboard_type(KeyboardType::Number)
 | `onChange` | `.on_change(\|text: &str\| ..)` | `{ value }` | 用户修改了文本：`value` 是现在的文本。 |
 | `onSubmit` | `.on_submit(\|text: &str\| ..)` | `{ text }` | 在会提交的输入框中按下了回车键（单行，或 `submitBehavior` 为 `"submit"` / `"blurAndSubmit"`）。 |
 | `onFocus` / `onBlur` | `.on_focus` / `.on_blur` | 无 | 输入框获得 / 失去焦点。 |
+| `onPress` | `.on_press` | `PressEvent`（Rust 中无） | 点击或轻点输入框（它的文字或文字周围的内边距），在这次按下带来的焦点之后报告：例如按下输入框时打开、再按下时关闭的列表。输入框外层的视图不会因此收到按下。 |
 | `onSelectionChange` | `.on_selection_change(\|s: &Selection\| ..)` | `{ start, end }` | 光标或选区移动（UTF-16 单位）。 |
 | `onPaste` | `.on_paste(\|e: &PasteEvent\| ..)` | `{ text, html, files, tooLarge, uris }` | 用户粘贴了内容：文本、带格式的 HTML（Linux、Web）、作为 `File` 的图片（如截图）、超过 `pasteMaxSize` 的文件的名称、类型和大小（`tooLarge`）、本地文件的 `file:` URL。在它插入的文本的 `onChange` 之前（[表单与键盘](../docs/forms-and-keyboard.md#粘贴图片和文件)）。 |
 | `onCaretMove` | `.on_caret_move(\|e: &CaretEvent\| ..)` | `{ bounds, pageBounds }` | 光标随选区移动，或因文本滚动、重新换行而移动：`bounds` 是它在输入框中的位置，`pageBounds` 是它在窗口中的位置，可作为 `Overlay` 的 `anchor`（[表单与键盘](../docs/forms-and-keyboard.md#光标位置)）。 |

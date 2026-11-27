@@ -925,7 +925,9 @@ fn run_top<H: Host>(h: H, id: u32) {
         return look_upstream(h, id, NONE);
     }
     let exec = graph.exec;
-    let mut ancestors = vec![id];
+    // Owners needing an update run outermost first, then the node itself.
+    // Usually none needs one, and the empty list allocates nothing.
+    let mut ancestors = Vec::new();
     let mut at = graph.owner_of(id);
     while is_node(at) {
         let n = &graph.nodes[at as usize];
@@ -937,7 +939,7 @@ fn run_top<H: Host>(h: H, id: u32) {
         }
         at = graph.owner_of(at);
     }
-    for &node in ancestors.iter().rev() {
+    for node in ancestors.into_iter().rev().chain(std::iter::once(id)) {
         let n = &g(h).nodes[node as usize];
         if n.disposed {
             continue;
@@ -946,7 +948,7 @@ fn run_top<H: Host>(h: H, id: u32) {
             update_computation(h, node);
         } else if n.state == PENDING {
             let updates = g(h).updates.take();
-            run_updates(h, false, || look_upstream(h, node, ancestors[0]));
+            run_updates(h, false, || look_upstream(h, node, id));
             g(h).updates = updates;
         }
     }

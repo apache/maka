@@ -3584,13 +3584,24 @@ const report = (v) => text(String(v));
                 if (({}).constructor !== Object || [].toString() !== "") throw new Error();
             });
             attempt(() => { "use strict"; Object.prototype.toString = null; });
+            // Functions take an own `constructor` (libraries such as axios copy
+            // a prototype's members onto a function), while the shared one
+            // stays blocked.
+            attempt(() => {
+                "use strict";
+                const f = function () {};
+                f.constructor = Object;
+                if (f.constructor !== Object || (function () {}).constructor === Object) throw new Error();
+            });
+            attempt(() => { "use strict"; Function.prototype.constructor = Object; });
+            attempt(() => Object.getPrototypeOf(function () {}).constructor("return 1")());
             report(results.join(","));
             "#))
         .unwrap();
         assert_eq!(
             reported(host),
             [
-                "ReferenceError,TypeError,TypeError,TypeError,TypeError,TypeError,TypeError,ran,ran,ran,TypeError"
+                "ReferenceError,TypeError,TypeError,TypeError,TypeError,TypeError,TypeError,ran,ran,ran,TypeError,ran,TypeError,TypeError"
             ]
         );
     }

@@ -116,8 +116,8 @@ pub struct DockPanel {
     pub id: PanelId,
 }
 
-/// A tab, as `renderTab`, `renderDragPreview` and `renderToolbar` render
-/// it.
+/// A tab, as `renderTab`, `renderDragPreview`, `renderToolbar` and
+/// `renderTabBarPrefix` render it.
 #[derive(Clone, Debug, Default, PartialEq, JsObject)]
 #[non_exhaustive]
 pub struct DockTab {
@@ -146,6 +146,9 @@ pub struct DockDropIndicator {
     #[prop(skip_none)]
     pub side: Option<Placement>,
     /// The slot in the group's tab bar it goes to, when dropped on the bar.
+    /// A drag over a tab bar shows the area's insertion line rather than
+    /// the indicator, so `renderDropIndicator` is not called for one and
+    /// this is kept for compatibility.
     #[prop(skip_none)]
     pub index: Option<usize>,
 }
@@ -278,8 +281,13 @@ pub struct DockAreaProps {
     /// The toolbar at the end of a tab group's tab bar, given its displayed
     /// tab: that panel's actions (as a GPUI dock panel's toolbar buttons).
     pub render_toolbar: Prop<Option<Renderer<DockTab>>>,
+    /// What a tab group's tab bar starts with, before its tabs, given its
+    /// displayed tab: room or controls that stay put while the tabs scroll
+    /// (`TabBar::prefix` in GPUI Kit).
+    pub render_tab_bar_prefix: Prop<Option<Renderer<DockTab>>>,
     /// What shows where a drag would land, placed over the part of the
-    /// group it would take.
+    /// group it would take. Not called for a tab bar's slot: there the area
+    /// draws an insertion line between the tabs instead.
     pub render_drop_indicator: Prop<Option<Renderer<DockDropIndicator>>>,
     /// A dock's own chrome (a title strip, a collapse button), before its
     /// layout.
@@ -586,6 +594,7 @@ pub(crate) fn area_view(a: AreaCx) -> View {
             .otherwise(move || regular_view(a)),
         )
         .child(super::tab_group::drop_indicator(a))
+        .child(super::tab_group::drop_line(a))
         .child(drag_preview(a))
 }
 
@@ -610,6 +619,10 @@ pub(crate) struct DropAt {
     pub(crate) index: Option<usize>,
     /// The group's content frame, in the root view's coordinates.
     pub(crate) content: Bounds<Points>,
+    /// Over a tab bar (`index` some): the insertion line at the slot, in
+    /// the root view's coordinates, drawn instead of the drop indicator
+    /// (`tab_group.rs` `slot_line`).
+    pub(crate) line: Option<Bounds<Points>>,
 }
 
 /// The views of a tab group a drag measures: its tab bar, its tabs and
@@ -669,9 +682,9 @@ pub(crate) struct AreaCx {
     /// The area's size.
     size: Signal<Size<Points>>,
     dock_drag: Signal<Option<DockDrag>>,
-    /// Bumped each time the drop indicator's overlay is first laid out (a
-    /// commit after it opened): the key of the drag preview's row, which
-    /// mounts the preview again, above the indicator.
+    /// Bumped each time the drop indicator's or the insertion line's
+    /// overlay is first laid out (a commit after it opened): the key of the
+    /// drag preview's row, which mounts the preview again, above them.
     pub(crate) indicator_shown: Signal<u32>,
     /// The last edit of a controlled area, until the app passes a layout.
     pending: Stored<Option<Area>>,

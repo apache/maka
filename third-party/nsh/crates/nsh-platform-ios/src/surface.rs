@@ -108,13 +108,7 @@ impl MountSink for MainThreadSink {
         let mounter = self.mounter.clone();
         // The main queue is serial: after the batches submitted before it.
         DispatchQueue::main().exec_async(move || {
-            let mtm = MainThreadMarker::new().expect("main queue runs on the main thread");
-            let root = mounter
-                .get(mtm)
-                .borrow()
-                .as_ref()
-                .and_then(|mounter| mounter.ui_view(nsh_core::ROOT_ID));
-            crate::presenting::run_for(root, || task.run());
+            crate::presenting::run_for(mounter, || task.run());
         });
     }
 
@@ -615,15 +609,11 @@ impl RootView {
             // Drawings replayed into Core Graphics bitmaps
             // ([`crate::canvas::Offscreen`]).
             canvas_render: true,
-            // `UIActivityViewController` (`crate::share`).
-            share: true,
             // `UIApplication.openSettingsURLString`. A Mac has no settings
             // page of an iPhone or iPad app's own: Mac Catalyst and an iOS
             // app running on a Mac ("Designed for iPad") report none.
             app_settings: !cfg!(target_abi = "macabi")
                 && !objc2_foundation::NSProcessInfo::processInfo().isiOSAppOnMac(),
-            // `ASWebAuthenticationSession` (`crate::auth_session`).
-            auth_session: true,
             // The notification center.
             notifications: true,
             // AVAudioEngine and AVPlayer.

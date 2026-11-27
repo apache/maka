@@ -9,6 +9,10 @@
 //! changes, and answers each [`start_for_result`] here, as
 //! [`crate::permissions`] answers prompts.
 //!
+//! Files cross to the other app through the runtime's `FilesProvider`: a
+//! new file it writes its answer to ([`output_file`]), or a file of the
+//! app's own storage it reads ([`content_uri`]).
+//!
 //! ```no_run
 //! // The library of the `nsh-platform-android` crate is `nsh`.
 //! use nsh::{activity, jni::objects::JValue};
@@ -36,7 +40,7 @@
 use std::{
     fmt,
     future::Future,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         Mutex,
         atomic::{AtomicI64, Ordering},
@@ -204,6 +208,65 @@ pub fn output_file(env: &mut JNIEnv<'_>, name: &str) -> Result<OutputFile, Activ
         Ok(None) => Err(ActivityError::Failed(
             "no output file can be made (no NshView yet, or the cache is not writable)".into(),
         )),
+        Err(err) => {
+            clear_exception(env);
+            Err(ActivityError::Failed(err.to_string()))
+        }
+    }
+}
+
+/// A file of the app's own storage as another app reads it: the
+/// `content:` URI the runtime's `FilesProvider` serves it through and its
+/// type ([`content_uri`]).
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct ContentUri {
+    /// The `content:` URI (`android.net.Uri`), for an intent's data, its
+    /// `EXTRA_STREAM` or its `ClipData`; the intent grants the other app
+    /// reading it with `FLAG_GRANT_READ_URI_PERMISSION`.
+    pub uri: GlobalRef,
+    /// The file's MIME type by its extension (`application/pdf`),
+    /// `application/octet-stream` for one Android does not know.
+    pub mime: String,
+}
+
+/// The `content:` URI another app reads the file at `path` through, for
+/// Rust code that hands a file to another app (a share sheet, an "open
+/// with" chooser, a mail's attachment): `None` when `path` is not a file
+/// of the app's own storage (its files, cache and no-backup directories
+/// and their external counterparts, where `${dataDir}` is unless an
+/// embedding app chose another), which is all the runtime's
+/// `FilesProvider` serves. Check the app may read the file
+/// first (`System::readable_file` in a module). Any thread.
+pub fn content_uri(env: &mut JNIEnv<'_>, path: &Path) -> Result<Option<ContentUri>, ActivityError> {
+    let made = (|| -> jni::errors::Result<Option<Option<ContentUri>>> {
+        let path = env.new_string(path.to_string_lossy())?;
+        // SAFETY: the signature checked in `java::init`.
+        let made = unsafe {
+            env.call_static_method_unchecked(
+                <&JClass<'_>>::from(java().activities.as_obj()),
+                java().activities_content_uri,
+                ReturnType::Array,
+                &[JValue::Object(&path).as_jni()],
+            )
+        }?
+        .l()?;
+        if made.is_null() {
+            return Ok(None);
+        }
+        let made = JObjectArray::from(made);
+        if env.get_array_length(&made)? < 2 {
+            return Ok(Some(None));
+        }
+        let uri = env.get_object_array_element(&made, 0)?;
+        let uri = env.new_global_ref(uri)?;
+        let mime: JString<'_> = env.get_object_array_element(&made, 1)?.into();
+        let mime = String::from(env.get_string(&mime)?);
+        Ok(Some(Some(ContentUri { uri, mime })))
+    })();
+    match made {
+        Ok(Some(served)) => Ok(served),
+        Ok(None) => Err(ActivityError::NotStarted),
         Err(err) => {
             clear_exception(env);
             Err(ActivityError::Failed(err.to_string()))

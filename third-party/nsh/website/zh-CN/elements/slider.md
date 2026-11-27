@@ -137,6 +137,7 @@ const price = signal<[number, number]>([200, 800]);
 | `indicatorClass`、`indicatorStyle` | `.indicator_style(\|s\| ..)` | `string`、`StyleProp<ViewStyle>` | 无 | 指示条：映射数值的滑轨。 |
 | `rangeClass`、`rangeStyle` | `.range_style(\|s\| ..)` | `string`、`StyleProp<ViewStyle>` | 无 | 范围：从 `min` 到滑块（范围时在两个滑块之间），由滑块放置。 |
 | `thumbClass`、`thumbStyle` | `.thumb_style(\|s\| ..)` | `string`、`StyleProp<ViewStyle>` | 无 | 每个滑块，以它的值为中心。 |
+| `renderThumb` | `.render_thumb(\|thumb: &SliderThumbContext\| ..)` | `(thumb: SliderThumbContext) => JSX.Element` | 无 | 每个滑块里的内容，按它是哪个滑块绘制（`{ start }`）：例如数值气泡。见[滑块里的内容](#滑块里的内容)。 |
 | `children` | `.child(..)` | `JSX.Element` | 无 | 轨道之后的内容：标签、文字形式的数值。 |
 | `class`、`style` | 样式方法 | `string`、`StyleProp<ViewStyle>` | 无 | 滑块本身：包住轨道和标签的列（或行）。 |
 
@@ -156,6 +157,7 @@ const price = signal<[number, number]>([200, 800]);
 | 指示条 | 轨道内 | `indicatorClass`、`indicatorStyle` |
 | 范围 | 指示条内，按数值放置 | `rangeClass`、`rangeStyle` |
 | 滑块（范围时两个） | 指示条内，以它的值为中心 | `thumbClass`、`thumbStyle` |
+| 滑块里的内容 | 滑块内，覆盖它的区域 | 它自己的元素（`renderThumb`） |
 | 标签 | 滑块控件内，轨道之后 | 它自己的元素（`children`） |
 
 轨道接收按压和拖动。指示条的长度就是数值范围，`min` 在它的起始边（垂直时在底部）；滑块把范围和滑块放在指示条上，无论大小，滑块都以它的值为中心。有两种布局：
@@ -165,12 +167,52 @@ const price = signal<[number, number]>([200, 800]);
 
 部件显示的状态：
 
-- 滑块：指针悬停时 `hover:`，拖动时 `active:`，获得键盘焦点时 `focus-visible:`（拖动之后也有 `focus:`），以及 `disabled:`。
+- 滑块：指针悬停时 `hover:`，拖动时 `active:`，按压它或按压轨道让它移动时 `data-dragging:`（从按下、尚未移动时起，到抬起为止），获得键盘焦点时
+  `focus-visible:`（拖动之后也有 `focus:`），以及 `disabled:`。每个滑块都是一个 `group`，所以它里面的内容可以用 `group-hover:`、`group-active:`、
+  `group-data-dragging:` 和 `group-focus-visible:`。
 - 轨道：按压轨道并拖动时 `active:`；它是一个 `group`，所以指示条、范围和滑块可以用 `group-hover:` 和 `group-active:`。
 - 每个部件：滑块禁用时 `disabled:`。
 
 滑块随数值移动，拖动时立即跟随。滑块各状态的动效由应用决定（例如 `transition` 让滑块在 `hover:` 和 `active:` 时变亮），
 `motion-reduce:` 为要求减少动效的用户保持静止。键盘焦点在滑块上：键盘把焦点移到滑块时，滑块的 `focus-visible:` 类给它加上焦点环；按下或拖动之后不显示。
+
+## 滑块里的内容
+
+`renderThumb` 在每个滑块里绘制内容：滑块上方显示数值的气泡、握把等。它得到的是自己画在哪个滑块里（范围起点的滑块 `start` 为
+`true`），而不是滑块的状态：内容通过 `group-*:` 类显示所在滑块自己的状态，所以范围的气泡只出现在指针所在、正在拖动（按压轨道时拖动较近的滑块）或键盘正在移动的那个滑块上方，另一个不显示。
+内容和滑块在与指针同一帧移动，状态变化由原生层处理，悬停、按压和拖动都不会重新绘制内容。内容排布在滑块的区域里、覆盖在滑块上（`absolute`
+的气泡相对滑块定位），并且不接收指针：滑块旁边的按压会到达轨道。读屏软件会跳过它：每个滑块自己告诉读屏软件它的标签和数值。
+
+```tsx
+const price = signal<[number, number]>([200, 800]);
+
+<Slider
+  value={price()}
+  onChange={({ value }) => price.set(value as [number, number])}
+  max={1000}
+  step={10}
+  accessibilityLabel="最高价格"
+  startAccessibilityLabel="最低价格"
+  trackClass="h-8 justify-center"
+  indicatorClass="h-1.5 rounded-full bg-muted"
+  rangeClass="rounded-full bg-primary"
+  thumbClass="size-4 rounded-full bg-background shadow"
+  renderThumb={({ start }) => (
+    <View class="absolute bottom-6 left-1/2 -translate-x-1/2 rounded-md bg-foreground px-1.5 py-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-data-dragging:opacity-100 group-focus-visible:opacity-100 motion-reduce:transition-none">
+      <Text class="whitespace-nowrap text-xs text-background">{`¥${price()[start ? 0 : 1]}`}</Text>
+    </View>
+  )}
+/>;
+```
+
+文字跟随应用的值；在终端里滑块只显示它的字形。示例中的几处细节：
+
+- 范围的终点滑块绘制在起点滑块之上，它的内容也是。滑块上方的气泡不会碰到另一个滑块；但两个值相遇、两个气泡又同时显示时（指针在一个滑块上，
+  键盘焦点在另一个上），终点的气泡会盖住起点的。要让两个都看得见，可以把起点的气泡放在轨道下方：
+  ``class={`absolute ${start ? "top-6" : "bottom-6"} ...`}``。
+- `whitespace-nowrap` 让数值保持一行：气泡从滑块的区域定位，而滑块比文字窄。
+- 离内容最近的 `group` 是它所在的滑块，所以内容里的 `group-hover:` 跟随滑块。如果内容要跟随应用在滑块外面的 `group`
+  （例如指针移到卡片上时显示数值），就给它命名：卡片上写 `group/card`，内容里写 `group-hover/card:`。
 
 ## 键盘
 

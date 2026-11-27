@@ -173,6 +173,7 @@ pub(crate) fn decode_command<'js>(
         "focus" => Command::Focus,
         "blur" => Command::Blur,
         "clearSelection" => Command::ClearSelection,
+        "selectAll" => Command::SelectAll,
         "reload" => Command::Reload,
         "goBack" => Command::GoBack,
         "goForward" => Command::GoForward,

@@ -6,23 +6,31 @@
 //! It stays in the possible state while tracking and only recognizes on
 //! release, so scroll views and pans on the same touches win whenever they
 //! start first; it then fails and reports `onPressUp`.
+//!
+//! On an input it hears the touches on the input's own field or text area,
+//! which keeps them (the caret, a selection, the edit menu): a tap there is
+//! the input's press, a drag or a touch held there is not.
 
 use std::cell::{Cell, RefCell};
 
 use dispatch2::{DispatchQueue, DispatchTime, MainThreadBound};
-use nsh_core::{EventKind, NodeId, TextLink};
+use nsh_core::{EventKind, NodeId, TextLink, input::PRESS_SLOP};
 use objc2::{
     ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send,
     rc::Retained,
 };
-use objc2_core_foundation::CGPoint;
+use objc2_core_foundation::{CGFloat, CGPoint};
 use objc2_foundation::{NSObject, NSObjectProtocol, NSSet};
 use objc2_ui_kit::{
     UIControl, UIEvent, UIGestureRecognizer, UIGestureRecognizerState, UINavigationBar,
     UIScrollView, UITapGestureRecognizer, UITouch, UIView, UIWindow,
 };
 
-use crate::{target::EventTarget, text_view::TextView};
+use crate::{
+    input::{Area, Field},
+    target::EventTarget,
+    text_view::TextView,
+};
 
 /// Delay before `onPressDown` inside scroll views, so starting a scroll does
 /// not flash pressed states.
@@ -61,6 +69,9 @@ pub(crate) struct PressIvars {
     /// The pressable text span the current touch is on: its presses go
     /// there.
     link: Cell<Option<TextLink>>,
+    /// The current touch is on the field or text area of the input the
+    /// recognizer is on ([`own_editor`]).
+    editor: Cell<bool>,
     /// Where the touch is, and what it began with.
     at: Cell<PressAt>,
 }
@@ -96,7 +107,11 @@ define_class!(
                 return self.set_state(UIGestureRecognizerState::Failed);
             }
             let ivars = self.ivars();
-            ivars.tap_only.set(ivars.target.tap_only(&view));
+            let editor = own_editor(&touch, &view);
+            ivars.editor.set(editor);
+            // A touch on an input is never one that only dismisses the
+            // keyboard.
+            ivars.tap_only.set(!editor && ivars.target.tap_only(&view));
             let link = view
                 .downcast_ref::<TextView>()
                 .and_then(|t| t.link_at(touch.locationInView(Some(&view))));
@@ -133,6 +148,13 @@ define_class!(
             } else {
                 self.after(delay, generation, |r| r.press_in());
             }
+            if editor && !long_press {
+                // A touch held on the text is the field's (the loupe, the
+                // edit menu), not a press.
+                self.after(ivars.long_press_delay.get(), generation, |r| {
+                    r.set_state(UIGestureRecognizerState::Failed);
+                });
+            }
             if long_press {
                 self.after(ivars.long_press_delay.get(), generation, |r| {
                     if !r.ivars().pressed.get() {
@@ -155,7 +177,12 @@ define_class!(
                 && p.y >= -RETENTION
                 && p.x <= b.size.width + RETENTION
                 && p.y <= b.size.height + RETENTION;
-            if !inside {
+            // A drag on the text moves the caret or the selection: no
+            // press, as on the other platforms.
+            let start = self.ivars().start.get();
+            let dragged = self.ivars().editor.get()
+                && (p.x - start.x).hypot(p.y - start.y) > CGFloat::from(PRESS_SLOP.0);
+            if !inside || dragged {
                 self.set_state(UIGestureRecognizerState::Failed);
             }
         }
@@ -198,17 +225,26 @@ define_class!(
                 self.report(Report::PressOut);
             }
             ivars.link.set(None);
+            ivars.editor.set(false);
         }
 
         #[unsafe(method(canBePreventedByGestureRecognizer:))]
         fn can_be_prevented(&self, other: &UIGestureRecognizer) -> bool {
+            // An input's field places the caret, selects and opens its
+            // menus with recognizers of its own, which act on the touch
+            // too: the press decides by itself whether the touch was a
+            // tap (`touchesMoved:`, the long press timer).
+            let field = self.ivars().editor.get()
+                && self.view().zip(other.view()).is_some_and(|(view, on)| {
+                    !std::ptr::eq::<UIView>(&*on, &*view) && on.isDescendantOfView(&view)
+                });
             // Taps UIKit attaches to the window and the navigation bar skip
             // `UIControl`s, and a press stands in for one: on iOS 26+ their
             // top-edge tap interaction (`_UIDoubleTapInteraction`, cancels
             // touches, never simultaneous) would otherwise swallow every
             // press near the top, such as a navigation bar's back button or
             // a view the app put in the header.
-            !is_system_tap(other)
+            !field && !is_system_tap(other)
         }
 
         #[unsafe(method(shouldBeRequiredToFailByGestureRecognizer:))]
@@ -252,6 +288,7 @@ impl PressRecognizer {
             taps: Cell::new(false),
             deeper_long: RefCell::new(None),
             link: Cell::new(None),
+            editor: Cell::new(false),
             at: Cell::new(PressAt::default()),
         });
         // SAFETY: the designated initializer; `handlePress:` is implemented by
@@ -286,6 +323,12 @@ impl PressRecognizer {
     /// The pressable text span the current press is on.
     pub(crate) fn link(&self) -> Option<TextLink> {
         self.ivars().link.get()
+    }
+
+    /// Whether the current press is on its input's field or text area
+    /// ([`own_editor`]).
+    pub(crate) fn on_editor(&self) -> bool {
+        self.ivars().editor.get()
     }
 
     /// Where the current press's touch is.
@@ -375,6 +418,13 @@ impl PressRecognizer {
             if std::ptr::eq::<UIView>(&*v, view) {
                 return false;
             }
+            // A control, or an input's field or text area, handles its
+            // touches; the input's own editor's are the input's presses.
+            if is_editor(&v) {
+                return !v
+                    .superview()
+                    .is_some_and(|s| std::ptr::eq::<UIView>(&*s, view));
+            }
             if v.isKindOfClass(UIControl::class()) {
                 return true;
             }
@@ -432,6 +482,30 @@ fn is_system_tap(recognizer: &UIGestureRecognizer) -> bool {
         && recognizer.view().is_some_and(|view| {
             view.isKindOfClass(UIWindow::class()) || view.isKindOfClass(UINavigationBar::class())
         })
+}
+
+/// Whether `view` is an input's field or text area.
+fn is_editor(view: &UIView) -> bool {
+    view.downcast_ref::<Field>().is_some() || view.downcast_ref::<Area>().is_some()
+}
+
+/// Whether `touch` is on the field or text area of the input whose view is
+/// `view`: the input hears it as a press, as on the other platforms, after
+/// the focus the touch gives the field (`EventTarget::handle_press`).
+fn own_editor(touch: &UITouch, view: &UIView) -> bool {
+    let mut current = touch.view();
+    while let Some(v) = current {
+        if std::ptr::eq::<UIView>(&*v, view) {
+            return false;
+        }
+        if is_editor(&v) {
+            return v
+                .superview()
+                .is_some_and(|s| std::ptr::eq::<UIView>(&*s, view));
+        }
+        current = v.superview();
+    }
+    false
 }
 
 fn inside_scroll_view(view: &UIView) -> bool {

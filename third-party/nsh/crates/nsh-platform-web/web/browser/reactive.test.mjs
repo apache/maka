@@ -658,6 +658,45 @@ test("a list separator that is one If follows its condition after rows move", { 
   close();
 });
 
+test("list reads props.each once per reactive change across empty, separator and viewability", { skip: !path }, async () => {
+  const { createLists } = await import("./list.js");
+  const { api, invoke, values, dom, close } = await fixture();
+  const lists = createLists(invoke, values, api, dom, () => true, () => {});
+  const data = api.signal([{ id: "a" }, { id: "b" }, { id: "c" }]);
+  const reports = [];
+  let reads = 0, node, dispose;
+  api.root(stop => {
+    dispose = stop;
+    node = lists.render({
+      get each() { reads++; return data(); },
+      keyExtractor: item => item.id,
+      empty: () => "empty",
+      separator: () => "-",
+      onViewableItemsChange: info => reports.push(info),
+      children: item => () => item()?.id,
+    });
+  });
+  assert.equal(reads, 1);
+  const id = values.nodeIds.get(node);
+  lists.bind(id, [[0, 0], [1, 1], [2, 2]]);
+  lists.bind(id, [[0, 2], [1, 1], [2, 0]]);
+  assert.equal(reads, 1);
+  dom.event(id, "onViewableItemsChange", { first: 0, last: 1 });
+  dom.event(id, "onViewableItemsChange", { first: 1, last: 2 });
+  assert.equal(reads, 1);
+  assert.deepEqual(reports[1].viewableItems.map(t => t.key), ["b", "c"]);
+  data.set([{ id: "x" }, { id: "y" }]);
+  assert.equal(reads, 2);
+  lists.bind(id, [[0, 0], [1, 1]]);
+  dom.event(id, "onViewableItemsChange", { first: 0, last: 1 });
+  assert.equal(reads, 2);
+  assert.deepEqual(reports[2].viewableItems.map(t => t.key), ["x", "y"]);
+  data.set([]);
+  assert.equal(reads, 3);
+  dispose();
+  close();
+});
+
 test("resources cancel superseded loads, retain values, and ignore settlement after disposal", { skip: !path }, async () => {
   const { createResource } = await import("./resource.js");
   const { api, invoke, close } = await fixture();

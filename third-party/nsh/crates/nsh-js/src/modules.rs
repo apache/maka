@@ -491,7 +491,7 @@ pub(crate) const MODULES: &[NativeModule] = &[
         exports: crate::i18n::EXPORTS,
         also: &[],
         moved_to: None,
-        types: "",
+        types: decl!(crate::i18n::TYPES),
     },
     NativeModule {
         name: "nsh/mobile",

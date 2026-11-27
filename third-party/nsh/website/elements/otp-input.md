@@ -1,6 +1,6 @@
 ---
 title: OtpInput
-description: "The OtpInput component: a fixed-length numeric one-time code typed, pasted or autofilled into one native field, shown in cells, groups and a caret the app styles."
+description: "The OtpInput component: a fixed-length one-time code (digits, or letters and digits) typed, pasted or autofilled into one native field, shown in cells, groups and a caret the app styles."
 group: base
 demo: el-otp-input
 ---
@@ -97,6 +97,7 @@ What the user does is read from the field, with the caret always at its end:
 | Types a full-width digit (`０`–`９`, an East Asian input method's) | The ASCII digit is added. |
 | Types anything else | Nothing changes; the field drops it. |
 | Presses Backspace | The last digit is removed. |
+| With `validationType="alphanumeric"`: types a letter, in either case | It is added upper-cased (`a` as `A`), as a digit is; full-width letters (`ａ`, `Ｂ`) as ASCII ones. |
 | Pastes, or the system autofills a code | Its digits are added the same way; text with `length` digits or more (`123-456`, a message's code) replaces the code with its first `length` digits. |
 
 `onChange` reports each change with the new code, and `onComplete` follows it when the change filled the last cell,
@@ -107,6 +108,7 @@ so the app verifies the code there.
 | Prop | Rust | Type | Default | Description |
 |---|---|---|---|---|
 | `length` | `.length(..)` | `number` | required | How many digits the code has: one cell each. |
+| `validationType` | `.validation_type(..)` | `"numeric" \| "alphanumeric"` | `"numeric"` | Which characters the code takes. `"numeric"`: digits, on the number pad. `"alphanumeric"`: ASCII letters and digits, on the full keyboard; letters are upper-cased, so the cells show and `onChange` reports `AB12CD34` for `ab12cd34`, and the app compares codes without case. |
 | `value` | `.value(..)` | `string` | none | The code, controlled by the app (shown as it is). Without it the input keeps its own. |
 | `defaultValue` | `.default_value(..)` | `string` | none | The code at first, while `value` is not set. |
 | `masked` | `.masked(..)` | `boolean` | `false` | Filled cells show a bullet instead of their digit, and the field is a secure one: screen readers do not read the code, and the system keeps it out of its suggestions. |
@@ -171,3 +173,5 @@ See [Accessibility](../docs/accessibility.md) for labels, roles and announcement
   the number keyboard comes up.
 - macOS, Windows, Linux and the web: typing and paste go to the field (in the browser, with `inputmode="numeric"`
   for a phone's number keyboard), and the I-beam pointer shows over the cells.
+- With `validationType="alphanumeric"` the full keyboard comes up instead of the number pad (`inputmode="text"` in
+  the browser), with capitals on where the platform offers it (`autoCapitalize="characters"`).

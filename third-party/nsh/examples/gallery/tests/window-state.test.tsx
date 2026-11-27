@@ -28,6 +28,16 @@ test("state() reports a window, and its requests change it", async () => {
   await app.waitFor("text:/^Notes: mode=normal minimized=false visible=true /");
 });
 
+test("focus shows a hidden window", async () => {
+  const app = await open(FIXTURE, OPTIONS);
+  await app.press("Open notes");
+  await app.waitFor("text:/^Notes: .*visible=true /");
+  await app.press("Hide notes");
+  await app.waitFor("text:/^Notes: .*visible=false /");
+  await app.press("Focus notes");
+  await app.waitFor("text:/^Notes: .*visible=true focused=true /");
+});
+
 test("a window opens at the defaultPosition the app gives it", async () => {
   const app = await open(FIXTURE, OPTIONS);
   await app.press("Open notes");

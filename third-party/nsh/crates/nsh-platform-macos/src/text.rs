@@ -44,7 +44,7 @@ use rustc_hash::FxHashMap;
 
 mod raster;
 
-pub(crate) use raster::{Rasters, prerender};
+pub(crate) use raster::{Rasters, State as RasterState, prerender};
 
 /// Identifies a font: size bits, weight, family, italic, OpenType features.
 type FontKey = (u32, u16, Option<FontFamily>, bool, u8);
@@ -337,6 +337,11 @@ pub struct Prepared {
     /// `writingDirection` (`AttributedText::writing_direction`): right to
     /// left, left to right, or from the content (`None`).
     writing_direction: Option<bool>,
+    /// How far the root strut's baseline is below its line's top with a
+    /// fixed `lineHeight` (`None`: no fixed line height).
+    strut_up: Option<CGFloat>,
+    /// The root strut font's size.
+    strut_size: CGFloat,
     /// Attachments: placeholder offset (UTF-16) and how far its top is
     /// above the baseline (`TextAttachment::ascent`).
     attachments: Vec<(CFIndex, CGFloat)>,
@@ -347,6 +352,9 @@ pub struct Prepared {
 pub(crate) struct LaidLine {
     pub(crate) line: CFRetained<CTLine>,
     pub(crate) origin: CGPoint,
+    /// The ascent the root strut reserves when the line was moved down to
+    /// its baseline (`None`: CoreText's own metrics).
+    strut_ascent: Option<CGFloat>,
     /// Its characters in the text (before any ellipsis).
     pub(crate) range: CFRange,
     /// How many of its last characters (UTF-16 units) are a hard line break
@@ -372,6 +380,8 @@ pub(crate) struct CoreTextLayout {
     align: TextAlign,
     rtl: bool,
     writing_direction: Option<bool>,
+    strut_up: Option<CGFloat>,
+    strut_size: CGFloat,
     placeholders: Vec<(CFIndex, CGFloat)>,
     size: Size<Points>,
 }
@@ -391,6 +401,8 @@ impl std::ops::Deref for CoreTextLayout {
                 align: self.align,
                 rtl: self.rtl,
                 writing_direction: self.writing_direction,
+                strut_up: self.strut_up,
+                strut_size: self.strut_size,
                 attachments: self.placeholders.clone(),
             };
             lay_out(&prepared, self.size)
@@ -443,7 +455,7 @@ impl CoreTextEngine {
             .map_or_else(Default::default, |s| s.style);
         let f = self.fonts.get(&style);
         // SAFETY: a valid font.
-        let (ascent, descent, leading, x) =
+        let (ascent, descent, _leading, x) =
             unsafe { (f.ascent(), f.descent(), f.leading(), f.x_height()) };
         let align = alignments.get(a.index);
         let font = if align == nsh_core::VerticalAlign::Baseline {
@@ -469,8 +481,17 @@ impl CoreTextEngine {
         if line_height <= 0.0 {
             return (top, up, down);
         }
-        let half = (line_height - (ascent + descent + leading)) / 2.0;
-        let (strut_up, strut_down) = (ascent + half, descent + half);
+        let strut_font = self.fonts.get(&text.paragraph_strut_or_first());
+        // SAFETY: a valid font.
+        let (strut_ascent, strut_descent, strut_leading) = unsafe {
+            (
+                strut_font.ascent(),
+                strut_font.descent(),
+                strut_font.leading(),
+            )
+        };
+        let half = (line_height - (strut_ascent + strut_descent + strut_leading)) / 2.0;
+        let (strut_up, strut_down) = (strut_ascent + half, strut_descent + half);
         if align == nsh_core::VerticalAlign::Middle {
             let grow = (up - strut_up).max(down - strut_down).max(0.0);
             (top, strut_up + grow, strut_down + grow)
@@ -782,9 +803,9 @@ fn attachment_points(
     points
 }
 
-/// The text's fixed `lineHeight` (its first span's; 0: none).
+/// The text's fixed `lineHeight`: its root paragraph strut's (0: none).
 fn line_height(text: &AttributedText) -> CGFloat {
-    text.spans.first().map_or(0.0, |s| s.style.line_height.0) as CGFloat
+    text.paragraph_strut_or_first().line_height.0 as CGFloat
 }
 
 /// The paragraph settings of a text: its alignment, writing direction and
@@ -1173,6 +1194,20 @@ impl TextEngine for CoreTextEngine {
             align: text.align,
             rtl: text.rtl,
             writing_direction: text.writing_direction,
+            strut_size: text.paragraph_strut_or_first().font_size.0 as CGFloat,
+            strut_up: if line_height(text) > 0.0 {
+                let style = text.paragraph_strut_or_first();
+                let font = self.fonts.get(&style);
+                // SAFETY: a valid font.
+                let (ascent, descent, leading) =
+                    unsafe { (font.ascent(), font.descent(), font.leading()) };
+                // CoreText reports fixed-height line ascents in whole
+                // points; quantize the strut the same way so a line of only
+                // smaller spans lands exactly on a root-font line's baseline.
+                Some((ascent + (line_height(text) - (ascent + descent + leading)) / 2.0).round())
+            } else {
+                None
+            },
             attachments: text
                 .attachments
                 .iter()
@@ -1247,6 +1282,8 @@ impl TextEngine for CoreTextEngine {
             align: prepared.align,
             rtl: prepared.rtl,
             writing_direction: prepared.writing_direction,
+            strut_up: prepared.strut_up,
+            strut_size: prepared.strut_size,
             placeholders: prepared.attachments.clone(),
             size,
         };
@@ -1281,6 +1318,11 @@ impl TextEngine for CoreTextEngine {
                     l.line
                         .typographic_bounds(&mut ascent, &mut descent, &mut leading)
                 };
+                if let Some(strut) = l.strut_ascent {
+                    let total = ascent + descent + leading;
+                    ascent = strut;
+                    descent = (total - leading - strut).max(0.0);
+                }
                 let (cap, x_height) =
                     line_font(&l.line).map_or((ascent * 0.7, ascent * 0.5), |f| {
                         // SAFETY: a valid font.
@@ -1399,6 +1441,34 @@ fn has_strikethrough(prepared: &Prepared) -> bool {
     false
 }
 
+/// Whether `line` has a run whose own box already reaches past the root
+/// strut: an attachment delegate, or a larger font the fixed line height
+/// holds as it always has.
+fn reaches_past_strut(line: &CTLine, strut_size: CGFloat) -> bool {
+    // SAFETY: the line's own runs and their attribute dictionaries.
+    unsafe {
+        let runs = line.glyph_runs();
+        for i in 0..runs.count() {
+            let run = &*runs.value_at_index(i).cast::<objc2_core_text::CTRun>();
+            let key: *const CFString = kCTRunDelegateAttributeName;
+            if run.attributes().contains_ptr_key(key.cast()) {
+                return true;
+            }
+            let attributes = run.attributes();
+            let attributes: &objc2_core_foundation::CFDictionary<CFString, CFType> =
+                attributes.cast_unchecked();
+            if let Some(font) = attributes
+                .get(kCTFontAttributeName)
+                .and_then(|f| f.downcast::<CTFont>().ok())
+                && font.size() > strut_size + 0.01
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Typesets a text at its final size ([`CoreTextLayout`]).
 fn lay_out(prepared: &Prepared, size: Size<Points>) -> LaidLines {
     let _typesetting = prepared
@@ -1459,6 +1529,7 @@ fn lay_out(prepared: &Prepared, size: Size<Points>) -> LaidLines {
                 LaidLine {
                     line,
                     origin: origins[i as usize],
+                    strut_ascent: None,
                     range,
                     break_len: break_len(attributed, range),
                     hit_end: range.location + range.length,
@@ -1502,6 +1573,28 @@ fn lay_out(prepared: &Prepared, size: Size<Points>) -> LaidLines {
             last.line = truncated;
             last.hit_end = prepared.length;
             last.break_len = 0;
+        }
+    }
+    // A line made only of smaller inline spans still contains the root
+    // strut. CoreText centers the line's own extent in the fixed height, so
+    // move such a line down to the strut's baseline; a taller span or
+    // attachment already reaches at least that far and is left as laid out.
+    if let Some(strut_up) = prepared.strut_up {
+        for line in &mut lines {
+            let (mut ascent, mut descent, mut leading) = (0.0, 0.0, 0.0);
+            // SAFETY: a valid line and out pointers.
+            unsafe {
+                line.line
+                    .typographic_bounds(&mut ascent, &mut descent, &mut leading)
+            };
+            let truncated = line.hit_end > line.range.location + line.range.length;
+            if ascent < strut_up
+                && !truncated
+                && !reaches_past_strut(&line.line, prepared.strut_size)
+            {
+                line.origin.y -= strut_up - ascent;
+                line.strut_ascent = Some(strut_up);
+            }
         }
     }
     let attachments = if prepared.attachments.is_empty() {
@@ -2050,6 +2143,11 @@ impl<'a> LineBox<'a> {
             l.line
                 .typographic_bounds(&mut ascent, &mut descent, &mut leading)
         };
+        if let Some(strut) = l.strut_ascent {
+            let total = ascent + descent + leading;
+            ascent = strut;
+            descent = (total - leading - strut).max(0.0);
+        }
         let start = l.range.location.max(0);
         let end = l.hit_end.max(start);
         LineBox {
@@ -4758,6 +4856,84 @@ mod first_baseline {
         );
         let (large, _) = baseline(24.0);
         assert!(large > small * 1.5, "{small} {large}");
+    }
+
+    /// The paragraph's fixed line height is the root strut's, not whatever
+    /// inline span happens to start the text (a small inline-code span).
+    #[test]
+    fn the_paragraph_line_height_is_the_root_struts() {
+        let root = ResolvedTextStyle {
+            font_size: Points(14.0),
+            line_height: Points(22.75),
+            ..Default::default()
+        };
+        let small = ResolvedTextStyle {
+            font_size: Points(12.6),
+            line_height: Points(20.475),
+            ..Default::default()
+        };
+        let text = |first_small| {
+            let mut text = AttributedText {
+                paragraph_strut: Some(root),
+                ..Default::default()
+            };
+            if first_small {
+                text.push("`code`", small);
+                text.push(" 中文正文", root);
+            } else {
+                text.push("中文正文 ", root);
+                text.push("`code`", small);
+            }
+            text
+        };
+        let engine = CoreTextEngine::default();
+        let measure = |first_small| {
+            let prepared = engine.prepare(&text(first_small));
+            let size = engine.measure(&prepared, Some(Points(300.0)));
+            let baseline = engine
+                .first_baseline(&prepared, Points(300.0))
+                .expect("a first line");
+            (size.height.0, baseline.0)
+        };
+        let small_first = measure(true);
+        let plain_first = measure(false);
+        assert!(
+            (small_first.0 - plain_first.0).abs() < 0.01,
+            "height: small first {small_first:?}, plain first {plain_first:?}"
+        );
+        assert!(
+            (small_first.1 - plain_first.1).abs() < 0.01,
+            "baseline: small first {small_first:?}, plain first {plain_first:?}"
+        );
+        assert!(
+            (plain_first.0 - 22.75f32.ceil()).abs() < 0.01,
+            "{plain_first:?}"
+        );
+
+        // Even when no root-sized glyph is present, the strut keeps the
+        // smaller inline box from lowering the paragraph or moving its baseline.
+        let only = |small_style| {
+            let mut text = AttributedText {
+                paragraph_strut: Some(root),
+                ..Default::default()
+            };
+            text.push("`code`", if small_style { small } else { root });
+            text
+        };
+        let measure_only = |small_style| {
+            let prepared = engine.prepare(&only(small_style));
+            let size = engine.measure(&prepared, Some(Points(300.0)));
+            let baseline = engine
+                .first_baseline(&prepared, Points(300.0))
+                .expect("a first line");
+            (size.height.0, baseline.0)
+        };
+        let small_only = measure_only(true);
+        let root_only = measure_only(false);
+        assert!(
+            (small_only.0 - root_only.0).abs() < 0.01 && (small_only.1 - root_only.1).abs() < 0.01,
+            "small only {small_only:?}, root only {root_only:?}"
+        );
     }
 }
 

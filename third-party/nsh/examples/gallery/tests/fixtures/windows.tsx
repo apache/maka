@@ -175,6 +175,8 @@ function Main() {
       <View style={{ position: "absolute", right: 12, top: 12, width: 312, flexDirection: "row", flexWrap: "wrap", gap: 4 }}>
         <Action label="Open notes" onPress={openNotes} />
         <Action label="Close notes" onPress={() => notes()?.close()} />
+        <Action label="Hide notes" onPress={() => notes()?.hide()} />
+        <Action label="Focus notes" onPress={() => notes()?.focus()} />
         <Action label="Resize notes" onPress={() => notes()?.setBounds({ size: { width: 360, height: 240 } })} />
         <Action label="Fit notes" onPress={() => notes()?.set({ sizeToContent: true })} />
         <Action label="Maximize notes" onPress={() => notes()?.setMode("maximized")} />

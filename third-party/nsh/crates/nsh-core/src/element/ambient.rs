@@ -940,74 +940,6 @@ pub fn pick_screen_color() -> Answer<Option<crate::Hsla>> {
     answer
 }
 
-/// Shows the system's share sheet for `request` (TS: `Share.show`;
-/// [`crate::share`]): text, a link or local files the user sends to
-/// another app, a message or mail. To await in a task: the
-/// [`ShareOutcome`](crate::share::ShareOutcome) says whether the user
-/// shared or dismissed it; it fails with the
-/// [`ShareError`](crate::share::ShareError) `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`
-/// where the platform shows no share sheet ([`share_available`]),
-/// `ERR_ACCESS_DENIED` where the app's capabilities do not grant `share`,
-/// and with no code for a request [`ShareRequest::check`](crate::share::ShareRequest::check)
-/// refuses or the platform could not share.
-pub fn share(
-    request: crate::share::ShareRequest,
-) -> Answer<Result<crate::share::ShareOutcome, crate::share::ShareError>> {
-    let (answer, action) = super::services::share(request);
-    act(action);
-    answer
-}
-
-/// Opens a web sign-in session for `request` ([`crate::auth_session`]):
-/// the provider's sign-in page, which redirects to a URL of the request's
-/// callback scheme when the user is done. iOS shows it in an
-/// `ASWebAuthenticationSession`, Android in a Custom Tab, the macOS,
-/// Windows and Linux backends in the system browser. To await in a task: the
-/// [`AuthSessionOutcome`](crate::auth_session::AuthSessionOutcome) is the
-/// callback URL, or a cancellation (the user closed the page or came back
-/// without signing in, or a later session replaced it). Outside iOS the
-/// callback comes back as a link of a scheme the app claims (`nsh.json`
-/// `schemes`), which the session takes instead of
-/// [`next_url_scheme_open`]; where nothing brings it back (an unclaimed
-/// scheme, or a platform that hears no links of the app's schemes: the
-/// web, the GPUI and terminal backends), the session fails at once with the
-/// [`AuthSessionError`](crate::auth_session::AuthSessionError)
-/// `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`. It fails with `ERR_ACCESS_DENIED`
-/// where the app's `openUrl` capability does not grant the page's URL, and
-/// with no code for a request
-/// [`AuthSessionRequest::check`](crate::auth_session::AuthSessionRequest::check)
-/// refuses or a page the platform could not show.
-pub fn open_auth_session(
-    request: crate::auth_session::AuthSessionRequest,
-) -> Answer<Result<crate::auth_session::AuthSessionOutcome, crate::auth_session::AuthSessionError>>
-{
-    let (answer, slot) = Answer::new();
-    act(Action::AuthSession(request, slot));
-    answer
-}
-
-/// Closes the app's web sign-in session ([`open_auth_session`]) while it
-/// still waits, as when the app learned the user signed in some other way
-/// (a device code approved on the page, which never redirects back): its
-/// answer resolves now as
-/// [`Cancelled`](crate::auth_session::AuthSessionOutcome::Cancelled), and
-/// iOS and Android take the page off the screen, bringing the app back.
-/// A page in the system browser elsewhere stays open. Only the app's own
-/// session closes; with none waiting, nothing happens.
-pub fn close_auth_session() {
-    act(Action::CloseAuthSession);
-}
-
-/// Whether the system's share sheet shows here (TS: `Share.available()`):
-/// the platform has one (iOS, Android, macOS, browsers with
-/// `navigator.share`) and the app's capabilities grant `share`. To await
-/// in a task.
-pub fn share_available() -> Answer<bool> {
-    let (answer, slot) = Answer::new();
-    act(Action::ShareAvailable(slot));
-    answer
-}
-
 /// The `file:` URLs of the local files on the system clipboard (files
 /// copied in a file manager; TS: `Clipboard.readFiles`), to await in a task.
 pub fn clipboard_files() -> Answer<Vec<String>> {
@@ -1204,8 +1136,9 @@ pub fn next_notification_press() -> Answer<String> {
 /// launch or while it runs, as absolute paths. Those that came before
 /// anything listened, the files that launched the app included, come at
 /// once (at most [`crate::file_type::MAX_PENDING`]). Links of the app's
-/// schemes come apart ([`next_url_scheme_open`]). One call waits at a time,
-/// as with [`next_url_scheme_open`]. To await in a task.
+/// schemes come apart ([`next_url_scheme_open`]). One call waits at a time:
+/// a newer call takes the next files and the one before gets none. To
+/// await in a task.
 pub fn next_open_files() -> Answer<Vec<std::path::PathBuf>> {
     let (answer, slot) = Answer::new();
     act(Action::NextOpenFiles(slot));
@@ -1226,12 +1159,55 @@ pub fn next_second_instance() -> Answer<crate::single_instance::SecondInstance> 
 }
 
 /// The next link that opens the app (TS: `UrlScheme.on("open", ...)`): a
-/// URL of a scheme the app claims (`nsh.json` `schemes`), those
-/// that came before anything listened first, the one that launched the app
-/// included ([`crate::url_scheme`]). To await in a task.
+/// URL of a scheme the app claims (`nsh.json` `schemes`,
+/// [`crate::url_scheme`]). Every call waiting when a link comes gets it, as
+/// TS's `open` listeners all do.
+///
+/// A task that called it is a listener for as long as it lives: its next
+/// call first gets the links that came since its last one, at most the
+/// last [`crate::url_scheme::MAX_PENDING`] (16). So a loop hears every
+/// link, those that came while it handled the one before included. Await
+/// it in a loop, or in a task that ends once it stops listening: a task
+/// that calls it again much later gets every link that came meanwhile,
+/// though others may have handled them long ago.
+///
+/// Links that came while nothing listened, the one that launched the app
+/// included, go to the first call that asks (at most 16 are kept); a
+/// listener that starts later does not get the links that came before it.
+/// A link a call of [`next_url_scheme_open_for`] waits for goes to that
+/// call alone. To await in a task.
 pub fn next_url_scheme_open() -> Answer<String> {
     let (answer, slot) = Answer::new();
-    act(Action::NextUrlSchemeOpen(slot));
+    let executor = executor();
+    let listener = executor.current_task();
+    executor.act(Action::NextUrlSchemeOpen(listener, slot));
+    answer
+}
+
+/// The next link of `scheme` (without `:`, compared ignoring case) that
+/// opens the app while this call waits, for the caller alone: a module
+/// that waits for one link, as a sign-in session for the provider's
+/// redirect, takes it without the app hearing it and without taking the
+/// app's other links. While it waits, a link of `scheme` goes to it and to
+/// no [`next_url_scheme_open`] or `UrlScheme.on("open", ...)` listener,
+/// and it does not become the app's address ([`app_url`]); links of other
+/// schemes go to the app as before. Links that came before the call are
+/// the app's, never this call's. Calls waiting for the same scheme take
+/// its links in the order they were made. The app must claim `scheme`
+/// (`nsh.json` `schemes`, or `https` with its web links), else no link of
+/// it comes. The wait claims the whole scheme: waiting for `https` takes
+/// every `https` link of the app meanwhile (its Universal Links and App
+/// Links), so a callback should use a scheme of the app's own; matching by
+/// host or path would be another function. The wait starts at the call,
+/// not at the first poll, so a module calls it before it opens what will
+/// send the link. Dropping the answer (a task cancelled, the losing branch
+/// of a `select!`) ends the wait. To await in a task.
+pub fn next_url_scheme_open_for(scheme: impl Into<String>) -> Answer<String> {
+    let (answer, slot) = Answer::new();
+    act(Action::NextUrlSchemeOpenFor(
+        scheme.into().to_ascii_lowercase(),
+        slot,
+    ));
     answer
 }
 
@@ -1241,10 +1217,10 @@ pub fn next_url_scheme_open() -> Answer<String> {
 /// the user typed ([`crate::url_scheme::AppUrlChange`]). [`app_url`] reads
 /// it already. Moves while nothing listened since the app started are not
 /// kept; once something listened, at most
-/// [`crate::url_scheme::MAX_PENDING`] wait. One call waits at a time, as
-/// with [`next_url_scheme_open`]: a newer call takes the next move and the
-/// one before gets none, so an app awaits it in one task (TS's `change`
-/// listeners share one). To await in a task.
+/// [`crate::url_scheme::MAX_PENDING`] wait. One call waits at a time: a
+/// newer call takes the next move and the one before gets none, so an app
+/// awaits it in one task (TS's `change` listeners share one). To await in a
+/// task.
 pub fn next_app_url_change() -> Answer<crate::url_scheme::AppUrlChange> {
     let (answer, slot) = Answer::new();
     act(Action::NextAppUrlChange(slot));

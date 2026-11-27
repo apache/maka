@@ -420,9 +420,7 @@ fn autosaves() {
 | `app.dialogs()` | 应用弹出过的对话框，按顺序排列。 |
 | `app.onPick(handler)` | 回答应用之后发起的选取（`Picker.pickImages`、`Picker.pickFiles`）：`handler` 接收这次选取的要求（`kind`：`"images"` 或 `"files"`，`multiple`、`limit`、`maxDimension`、`quality`、`format`、`filters`、`maxSize`），返回用户选中的文件（`{ name, type?, data: Uint8Array }`，原样交给应用；超过 `maxSize` 的文件到应用时不带内容，`status` 为 `"tooLarge"`），返回 `null` 则取消。没有 handler 时选取都会被取消。仅限无界面运行。 |
 | `app.picks()` | 应用发起过的选取，按顺序排列。 |
-| `app.onShare({ action, target })` | 给这次运行一个分享面板，并回答应用之后显示的分享（`Share.show`）：`action` 为 `"shared"`（分享到 `target`）或 `"dismissed"`。仅限无界面运行。 |
-| `app.shares()` | 应用分享过的内容，按顺序排列（`{ title, text, url, files }`）。 |
-| `await app.fake(name, method, args?)` | 按名称调用原生模块在无界面运行中代替设备的模拟实现，`args` 是一个数组，应用静止后 resolve 为它的 JSON 回答。模拟实现有哪些方法由模块自己的文档说明：`nsh-extra` 的语音识别器是 `"nsh-extra/speech"`（[`Speech`](./nshm.md#speech)：`app.fake("nsh-extra/speech", "hear", ["hello"])` 代替用户说话）。仅限无界面运行。 |
+| `await app.fake(name, method, args?)` | 按名称调用原生模块在无界面运行中代替设备的模拟实现，`args` 是一个数组，应用静止后 resolve 为它的 JSON 回答。模拟实现有哪些方法由模块自己的文档说明：`nsh-extra` 的语音识别器是 `"nsh-extra/speech"`（[`Speech`](./nshm.md#speech)：`app.fake("nsh-extra/speech", "hear", ["hello"])` 代替用户说话），分享面板是 `"nsh-extra/share"`（[`Share`](./nshm.md#share)：`app.fake("nsh-extra/share", "answer", [{ action: "shared" }])` 代替用户作答）。仅限无界面运行。 |
 | `app.audio()` | 应用对扬声器发出的请求（`Sound`、`AudioPlayer`），按顺序：`command`（`"load"`、`"play"`、`"stop"`、`"unload"`、`"open"`、`"preload"`、`"resume"`、`"pause"`、`"seek"`、`"set"`、`"close"`）、`src`，以及适用时的 `volume`、`rate`、`position`。仅限无界面运行。 |
 | `app.endAudio()` | 正在播放的播放器播到结尾（`end`；循环的从头再播）。仅限无界面运行。 |
 | `app.clipboard()` | 剪贴板当前的文字，没有时为 `null`。 |
@@ -501,8 +499,7 @@ expect(app.spanStyle("id:title")).toMatchObject({ fontSize: 20, lineHeight: 28, 
 - **应用在它的能力下运行**：`nsh.json` 的 `capabilities` 与设备上一样生效，没有声明的都会被拒绝。
 - **URL 只被记录**：应用打开的 URL 以“已打开”回报（测试用 `app.failOpenUrls` 让它失败的除外），`app.openedUrls()` 列出它们。
 - **选取会被回答**：用测试给的文件（`onPick`），否则视为取消，`Picker.pickImages` 和 `Picker.pickFiles` resolve 为 `[]`。
-- **分享由测试决定**：`onShare` 给出分享面板后，每次分享都按它的回答；在此之前 `Share.available()` resolve 为 `false`。
-- **原生模块运行在模拟实现上**：会访问设备的模块在无界面运行中提供一个模拟实现代替设备，由测试驱动（`app.fake`）。开启 `nsh-extra` 的 `speech` 时，`Speech.available()` resolve 为 `true`，会话立即开始，听到模拟实现的 `hear` 说的内容。模拟实现在整个进程内生效，所以启动带模拟实现模块的 `Headless` 应用的 Rust 测试在同一进程里轮流运行；用同一个 registry 的克隆启动的应用可以同时运行。
+- **原生模块运行在模拟实现上**：会访问设备的模块在无界面运行中提供一个模拟实现代替设备，由测试驱动（`app.fake`）。开启 `nsh-extra` 的 `speech` 时，`Speech.available()` resolve 为 `true`，会话立即开始，听到模拟实现的 `hear` 说的内容。开启它的 `share` 时，模拟实现的 `answer` 给出分享面板后，每次分享都按它的回答；在此之前 `Share.available()` resolve 为 `false`。模拟实现在整个进程内生效，所以启动带模拟实现模块的 `Headless` 应用的 Rust 测试在同一进程里轮流运行；用同一个 registry 的克隆启动的应用可以同时运行。
 - **声音交给假扬声器**：音效按 WAV 解码（时长取自文件头，其他字节以 `decode` 失败），播放器立即播放其源的一分钟，在 `endAudio()` 时播到结尾。
 - **模态窗口立即出现**：弹出时就会触发 `onShow`。
 - **图片不会加载**：不会有 `onLoad`，也不会有 `onError`，除非测试让这张图片加载失败（`app.failImages`）；`Image.getSize` 和 `Image.prefetch` 会 reject，app 里和测试文件里都一样。`blob:` URL 的尺寸直接从它的数据读取，所以对它调用 `Image.getSize` 会 resolve。
@@ -637,6 +634,41 @@ echo 'await app.press("text:+1"); expect(app.texts()).toContain("1");' | nsh tes
 
 这 1.2 s 让引擎的空闲垃圾回收在第一步之前运行，这样，如果应用丢掉了它仍在使用的对象，问题就会暴露出来：它的处理函数
 不再生效。
+
+### 驱动正在运行的会话
+
+`nsh test --attach` 直接驱动你已经用 `nsh run` 或 `nsh dev` 打开的应用，就在它的窗口里，保持它现在的样子。有些问题只在那个
+窗口里出现，比如开发了很久、热更新了很多次之后，这时就用它。另起的 `nsh test` 实例从头开始，复现不出这类问题。
+
+在应用目录里运行，步骤从标准输入给出：
+
+```sh
+nsh run --target gpui                         # 一个终端里：你正在用的窗口
+echo 'console.log(app.texts()); await app.press("text:+1"); await app.screenshot("now.png")' | nsh test --attach
+```
+
+可用的步骤和查询与[在真实平台上运行](#在真实平台上运行)相同：`press`、`type`、`scroll`、`hover`、`waitFor`、`texts()`、
+`shows()`、`layout()`、`accessibility()`、`screenshot(path)` 等。它们用平台自己的输入作用在正在运行的应用上。`app` 就是这个
+应用，马上可用，不会先等 1.2 s。
+
+- `--attach` 选本机正在运行的会话。同时有几个会话时，选当前目录这个应用的那个。`--attach=<port>` 按端口指定会话
+  （`nsh run` 打印的端口）。
+- 一个会话可以连着几个宿主，比如一个 GPUI 窗口加一个浏览器。步骤默认发给最后连上的宿主。用 `--device <name>` 换一个：
+  按会话终端里显示的名字，或按 `--target` 的平台名（`--device gpui`）。`nsh test --attach` 会打印它选中的宿主和其余宿主。
+- 也可以给一个测试文件：`nsh test tests/repro.test.tsx --attach`。文件里的 `open("./App.tsx")` 会附着到正在运行的应用。
+  这时 `open` 不接受选项，因为选项是给新应用做准备的：`storage`、`network`、`width`、`colorScheme` 等都会以
+  `ERR_NSH_TEST_UNSUPPORTED` 拒绝。
+- 步骤结束后应用照常运行，测试里关闭应用也不会让它退出。应用的请求照常走网络，所以 `app.requests()` 是空的。
+- 步骤看到的是应用已经创建的视图。长列表在行接近屏幕时才创建它们，所以靠下的行要先 `scroll` 才能找到。
+- `--target`、`--trace`、`--fps`、`--display` 和 `--foreground` 是给测试打开的应用做准备的，不能和 `--attach` 一起用。
+
+macOS 和 GPUI 的开发宿主接受附着的步骤。其他宿主（Windows、Linux、iOS、Android、终端和浏览器）会明确报告不接受。
+
+只有本机能驱动会话。开发服务器只在回环地址上接受附着的步骤，拒绝任何网页（包括它自己的页面），还要求一个令牌。会话把令牌
+写在只有你的用户能读的文件里。网络上的其他机器、本机的其他用户和浏览器里打开的网页都无法驱动你的应用。
+
+附着只用于开发。只有 `nsh run` 和 `nsh dev` 的宿主会连开发服务器、保留步骤需要的模型；打包的应用（`nsh package`）和正式构建的应用
+两样都没有，也就无法附着。
 
 示例中有可以参考的测试：Rust 应用见 `examples/gallery-rs`（`cargo test`，每个演示一个模块，以及 `App.test.tsx`），带 Rust crate
 的应用见 `examples/rust-exports`，TSX 应用见 `examples/counter` 和 `examples/gallery/tests`（存储、输入框、长列表、模拟请求、

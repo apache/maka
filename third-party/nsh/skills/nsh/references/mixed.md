@@ -182,6 +182,11 @@ TSX gets `value: number`, `max?: number`, `step?: number`, `label?: string | nul
 - A prop of the wrong type at run time is a warning, not a throw: the prop keeps its value and the rest render.
 - A Rust component's own state stays private. TSX passes props and hears events; to call into it, add `#[methods]` ref methods (`docs/dev/components.md`).
 
+For a component that reads the string between its JSX tags, declare `pub children: Prop<SharedString>`. TSX gets
+`children: string`, and `<TextChild>**bold**</TextChild>` supplies the original string, including the asterisks.
+`<TextChild>{source()}</TextChild>` supplies the current value of a signal. Read `props.children.get()` in a
+reactive binding or computation to follow changes. Use `Prop<Children>` to place JSX nodes, as `Gauge` does.
+
 Two more prop kinds have no example in `rust-exports`:
 
 - `Prop<Option<Renderer<T>>>` is `(value: T) => JSX.Element`, content the app draws. Rust calls `r.render(key, value)`, which returns a view it can style and place. Content is kept per key while the value stays equal. `TextView` uses it.

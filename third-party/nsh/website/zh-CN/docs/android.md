@@ -97,7 +97,8 @@ cargo xtask android-embed    # writes dist/nsh/embed/android/{nsh,nsh-dev}.aar
 
 AAR 包含 Java 运行时以及适用于 `arm64-v8a`、`armeabi-v7a` 和 `x86_64` 的 `libnsh.so`，库中带有符号：应用的 Gradle
 构建在打包时去除符号，并保留它们用于崩溃报告。它声明了 `INTERNET` 和
-`ACCESS_NETWORK_STATE` 权限，要求 **API 26**（Android 8）或更高版本。它自带 R8 规则（`proguard.txt`），开启混淆的构建会自动应用：原生库按名字
+`ACCESS_NETWORK_STATE` 权限，以及在 Android 13 之前让运行时注册的接收器只对应用自己开放的签名级权限
+`${applicationId}.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION`（与 androidx 同名，二者会合并），要求 **API 26**（Android 8）或更高版本。它自带 R8 规则（`proguard.txt`），开启混淆的构建会自动应用：原生库按名字
 查找运行时的类，因此 `com.longbridge.nsh` 保持原样。
 
 把它加入应用模块，例如从 `libs` 文件夹引入：
@@ -379,10 +380,19 @@ let application = unsafe { jni::objects::JObject::from_raw(context.context().cas
 从前台的 activity 启动它，并返回它的 `ActivityResult`（结果码和对方返回的 intent），能跨越配置变更；`can_start(env, &intent)`
 判断是否有已安装的应用响应这个 intent。Android 11+ 只让应用看到 manifest 里查询过的应用：crate 在自己的 `Cargo.toml` 里声明这些查询
 （[打包的应用需要什么](./nshm.md#打包的应用需要什么)）。`output_file(env, name)` 在应用缓存里新建一个文件，并给出对方通过应用的
-file provider 写入的 `content://` URI（`MediaStore.EXTRA_OUTPUT`）；`picker::prepare_image(path, name, &request)` 像
+file provider 写入的 `content://` URI（`MediaStore.EXTRA_OUTPUT`）；`content_uri(env, path)` 是另一个应用读取应用自己存储中一个已有文件所用的
+`content://` URI 和 MIME 类型（用于分享或"用其他应用打开"intent 的 `EXTRA_STREAM`），文件不在应用存储中时为 `None`；`picker::prepare_image(path, name, &request)` 像
 `Picker.pickImages` 一样处理一个图片文件。`with_env(f)` 用当前线程的 JNI 环境运行 `f`（供应用和它的 nshm 的代码使用；其他 crate 通过上面的 `ndk-context` 获取 VM），返回它的结果或 JNI 错误（Java 异常会记录到日志并清除）。应用在后台时发起的请求以
 `ActivityError::NoActivity` 失败。`nsh-extra` 的相机
 （`crates/nsh-extra/src/camera/android.rs`）用到了它们全部。
+
+## 在 Rust 中显示系统界面
+
+需要显示系统界面（弹出菜单、对话框、分享面板）的 Rust 代码，从发起调用的那个 surface 显示它。在 UI 线程任务（`run_on_main_thread`）里，
+`nsh::presenting_activity(env)` 是这个 surface 的视图所在的 activity，没有元素作为锚点时在它之上显示（视图不在任何能显示界面的 activity
+里时为 `None`）；`nsh::native_view(env, node)` 是这个 surface 中某个元素的 `View`（元素 `ref` 的节点，即模块函数的 `NodeRef` 参数；
+`ROOT_ID` 是 surface 的根视图），无论它在 surface 里还是在某个 modal 里：属于这个元素的弹出窗口以它为锚点。两者都返回全局引用，
+不在这样的任务里时为 `None`，JNI 出错时返回该错误。两者都要在任务运行时取得。它们只用于锚定和显示系统界面：模块绝不修改、重新挂载、改变样式或移除 NSH 拥有的视图。
 
 ## 用 Rust 实现 Java 监听器
 
@@ -393,6 +403,15 @@ Java 发起调用的线程上交给 `handler`（方法名和参数），所以 c
 这种方式只能实现接口：接收抽象类的 API（`UtteranceProgressListener`）需要一个 Java 子类，由 crate 作为库自带（[Java 代码](./packaging.md#java-代码)）。
 返回基本类型的方法必须得到装箱成对应类型的值（`boolean` 对应 `java.lang.Boolean`）：在这里返回 `None`，或在 `Proxy` 丢弃后被调用，都会在 Java 中抛出
 `NullPointerException`。
+
+## 在 Rust 中接收广播
+
+以广播作答的 Android API（选择器的 `IntentSender` 报告用户选中的应用、闹钟或通知发回的 `PendingIntent`、下载完成）由
+`receiver::register(env, action, handler)` 接收：一个注册在 application 上、接收这个 action 的接收器，它收到的广播在 UI 线程上交给
+`handler`（广播的 `Intent`），所以 crate 不需要自带 `BroadcastReceiver` 子类。它不导出：只接收应用自己的广播（让 `PendingIntent`
+的 intent 指向应用自己的包名）和系统的广播，不接收其他应用的。Android 12 及以下靠运行时 manifest 声明的签名级权限做到这一点，所以
+另一个系统应用以自己身份发出的广播（如下载服务发出的 `DOWNLOAD_COMPLETE`）在那些版本上可能收不到。
+广播可能到来期间要一直持有返回的 `Receiver`；丢弃即注销。
 
 ## 来自其他代码的通知
 

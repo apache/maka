@@ -214,37 +214,13 @@ fn open_notes() {
 
 ## 在网页上登录
 
-`open_auth_session` 打开服务方的登录页（OAuth 授权地址），结果是登录页跳回的回调地址：iOS 用
-`ASWebAuthenticationSession` 弹层显示（`.ephemeral(true)` 不与用户的 Safari 共用数据），Android 用 Custom Tab，
-macOS、Windows 和 Linux 后端用系统浏览器。iOS 以外，回调以应用声明的 scheme（`nsh.json` 的 `schemes`）的链接回到应用，
-由会话收下，`next_url_scheme_open` 收不到它。结果是 `Completed(url)` 或 `Cancelled`（用户关掉了页面，或没登录就回到应用）；
-回调回不到应用时立即以 `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` 失败：scheme 不是应用声明的会话如此；网页、GPUI
-和终端后端收不到应用 scheme 的链接，那里的每个会话都如此。登录页的地址同 `open_url` 一样要 `openUrl` 能力。
+登录会话（打开 OAuth 2 授权页、再跳回应用）已从 NSH core 移到 [nsh-oauth2](https://github.com/longbridge/nsh-oauth2) 这个 nshm。Rust 和 TSX 都能用：iOS 用 `ASWebAuthenticationSession`，Android 用 Custom Tab，桌面端用系统浏览器。
 
-登录页还开着、应用已从别处得知用户登录了（在不会跳回的页面上批准了设备码）时，`close_auth_session()` 关掉它：会话以
-`Cancelled` 结束，iOS 和 Android 收起页面、回到应用；桌面浏览器里的页面不动。没有会话在等时什么也不做。
-
-```rust
-use nsh_core::{
-    auth_session::{AuthSessionOutcome, AuthSessionRequest},
-    prelude::*,
-};
-
-fn sign_in(authorize_url: String) {
-    let session = open_auth_session(AuthSessionRequest::new(authorize_url, "myapp"));
-    spawn(async move {
-        match session.await {
-            Ok(AuthSessionOutcome::Completed(callback)) => log::info!("signed in: {callback}"),
-            Ok(_) => {} // 取消了。
-            Err(error) => log::warn!("no sign-in page: {error}"),
-        }
-    });
-}
+```sh
+nsh add github:longbridge/nsh-oauth2
 ```
 
-测试里 `Headless::on_auth_session` 让平台有应用内会话、每个会话按给定的结果结束，`keep_auth_sessions_open` 则让
-每个会话一直开着、直到应用关掉它（`screen().auth_session_showing()`）；都不设时登录页记在 `opened_urls()` 里，用
-`open_with_url` 送回调（以网页身份运行的测试除外：会话立即失败）。
+core 已删除 `nsh_core::element::open_auth_session` 和 `close_auth_session`。请改用 `nsh_oauth2::open_auth_session` 和 `nsh_oauth2::close_auth_session`，请求、结果和错误类型与原来一致。
 
 ## 用 TSX 扩展 Rust 应用
 
@@ -398,13 +374,21 @@ Rust 值：对象被回收时释放，或调用 `ledger.dispose()`（也可以 `
 Rust 的修改会重新构建并重启应用。CLI 根据 crate 的描述知道它导出了什么，自己打包和编译 TSX；开发宿主和 `nsh test` 的
 无界面运行器则与你的 crate 和 QuickJS 一起构建。
 
-仓库中的 `examples/rust-exports` 是导出的参考示例：一个小型 TSX 应用，它的 crate 导出一个组件（必填、有默认值和可选的
-props，一个事件，子元素）、一个模块（每种函数各一个）和一个类（构造函数、方法、getter 和 setter、静态成员、`async` 成员、以另一个实例为参数、
+仓库中的 `examples/rust-exports` 是导出的参考示例：一个小型 TSX 应用，它的 crate 导出组件（必填、有默认值和可选的
+props，一个事件，以及节点或字符串形式的 children）、一个模块（每种函数各一个）和一个类（构造函数、方法、getter 和 setter、静态成员、`async` 成员、以另一个实例为参数、
 Rust 用 `post` 调用的回调、`dispose()` 和 `using`），每个都有简短的文档注释；它的测试（Rust 的，以及 TypeScript 的 `App.test.tsx`）在应用中逐一点按，并检查每个导出显示的内容。
 
 仓库中的 `examples/gallery-rs` 是一个完整的 Rust 应用：每个 demo 都是 Rust，`nsh run examples/gallery-rs --target web`
 （或 `ios`、`android` 等）运行它的根组件，`nsh test examples/gallery-rs` 以无界面方式运行它的测试，`cargo run -p gallery-native`
 在桌面后端上启动它。
+
+### 读取字符串 children
+
+在 Rust 组件的 `#[derive(Props)]` 结构体中声明 `pub children: Prop<SharedString>`，就能接收 JSX 标签之间的字符串。
+生成的 TypeScript props 包含 `children: string`。例如，`<TextChild>**bold**</TextChild>` 和
+`<TextChild>{source()}</TextChild>` 都会把字符串传给 Rust，Markdown 的星号等字符会保留。若 `source` 是信号，
+在响应式绑定或计算中调用 `props.children.get()` 就能跟踪更新。要把调用方传入的 JSX 节点放进组件的视图，使用
+`Prop<Children>` 插槽。
 
 ### 渲染函数与应用的类
 

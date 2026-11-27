@@ -1248,6 +1248,7 @@ fn body_row(
     let (press_dt, menu_dt, class_dt) = (dt.clone(), dt.clone(), dt.clone());
     let el = parts_with(
         view()
+            .role(AccessibilityRole::Row)
             .absolute()
             .left_0()
             .style_when(move || row.get().is_none(), |s| s.hidden())
@@ -1687,8 +1688,7 @@ fn corner(dt: Dt) -> impl IntoElement {
 }
 
 fn header_region(dt: Dt, which: Region, w: Windows, custom: bool) -> impl IntoElement {
-    let (left_dt, width_dt, x_dt, titles_dt, groups_dt) =
-        (dt.clone(), dt.clone(), dt.clone(), dt.clone(), dt.clone());
+    let (left_dt, width_dt, x_dt, row_dt) = (dt.clone(), dt.clone(), dt.clone(), dt.clone());
     let shown = {
         let dt = dt.clone();
         move || match which {
@@ -1704,13 +1704,16 @@ fn header_region(dt: Dt, which: Region, w: Windows, custom: bool) -> impl IntoEl
             group_cells(&dt, which, &window, w.col_origin.get())
         })
     };
+    let levels = {
+        let dt = dt.clone();
+        computed(move || (0..dt.header_levels()).collect::<Vec<usize>>())
+    };
     when(shown, move || {
-        let (left_dt, width_dt, x_dt, titles_dt, groups_dt) = (
+        let (left_dt, width_dt, x_dt, row_dt) = (
             left_dt.clone(),
             width_dt.clone(),
             x_dt.clone(),
-            titles_dt.clone(),
-            groups_dt.clone(),
+            row_dt.clone(),
         );
         let list = match which {
             Region::Fixed => w.fixed_cols,
@@ -1738,40 +1741,98 @@ fn header_region(dt: Dt, which: Region, w: Windows, custom: bool) -> impl IntoEl
                         _ => Length::from(px(0.0)),
                     })
                     .child(each(
-                        groups,
-                        |g: &GroupCell| (g.level, g.from),
-                        move |group, _| {
-                            group_cell(groups_dt.clone(), group.get_untracked(), which, w)
-                        },
-                    ))
-                    .child(each(
-                        list,
-                        |def: &usize| *def,
-                        move |def, _| {
-                            title(titles_dt.clone(), def.get_untracked(), which, w, custom)
+                        levels,
+                        |row: &usize| *row,
+                        move |row, _| {
+                            header_row(
+                                row_dt.clone(),
+                                row.get_untracked(),
+                                which,
+                                w,
+                                custom,
+                                groups,
+                                list,
+                            )
                         },
                     )),
             )
     })
 }
 
+/// One row of the header: a level of group labels or the titles' row, with
+/// the row role, so a column header has a row to belong to.
+fn header_row(
+    dt: Dt,
+    index: usize,
+    which: Region,
+    w: Windows,
+    custom: bool,
+    groups: Memo<Vec<GroupCell>>,
+    list: Memo<Vec<usize>>,
+) -> impl IntoElement {
+    let (top_dt, height_dt, width_dt, groups_dt, titles_dt) =
+        (dt.clone(), dt.clone(), dt.clone(), dt.clone(), dt.clone());
+    let rows = {
+        let dt = dt.clone();
+        computed(move || {
+            let levels = dt.header_levels();
+            // Lowest level first: it is the one above the titles.
+            let Some(level) = levels.checked_sub(2 + index) else {
+                return Vec::new();
+            };
+            groups
+                .get()
+                .into_iter()
+                .filter(|group| group.level == level)
+                .collect()
+        })
+    };
+    let titles = {
+        let dt = dt.clone();
+        computed(move || index + 1 == dt.header_levels())
+    };
+    view()
+        .role(AccessibilityRole::Row)
+        .absolute()
+        .left_0()
+        .w(move || {
+            let width = match which {
+                Region::Scroll => w.span.get(),
+                Region::Fixed => width_dt.geo().fixed,
+                Region::End => width_dt.geo().end,
+                Region::Lead => 0.0,
+            };
+            Length::from(px(width))
+        })
+        .top(move || {
+            let h = top_dt.row_height_for_header();
+            Length::from(px(h * index as f32))
+        })
+        .h(move || Length::from(px(height_dt.row_height_for_header())))
+        .child(each(
+            rows,
+            |group: &GroupCell| (group.level, group.from),
+            move |group, _| group_cell(groups_dt.clone(), group.get_untracked(), which, w),
+        ))
+        .child(when(titles, move || {
+            let titles_dt = titles_dt.clone();
+            each(
+                list,
+                |def: &usize| *def,
+                move |def, _| title(titles_dt.clone(), def.get_untracked(), which, w, custom),
+            )
+        }))
+}
+
 /// A label over columns.
 fn group_cell(dt: Dt, group: GroupCell, which: Region, w: Windows) -> impl IntoElement {
     let props = dt.props;
-    let (left_dt, width_dt, top_dt) = (dt.clone(), dt.clone(), dt.clone());
+    let (left_dt, width_dt) = (dt.clone(), dt.clone());
     part(
         view()
             .absolute()
-            .top(move || {
-                let levels = top_dt.header_levels();
-                let h = top_dt.geo().header / levels as f32;
-                // Lowest level first: it is the one above the titles.
-                Length::from(px(h * (levels - 2 - group.level.min(levels - 2)) as f32))
-            })
-            .h(move || {
-                let g = dt.geo();
-                Length::from(px(g.header / dt.header_levels() as f32))
-            })
+            .top_0()
+            .h(relative(1.0))
             .left(move || {
                 left_dt.layout_rev.get();
                 let st = left_dt.st.borrow();
@@ -1861,7 +1922,7 @@ fn title(dt: Dt, def: usize, which: Region, w: Windows, custom: bool) -> impl In
         }
         list
     };
-    let (left_dt, width_dt, top_dt, hgt_dt) = (dt.clone(), dt.clone(), dt.clone(), dt.clone());
+    let (left_dt, width_dt) = (dt.clone(), dt.clone());
     let (press_dt, claim_dt, grant_dt, move_dt, up_dt, end_dt) = (
         dt.clone(),
         dt.clone(),
@@ -1882,12 +1943,8 @@ fn title(dt: Dt, def: usize, which: Region, w: Windows, custom: bool) -> impl In
                 ..AccessibilityState::default()
             })
             .absolute()
-            .top(move || {
-                let levels = top_dt.header_levels();
-                let h = top_dt.geo().header / levels as f32;
-                Length::from(px(h * (levels - 1) as f32))
-            })
-            .h(move || Length::from(px(hgt_dt.row_height_for_header())))
+            .top_0()
+            .h(relative(1.0))
             .left(move || {
                 left_dt.layout_rev.get();
                 let st = left_dt.st.borrow();

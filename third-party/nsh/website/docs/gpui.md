@@ -173,7 +173,11 @@ the view owns its host window (`AppView::own_window`), regardless of whether you
   `run_app` open a transparent window, so what the app leaves unpainted shows what is behind the window (desktop
   widgets, overlays). False by default.
 - `AppView::connect_dev_server(url, cx)` (feature `dev`) loads the app from `nsh dev` and reloads it as you edit,
-  with the error overlay over the view; `AppView::on_error` keeps hearing the app's errors.
+  with the error overlay over the view; `AppView::on_error` keeps hearing the app's errors. The app's logs
+  (`console.*`, uncaught exceptions, runtime warnings) reach the `nsh dev` terminal through the `log` crate: your
+  app has a logger of its own, so call `nsh_platform_gpui::dev::forward(record)` from its `log` and let `Info`
+  through (its `enabled` and `log::set_max_level`), or `console.log` never reaches it. Warnings and errors your app
+  logs under its own target show in that terminal too.
 - `AppView::on_app_error(|error| …)` hears the app's errors: `error.kind` (the app failed to load, an uncaught
   exception, the VM stopped), `error.is_fatal()` when no JS of the app runs again, `error.message`, `error.stack`
   and `error.package` (the id and build of the signed package it came from). `AppView::on_error` gets the same

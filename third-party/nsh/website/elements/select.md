@@ -235,7 +235,45 @@ keyboard, and Return chooses it. `empty` is what the list shows while nothing ma
 ```
 
 On the desktops the search field takes the keyboard as the list opens; on touch screens the keyboard comes up when
-the field is pressed. Each opening starts with an empty search.
+the field is pressed.
+
+The query is the field's own, starting each opening from `defaultQuery` (else empty), or the app's with `query`:
+`onQueryChange({ query })` reports what is typed in the field, and the app sets `query` to follow it. A query the app
+owns stays from one opening to the next until the app changes it, and the rows `renderItem` draws can mark the match.
+This select clears its query once the list is gone (`onClose`), so the list leaves with the rows it showed; clear it
+there rather than in `onOpen`, where the query changes after the list opened and, as a typed one would, moves the
+highlight to its first match:
+
+```tsx
+const query = signal("");
+// The title around the query's first match: before, the match, after.
+const split = (title: string, q: string) => {
+  const at = q ? title.toLowerCase().indexOf(q.toLowerCase()) : -1;
+  if (at < 0) return [title, "", ""];
+  return [title.slice(0, at), title.slice(at, at + q.length), title.slice(at + q.length)];
+};
+
+<Select
+  items={zones}
+  searchable
+  query={query()}
+  onQueryChange={({ query: q }) => query.set(q)}
+  onClose={() => query.set("")}
+  renderItem={(item) => {
+    const parts = computed(() => split(item.title, query()));
+    return (
+      <Text class="px-2 py-1.5 text-sm">
+        {parts()[0]}
+        <Text class="font-semibold">{parts()[1]}</Text>
+        {parts()[2]}
+      </Text>
+    );
+  }}
+  trigger={trigger}
+/>
+```
+
+Without `searchable` there is no field, and no query filters the items.
 
 ## Rows the app draws
 
@@ -275,6 +313,8 @@ choice draws nothing again. `renderGroup` draws a section's header the same way:
 | `searchPlaceholder` | `.search_placeholder(..)` | `string` | none | The search field's placeholder. |
 | `searchAccessibilityLabel` | `.search_accessibility_label(..)` | `string` | none | What screen readers call the search field: what it searches. |
 | `searchTestID` | `.search_test_id(..)` | `string` | none | The id UI tests find the search field by (`id:` in `nsh/test`), as `testID` names the select's own view. |
+| `query` | `.query(..)` | `string` | none | The search's query, owned by the app (with `searchable`). |
+| `defaultQuery` | `.default_query(..)` | `string` | none | The query each opening starts with, without `query`. |
 | `cleanable` | `.cleanable(..)` | `boolean` | `false` | A clear button while an item is chosen; a press clears the value (`onChange({ value: null })`). |
 | `disabled` | `.disabled(..)` | `boolean` | `false` | It stays closed: the trigger takes no presses and no keyboard focus, and `disabled:` styles apply to it. |
 | `accessibilityLabel` | `.accessibility_label(..)` | `string` | none | What screen readers call it: what the choice is about. |
@@ -305,6 +345,7 @@ choice draws nothing again. `renderGroup` draws a section's header the same way:
 | Event | Rust | Description |
 |---|---|---|
 | `onChange` | `.on_change(\|value\| ..)` | The user chose another item (a press, Return or Space, typeahead on the trigger): its `value`; `null` when the clear button cleared it. Set `value` to follow it. |
+| `onQueryChange` | `.on_query_change(\|query\| ..)` | The user typed in the search field: `{ query }`. Set `query` to follow it. |
 | `onOpenChange` | `.on_open_change(\|e\| ..)` | The list opened or closed, with why. Set `open` to follow it. |
 | `onOpen` | `.on_open(\|\| ..)` | The list is shown; as a sheet, once it came in. |
 | `onClose` | `.on_close(\|\| ..)` | The list is gone; as a sheet, once it went. Also when the app closed it. |

@@ -42,6 +42,20 @@ test("clearSelection clears a selectable view's selection", async () => {
   expect(app.shows('Selected: ""')).toBe(true);
 });
 
+test("selectAll selects every text of a selectable view", async () => {
+  const app = await open("./App.tsx", { platform: "macos" });
+  await app.press("id:select-all");
+  await app.waitFor('Selected: "Alpha beta\\nGamma delta"');
+});
+
+test("selectAll on a view inside a selectable view selects all of it, once", async () => {
+  const app = await open("./App.tsx", { platform: "ios" });
+  await app.press("id:select-all-inside");
+  await app.waitFor('Selected: "Alpha beta\\nGamma delta"');
+  await app.press("id:select-all-inside");
+  expect(app.shows("Changes: 1")).toBe(true);
+});
+
 test("a finger drag on a phone selects nothing", async () => {
   const app = await open("./App.tsx", { platform: "ios" });
   await app.drag("id:first", { x: 0, y: 17 });

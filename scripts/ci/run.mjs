@@ -783,6 +783,9 @@ export function executor(
             '--test',
             'third-party/nsh/crates/nsh-platform-web/web/nsh.test.mjs',
             'third-party/nsh/crates/nsh-platform-web/web/browser/dom.test.mjs',
+            'third-party/nsh/crates/nsh-platform-web/web/mouse.test.mjs',
+            'third-party/nsh/crates/nsh-platform-web/web/mouse-browser.test.mjs',
+            'third-party/nsh/crates/nsh-platform-web/web/local-time.test.mjs',
           ]);
       });
     } else if (!['native', 'native-build'].includes(id)) {

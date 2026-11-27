@@ -29,6 +29,40 @@ use crate::element::{Callback, JsError, JsObject, Later, System, codes, module};
 /// the resource's total size if known; an error stops it.
 pub type UpdaterSink<'a> = &'a mut dyn FnMut(u64, &[u8], Option<u64>) -> Result<(), String>;
 
+/// Downloads an update for the app, in place of the engine's HTTP
+/// ([`set_updater_transport`]). Same contract as [`UpdaterHost::get`].
+pub type UpdaterTransport = dyn Fn(&str, u64, UpdaterSink<'_>) -> Result<(), String> + Send + Sync;
+
+static TRANSPORT: std::sync::OnceLock<std::sync::Arc<UpdaterTransport>> =
+    std::sync::OnceLock::new();
+
+/// Makes `get` download the update check and the archive, instead of the
+/// engine's HTTP; for releases behind credentials the app holds (a private
+/// GitHub repository, a CDN behind SSO). Call it at startup, before the
+/// first check. Only the first call counts.
+///
+/// The URLs still come from the packaged `nsh-updater.json`, and NSH still
+/// checks everything it checks otherwise (signature, version, size,
+/// SHA-256). `get` follows [`UpdaterHost::get`]: it gets `url` from byte
+/// `from` on (`Range: bytes=<from>-`), follows redirects, and hands each
+/// piece to `sink` with its offset; a server that ignores the range sends
+/// from offset `0`.
+///
+/// ```ignore
+/// nsh_core::runtime::set_updater_transport(|url, from, sink| my_fetch(url, from, sink));
+/// ```
+pub fn set_updater_transport(
+    get: impl Fn(&str, u64, UpdaterSink<'_>) -> Result<(), String> + Send + Sync + 'static,
+) {
+    let _ = TRANSPORT.set(std::sync::Arc::new(get));
+}
+
+/// The app's [`set_updater_transport`], if it set one.
+#[doc(hidden)]
+pub fn updater_transport() -> Option<&'static std::sync::Arc<UpdaterTransport>> {
+    TRANSPORT.get()
+}
+
 /// What the platform gives the module: the package's update configuration
 /// and HTTP. Both block, and are called off the engine thread.
 pub trait UpdaterHost: Send + Sync + 'static {

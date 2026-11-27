@@ -5,11 +5,12 @@ carrying them. `nsh.json` lists the crate in `"dependencies"` by path, with the 
 `App.tsx` imports them from `nsh-extra`:
 
 ```tsx
-import { Speech } from "nsh-extra";
+import { Share, Speech } from "nsh-extra";
 ```
 
 | Feature | What the example shows | Tests |
 |---|---|---|
+| `share` | The system's share sheet: a link, a file of the app's data directory and a line of text, each pointing the sheet at its button (`App.tsx`) | `tests/share.test.tsx`, with the module's fake share sheet answering for the user (`app.fake("nsh-extra/share", "answer", [{ action, target }])`) |
 | `speech` | Dictation: a session with interim transcripts, stopped or aborted (`App.tsx`) | `tests/speech.test.tsx`, with the module's fake recognizer speaking for the user (`app.fake("nsh-extra/speech", "hear", [text])`) |
 
 ```sh

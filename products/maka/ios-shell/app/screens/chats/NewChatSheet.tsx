@@ -17,9 +17,9 @@
  * under the License.
  */
 
-import { cleanup, effect, untracked, Scroll, signal, Text, View, token } from 'nsh';
+import { cleanup, effect, platform, untracked, Scroll, signal, Text, View, token } from 'nsh';
 import { Input, MenuButton, Sheet, type MenuButtonItem, type SheetDetent } from 'nsh/base';
-import { isAvailable, SegmentedControl } from 'nsh/mobile';
+import { SegmentedControl } from 'nsh-system-controls';
 import {
   hasAgentEndpoint,
   hostMutate,
@@ -401,7 +401,7 @@ export function NewChatSheet(props: {
         {/* Chat vs Room Segmented Control */}
         <View style={{ paddingHorizontal: spacing.pageX, marginBottom: 18 }}>
           <If
-            when={isAvailable}
+            when={platform.os === 'ios'}
             else={
               <View
                 style={{

@@ -47,6 +47,9 @@ pub struct Animator {
     pub finished: Vec<Finished>,
     /// View id -> bound properties.
     bindings: FxHashMap<u32, Vec<(AnimationProp, NodeId)>>,
+    /// Views whose bindings became empty since the last [`Animator::write`]:
+    /// written once with [`AnimValues::default`] so backends drop stale values.
+    cleared: Vec<u32>,
     gestures: FxHashMap<u32, Gestures>,
     /// Scroll view id -> (value node, horizontal).
     scrolls: FxHashMap<u32, (NodeId, bool)>,
@@ -82,8 +85,11 @@ impl Animator {
                             .any(|(p, _)| *p == AnimationProp::ComponentSlot(slot))
                 });
                 if bindings.is_empty() {
-                    self.bindings.remove(id);
+                    if self.bindings.remove(id).is_some() && !self.cleared.contains(id) {
+                        self.cleared.push(*id);
+                    }
                 } else {
+                    self.cleared.retain(|v| v != id);
                     self.bindings.insert(*id, bindings.clone());
                 }
             }
@@ -133,6 +139,7 @@ impl Animator {
                 self.component_slots.remove(id);
                 self.component_values.retain(|&(view, _), _| view != *id);
                 self.bindings.remove(id);
+                self.cleared.retain(|v| v != id);
                 self.gestures.remove(id);
                 self.scrolls.remove(id);
                 self.pulls.remove(id);
@@ -290,12 +297,19 @@ impl Animator {
     }
 
     /// Evaluates every bound property: for each view `find` knows, `set`
-    /// gets its values and the values of its canvas slots.
+    /// gets its values and the values of its canvas slots. Views whose
+    /// bindings became empty since the last write receive
+    /// [`AnimValues::default`] once so backends drop stale values.
     pub fn write<V>(
         &mut self,
         mut find: impl FnMut(u32) -> Option<V>,
         mut set: impl FnMut(V, AnimValues, &[(u16, AnimationValue)]),
     ) {
+        for id in self.cleared.drain(..) {
+            if let Some(view) = find(id) {
+                set(view, AnimValues::default(), &[]);
+            }
+        }
         let canvas = &mut self.canvas_args;
         for (&id, bindings) in &self.bindings {
             let Some(view) = find(id) else {
@@ -540,5 +554,90 @@ mod tests {
         a.tick(1.3);
         assert_eq!(a.graph.eval(3).number(), 50.0);
         assert!(!a.animating());
+    }
+
+    #[test]
+    fn clearing_animation_bindings_resets_view_values_once() {
+        let mut a = Animator::default();
+        a.apply(&MountItem::Animation(AnimationOp::CreateValue {
+            node: 1,
+            value: 0.4,
+        }));
+        a.apply(&MountItem::Animation(AnimationOp::CreateValue {
+            node: 2,
+            value: 0.0,
+        }));
+        a.apply(&MountItem::AnimationBindings {
+            id: 7,
+            bindings: vec![
+                (AnimationProp::Opacity, 1),
+                (AnimationProp::Transform(0), 2),
+            ],
+        });
+
+        let writes = |a: &mut Animator| {
+            let mut out = Vec::new();
+            a.write(Some, |id, values, canvas| {
+                assert!(canvas.is_empty());
+                out.push((id, values));
+            });
+            out
+        };
+
+        let first = writes(&mut a);
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].0, 7);
+        assert_eq!(first[0].1.opacity, Some(0.4));
+        assert_eq!(first[0].1.transform[0], Some(0.0));
+
+        // Unbinding clears the view's animated values on the next write only.
+        a.apply(&MountItem::AnimationBindings {
+            id: 7,
+            bindings: vec![],
+        });
+        assert_eq!(writes(&mut a), vec![(7, AnimValues::default())]);
+        assert!(writes(&mut a).is_empty());
+
+        // Clearing a view that had no bindings emits nothing.
+        a.apply(&MountItem::AnimationBindings {
+            id: 8,
+            bindings: vec![],
+        });
+        assert!(writes(&mut a).is_empty());
+    }
+
+    #[test]
+    fn rebinding_or_deleting_before_write_drops_pending_clear() {
+        let mut a = Animator::default();
+        a.apply(&MountItem::Animation(AnimationOp::CreateValue {
+            node: 1,
+            value: 0.5,
+        }));
+        a.apply(&MountItem::AnimationBindings {
+            id: 7,
+            bindings: vec![(AnimationProp::Opacity, 1)],
+        });
+        a.apply(&MountItem::AnimationBindings {
+            id: 7,
+            bindings: vec![],
+        });
+        a.apply(&MountItem::AnimationBindings {
+            id: 7,
+            bindings: vec![(AnimationProp::Opacity, 1)],
+        });
+        let mut out = Vec::new();
+        a.write(Some, |id, values, _| out.push((id, values)));
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].1.opacity, Some(0.5));
+
+        // Clearing then deleting before write skips writing the deleted view.
+        a.apply(&MountItem::AnimationBindings {
+            id: 7,
+            bindings: vec![],
+        });
+        a.apply(&MountItem::Delete { id: 7 });
+        out.clear();
+        a.write(Some, |id, values, _| out.push((id, values)));
+        assert!(out.is_empty());
     }
 }

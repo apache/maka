@@ -781,6 +781,11 @@ browsers' touches into what phones report:
   way to scroll, the mouse has the wheel, the keyboard and the scroll bar. Its drags go to pans, the responder system
   and selectable text (`pointerDown` only takes touches and pens in zoomable views, which pan themselves; a press
   elsewhere has its `mousedown` prevented, so it selects no page text).
+- **Presses on fields**: a field takes its own presses (the caret, a selection, the focus are the browser's), and so
+  does its input's padding around it, which gives the field the focus (`mouseDown`); only an `Input` that listens to
+  presses hears them, after the focus the press gives, and no view around it does, as on Linux and Windows
+  (`pointerDown`, `pressOut`). A tap's press waits for that focus only while the browser's mouse events of the tap
+  last (`awaitFieldFocus`).
 - **Scroll bars** in the desktop idiom are nsh's own, as on the desktop backends (`showBar`): the browser's are hidden
   (they would take 6 px from content the core laid out for the whole view), and a 4 px thumb in a sticky, zero-size
   `.nsh-bar` at the view's top left (it stays put as the content scrolls, in step with the compositor) shows while
@@ -827,8 +832,10 @@ browsers' touches into what phones report:
   `defaultPrevented`.
 - **Focus**: the stops `ViewProps::focus_stop` decides are focusable (`tabindex=0`; `updateFocusable`): pressables
   (role `button` unless they have one) unless `focusable={false}`, and `focusable={true}` views whether or not they take
-  presses (Return and Space press only pressables), never disabled or hidden ones (a focused one that stops being a
-  stop is blurred), nor ones with no area (`seenByKeys`): the core lays out each view of a `display: none` subtree at no
+  presses (Return and Space press only pressables), but no `Input`'s view, pressable or `focusable` (nor is a pressable
+  one a `button`): its field is its one stop, as on the desktops; never disabled or hidden ones (a focused one that
+  stops being a stop is blurred), nor ones with no area (`seenByKeys`): the core lays out each view of a
+  `display: none` subtree at no
   size, which hides nothing in a browser, so such a view is no stop (`tabindex=-1` where the browser would stop at it
   without one: a link's `<a href>`, a `web={{ element }}` button), nor is an input's field there (`fieldStop`:
   `tabindex=-1` while its view or its content box has no area), as on macOS (`NshView::seen_by_keys`). A view that is

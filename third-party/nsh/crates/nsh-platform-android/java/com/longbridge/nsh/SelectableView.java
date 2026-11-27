@@ -217,6 +217,17 @@ final class SelectableView implements SelectionHandle.Owner {
         extending = true;
     }
 
+    /** {@code ref.selectAll()}: selects every text, with the handles and the toolbar. */
+    void selectAll() {
+        if (!view.isAttachedToWindow() || (handle == 0 && !begin())) return;
+        gesture(SELECT_ALL, 0, 0);
+        if (empty()) {
+            clear();
+            return;
+        }
+        showToolbar();
+    }
+
     /** Starts a selection: the texts, the model, this surface's only selection. */
     private boolean begin() {
         collect();

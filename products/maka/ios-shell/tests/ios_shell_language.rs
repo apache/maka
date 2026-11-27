@@ -21,7 +21,7 @@
 
 use maka_ios_shell::engine_config;
 use nsh_core::{
-    MountItem, Size,
+    EventKind, EventPayload, MountItem, Size,
     platform::{Environment, Languages, LocaleSettings, Os},
     prelude::px,
 };
@@ -346,17 +346,23 @@ async fn chinese_settings_localize_connection_and_dynamic_model_controls() {
 
     let dir = tempfile::tempdir().unwrap();
     let mut app = start_on(dir.path(), channel, "zh-Hans-CN", Os::Ios);
-    // Headless does not open UIKit menus; inspect the items sent to the native menu.
+    // Headless sees the props sent to UIKit and can return the native event.
     let (menu_tx, menus) = std::sync::mpsc::channel();
+    let (switch_tx, switches) = std::sync::mpsc::channel();
     app.observe(move |_, batch| {
         for item in &batch.items {
-            if let MountItem::ComponentProps { props, .. } = item {
+            if let MountItem::ComponentProps { id, props } = item {
                 for (name, value) in props {
                     if name.as_ref() == "items"
                         && let Some(items) = value.as_ref().and_then(|value| value.as_array())
                         && items.iter().any(|item| item["id"] == "future_level")
                     {
                         menu_tx.send(items.clone()).unwrap();
+                    }
+                    if name.as_ref() == "accessibilityLabel"
+                        && value.as_ref().and_then(|value| value.as_str()) == Some("Fixture Agent")
+                    {
+                        switch_tx.send(*id).unwrap();
                     }
                 }
             }
@@ -395,7 +401,21 @@ async fn chinese_settings_localize_connection_and_dynamic_model_controls() {
     );
 
     app.answer_dialogs_myself();
-    app.press("role:switch[Fixture Agent]").unwrap();
+    let id = switches.try_iter().last().expect("native agent switch");
+    app.engine().control().dispatch_event(
+        id,
+        EventKind::NativeEvent,
+        EventPayload::Native {
+            name: "change".into(),
+            data: json!(true),
+        },
+    );
+    app.wait_until(
+        "native switch confirmation",
+        Duration::from_secs(5),
+        |screen| !screen.dialogs().is_empty(),
+    )
+    .unwrap();
     let dialog = app.pending_dialog().unwrap();
     assert_eq!(dialog.title.as_deref(), Some("确认权限并启用"));
     assert!(dialog.buttons.iter().any(|button| button.text == "启用"));

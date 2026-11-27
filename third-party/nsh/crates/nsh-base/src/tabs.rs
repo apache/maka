@@ -45,6 +45,12 @@ pub struct TabProps {
     /// pause, and a user can skip: what it can do that its name does not
     /// say (a closable tab that Delete closes).
     pub accessibility_description: Prop<Option<SharedString>>,
+    /// How far outside its bounds presses still count, as a view's
+    /// `hitSlop`: one number for every side, or the sides named (each left
+    /// out 0). A compact tab (a segment of a short track) takes presses a
+    /// finger lands near it, with no change to its layout or look.
+    #[prop(default)]
+    pub hit_slop: Prop<EdgeInsets>,
     /// The content: the app's label, icon or badge, which screen readers
     /// say.
     pub children: Prop<Children>,
@@ -89,6 +95,7 @@ pub fn Tab(props: TabProps, cx: Scope<TabEvent>) -> impl IntoElement {
             ..AccessibilityState::default()
         })
         .selected_style(props.selected_style)
+        .hit_slop(props.hit_slop)
         .on_press(move |_: &()| cx.emit(TabEvent::Press))
         .child(props.children)
 }

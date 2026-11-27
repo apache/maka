@@ -363,14 +363,16 @@ fn notes(args: &[String]) -> anyhow::Result<Notes> {
                 {
                     bail!("--notes: {tag} given twice");
                 }
-                let text = fs::read_to_string(file).with_context(|| format!("read {file}"))?;
+                let text =
+                    fs::read_to_string(file).with_context(|| format!("--notes: read {file}"))?;
                 tagged.push((tag.to_owned(), text.into_bytes()));
             }
             None => {
                 if default.is_some() {
                     bail!("--notes: more than one file without a tag");
                 }
-                default = Some(fs::read_to_string(arg).with_context(|| format!("read {arg}"))?);
+                default =
+                    Some(fs::read_to_string(arg).with_context(|| format!("--notes: read {arg}"))?);
             }
         }
     }
@@ -382,7 +384,10 @@ fn notes(args: &[String]) -> anyhow::Result<Notes> {
 
 /// `nsh update-manifest`.
 pub(crate) fn manifest(options: ManifestOptions<'_>) -> anyhow::Result<()> {
-    let entry = crate::entry::resolve(&dunce::canonicalize(options.entry)?)?;
+    let entry = crate::entry::resolve(&dunce::canonicalize(options.entry)?).with_context(|| {
+        "nsh update-manifest reads the app's nsh.json (its \"updater\", \"id\", \"version\"): \
+         run it in the app's directory, or pass the directory as ENTRY"
+    })?;
     let config = crate::package::read_config(&entry)?;
     let (name, id) = crate::package::release_name_and_id(&entry, &config)?;
     let Some(runtime) = runtime_config(&config, &id)? else {

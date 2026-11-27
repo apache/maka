@@ -69,6 +69,10 @@ pub(crate) struct OpenState {
     /// that (a secondary click on an open context menu's trigger closes
     /// it and opens it again, both reported).
     asked: Stored<Option<bool>>,
+    /// Why the user last asked it to close ([`Self::request_for`]), until
+    /// the popup reads it as it goes ([`Self::take_closed_by`]) or the app
+    /// that controls it keeps it open.
+    closed_by: Stored<Option<OpenChangeReason>>,
     /// The popup's own owner, which lets go of `asked`: a request comes
     /// from what it shows (Escape, an item chosen), which the answer
     /// closing it takes away before the answer reaches the popup.
@@ -81,6 +85,7 @@ impl OpenState {
             controlled: open,
             own: signal(default_open.get_untracked()),
             asked: stored(None),
+            closed_by: stored(None),
             owner: Owner::current(),
         }
     }
@@ -117,13 +122,35 @@ impl OpenState {
             self.own.set(open);
         } else {
             self.asked.replace(Some(open));
-            let asked = self.asked;
             self.owner.run(|| {
                 after_answer(move || {
-                    asked.replace(None);
+                    self.asked.replace(None);
+                    // The app kept it open (a press outside it asks to
+                    // confirm first): the reason goes with the refusal, or
+                    // the app's own close later would read it.
+                    if !open && self.get_untracked() {
+                        self.closed_by.replace(None);
+                    }
                 })
             });
         }
+    }
+
+    /// [`Self::request`] for `reason`, which a close keeps until the popup
+    /// reads it as it goes ([`Self::take_closed_by`]): where the keyboard
+    /// focus goes then depends on what closed it (a press outside put it
+    /// where it pressed).
+    pub(crate) fn request_for(self, open: bool, reason: OpenChangeReason, report: impl FnOnce()) {
+        if !open {
+            self.closed_by.replace(Some(reason));
+        }
+        self.request(open, report);
+    }
+
+    /// Why the user asked it to close, read once as it goes: none when the
+    /// app closed it, or when the app kept it open after the user asked.
+    pub(crate) fn take_closed_by(self) -> Option<OpenChangeReason> {
+        self.closed_by.replace(None)
     }
 }
 

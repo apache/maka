@@ -174,6 +174,10 @@ actions and the ref's `toggleZoom(tab.group)` acts on its group. It is a child o
 view, so it keeps its place while the tabs scroll and the bar's own layout places it (`ml-auto` on what it returns
 pushes it to the end of a `flex-row` bar). In the compact presentation the one tab bar ends with the shown tab's.
 
+`renderTabBarPrefix` is its counterpart at the start of the bar, before the tabs' scroll view, with the same
+`DockTab`: room or controls that stay put while the tabs scroll, such as space for window controls over the
+top-left group only (`tabBarStyle` would give every group that space).
+
 ```tsx
 renderToolbar={(tab) => (
   <View class="ml-auto flex-row items-center gap-2 px-2">
@@ -220,10 +224,12 @@ A tab dragged over a group shows where it would land, and the drop puts it there
 | The middle of a group's content | Joins that group |
 | An edge of a group's content (its outer 35% on each side) | Splits that group: a new group of its own on that side |
 
-While a drag hovers, the area shows the drop indicator over the part of the group the panel would take (all of its
+While a drag hovers a group's content, the area shows the drop indicator over the part of the group the panel would take (all of its
 content to join, half of it to split): a part the
 app styles (`dropIndicatorClass`), with content of its own if the app renders some (`renderDropIndicator`, told the
-`group`, the `side` it splits off or the tab bar `index`). It moves to each new place natively, easing there and fading in on another group as the last one fades out (at once when the user asks for less motion). What follows the pointer or finger is the app's too
+`group` and the `side` it splits off). While a drag runs along a tab bar (the compact strip's too), the area draws an
+insertion line instead, between the tabs where the panel would land: a 2-point line as tall as the bar (across a
+vertical bar), in the theme's `ring` color, and the content is not tinted. It moves to each new place natively, easing there and fading in on another group as the last one fades out (at once when the user asks for less motion). What follows the pointer or finger is the app's too
 (`renderDragPreview`). A drop is one change of the layout, reported once; a drop that would change nothing changes nothing.
 
 A locked area, a zoomed one, and a group's last panel when nothing sits beside the group drag nothing.
@@ -362,7 +368,8 @@ rest of the area.
 | `renderPanel` | `.render_panel(\|panel\| ..)` | `(panel: DockPanel) => JSX.Element` | none | A panel's content, by its key (`panel.id`). |
 | `renderTab` | `.render_tab(\|tab\| ..)` | `(tab: DockTab) => JSX.Element` | the key | What a tab shows. |
 | `renderToolbar` | `.render_toolbar(\|tab\| ..)` | `(tab: DockTab) => JSX.Element` | none | The toolbar at the end of a group's tab bar, for its displayed tab: that panel's actions (a new tab, a zoom button). |
-| `renderDropIndicator` | `.render_drop_indicator(\|drop\| ..)` | `(drop: DockDropIndicator) => JSX.Element` | none | What is inside the drop indicator: `group`, `side`, `index`. |
+| `renderTabBarPrefix` | `.render_tab_bar_prefix(\|tab\| ..)` | `(tab: DockTab) => JSX.Element` | none | What a group's tab bar starts with, before its tabs, for its displayed tab. |
+| `renderDropIndicator` | `.render_drop_indicator(\|drop\| ..)` | `(drop: DockDropIndicator) => JSX.Element` | none | What is inside the drop indicator over a group's content: `group`, `side` (not called over a tab bar, which shows the insertion line). |
 | `renderDock` | `.render_dock(\|dock\| ..)` | `(dock: DockInfo) => JSX.Element` | none | A dock's own chrome, before its layout: `placement`, `open` (shown in the current presentation), `size`, `collapsible`. |
 | `renderEmpty` | `.render_empty(\|placement\| ..)` | `(placement: DockPlacement) => JSX.Element` | none | What an empty center shows. |
 | `renderDragPreview` | `.render_drag_preview(\|tab\| ..)` | `(tab: DockTab) => JSX.Element` | none | What follows the pointer or finger while a tab is dragged. |
@@ -400,12 +407,13 @@ rest of the area.
 | A tab group | a region | `groupClass`, `groupStyle` | |
 | A tab bar | a group | `tabBarClass`, `tabBarStyle` | |
 | A tab | a tab bar | `tabClass`, `tabStyle`; `renderTab` | `selected:`, `active:`, `hover:` |
+| Tab bar prefix | the start of a tab bar | `renderTabBarPrefix` | |
 | Toolbar | the end of a tab bar | `renderToolbar` | |
 | A group's content | a group | `contentClass`, `contentStyle`; `renderPanel` | |
 | A handle's indicator | between a split's groups, at a dock's edge | `handleClass`, `handleStyle` | `group-hover:`, `group-active:` |
 | A handle's thumb | centered on a handle's line | `handleThumbClass`, `handleThumbStyle` | `group-hover:`, `group-active:` (pressed until the drag ends) |
 | A dock | an edge | `dockClass`, `dockStyle`; `renderDock` | |
-| The drop indicator | over a group during a drag | `dropIndicatorClass`, `dropIndicatorStyle`; `renderDropIndicator` | |
+| The drop indicator | over a group's content during a drag (a tab bar shows an insertion line) | `dropIndicatorClass`, `dropIndicatorStyle`; `renderDropIndicator` | |
 | The drag preview | under the pointer or finger | `renderDragPreview` | |
 | The empty center | the center | `renderEmpty` | |
 | A drawer, the sheet, the backdrop | over the center, compact | `drawerClass`, `sheetClass`, `backdropClass` (and their styles) | |

@@ -1,6 +1,6 @@
 ---
 title: nsh/mobile
-description: "What iOS and Android have: TabBar, the system's tab bar, DateTimePicker, the system's date and time picker, SegmentedControl, the system's segmented control on iOS, Switch, the system's switch, Haptics, AppSettings, the app's page in the system's settings, InputAccessoryView on iOS, BackHandler on Android, and isAvailable."
+description: "What iOS and Android have: TabBar, the system's tab bar, Haptics, AppSettings, the app's page in the system's settings, InputAccessoryView on iOS, BackHandler on Android, and isAvailable."
 order: 12.2
 ---
 
@@ -11,11 +11,8 @@ order: 12.2
 | API | What it is | Platforms |
 |---|---|---|
 | `TabBar` | The system's tab bar | iOS, Android |
-| [`DateTimePicker`](#datetimepicker) | The system's date and time picker | iOS, Android |
-| [`Switch`](#switch) | The system's switch | iOS, Android |
 | [`Haptics`](#haptics) | The device's haptic feedback | iOS, Android |
 | [`AppSettings`](#appsettings) | The app's page in the system's settings | iOS, Android |
-| [`SegmentedControl`](#segmentedcontrol) | The system's segmented control | iOS |
 | [`InputAccessoryView`](#inputaccessoryview) | A bar over the keyboard | iOS |
 | [`BackHandler`](#backhandler) | The back button | Android |
 
@@ -25,35 +22,23 @@ You can import the module on every platform, so one bundle runs everywhere. On o
 import {
   AppSettings,
   BackHandler,
-  DateTimePicker,
   Haptics,
   InputAccessoryView,
   isAvailable,
-  SegmentedControl,
-  Switch,
   TabBar,
 } from "nsh/mobile";
-import type {
-  DateTimePickerMode,
-  DateTimePickerProps,
-  SegmentedControlItem,
-  SegmentedControlProps,
-  SwitchProps,
-  TabBarItem,
-  TabBarProps,
-} from "nsh/mobile";
+import type { TabBarItem, TabBarProps } from "nsh/mobile";
 ```
 
 ```rust tabs
-use nsh_core::mobile::{
-    DateTimePickerMode, DateTimePickerValue, SegmentedControlItem, TabBarItem, date_time_picker, segmented_control,
-    switch, tab_bar,
-};
+use nsh_core::mobile::{TabBarItem, tab_bar};
 ```
 
 ## Scope
 
-This module exposes capabilities specific to mobile platforms, such as the system tab bar for top-level app navigation. Common controls belong to [`nsh/base`](./nsh-base.md): its [Switch](../elements/switch.md), for example, shares behavior and API across phones, desktops and the web, with the track, thumb and state styles supplied by the app. `TabBar` serves mobile app navigation; `Tabs` serves tabbed content across platforms. Only capabilities with mobile-specific interaction semantics belong here. A system appearance, size or animation alone does not change a common control’s shared role. This distinction guides which capabilities belong here ([Goals and design principles](../docs/goals.md)). `SegmentedControl` is the system's own control for an app that needs exactly the iOS one; a choice in the app's look, on every platform, is `nsh/base`'s [ToggleGroup](../elements/toggle.md) or [RadioGroup](../elements/radio.md). Likewise `DateTimePicker` is the system's own date and time picker on phones; a picker in the app's look, on every platform, is `nsh/base`'s [DatePicker](../elements/date-picker.md) or [TimeField](../elements/time-field.md). `Switch` is the same: the system's own switch for an app that wants exactly the iOS and Android ones; a switch in the app's look, on every platform, is `nsh/base`'s [Switch](../elements/switch.md).
+This module exposes capabilities specific to mobile platforms, such as the system tab bar for top-level app navigation. Common controls belong to [`nsh/base`](./nsh-base.md): its [Switch](../elements/switch.md), for example, shares behavior and API across phones, desktops and the web, with the track, thumb and state styles supplied by the app. `TabBar` serves mobile app navigation; `Tabs` serves tabbed content across platforms. Only capabilities with mobile-specific interaction semantics belong here. A system appearance, size or animation alone does not change a common control’s shared role. This distinction guides which capabilities belong here ([Goals and design principles](../docs/goals.md)).
+
+The system's own segmented control, switch and date and time picker are in the [nsh-system-controls](https://github.com/longbridge/nsh-system-controls) [nshm](../docs/nshm.md): add it with `nsh add nsh-system-controls` and import `SegmentedControl`, `Switch` and `DateTimePicker` from `"nsh-system-controls"` instead of `"nsh/mobile"`. For a control in the app's look on every platform, use `nsh/base`'s [ToggleGroup](../elements/toggle.md) or [RadioGroup](../elements/radio.md), [Switch](../elements/switch.md), and [DatePicker](../elements/date-picker.md) or [TimeField](../elements/time-field.md).
 
 ## isAvailable
 
@@ -185,174 +170,6 @@ In Rust, `tab_bar()` makes one, with a setter per prop (`.items(..)`, `.selected
 - **Desktops (macOS, Windows, Linux, GPUI) and the web**: the sections show with [Tabs](../elements/tabs.md), in the app's
   look. `TabBar` takes no room there, so one layout holds both, picked by `platform.os`
   ([`nsh`'s device API](./nsh.md#device)).
-
-## SegmentedControl
-
-A segmented control picks one of a few options in place: light or dark, day, week or month. `SegmentedControl` is
-the system's own `UISegmentedControl` on iOS and iPadOS, so it has the system's look (Liquid Glass on iOS 26 and
-later), its motion, VoiceOver ("Light, button, selected, 1 of 2") and its keyboard focus.
-
-```tsx
-import { signal } from "nsh";
-import { SegmentedControl } from "nsh/mobile";
-
-const appearance = signal(0);
-
-<SegmentedControl
-  items={[{ title: "Light", icon: "sun.max" }, { title: "Dark", icon: "moon" }]}
-  selectedIndex={appearance()}
-  onChange={({ index }) => appearance.set(index)}
-  style={{ alignSelf: "stretch" }}
-/>;
-```
-
-The selection is the app's: a tap reports `onChange` with the segment's index (`{ index }`), the control shows the
-choice at once, as the system's does, and the app passes the index back as `selectedIndex`. New `items` change the
-segments in place (the same number of segments keeps the control as it is, so a renamed or disabled segment does not
-flash). Its size is the system's where the style leaves it open; a width the style gives is shared by the segments. In
-Rust, `segmented_control()` makes one, with a setter per prop and `.on_change(..)`;
-`SegmentedControlItem::new(title).icon(name).disabled(true)` makes a segment.
-
-### Props
-
-| Prop | Rust | Type | Default | Description |
-|---|---|---|---|---|
-| `items` | `.items(..)` | `SegmentedControlItem[]` | `[]` | The segments, in order. |
-| `selectedIndex` | `.selected_index(..)` | `number` | `0` | The selected segment, by index; an index past the segments selects none. |
-| `disabled` | `.disabled(..)` | `boolean` | `false` | No segment can be chosen: the system dims the control. |
-| `class`, `style` | style methods | `string`, `StyleProp<ViewStyle>` | none | Where the control is: its position and size. Its look is the system's. |
-| `testID` | `.test_id(..)` | `string` | none | Finds the control in tests and `nsh test --trace`. |
-
-#### SegmentedControlItem
-
-| Field | Rust | Type | Description |
-|---|---|---|---|
-| `title` | `SegmentedControlItem::new(title)` | `string` | The segment's title: what it shows, and what VoiceOver says. |
-| `icon` | `.icon(name)` | `string` | An [SF Symbol](https://developer.apple.com/sf-symbols/) shown in place of the title, which VoiceOver still says. |
-| `disabled` | `.disabled(..)` | `boolean` | The segment cannot be chosen. |
-
-### Events
-
-| Event | Rust | Description |
-|---|---|---|
-| `onChange` | `.on_change(\|index: &u32\| ..)` | The user chose another segment: `{ index }`. The control shows the choice at once; the app sets `selectedIndex`. |
-
-### Platform notes
-
-- **iOS and Mac Catalyst**: `UISegmentedControl` in the system's appearance for the iOS version and the SDK the app
-  is linked with: Liquid Glass on iOS 26 and later.
-- **Android, the desktops and the web**: `SegmentedControl` takes no room and shows nothing, so one layout holds both:
-  show the choice with [ToggleGroup](../elements/toggle.md) or [RadioGroup](../elements/radio.md) there, picked by
-  `platform.os`.
-
-## Switch
-
-A switch turns one setting on or off. `Switch` is the system's own: a `UISwitch` on iOS and iPadOS, Material 3's
-switch on Android. It has the system's look (Liquid Glass on iOS 26 and later), its motion as it is flipped or
-dragged, its haptics and the screen reader's reading ("Wi-Fi, switch button, on").
-
-```tsx
-import { signal } from "nsh";
-import { Switch } from "nsh/mobile";
-
-const wifi = signal(true);
-
-<Switch accessibilityLabel="Wi-Fi" checked={wifi()} onChange={({ checked }) => wifi.set(checked)} />;
-```
-
-The value is the app's: a flip reports `onChange` with the value the user asked for (`{ checked }`), the switch
-moves at once, as the system's does, and the app passes the value back as `checked`. A value the app keeps (it turns
-the flip down) moves the switch back. Its size is the system's where the style leaves it open, so a row places it with
-its other content. It is on in the theme's `primary` color; without one, the system's. In Rust, `switch()` makes one,
-with a setter per prop and `.on_change(..)`.
-
-### Props
-
-| Prop | Rust | Type | Default | Description |
-|---|---|---|---|---|
-| `checked` | `.checked(..)` | `boolean` | `false` | On or off. |
-| `disabled` | `.disabled(..)` | `boolean` | `false` | It cannot be flipped: the system dims it. |
-| `accessibilityLabel` | `.accessibility_label(..)` | `string` | none | What screen readers say with its state: the setting it turns on. |
-| `class`, `style` | style methods | `string`, `StyleProp<ViewStyle>` | none | Where the switch is. Its look and size are the system's. |
-| `testID` | `.test_id(..)` | `string` | none | Finds the switch in tests and `nsh test --trace`. |
-
-### Events
-
-| Event | Rust | Description |
-|---|---|---|
-| `onChange` | `.on_change(\|checked: &bool\| ..)` | The user flipped the switch: `{ checked }`, the value it asks for. The switch moves at once; the app sets `checked`. |
-
-### Platform notes
-
-- **iOS and Mac Catalyst**: `UISwitch` in the system's appearance for the iOS version and the SDK the app is linked
-  with: Liquid Glass on iOS 26 and later.
-- **Android**: the framework's switch drawn as Material 3's: its track and thumb, in the system's dynamic colors on
-  Android 12 and later (Material's baseline colors before), following the app's light or dark appearance.
-- **The desktops and the web**: `Switch` takes no room and shows nothing, so one layout holds both: show the setting
-  with `nsh/base`'s [Switch](../elements/switch.md) there, picked with `isAvailable`.
-
-## DateTimePicker
-
-A date and time picker sets a day, a time of day or both: a reminder's time, a schedule's end date. `DateTimePicker`
-is the system's own picker, so it has the system's look, formats, calendar and accessibility: on iOS and iPadOS a
-`UIDatePicker` in its compact style, the value in a capsule that opens the system's calendar or time wheels; on
-Android the value in a field that opens the system's date or time dialog.
-
-```tsx
-import { signal } from "nsh";
-import { DateTimePicker } from "nsh/mobile";
-
-const at = signal("2026-11-17T09:30");
-
-<DateTimePicker
-  mode="dateTime"
-  value={at()}
-  min="2026-11-17T00:00"
-  minuteInterval={5}
-  accessibilityLabel="Reminder"
-  onChange={({ value }) => at.set(value)}
-/>;
-```
-
-Values are ISO strings in the mode's form, as HTML's date and time inputs take them: `"2026-11-17"` for `date`,
-`"09:30"` for `time`, `"2026-11-17T09:30"` for `dateTime`. They are wall-clock times: the picker shows them as they
-are, and the app ties them to the time zone it means. The value is the app's: a pick reports `onChange` with the new
-value (`{ value }`), the picker shows it at once, as the system's does, and the app passes it back as `value`. Without
-a value the picker shows the present. A value, `min` or `max` in another mode's form is not shown as something else:
-NSH logs a warning and leaves it out. Its size is the system's where the style leaves it open. In Rust,
-`date_time_picker()` makes one, with a setter per prop and `.on_change(..)`; values are `DateTimePickerValue`s, made
-from `chrono`'s `NaiveDate`, `NaiveTime` and `NaiveDateTime`.
-
-### Props
-
-| Prop | Rust | Type | Default | Description |
-|---|---|---|---|---|
-| `mode` | `.mode(..)` | `"date" \| "time" \| "dateTime"` | `"date"` | What it picks: a day, a time of day, or both. |
-| `value` | `.value(..)` | `string \| null` | `null` | The value shown, in the mode's form; `null` shows the present. |
-| `min` | `.min(..)` | `string \| null` | `null` | The earliest value the user can pick. |
-| `max` | `.max(..)` | `string \| null` | `null` | The latest value the user can pick. |
-| `minuteInterval` | `.minute_interval(..)` | `number` | `1` | The minutes offered are this many apart: 1 to 30, a divisor of 60. Other numbers log a warning and step by 1. |
-| `disabled` | `.disabled(..)` | `boolean` | `false` | It cannot be changed: the system dims it. |
-| `accessibilityLabel` | `.accessibility_label(..)` | `string` | none | What screen readers say with its value: what it sets. The picker shows only the value, so give the name of the row it sits in. |
-| `class`, `style` | style methods | `string`, `StyleProp<ViewStyle>` | none | Where the picker is: its position and size. Its look is the system's. |
-| `testID` | `.test_id(..)` | `string` | none | Finds the picker in tests and `nsh test --trace`. |
-
-### Events
-
-| Event | Rust | Description |
-|---|---|---|
-| `onChange` | `.on_change(\|value: &DateTimePickerValue\| ..)` | The user picked a value: `{ value }`, in the mode's form. The picker shows it at once; the app sets `value`. |
-
-### Platform notes
-
-- **iOS and Mac Catalyst**: `UIDatePicker` in its compact style; with `dateTime` the day and the time are two capsules.
-  The calendar and the time wheels are the system's, in the user's locale, calendar and clock.
-- **Android**: the value in the formats of the app's language ([I18n](../docs/i18n.md)), including one `setLocale`
-  picks, and the user's 12- or 24-hour clock, in a field per part; a press opens the system's date or time dialog,
-  in the same language. The time dialog offers every minute: a pick between two steps of `minuteInterval` takes the
-  step before it, and a pick past `min` or `max` takes the bound.
-- **The desktops and the web**: `DateTimePicker` takes no room and shows nothing, so one layout holds both: pick with
-  [DatePicker](../elements/date-picker.md) or [TimeField](../elements/time-field.md) there, chosen by `platform.os`.
 
 ## InputAccessoryView
 

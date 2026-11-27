@@ -613,7 +613,8 @@ export function TimeSegment(props: { label: string }) {
  * at 70%, `group` for what they draw), `segmentClass` the time's segments
  * (filled while they have the keys), the popup's layout (`content`: the
  * presets beside the calendar with a pointer, above it on a phone), the
- * presets' column of ghost buttons or chips, the header's gap over the
+ * presets' column of ghost buttons or chips (`presetDescription` a
+ * preset's second line, smaller and muted), the header's gap over the
  * weekdays (shadcn's `gap-4`), the calendar's padding (with the popup's,
  * shadcn's `p-3`), the time's row under a hairline, its well
  * (`timeFieldClass`, the number inputs'), the time's `:` in the muted
@@ -638,10 +639,14 @@ export const calendarLook = {
       : { flexDirection: "row", flexWrap: "wrap", gap: 6 };
   },
   get preset() {
-    if (terminal) return { height: 28, paddingHorizontal: 8, borderRadius: radius.control, justifyContent: "center" as const, fontSize: 13, color: colors.text };
+    // At least a line's height, growing with a description's second line: a preset without one stays as tall.
+    if (terminal) return { minHeight: 28, paddingHorizontal: 8, borderRadius: radius.control, justifyContent: "center" as const, fontSize: 13, color: colors.text };
     return pointer
-      ? { height: 28, paddingHorizontal: 10, borderRadius: radius.control, justifyContent: "center" as const, fontSize: 13, color: colors.text }
-      : { height: 34, paddingHorizontal: 12, borderRadius: 17, borderWidth: 1, borderColor: colors.border, justifyContent: "center" as const, fontSize: 14, color: colors.text };
+      ? { minHeight: 28, paddingVertical: 4, paddingHorizontal: 10, borderRadius: radius.control, justifyContent: "center" as const, fontSize: 13, color: colors.text }
+      : { minHeight: 34, paddingVertical: 6, paddingHorizontal: 12, borderRadius: 17, borderWidth: 1, borderColor: colors.border, justifyContent: "center" as const, fontSize: 14, color: colors.text };
+  },
+  get presetDescription() {
+    return terminal ? { color: colors.faint } : { fontSize: 12, color: colors.muted, fontVariant: ["tabular-nums" as const] };
   },
   presetClass: terminal ? "enabled:hover:bg-accent active:opacity-70" : `transition-colors duration-100 motion-reduce:transition-none enabled:hover:${quietFill} enabled:active:${pressedFill}`,
   header: { marginBottom: terminal ? 4 : pointer ? 12 : 8 },
@@ -690,6 +695,9 @@ export function datePickerLook(o?: DatePickerLookOptions) {
     },
     get presetStyle() {
       return calendarLook.preset;
+    },
+    get presetDescriptionStyle() {
+      return calendarLook.presetDescription;
     },
     presetClass: calendarLook.presetClass,
     calendarStyle: calendarLook.calendar,

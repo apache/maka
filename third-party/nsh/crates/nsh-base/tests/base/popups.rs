@@ -12,8 +12,9 @@
 //! pointer. Moving on from a trigger whose tooltip the pointer showed, the
 //! next one's shows at once within the 300 ms grace period, until a press or
 //! Escape ends it. Escape or a choice closes a menu
-//! whose `open` the app controls every time, also when the app opened it itself. On a manual clock: time moves only as the test
-//! says.
+//! whose `open` the app controls every time, also when the app opened it itself. A popover or menu the app kept
+//! open after a press outside, then closed itself, gives the trigger the keyboard back. On a manual clock: time moves
+//! only as the test says.
 
 use std::{
     collections::HashMap,
@@ -22,8 +23,8 @@ use std::{
 };
 
 use nsh_base::{
-    MenuEvent, PopoverEvent, TooltipElement, TooltipEvent, button, menu, menu_item, popover,
-    submenu, tooltip,
+    MenuEvent, OpenChangeReason, PopoverEvent, TooltipElement, TooltipEvent, button, menu,
+    menu_item, popover, submenu, tooltip,
 };
 use nsh_core::{
     MountItem, NodeId, Size,
@@ -593,6 +594,159 @@ fn a_popover_closed_with_escape_takes_no_return_on_its_way_out() {
     assert!(
         app.app.shows("applied:1"),
         "not pressed again while it goes"
+    );
+}
+
+/// A popover whose `open` the app controls and keeps when a press outside
+/// asks to close it, a button `Apply` inside that closes it (the app
+/// setting `open`), a view `elsewhere` beside it, and the reports of
+/// `onOpenChange` on screen.
+#[component]
+fn KeptPopoverScreen() -> impl IntoElement {
+    let open = signal(false);
+    let changes = signal(Vec::<String>::new());
+    view()
+        .pt(px(100.0))
+        .pl(px(40.0))
+        .child(
+            popover()
+                .open(move || Some(open.get()))
+                .on_open_change(move |e: &PopoverEvent| {
+                    if let PopoverEvent::OpenChange(next, reason) = e {
+                        changes.update(|c| c.push(format!("{next}:{reason:?}")));
+                        if *reason != OpenChangeReason::PressOutside {
+                            open.set(*next);
+                        }
+                    }
+                })
+                .trigger(
+                    view()
+                        .test_id("trigger")
+                        .w(px(100.0))
+                        .h(px(30.0))
+                        .child(text("Details")),
+                )
+                .child(
+                    view()
+                        .test_id("apply")
+                        .h(px(30.0))
+                        .on_press(move || open.set(false))
+                        .child(text("Apply")),
+                ),
+        )
+        .child(
+            view()
+                .test_id("elsewhere")
+                .w(px(40.0))
+                .h(px(40.0))
+                .on_press(|| {}),
+        )
+        .child(text(move || format!("changes:{}", changes.get().join(" "))))
+}
+
+#[test]
+fn a_popover_the_app_closes_after_keeping_it_open_gives_the_trigger_the_keyboard_back() {
+    let mut app = start(nsh_testing::windowed_root::<KeptPopoverScreen>(), false);
+    app.app.press_key("tab").unwrap();
+    app.app.press_key("enter").unwrap();
+    app.app.run_for(Duration::from_millis(50)).unwrap();
+    app.app.wait_for("Apply").unwrap();
+    // A press outside asks to close it (the focus leaves the popup); the
+    // app keeps it open.
+    app.app.press("id:elsewhere").unwrap();
+    app.app.run_for(Duration::from_millis(50)).unwrap();
+    app.app
+        .wait_for("text:changes:true:TriggerPress false:PressOutside")
+        .unwrap();
+    assert!(app.app.shows("Apply"), "kept open");
+    // Tab comes back to the trigger, then to Apply in the popup.
+    app.app.press_key("tab").unwrap();
+    app.app.press_key("tab").unwrap();
+    // Return on Apply: the app closes it, and the keyboard goes back to
+    // the trigger, where Return opens it again.
+    app.app.press_key("enter").unwrap();
+    app.app.run_for(Duration::from_millis(50)).unwrap();
+    assert!(!app.app.shows("Apply"), "closed by the app");
+    app.app.press_key("enter").unwrap();
+    app.app.run_for(Duration::from_millis(50)).unwrap();
+    assert!(
+        app.app.shows("Apply"),
+        "opened again from the trigger: {:?}",
+        app.app.screen().texts()
+    );
+}
+
+/// A desktop menu whose `open` the app controls and keeps when a press
+/// outside asks to close it, F9 closing it as the app (setting `open`), a
+/// view `elsewhere` beside it, and the reports of `onOpenChange` on screen.
+#[component]
+fn KeptMenuScreen() -> impl IntoElement {
+    let open = signal(false);
+    let changes = signal(Vec::<String>::new());
+    on_key("f9", move |_| open.set(false));
+    view()
+        .pt(px(100.0))
+        .pl(px(40.0))
+        .child(
+            menu()
+                .open(move || Some(open.get()))
+                .on_open_change(move |e: &MenuEvent| {
+                    if let MenuEvent::OpenChange(next, reason) = e {
+                        changes.update(|c| c.push(format!("{next}:{reason:?}")));
+                        if *reason != OpenChangeReason::PressOutside {
+                            open.set(*next);
+                        }
+                    }
+                })
+                .trigger(
+                    view()
+                        .test_id("file")
+                        .w(px(80.0))
+                        .h(px(30.0))
+                        .child(text("File")),
+                )
+                .child(menu_item().accessibility_label("Open").child(text("Open")))
+                .child(menu_item().accessibility_label("Save").child(text("Save"))),
+        )
+        .child(
+            view()
+                .test_id("elsewhere")
+                .w(px(40.0))
+                .h(px(40.0))
+                .on_press(|| {}),
+        )
+        .child(text(move || format!("changes:{}", changes.get().join(" "))))
+}
+
+#[test]
+fn a_menu_the_app_closes_after_keeping_it_open_gives_the_trigger_the_keyboard_back() {
+    let mut app = start(nsh_testing::windowed_root::<KeptMenuScreen>(), false);
+    // Opened from the keyboard: the focus on Open.
+    app.app.press_key("tab").unwrap();
+    app.app.press_key("enter").unwrap();
+    app.app.run_for(Duration::from_millis(50)).unwrap();
+    app.app.wait_for("Save").unwrap();
+    // A press outside asks to close it (the focus leaves the popup); the
+    // app keeps it open.
+    app.app.press("id:elsewhere").unwrap();
+    app.app.run_for(Duration::from_millis(50)).unwrap();
+    app.app
+        .wait_for("text:changes:true:TriggerPress false:PressOutside")
+        .unwrap();
+    assert!(app.app.shows("Save"), "kept open");
+    // The pointer moving over Save gives it the keyboard focus again.
+    app.app.hover("Save").unwrap();
+    // The app closes it itself: the keyboard goes back to the trigger,
+    // where Return opens it again.
+    app.app.press_key("f9").unwrap();
+    app.app.run_for(Duration::from_millis(50)).unwrap();
+    assert!(!app.app.shows("Save"), "closed by the app");
+    app.app.press_key("enter").unwrap();
+    app.app.run_for(Duration::from_millis(50)).unwrap();
+    assert!(
+        app.app.shows("Save"),
+        "opened again from the trigger: {:?}",
+        app.app.screen().texts()
     );
 }
 

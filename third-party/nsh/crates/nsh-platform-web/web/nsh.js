@@ -173,6 +173,10 @@ const EASE_OUT_CUBIC = "cubic-bezier(0.333,1,0.667,1)";
 const READING_ORDER = typeof CSS !== "undefined" && !!CSS.supports?.("reading-flow", "source-order");
 /** How far back a pointer's velocity is measured (ms). */
 const VELOCITY_WINDOW = 100;
+/** How long a tap's press on a field waits for the focus the mouse events
+ * the browser makes of the tap give it (`awaitFieldFocus`): they follow
+ * the lift at once, or after a double tap's wait (about 300 ms). */
+const FIELD_PRESS_WAIT_MS = 1000;
 /** How long after something animated comes due a timer makes it happen
  * when no animation frame did (`keepDeadline`, `moveScreens`, ...): more
  * than a frame, so that while the page shows its frames always come first. */
@@ -569,41 +573,6 @@ function navigationIndex() {
 /** The offset of local time at `ms` (since the epoch) in seconds east of UTC. */
 function localOffset(ms) {
   return 0 - new Date(ms).getTimezoneOffset() * 60;
-}
-
-/**
- * Whether the page can show the browser's share sheet: it has
- * `navigator.share` and the document is allowed to use `web-share` (a frame
- * of another origin needs `allow="web-share"`, and `Permissions-Policy:
- * web-share=()` turns it off).
- *
- * Web Share (W3C REC) makes `navigator.canShare(data)` return `false` when the
- * document is not allowed to use "web-share", so that is the probe. It never
- * touches the policy by name, so it does not log "Unrecognized feature" in
- * browsers whose Permissions Policy has no `web-share` entry. The data only
- * has to be valid share data; nothing is shared.
- *
- * `canShare` is newer than `share` (some browsers ship only `share`). Those
- * fall back to the Permissions Policy API, asking `features()` before
- * `allowsFeature()`: `allowsFeature` logs for a name the browser does not
- * list, and such a browser does not gate sharing on that policy.
- */
-function webShareAllowed(
-  nav = typeof navigator === "undefined" ? undefined : navigator,
-  doc = typeof document === "undefined" ? undefined : document,
-) {
-  if (typeof nav?.share !== "function") return false;
-  if (typeof nav.canShare === "function") {
-    try {
-      return nav.canShare({ text: "share" });
-    } catch {
-      return false;
-    }
-  }
-  const policy = doc?.permissionsPolicy ?? doc?.featurePolicy;
-  if (typeof policy?.allowsFeature !== "function") return true;
-  if (typeof policy.features === "function" && !policy.features().includes("web-share")) return true;
-  return policy.allowsFeature("web-share");
 }
 
 /** The kinds `network()` names for `navigator.connection.type`'s. */
@@ -2276,7 +2245,13 @@ class Player {
     this.frame = requestAnimationFrame((now) => {
       this.frame = 0;
       this.frameAt = performance.now();
-      this.call((w) => w.nsh_frame(this.frameTime(now), 1));
+      // What the frame changes is drawn in it (`drawSoon`).
+      this.inFrame = true;
+      try {
+        this.call((w) => w.nsh_frame(this.frameTime(now), 1));
+      } finally {
+        this.inFrame = false;
+      }
     });
   }
 
@@ -2483,7 +2458,6 @@ class Player {
       screenColor: typeof window.EyeDropper === "function",
       // `writeClipboard` reports each write's result.
       clipboardWriteResult: true,
-      share: webShareAllowed(),
       notifications: typeof window.Notification === "function",
       audio: typeof (window.AudioContext ?? window.webkitAudioContext) === "function",
       // Shader views draw until the first one finds no WebGL 2 (`shaderGl`).
@@ -3459,7 +3433,10 @@ class Player {
   updateAria(el) {
     const p = el._props ?? {};
     const set = (name, value) => setAriaAttribute(el, name, value);
-    const role = ARIA_ROLES[p.role] ?? (p.role && p.role !== "none" ? p.role : el._pressable ? "button" : null);
+    // An input that takes presses is still a text box, read on its field:
+    // its view is no button around it.
+    const button = el._pressable && el._kind !== "input";
+    const role = ARIA_ROLES[p.role] ?? (p.role && p.role !== "none" ? p.role : button ? "button" : null);
     // A combo box that is an input is its field, which keeps the focus
     // (`fieldAria`).
     set("role", el._field && p.role === "combobox" ? null : role);
@@ -3498,11 +3475,13 @@ class Player {
    * decides: pressables (Enter and Space press them) unless `focusable`
    * false, and any `focusable` view, pressable or not (its keys reach it
    * through the app's keymap); never disabled ones, those hidden from
-   * assistive technologies or those with no area (`seenByKeys`). */
+   * assistive technologies or those with no area (`seenByKeys`). An input's
+   * view is none, `focusable` or pressable: its field is its one stop
+   * (`fieldStop`), as on the desktops. */
   updateFocusable(el) {
     const p = el._props;
     const seen = this.seenByKeys(el);
-    const focusable = (p?.focusable ?? !!el._pressable) && !p?.disabled && !p?.hidden && seen;
+    const focusable = el._kind !== "input" && (p?.focusable ?? !!el._pressable) && !p?.disabled && !p?.hidden && seen;
     if (focusable) el.tabIndex = 0;
     // Programmatic focus only for what screen-reader focus moved to; an
     // element Tab reaches without a `tabindex` (a link, `web={{ element }}`)
@@ -4144,6 +4123,8 @@ class Player {
    * the root with a screen effect) as they show without the effect.
    */
   paintHost(cx, host, r, stop, owner) {
+    // A canvas changed since the last frame shows its new drawing.
+    this.flushDraws();
     this.watchPaint();
     // What changed since the last picture: its styles are read again.
     this.touchAll(this._paintObserver.takeRecords());
@@ -5659,13 +5640,35 @@ class Player {
     this.drawSoon(el);
   }
 
+  /**
+   * Draws canvas view `el` once before the next paint. Each input event,
+   * timer or socket message is a task with a batch of its own, and several
+   * can come between two frames (pointer moves, a stream of updates): each
+   * replays the whole drawing, only the last of them is ever shown, and the
+   * replays hold the main thread the input waits on. So a change waits for
+   * the next frame, and the canvases changed before it draw once there. A
+   * change made in a frame (the engine's `nsh_frame` stepping an animated
+   * value) draws at the end of its callback, before that frame's paint: a
+   * `requestAnimationFrame` asked for there would come a frame late.
+   */
   drawSoon(el) {
-    if (el._drawQueued) return;
-    el._drawQueued = true;
-    queueMicrotask(() => {
-      el._drawQueued = false;
-      this.draw(el);
-    });
+    (this.drawQueue ??= new Set()).add(el);
+    if (this.drawQueued) return;
+    this.drawQueued = true;
+    const run = () => {
+      this.drawQueued = false;
+      this.flushDraws();
+    };
+    if (this.inFrame) queueMicrotask(run);
+    else requestAnimationFrame(run);
+  }
+
+  /** Draws the canvases waiting for a frame (`drawSoon`) now: a picture of them (`paintHost`) shows what they draw. */
+  flushDraws() {
+    const queue = this.drawQueue;
+    if (!queue?.size) return;
+    this.drawQueue = new Set();
+    for (const el of queue) this.draw(el);
   }
 
   draw(el) {
@@ -6053,6 +6056,7 @@ class Player {
         field._selectOnUp = true;
         this.selectionChanged(el, field);
       }
+      this.fieldPressed(field);
     });
     field.addEventListener("blur", () => {
       field._selectOnUp = false;
@@ -6065,6 +6069,43 @@ class Player {
     // Scrolling the text moves the caret.
     field.addEventListener("scroll", () => this.caretMoved(el, field));
     field.addEventListener("paste", (e) => this.pasted(el, e));
+  }
+
+  /** Holds the press of a tap on `field`'s input for the focus the mouse
+   * events the browser makes of the tap give the field (`pressOut`), and
+   * no longer than those events last: the tap's click, a key or
+   * `FIELD_PRESS_WAIT_MS` drops it, so that a focus that comes later
+   * another way (Tab, the app's) reports no press. */
+  awaitFieldFocus(field, report) {
+    this.dropFieldPress();
+    const timer = setTimeout(() => this.dropFieldPress(), FIELD_PRESS_WAIT_MS);
+    this.fieldPress = { field, report, timer };
+  }
+
+  /** Reports the press that waits for `field`'s focus, if any
+   * (`awaitFieldFocus`). */
+  fieldPressed(field) {
+    const press = this.fieldPress;
+    if (press?.field !== field) return;
+    this.dropFieldPress();
+    press.report();
+  }
+
+  /** Forgets the press that waits for a field's focus, if any. */
+  dropFieldPress() {
+    clearTimeout(this.fieldPress?.timer);
+    this.fieldPress = null;
+  }
+
+  /** The click of a tap ends the mouse events the browser makes of it: a
+   * press still waiting for its field's focus (`awaitFieldFocus`) is
+   * reported when the click is on that field's input (the focus did not
+   * come), and dropped otherwise. */
+  fieldClicked(e) {
+    const press = this.fieldPress;
+    if (!press) return;
+    if (this.viewOf(e.target)?._field === press.field) this.fieldPressed(press.field);
+    else this.dropFieldPress();
   }
 
   /** Reports how far `el`'s textarea scrolled, and its text's height and
@@ -7649,6 +7690,13 @@ class Player {
         if (el && area && (el.contains(area) || area.contains(el))) sel.removeAllRanges();
         break;
       }
+      case "selectAll": {
+        // All the texts of the selectable view `el` is or is in, as Ctrl+A
+        // does there: `selectionchange` then reports them.
+        const area = el && this.areaOf(el);
+        if (area) getSelection()?.selectAllChildren(area);
+        break;
+      }
       case "setSelection": el?._field?.setSelectionRange(args[0], args[1]); break;
       case "insertText": {
         // As the user's typing: the browser's undo history keeps it and
@@ -7748,7 +7796,6 @@ class Player {
       // Pages see no local paths: never any files.
       case "readClipboardFiles": this.event(ROOT_ID, "onClipboard", { id: args[0], has: false, files: "" }); break;
       case "pickScreenColor": this.pickScreenColor(args[0]); break;
-      case "share": this.share(args[0], args[1], args[2], args[3], args[4]); break;
       case "renderCanvas": this.renderCanvas(...args); break;
       case "pickImages": this.pickImages(args[0], args[1], args[2], args[3], args[4]); break;
       case "pickFiles": this.pickFiles(args[0], args[1], args[2], args[3]); break;
@@ -7975,43 +8022,6 @@ class Player {
       color = parseInt(sRGBHex.slice(1, 7), 16) * 256 + 255;
     } catch {}
     this.event(ROOT_ID, "onScreenColor", color === undefined ? { id: request } : { id: request, color });
-  }
-
-  // `share`: the browser's share sheet (`navigator.share`, which the
-  // environment's `share` reports). A page has no local files to share, and
-  // a browser that cannot share this content says so: both are reported as
-  // unavailable, never as shared. The user closing the sheet rejects with
-  // an `AbortError`: dismissed.
-  async share(request, title, text, url, files) {
-    const unavailable = (error) => this.event(ROOT_ID, "onShare",
-      { id: request, error, code: "ERR_FEATURE_UNAVAILABLE_ON_PLATFORM" });
-    const data = {};
-    if (title != null) data.title = title;
-    if (text != null) data.text = text;
-    if (url != null) data.url = url;
-    if (files) return unavailable("share: a page shares no local files");
-    if (!webShareAllowed()) return unavailable("share: this browser has no share sheet for this page");
-    if (typeof navigator.canShare === "function" && !navigator.canShare(data)) {
-      return unavailable("share: this browser cannot share this content");
-    }
-    try {
-      await navigator.share(data);
-      this.event(ROOT_ID, "onShare", { id: request, action: "shared" });
-    } catch (err) {
-      if (err?.name === "AbortError") {
-        this.event(ROOT_ID, "onShare", { id: request, action: "dismissed" });
-      } else if (err?.name === "NotAllowedError") {
-        // The browser refuses the sheet here: the page's permissions policy
-        // (a frame without `web-share`) or a share without a user gesture.
-        unavailable(`share: the browser does not allow sharing here (${err?.message ?? err})`);
-      } else if (err?.name === "InvalidStateError") {
-        // An earlier share's sheet is still open: a browser shows one at a
-        // time and keeps it until the user closes it.
-        unavailable(`share: the browser still shows an earlier share (${err?.message ?? err})`);
-      } else {
-        this.event(ROOT_ID, "onShare", { id: request, error: `share: ${err?.message ?? err}` });
-      }
-    }
   }
 
   // Audio (`Sound`, `AudioPlayer`) -----------------------------------------
@@ -9292,6 +9302,7 @@ class Player {
     root.addEventListener("click", (e) => {
       const link = e.target instanceof Element ? e.target.closest(LINK_SELECTOR) : null;
       if (link && e.button === 0 && !heldModifier(e)) e.preventDefault();
+      this.fieldClicked(e);
     });
     window.addEventListener("pointermove", (e) => this.pointerMove(e), { passive: false });
     window.addEventListener("pointerup", (e) => this.pointerUp(e, false));
@@ -9533,6 +9544,8 @@ class Player {
   }
 
   keyDown(e) {
+    // A key ends a tap's mouse events (`awaitFieldFocus`).
+    this.dropFieldPress();
     if (this.wasm) this.modifiersChanged(e);
     if (!this.wasm || !this.takesKeys()) return;
     // Where the key was pressed, not where the focus is by now: a field's
@@ -10536,6 +10549,16 @@ class Player {
    * focus to the pressable, and close the keyboard as it opens. */
   mouseDown(e) {
     if (this.editable(e.target)) return;
+    // A press on an input around its field (its padding) is the field's,
+    // as on Linux and Windows: it takes the focus there, from a click as it
+    // goes down and from a tap as the finger lifts, as on the field itself.
+    const field = this.viewOf(e.target)?._field;
+    if (field && e.button === 0) {
+      e.preventDefault();
+      if (!document.hasFocus()) window.focus();
+      field.focus();
+      return;
+    }
     if (this.lastPointer === "touch" && !(this.pressFocus && this.pressFocus === document.activeElement)) return;
     e.preventDefault();
     // Which would also keep the keys from an app in an iframe.
@@ -10546,6 +10569,8 @@ class Player {
     this.lastPointer = e.pointerType;
     // The field this press makes the app focus, if any (`mouseDown`).
     this.pressFocus = null;
+    // A field's press that waited for a focus that never came (`pressOut`).
+    this.dropFieldPress();
     // A press without a move still holds a button: a modifier key then
     // fires no hover move (`modifiersChanged`).
     if (e.pointerType === "mouse") this.hoverButtons = e.buttons;
@@ -10568,7 +10593,8 @@ class Player {
     }
     const target = this.viewOf(e.target);
     if (!target) return;
-    const isField = e.target.classList?.contains("nsh-field");
+    // A press anywhere on an input (its field or the padding around it).
+    const field = target._field ?? null;
     const chain = this.ancestors(target);
     // Its positions are in the coordinates of the root view it went down on.
     const layer = this.windowLayer(e.target);
@@ -10577,8 +10603,8 @@ class Player {
     // the scroll bar do: dragging the content is a touchscreen's way);
     // touches scroll natively, except in zoomable views, which pan and
     // pinch here.
-    const scrollView = isField ? null : chain.find((v) => v._kind === "scroll") ?? null;
-    const link = isField ? null : this.linkPress(e.target, target);
+    const scrollView = field ? null : chain.find((v) => v._kind === "scroll") ?? null;
+    const link = field ? null : this.linkPress(e.target, target);
     // An edge pan starts only from its edge of the page (of the window for
     // a dialog over it): away from it, neither of its pans does.
     const [w, h] = layer ? [innerWidth, innerHeight] : [this.root.clientWidth, this.root.clientHeight];
@@ -10589,7 +10615,12 @@ class Player {
       pressure: e.pressure, tiltX: e.tiltX || 0, tiltY: e.tiltY || 0,
       ...penButtons(e),
       touchPath: chain.filter((v) => v._events.has("onTouch")).map((v) => v._id),
-      ...(isField ? { press: null } : link ? { press: link } : this.pickPress(chain)),
+      // A text field takes its own presses (the caret, a selection, the
+      // focus), on it or on the padding around it: its input hears them as
+      // a press when it listens, as on Linux and Windows, but no view
+      // around it does.
+      ...(field ? this.pickPress([target]) : link ? { press: link } : this.pickPress(chain)),
+      field,
       // What presses report: the modifier keys at the press and its clicks.
       modifiers: { control: e.ctrlKey, alt: e.altKey, shift: e.shiftKey, platform: e.metaKey },
       clicks: e.pointerType === "mouse" ? this.clickCount(x, y) : 1,
@@ -10611,8 +10642,9 @@ class Player {
     if (p.press) this.pressIn(p);
     for (const v of p.states) this.setState(v, PRESSED, true);
     // A field in a draggable view still takes focus: preventing the default
-    // keeps the browser from focusing it.
-    if ((p.scroll || p.pan) && !isField) e.preventDefault();
+    // would keep the browser from focusing it (and, around the field, keep
+    // the mouse events that do from coming).
+    if ((p.scroll || p.pan) && !field) e.preventDefault();
   }
 
   /** The press of the views in `chain` (innermost first): `{ press,
@@ -10669,7 +10701,18 @@ class Player {
     p.pressed = false;
     clearTimeout(p.longTimer);
     if (el._events.has("onPressOut")) this.event(el._id, "onPressOut", this.pressPayload(p));
-    if (inside && !p.long && el._events.has("onPress")) this.event(el._id, "onPress", this.pressPayload(p));
+    if (!inside || p.long || !el._events.has("onPress")) return;
+    const payload = this.pressPayload(p);
+    // Linux and Windows report a field's press after the focus it gives. A
+    // click focuses it as it goes down; a touch only with the mouse events
+    // the browser makes of it once the finger lifts: its press waits for
+    // that focus (or the click that follows, should the focus not come).
+    const field = p.field;
+    if (field && p.pointerType !== "mouse" && document.activeElement !== field) {
+      this.awaitFieldFocus(field, () => this.event(el._id, "onPress", payload));
+    } else {
+      this.event(el._id, "onPress", payload);
+    }
   }
 
   /** The payload of pointer `p`'s press events, `{ position, pagePosition,

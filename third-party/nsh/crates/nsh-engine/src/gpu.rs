@@ -108,7 +108,7 @@ fn open_device() -> Option<Device> {
 /// What the main thread and the render thread share of a view.
 #[derive(Default)]
 struct Shared {
-    frames: Mutex<FrameTarget>,
+    frames: Mutex<SharedFrames>,
     /// A frame is due: something changed, or its renderer animates.
     due: AtomicBool,
     /// Out of sight ([`GpuViews::set_hidden`]): rendered once it shows.
@@ -116,9 +116,26 @@ struct Shared {
 }
 
 impl Shared {
-    fn frames(&self) -> MutexGuard<'_, FrameTarget> {
+    fn frames(&self) -> MutexGuard<'_, SharedFrames> {
         self.frames.lock().unwrap_or_else(PoisonError::into_inner)
     }
+}
+
+#[derive(Default)]
+struct SharedFrames {
+    target: FrameTarget,
+    presentation: Presentation,
+}
+
+/// What the platform last received, independent of the render target's
+/// current surface pool, which can change before a new frame is collected.
+#[derive(Default, PartialEq, Eq)]
+enum Presentation {
+    #[default]
+    Empty,
+    Frame,
+    /// A displayed frame was retired and the platform has yet to be told.
+    ClearPending,
 }
 
 /// What the main thread asks of the render thread.
@@ -161,6 +178,14 @@ struct View {
     scale: f32,
 }
 
+impl View {
+    fn needs_render(&self) -> bool {
+        self.shared.due.load(Ordering::Acquire)
+            && !self.shared.hidden.load(Ordering::Acquire)
+            && has_area(self.pixels)
+    }
+}
+
 /// The GPU views of a surface: their renderers on a render thread, their
 /// frames for the backend to show.
 pub struct GpuViews {
@@ -184,7 +209,7 @@ impl GpuViews {
     }
 
     /// Calls `f`, on the render thread, when it has something for the main
-    /// thread: frames submitted (collected by a later [`Self::tick`]) or
+    /// thread: frames submitted or cleared (reported by a later [`Self::tick`]) or
     /// events ([`Self::take_events`]). A backend that ticks only while
     /// [`Self::wants_frame`] needs none; one that sleeps wakes on it.
     /// Replaces the last `f`.
@@ -292,17 +317,21 @@ impl GpuViews {
     }
 
     /// Whether a call to [`Self::tick`] has something to do: a frame due,
-    /// or one on its way back.
+    /// one on its way back, or a displayed frame being cleared.
     pub fn wants_frame(&self) -> bool {
         self.views.values().any(|v| {
-            (v.shared.due.load(Ordering::Acquire) && !v.shared.hidden.load(Ordering::Acquire))
-                || v.shared.frames().pending()
+            v.needs_render() || {
+                let frames = v.shared.frames();
+                frames.presentation == Presentation::ClearPending
+                    || frames.target.pending()
+                    || (!has_area(v.pixels) && frames.presentation == Presentation::Frame)
+            }
         })
     }
 
     /// Asks the render thread for the frames due, and collects the frames
-    /// done: the views whose frame shown is new, which the backend draws
-    /// again (`f(id)`).
+    /// done: the views whose displayed frame changed, which the backend
+    /// draws again (`f(id)`).
     pub fn tick(&mut self, mut f: impl FnMut(NodeId)) {
         // Collect first: a collected frame frees its read-back buffer, so the
         // frame asked for below has one to render into instead of being
@@ -310,14 +339,24 @@ impl GpuViews {
         if let Some(Some(device)) = self.worker.as_ref().and_then(|w| w.device.get()) {
             let _ = device.device.poll(wgpu::PollType::Poll);
             for (&id, view) in &self.views {
-                if view.shared.frames().collect() {
+                let changed = {
+                    let mut frames = view.shared.frames();
+                    if has_area(view.pixels) && frames.target.collect() {
+                        frames.presentation = Presentation::Frame;
+                        true
+                    } else if frames.presentation == Presentation::ClearPending {
+                        frames.presentation = Presentation::Empty;
+                        true
+                    } else {
+                        false
+                    }
+                };
+                if changed {
                     f(id);
                 }
             }
         }
-        if self.views.values().any(|v| {
-            v.shared.due.load(Ordering::Acquire) && !v.shared.hidden.load(Ordering::Acquire)
-        }) {
+        if self.views.values().any(View::needs_render) {
             self.send(Command::Frame);
         }
     }
@@ -339,7 +378,7 @@ impl GpuViews {
     /// is, and while its frames go to surfaces).
     pub fn with_frame<T>(&self, id: NodeId, f: impl FnOnce(&Frame) -> T) -> Option<T> {
         let view = self.views.get(&id)?;
-        Some(f(view.shared.frames().frame()))
+        Some(f(view.shared.frames().target.frame()))
     }
 
     /// Windows: the texture of view `id`'s last frame, while its frames go
@@ -347,7 +386,7 @@ impl GpuViews {
     /// returned once its frame is submitted.
     #[cfg(windows)]
     pub fn surface(&self, id: NodeId) -> Option<SharedTexture> {
-        self.views.get(&id)?.shared.frames().surface()
+        self.views.get(&id)?.shared.frames().target.surface()
     }
 
     /// Apple: calls `f` with the surface of view `id`'s last frame, while
@@ -360,7 +399,7 @@ impl GpuViews {
     ) -> Option<T> {
         let view = self.views.get(&id)?;
         let frames = view.shared.frames();
-        frames.surface().map(f)
+        frames.target.surface().map(f)
     }
 }
 
@@ -385,6 +424,10 @@ fn pixels(size: Size<Points>, scale: f32) -> ((u32, u32), f32) {
         ((w * scale).round() as u32, (h * scale).round() as u32),
         scale,
     )
+}
+
+fn has_area((width, height): (u32, u32)) -> bool {
+    width != 0 && height != 0
 }
 
 /// A view on the render thread.
@@ -471,11 +514,11 @@ fn run(
             continue;
         }
         let mut events = Vec::new();
-        let mut submitted = false;
+        let mut ready = false;
         for (&id, view) in &mut views {
-            submitted |= render(device, format, view, |e| events.push((id, e.name, e.data)));
+            ready |= render(device, format, view, |e| events.push((id, e.name, e.data)));
         }
-        if submitted {
+        if ready {
             let _ = device.device.poll(wgpu::PollType::Poll);
         }
         if !events.is_empty() {
@@ -484,10 +527,9 @@ fn run(
                 .unwrap_or_else(PoisonError::into_inner)
                 .events
                 .extend(events);
-            submitted = true;
+            ready = true;
         }
-        if submitted && let Some(wake) = wake.lock().unwrap_or_else(PoisonError::into_inner).clone()
-        {
+        if ready && let Some(wake) = wake.lock().unwrap_or_else(PoisonError::into_inner).clone() {
             wake();
         }
     }
@@ -562,12 +604,14 @@ fn apply(
                 view.scale = scale;
                 view.dirty = true;
                 view.update_due();
+                // Retire collapsed frames even if no visible view requests a render.
+                return !has_area(pixels);
             }
         }
         #[cfg(any(target_vendor = "apple", windows))]
         Command::Surfaces(id, on) => {
             if let Some(view) = views.get_mut(&id) {
-                view.shared.frames().show_on_surfaces(on);
+                view.shared.frames().target.show_on_surfaces(on);
                 view.dirty = true;
                 view.update_due();
             }
@@ -580,14 +624,27 @@ fn apply(
     false
 }
 
-/// Renders `view`'s frame if one is due and a destination is free; `true`
-/// when it submitted one.
+/// Renders `view`'s frame if one is due and a destination is free, or
+/// clears it when collapsed. Returns whether there is a change to report.
 fn render(
     device: &Device,
     format: PixelFormat,
     view: &mut RenderView,
     mut emit: impl FnMut(GpuEvent),
 ) -> bool {
+    if !has_area(view.pixels) {
+        if !view.dirty {
+            return false;
+        }
+        let mut frames = view.shared.frames();
+        frames.target.clear_frame();
+        let cleared = frames.presentation == Presentation::Frame;
+        if cleared {
+            frames.presentation = Presentation::ClearPending;
+        }
+        view.dirty = false;
+        return cleared;
+    }
     let Some(renderer) = view.renderer.as_mut() else {
         return false;
     };
@@ -599,16 +656,11 @@ fn render(
         return false;
     }
     let (width, height) = view.pixels;
-    if width == 0 || height == 0 {
-        view.shared.frames().clear_frame();
-        view.dirty = false;
-        view.update_due();
-        return false;
-    }
     // A destination, the lock let go while the renderer encodes: the main
     // thread only collects frames done and shows them meanwhile.
     let (destination, target, target_format) = {
-        let mut frames = view.shared.frames();
+        let mut shared = view.shared.frames();
+        let frames = &mut shared.target;
         let Some(target_format) = frames.surface_format(&device.device, format, width, height)
         else {
             return false;
@@ -637,6 +689,7 @@ fn render(
     )));
     view.shared
         .frames()
+        .target
         .submit(&device.queue, destination, encoder);
     for e in events {
         emit(e);
@@ -716,15 +769,14 @@ mod tests {
         (source, frames)
     }
 
-    /// Ticks until a frame of view 1 comes back, or `None` (no GPU, or
-    /// none within five seconds).
-    fn frame(views: &mut GpuViews) -> Option<Vec<u8>> {
+    /// Ticks until a frame of view 1 comes back, or `false` when there is no GPU.
+    fn wait_for_frame(views: &mut GpuViews) -> bool {
         let start = Instant::now();
         while start.elapsed() < Duration::from_secs(5) {
             let mut new = false;
             views.tick(|id| new |= id == 1);
             if new {
-                return views.with_frame(1, |f| f.rows().flatten().copied().collect());
+                return true;
             }
             if views
                 .worker
@@ -732,11 +784,11 @@ mod tests {
                 .and_then(|w| w.device.get())
                 .is_some_and(Option::is_none)
             {
-                return None;
+                return false;
             }
             std::thread::sleep(Duration::from_millis(2));
         }
-        None
+        panic!("no GPU view frame within five seconds");
     }
 
     #[test]
@@ -746,11 +798,17 @@ mod tests {
         views.set(1, Some(source));
         views.set_props(1, &[("red".into(), Some(JsonValue::from(1.0)))]);
         views.set_size(1, size(px(2.0), px(2.0)), 1.0);
-        let Some(pixels) = frame(&mut views) else {
+        if !wait_for_frame(&mut views) {
             return; // No GPU here.
+        }
+        let pixels = |views: &GpuViews| {
+            views
+                .with_frame(1, |f| f.rows().flatten().copied().collect::<Vec<_>>())
+                .unwrap()
         };
-        assert_eq!(&pixels[..4], &[255, 0, 0, 255]);
-        assert_eq!(pixels.len(), 2 * 2 * 4);
+        let first = pixels(&views);
+        assert_eq!(&first[..4], &[255, 0, 0, 255]);
+        assert_eq!(first.len(), 2 * 2 * 4);
         let events = views.take_events();
         assert!(
             events
@@ -769,8 +827,74 @@ mod tests {
         // An animated prop renders again.
         views.set_animated(1, "red", AnimatedPropValue::Number(0.0));
         assert!(views.wants_frame());
-        let pixels = frame(&mut views).expect("a frame");
-        assert_eq!(&pixels[..4], &[0, 0, 0, 255]);
+        assert!(wait_for_frame(&mut views), "a frame");
+        assert_eq!(&pixels(&views)[..4], &[0, 0, 0, 255]);
+    }
+
+    #[cfg(target_vendor = "apple")]
+    #[test]
+    fn a_zero_sized_gpu_view_retires_its_surface() {
+        let mut views = GpuViews::new(PixelFormat::Rgba);
+        let (source, _) = fill();
+        views.set(1, Some(source));
+        views.show_on_surfaces(1, true);
+        for hidden in [false, true] {
+            views.set_size(1, size(px(2.0), px(2.0)), 1.0);
+            if !wait_for_frame(&mut views) {
+                eprintln!("no GPU: skipped");
+                return;
+            }
+            assert_eq!(
+                views.with_surface(1, |s| (s.width(), s.height())),
+                Some((2, 2))
+            );
+
+            views.set_hidden(1, hidden);
+            views.set_size(1, size(px(0.0), px(0.0)), 1.0);
+            assert!(views.wants_frame(), "the platform must tick to clear");
+            assert!(wait_for_frame(&mut views), "the platform must be notified");
+            assert!(views.with_surface(1, |_| ()).is_none());
+            assert!(!views.wants_frame(), "the clear was delivered");
+        }
+    }
+
+    #[cfg(target_vendor = "apple")]
+    #[test]
+    fn a_gpu_view_collapsing_during_resize_clears_the_displayed_frame() {
+        let mut views = GpuViews::new(PixelFormat::Rgba);
+        let (source, _) = fill();
+        views.set(1, Some(source));
+        views.show_on_surfaces(1, true);
+        views.set_size(1, size(px(2.0), px(2.0)), 1.0);
+        if !wait_for_frame(&mut views) {
+            eprintln!("no GPU: skipped");
+            return;
+        }
+        assert_eq!(views.with_surface(1, |s| s.width()), Some(2));
+
+        views.set_size(1, size(px(4.0), px(4.0)), 1.0);
+        views.tick(|_| {});
+        let start = Instant::now();
+        while !views.views[&1].shared.frames().target.pending() {
+            assert!(
+                start.elapsed() < Duration::from_secs(5),
+                "a resized frame was not submitted"
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(
+            views.with_surface(1, |_| ()).is_none(),
+            "the new pool has no collected frame"
+        );
+
+        views.set_size(1, size(px(0.0), px(0.0)), 1.0);
+        assert!(
+            views.wants_frame(),
+            "the platform must tick to clear the old frame"
+        );
+        assert!(wait_for_frame(&mut views), "the platform must be notified");
+        assert!(views.with_surface(1, |_| ()).is_none());
+        assert!(!views.wants_frame(), "the clear was delivered");
     }
 
     #[test]

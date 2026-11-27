@@ -187,3 +187,80 @@ jobs:
             run "examples/gallery/tests/$file.test.tsx"
           done
           run examples/gallery/tests/environment.test.tsx --filter appearance
+
+  # The release runner on x86_64-pc-windows-gnullvm (#1644): linked again by
+  # `nsh package` from its link kit with only the parts an app imports, with
+  # rust-lld and the mingw-w64 runtime alone (no Visual Studio). Builds it,
+  # runs `nsh/base`'s tests there, and packages the counter from the kit.
+  gnullvm:
+    needs: changed
+    if: ${{ !cancelled() && needs.changed.outputs.run != 'false' && (github.event_name != 'pull_request' || (github.event.action != 'closed' && !github.event.pull_request.draft)) }}
+    environment:
+      name: ci-debounce
+      deployment: false
+    runs-on: windows-latest
+    env:
+      LIBCLANG_PATH: C:\Program Files\LLVM\bin
+      RUST_MIN_STACK: "268435456"
+      LLVM_MINGW_VERSION: "20261117"
+      LLVM_MINGW: llvm-mingw-20261117-ucrt-x86_64
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-gnullvm
+
+      - name: Cargo
+        uses: ./.github/actions/cargo
+        with:
+          cache: windows-gnullvm
+
+      - name: Use the toolchain compiler directly
+        shell: pwsh
+        run: |
+          $rustc = rustup which rustc
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "RUSTC=$rustc" >> $env:GITHUB_ENV
+
+      # The C code (QuickJS, zstd, ring) and the runner's link need a mingw
+      # toolchain; bindgen's libclang rejects the gnullvm triple, so it is
+      # given mingw's.
+      - name: Set up llvm-mingw
+        shell: bash
+        run: |
+          curl -sSfL -o "$RUNNER_TEMP/llvm-mingw.zip" \
+            "https://github.com/mstorsjo/llvm-mingw/releases/download/$LLVM_MINGW_VERSION/$LLVM_MINGW.zip"
+          unzip -q "$RUNNER_TEMP/llvm-mingw.zip" -d "$RUNNER_TEMP"
+          m="$(cygpath -m "$RUNNER_TEMP/$LLVM_MINGW")"
+          echo "$m/bin" >> "$GITHUB_PATH"
+          {
+            echo "CARGO_TARGET_X86_64_PC_WINDOWS_GNULLVM_LINKER=x86_64-w64-mingw32-clang"
+            echo "CC_x86_64_pc_windows_gnullvm=x86_64-w64-mingw32-clang"
+            echo "CXX_x86_64_pc_windows_gnullvm=x86_64-w64-mingw32-clang++"
+            echo "AR_x86_64_pc_windows_gnullvm=llvm-ar"
+            echo "BINDGEN_EXTRA_CLANG_ARGS_x86_64_pc_windows_gnullvm=--target=x86_64-w64-mingw32 -isystem $m/include"
+          } >> "$GITHUB_ENV"
+
+      - name: Test nsh/base
+        run: cargo test -p nsh-base --target x86_64-pc-windows-gnullvm
+
+      - name: Package the counter from the runner's link kit
+        shell: bash
+        env:
+          CARGO_PROFILE_RELEASE_LTO: "off"
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+        run: |
+          cargo rustc --release -p nsh-windows-app --bin nsh-windows-app \
+            --target x86_64-pc-windows-gnullvm -- -C save-temps --print link-args > "$RUNNER_TEMP/linkargs.txt"
+          rt="$RUNNER_TEMP/runtime/windows"
+          mkdir -p "$rt"
+          cp target/x86_64-pc-windows-gnullvm/release/nsh-windows-app.exe "$rt/"
+          node crates/nsh-windows-app/script/link-kit.js "$RUNNER_TEMP/linkargs.txt" "$rt/nsh-windows-app.link"
+          cargo build -p nsh-cli
+          NSH_RUNTIME="$RUNNER_TEMP/runtime" ./target/debug/nsh package examples/counter --target windows -o "$RUNNER_TEMP/out" -v
+          full=$(stat -c %s "$rt/nsh-windows-app.exe")
+          app=$(stat -c %s "$RUNNER_TEMP"/out/*/*.exe)
+          echo "runner $full bytes, the counter's $app bytes"
+          (( app < full * 9 / 10 ))

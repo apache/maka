@@ -1,6 +1,5 @@
 import { type JSX, LayoutAnimation, reduceMotion, Scroll, signal, Text, token, View } from "nsh";
 import { ContextMenu, Menu, MenuButton, MenuItem, MenuSeparator, type OpenChangeReason, Submenu, Toolbar } from "nsh/base";
-import { SegmentedControl } from "nsh/mobile";
 import { platform } from "nsh";
 import { keymap } from "nsh";
 import { Icon, type IconName, LucideIcon, type LucideIconName } from "../icons";
@@ -496,8 +495,8 @@ export function Menus() {
    * The system's own controls: `MenuButton` shows UIKit's menu from the
    * gallery's chip on iOS (the platform's context menu on the desktops),
    * a `ContextMenu` given `items` lifts its note into UIKit's context menu
-   * on iOS (the gallery's drawn menu elsewhere), and `SegmentedControl` is
-   * a `UISegmentedControl` on iOS, the gallery's drawn segments elsewhere.
+   * on iOS (the gallery's drawn menu elsewhere), and the gallery's segments
+   * pick the layout the menu sorts.
    */
   function SystemMenu() {
     const sort = signal<"Name" | "Date" | "Size">("Date");
@@ -514,7 +513,7 @@ export function Menus() {
     const ios = platform.os === "ios";
     const menuOff = !ios && !platform.desktop;
     return (
-      <Card icon="system" title="The system's menu" subtitle={ios ? "UIKit's menu and segmented control" : platform.desktop ? "The platform's menu at the pointer" : "Phones without a system menu use Menu"}>
+      <Card icon="system" title="The system's menu" subtitle={ios ? "UIKit's menu and context menu" : platform.desktop ? "The platform's menu at the pointer" : "Phones without a system menu use Menu"}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
           <MenuButton
             testID="system-menu"
@@ -587,9 +586,7 @@ export function Menus() {
           <Item label="Delete" icon="trash" danger onSelect={() => choose("delete")} />
         </ContextMenu>
         <Caption label={ios ? "Hold the note: UIKit lifts it into its context menu" : platform.desktop ? "Right click the note" : "Hold the note"} />
-        <If when={ios} else={<Segmented size="small" options={layouts.map((l, i) => ({ value: String(i), label: l }))} value={String(layout())} onChange={(v) => layout.set(Number(v))} />}>
-          <SegmentedControl testID="system-segments" items={layouts.map((title) => ({ title }))} selectedIndex={layout()} onChange={({ index }) => layout.set(index)} />
-        </If>
+        <Segmented size="small" options={layouts.map((l, i) => ({ value: String(i), label: l }))} value={String(layout())} onChange={(v) => layout.set(Number(v))} />
         <Caption label={`${layouts[layout()]} · sorted by ${sort()}`} />
       </Card>
     );

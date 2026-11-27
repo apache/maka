@@ -1077,16 +1077,28 @@ mod tests {
             })
     }
 
+    /// Flushes the engine again until it reports idle: a flush that ends
+    /// while something is still due (a timer coming due as it ran) answers
+    /// false once and nothing more.
     fn flush(surface: &crate::surface::Surface) {
         let (sent, received) = std::sync::mpsc::channel();
-        surface.control(|control| {
-            control.flush(move |done| {
-                let _ = sent.send(done);
+        let send = || {
+            let sent = sent.clone();
+            surface.control(|control| {
+                control.flush(move |done| {
+                    let _ = sent.send(done);
+                });
             });
-        });
-        assert!(crate::gtk_test::wait_until(
-            || received.try_recv() == Ok(true)
-        ));
+        };
+        send();
+        assert!(crate::gtk_test::wait_until(|| match received.try_recv() {
+            Ok(true) => true,
+            Ok(false) => {
+                send();
+                false
+            }
+            Err(_) => false,
+        }));
     }
 
     fn with_activation(

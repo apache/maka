@@ -851,3 +851,114 @@ fn the_indicator_is_hidden_from_screen_readers_and_takes_no_presses() {
     assert!(props.accessibility.hidden, "{props:?}");
     assert_eq!(props.pointer_events, PointerEvents::None);
 }
+
+/// `hitSlop` widens where presses count past its bounds, as a view's
+/// does: the platforms get it on the tab's pressable view, it follows a
+/// binding, and a tab without one gets none.
+mod hit_slop {
+    use std::sync::{Arc, Mutex};
+
+    use nsh_base::{tab, tabs};
+    use nsh_core::{EdgeInsets, MountBatch, MountItem, NodeId, Size, prelude::*};
+    use nsh_engine::EngineConfig;
+    use nsh_testing::Headless;
+
+    /// Every batch's items.
+    type Seen = Arc<Mutex<Vec<MountItem>>>;
+
+    fn start<C: Component<Props = ()>>() -> (Headless, Seen) {
+        let config = EngineConfig {
+            viewport: Size::new(px(390.0), px(844.0)),
+            ..EngineConfig::new(nsh_testing::windowed_root::<C>())
+        };
+        let mut app = Headless::start(config).unwrap();
+        let seen = Seen::default();
+        let log = seen.clone();
+        app.observe(move |_: &str, batch: &MountBatch| {
+            log.lock().unwrap().extend(batch.items.iter().cloned());
+        });
+        app.first_render().unwrap();
+        (app, seen)
+    }
+
+    /// The hit slop the platforms last got for view `id` (none: zero).
+    fn hit_slop(seen: &Seen, id: NodeId) -> EdgeInsets {
+        seen.lock()
+            .unwrap()
+            .iter()
+            .filter_map(|item| match item {
+                MountItem::ViewProps { id: of, props } if *of == id => Some(props.hit_slop),
+                _ => None,
+            })
+            .next_back()
+            .unwrap_or_default()
+    }
+
+    fn target(app: &Headless, selector: &str) -> NodeId {
+        app.screen()
+            .press_target(selector)
+            .unwrap()
+            .unwrap_or_else(|| panic!("no pressable {selector}"))
+    }
+
+    /// A small tab with a slop on every side, a tab whose slop the app
+    /// widens, and a tab with none.
+    #[component]
+    fn SmallTabs() -> impl IntoElement {
+        let presses = signal(0u32);
+        let wide = signal(false);
+        tabs()
+            .child(
+                tab()
+                    .hit_slop(EdgeInsets::all(px(12.0)))
+                    .accessibility_label("Read")
+                    .on_press(move |_: &()| presses.update(|n| *n += 1))
+                    .child(text("R")),
+            )
+            .child(
+                tab()
+                    .hit_slop(Prop::bind(move || match wide.get() {
+                        true => EdgeInsets {
+                            top: px(4.0),
+                            left: px(2.0),
+                            ..EdgeInsets::default()
+                        },
+                        false => EdgeInsets::default(),
+                    }))
+                    .child(text("Grows")),
+            )
+            .child(
+                tab()
+                    .on_press(move |_: &()| wide.set(true))
+                    .child(text("Widen")),
+            )
+            .child(text(move || format!("presses:{}", presses.get())))
+    }
+
+    #[test]
+    fn hit_slop_reaches_the_pressable_view() {
+        let (mut app, seen) = start::<SmallTabs>();
+        let small = target(&app, "label:Read");
+        assert_eq!(hit_slop(&seen, small), EdgeInsets::all(px(12.0)));
+        // The slop changes nothing of what a press does.
+        app.press("label:Read").unwrap();
+        app.wait_for("text:presses:1").unwrap();
+    }
+
+    #[test]
+    fn hit_slop_follows_a_binding_and_is_none_by_default() {
+        let (mut app, seen) = start::<SmallTabs>();
+        let grows = target(&app, "text:Grows");
+        let widen = target(&app, "text:Widen");
+        assert_eq!(hit_slop(&seen, grows), EdgeInsets::default());
+        app.press("text:Widen").unwrap();
+        let expected = EdgeInsets {
+            top: px(4.0),
+            left: px(2.0),
+            ..EdgeInsets::default()
+        };
+        assert_eq!(hit_slop(&seen, grows), expected);
+        // A tab without `hitSlop` never gets one.
+        assert_eq!(hit_slop(&seen, widen), EdgeInsets::default());
+    }
+}

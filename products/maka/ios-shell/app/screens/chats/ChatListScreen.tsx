@@ -17,8 +17,19 @@
  * under the License.
  */
 
-import { cleanup, computed, effect, safeAreaInsets, Scroll, signal, Text, View, token } from 'nsh';
-import { SegmentedControl, isAvailable } from 'nsh/mobile';
+import {
+  cleanup,
+  computed,
+  effect,
+  platform,
+  safeAreaInsets,
+  Scroll,
+  signal,
+  Text,
+  View,
+  token,
+} from 'nsh';
+import { SegmentedControl } from 'nsh-system-controls';
 import { ThinkingMark, ShimmerText } from '../../ui/ThinkingMark';
 import { AlertDialog, ContextMenu, Input, NavPage, Sheet } from 'nsh/base';
 import { hasAgentEndpoint } from '../../bridge';
@@ -656,7 +667,7 @@ export function ChatListScreen(props: { onOpenSession: (item: ScopedSession) => 
 
           <If when={hasRooms()}>
             <If
-              when={isAvailable}
+              when={platform.os === 'ios'}
               else={
                 <ScopePills
                   items={[

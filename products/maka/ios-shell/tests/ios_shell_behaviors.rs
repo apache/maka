@@ -311,7 +311,8 @@ async fn signed_invite_is_confirmed_on_the_live_connection_and_revocation_is_vis
     let (_, sas) = second.sas().await;
     app.wait_for(&format!("text:{sas}")).unwrap();
     app.press("label:Confirm & Connect").unwrap();
-    app.wait_for("text:Second test Host").unwrap();
+    app.wait_for_gone("text:Confirm Computer", Duration::from_secs(5))
+        .unwrap();
 
     app.press("label:Settings").unwrap();
     app.wait_for("label:Computer: Travel Mac").unwrap();
@@ -4064,6 +4065,67 @@ fn side_host_state(revision: u64, generation: Option<u64>) -> Value {
     json!({"revision":revision,"hosts":[host],
         "active":generation.map(|_| host),
         "connections":{"root":connection}})
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ios_system_segments_filter_the_chat_list() {
+    use nsh_core::{EventKind, EventPayload, MountItem};
+
+    let channel = HostChannel::new();
+    channel.handle("ios.bootstrap", |call| {
+        call.resolve(side_host_state(1, Some(7)))
+    });
+    channel.handle("ios.hostQuery", |mut call| {
+        let data = call.take_data();
+        let value = match data["method"].as_str().unwrap() {
+            "list" if data["input"]["filter"] == "needs_you" => {
+                json!({"sessions":[],"revision":"pending","needsYouCount":0})
+            }
+            "list" => json!({"sessions":[
+                {"id":"agent","kind":"agent","title":"Main Chat","revision":1,"activity":"idle"},
+                {"id":"room","kind":"room","title":"Room Chat","revision":1,"activity":"idle"}
+            ],"revision":"chats","needsYouCount":0}),
+            "botOutbox" => json!({"isBot":false}),
+            "history" => json!({"kind":"room","page":{"items":[],"through":0}}),
+            method => panic!("unexpected query: {method}"),
+        };
+        call.resolve(json!({"value":value}));
+    });
+    channel.handle("ios.subscribe", |mut call| {
+        let data = call.take_data();
+        call.resolve(json!({
+            "rootId":"root","generation":7,"subscriptionId":data["subscriptionId"],
+        }));
+    });
+    let mut config = engine_config(channel, tokio::runtime::Handle::current());
+    config.viewport = Size::new(px(390.), px(844.));
+    config.environment.os = Os::Ios;
+    config.environment.reduce_motion = true;
+    let mut app = Headless::start(config).unwrap();
+    let (segments, mut mounted) = mpsc::unbounded_channel();
+    app.observe(move |_, batch| {
+        for item in &batch.items {
+            if let MountItem::Component { id, name } = item
+                && name.as_ref() == nsh_system_controls::SEGMENTED_CONTROL_COMPONENT
+            {
+                segments.send(*id).unwrap();
+            }
+        }
+    });
+    app.wait_for("label:Conversation: Main Chat").unwrap();
+    app.wait_for("label:Conversation: Room Chat").unwrap();
+    let id = mounted.try_recv().expect("iOS system segments are mounted");
+    app.engine().control().dispatch_event(
+        id,
+        EventKind::NativeEvent,
+        EventPayload::Native {
+            name: "change".into(),
+            data: json!(2),
+        },
+    );
+    app.wait_for_gone("label:Conversation: Main Chat", Duration::from_secs(3))
+        .unwrap();
+    app.wait_for("label:Conversation: Room Chat").unwrap();
 }
 
 fn side_chat_fixture(default_model: bool, missing_main: bool) -> SideChatFixture {

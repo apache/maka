@@ -109,6 +109,7 @@ pub(crate) fn compact_view(a: AreaCx) -> AnyElement {
                         .element_ref(&refs.bar)
                         .app_class(a.props.tab_bar_class)
                         .inline_style(a.props.tab_bar_style)
+                        .child(super::tab_group::prefix(a, current))
                         .child(super::tab_group::tab_strip(each(
                             move || tabs.get(),
                             |panel: &PanelId| panel.clone(),

@@ -1906,6 +1906,8 @@ struct WebIvars {
     file: RefCell<Option<String>>,
     /// The web view's `allowOrigin`, from its latest props.
     allow_origin: RefCell<Option<nsh_core::access::WebOrigin>>,
+    /// The web view's `allowNavigation`, from its latest props.
+    allow_navigation: RefCell<Option<nsh_core::access::WebHosts>>,
     /// `evaluate()`'s requests in this web view.
     evaluations: Rc<nsh_platform_apple::web_evaluation::Evaluations>,
 }
@@ -1958,7 +1960,12 @@ define_class!(
                 ivars.file.borrow().as_deref(),
                 main,
                 &url,
-            );
+            ) && (!main
+                || ivars
+                    .allow_navigation
+                    .borrow()
+                    .as_ref()
+                    .is_none_or(|h| h.allows(&url)));
             if !allowed {
                 log::warn!(target: "js", "web view navigation to {url} is not granted");
                 let message = format!("navigation to {url} is not granted");
@@ -2138,6 +2145,7 @@ impl WebHandler {
             downloading: RefCell::default(),
             file: RefCell::new(None),
             allow_origin: RefCell::default(),
+            allow_navigation: RefCell::default(),
             evaluations,
         });
         // SAFETY: NSObject's designated initializer.
@@ -2166,6 +2174,12 @@ impl WebHandler {
     /// The web view's `allowOrigin`: its next navigations are checked with it.
     fn set_allow_origin(&self, origin: Option<nsh_core::access::WebOrigin>) {
         *self.ivars().allow_origin.borrow_mut() = origin;
+    }
+
+    /// The web view's `allowNavigation`: its next navigations are checked
+    /// with it.
+    fn set_allow_navigation(&self, hosts: Option<nsh_core::access::WebHosts>) {
+        *self.ivars().allow_navigation.borrow_mut() = hosts;
     }
 
     fn failed(&self, navigation: Option<&AnyObject>, err: &AnyObject) {
@@ -2569,6 +2583,8 @@ impl WebHost {
         self.handler.set_defer_downloads(p.defer_downloads);
         // Before the source loads: it applies to that navigation.
         self.handler.set_allow_origin(p.allow_origin.clone());
+        self.handler
+            .set_allow_navigation(p.allow_navigation.clone());
         if self.props.is_none() && self.web.is_none() {
             // The core keeps `incognito` and the URL schemes from changing
             // once it is made.

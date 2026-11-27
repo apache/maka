@@ -5,6 +5,7 @@ import { TextView } from "nsh/base";
 // text outside them.
 function App() {
   let article!: ViewRef;
+  let second!: ViewRef;
   const selected = signal("");
   const changes = signal(0);
   const heard = ({ text }: { text: string }) => {
@@ -15,7 +16,7 @@ function App() {
     <View style={{ flex: 1, padding: 16, gap: 16, alignItems: "flex-start" }}>
       <View ref={article} testID="article" selectable onSelectionChange={heard} style={{ alignItems: "flex-start" }}>
         <Text testID="first">Alpha beta</Text>
-        <Text testID="second">Gamma delta</Text>
+        <Text ref={second} testID="second">Gamma delta</Text>
       </View>
       <TextView testID="notes" selectable onSelectionChange={heard} markdown={"- one\n- two"} />
       <View testID="formulas" selectable onSelectionChange={heard} style={{ alignItems: "flex-start" }}>
@@ -35,6 +36,12 @@ function App() {
       <Text testID="outside">Elsewhere</Text>
       <View testID="clear" onPress={() => article.clearSelection()}>
         <Text>Clear</Text>
+      </View>
+      <View testID="select-all" onPress={() => article.selectAll()}>
+        <Text>Select all</Text>
+      </View>
+      <View testID="select-all-inside" onPress={() => second.selectAll()}>
+        <Text>Select all from inside</Text>
       </View>
       <Text>{`Selected: ${JSON.stringify(selected())}`}</Text>
       <Text>{`Changes: ${changes()}`}</Text>

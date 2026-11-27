@@ -81,6 +81,16 @@ pub(crate) fn unsupported(entry: &str, option: &str, target: &str, why: &str) ->
     format!("open({entry:?}): `{option}` is unsupported on --target {target}: {why}")
 }
 
+/// `open(entry)` was given `option`, which sets an app up, under `nsh test
+/// --attach`, which drives a running app as it is.
+#[cfg(feature = "js")]
+pub(crate) fn unsupported_attached(entry: &str, option: &str) -> String {
+    format!(
+        "open({entry:?}): `{option}` is unsupported with --attach: it sets an app up, and the app \
+         of a running development session is driven as it is; open it without options"
+    )
+}
+
 /// What a test app's sockets and WebSockets fail with (`net.connect`,
 /// `WebSocket.connect`; the global `WebSocket` fires `error` and `close`)
 /// while its test keeps it off the network: `open`'s `network` other than
@@ -266,7 +276,9 @@ pub(crate) fn code_of(message: &str) -> Option<&'static str> {
         Some(TIMED_OUT)
     } else if message.starts_with(NOTHING_TO_GO_BACK_FROM) {
         Some(NO_BACK)
-    } else if message.starts_with("open(") && message.contains("` is unsupported on --target ")
+    } else if message.starts_with("open(")
+        && (message.contains("` is unsupported on --target ")
+            || message.contains("` is unsupported with --attach: "))
         || quoted && message.contains("` is unsupported here: ")
     {
         Some(UNSUPPORTED)

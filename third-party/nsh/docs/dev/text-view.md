@@ -159,7 +159,9 @@ regexes on the web (`regex-fancy`; no C there) and Oniguruma's on the native run
 compile about 20 times faster and match 3 to 4 times faster; syntect takes it when both are on), and two-face's syntaxes (bat's set: syntect's own
 plus TypeScript / TSX, TOML, Dockerfile, ...). A block's language is found by extension or name, case-insensitive
 (`ts`, `tsx`, `rs`, `py`, `sh`, `yml`, `md`, `Rust`, ...) plus the other names fences use (`jsx`, `shell`, `golang`,
-`c++`, `csharp`, `jsonc`, ...); no language, `text` or one syntect does not know leaves the block plain.
+`c++`, `csharp`, `jsonc`, ...), mostly highlight.js's; a whole info string that names none (`ts title="a.ts"`,
+`rust,ignore`, as a `RichEditor` block's `language` can hold) is read by its first word. No language, `text` or one
+syntect does not know leaves the block plain.
 
 Colors: Allsum's reading palette (its `--hl-*` tokens, light and dark). TextMate scopes map to its kinds of token in code
 (`token()`), not through syntect themes: one parse gives one range list whose colors are `AdaptiveColor`s, so both

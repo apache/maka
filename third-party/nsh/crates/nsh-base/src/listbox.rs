@@ -32,8 +32,9 @@
 //!   pointer's highlight, which moves only when the pointer did (a row
 //!   scrolled under a still pointer does not take it from the keyboard).
 //!   The query is the search field's, or the app's when it sets one
-//!   ([`Query`], `Combobox`'s `query`); each opening starts from its
-//!   default, and a new query highlights its first enabled match.
+//!   ([`Query`], `Select`'s and `Combobox`'s `query`); each opening starts
+//!   from its default, a new query highlights its first enabled match, and
+//!   only a list with a search field filters by it.
 //! - **[`present`]**: on the desktops a popup anchored to the trigger
 //!   (`placement`, `align`, `offset`, `margin`), at least as wide as the
 //!   trigger and never taller than the room on its side; on touch screens
@@ -413,16 +414,6 @@ pub(crate) struct Query {
     pub(crate) default: Prop<Option<SharedString>>,
 }
 
-impl Query {
-    /// The search field's alone, starting empty (`Select`'s).
-    pub(crate) fn own() -> Self {
-        Self {
-            controlled: Prop::new(None),
-            default: Prop::new(None),
-        }
-    }
-}
-
 /// The row of a list's highlighted item, while it is rendered: the active
 /// descendant of the field that keeps the keyboard focus (a select's
 /// trigger, a combo box's input, a search field), which names it so
@@ -535,7 +526,12 @@ impl Listbox {
         let narrow = stored(None::<Narrow>);
         let shown = computed(move || {
             let index = index.get().0;
-            let query = query_of(query, own_query).to_lowercase();
+            // Without a search field nothing filters: neither what the
+            // field held nor the app's query (as `Command`'s).
+            let query = match searchable.get() {
+                true => query_of(query, own_query).to_lowercase(),
+                false => String::new(),
+            };
             items.with(|items| {
                 narrow.with(|last| {
                     let among = last
@@ -601,8 +597,8 @@ impl Listbox {
             });
         });
         // The search field went away (searchable turned off, the list
-        // open or not): what it held filters nothing any more, so every
-        // item shows again.
+        // open or not): what it held is dropped, so the field starts empty
+        // when it comes back.
         effect(move || {
             if !lb.searchable.get() {
                 untracked(|| {
@@ -612,12 +608,17 @@ impl Listbox {
                 });
             }
         });
-        // The app's query changed while the list is open (it followed the
-        // field, or set its own): as a typed one, the first match.
+        // The app's query changed while the list is open with its search
+        // field (it followed the field, or set its own): as a typed one,
+        // the first match.
         let last = stored(None::<SharedString>);
         effect(move || {
             let now = query.controlled.get();
-            if last.replace(now.clone()) == now || now.is_none() || !lb.open.get() {
+            if last.replace(now.clone()) == now
+                || now.is_none()
+                || !lb.open.get()
+                || !lb.searchable.get_untracked()
+            {
                 return;
             }
             untracked(|| lb.highlight_first());

@@ -450,6 +450,11 @@ impl Mounter {
                     crate::selectable_view::clear_in(surface, view);
                 }
             }
+            Command::SelectAll => {
+                if let Some(view) = view {
+                    crate::selectable_view::select_in(surface, view);
+                }
+            }
             Command::InsertText(text) => {
                 if let Some(view) = view {
                     crate::text_input::insert_text(view, text);

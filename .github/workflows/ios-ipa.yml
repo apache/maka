@@ -44,6 +44,8 @@ on:
       - "assets/logo.png"
       - "Cargo.toml"
       - "Cargo.lock"
+      - "LICENSE"
+      - "NOTICE"
       - ".cargo/config.toml"
       - "rust-toolchain.toml"
       - "package.json"

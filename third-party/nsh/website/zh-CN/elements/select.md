@@ -212,7 +212,40 @@ fn fruit_select() -> impl IntoElement {
 />
 ```
 
-在桌面平台上，列表打开时搜索框就获得键盘焦点；在触摸屏上，按下搜索框时键盘才弹出。每次打开时搜索都从空白开始。
+在桌面平台上，列表打开时搜索框就获得键盘焦点；在触摸屏上，按下搜索框时键盘才弹出。
+
+搜索词默认属于搜索框自己，每次打开从 `defaultQuery`（没有则为空）开始；有 `query` 时由应用持有：`onQueryChange({ query })` 报告在搜索框中输入的内容，应用把 `query` 设为它以跟随。应用持有的搜索词在多次打开之间保持不变，直到应用修改它；`renderItem` 绘制的行可以标出匹配的部分。下面的选择框在列表消失后（`onClose`）清空搜索词，这样列表离开时仍显示原来的行；应在这里清空，而不是在 `onOpen` 中：那时列表已经打开，搜索词的变化会像输入的一样，把高亮移到第一个匹配项：
+
+```tsx
+const query = signal("");
+// 标题按搜索词的第一个匹配分成三段：之前、匹配、之后。
+const split = (title: string, q: string) => {
+  const at = q ? title.toLowerCase().indexOf(q.toLowerCase()) : -1;
+  if (at < 0) return [title, "", ""];
+  return [title.slice(0, at), title.slice(at, at + q.length), title.slice(at + q.length)];
+};
+
+<Select
+  items={zones}
+  searchable
+  query={query()}
+  onQueryChange={({ query: q }) => query.set(q)}
+  onClose={() => query.set("")}
+  renderItem={(item) => {
+    const parts = computed(() => split(item.title, query()));
+    return (
+      <Text class="px-2 py-1.5 text-sm">
+        {parts()[0]}
+        <Text class="font-semibold">{parts()[1]}</Text>
+        {parts()[2]}
+      </Text>
+    );
+  }}
+  trigger={trigger}
+/>
+```
+
+没有 `searchable` 时没有搜索框，也不会有搜索词筛选条目。
 
 <a id="rows-the-app-draws"></a>
 
@@ -251,6 +284,8 @@ fn fruit_select() -> impl IntoElement {
 | `searchPlaceholder` | `.search_placeholder(..)` | `string` | 无 | 搜索框的占位文字。 |
 | `searchAccessibilityLabel` | `.search_accessibility_label(..)` | `string` | 无 | 屏幕阅读器对搜索框的称呼：它搜索的是什么。 |
 | `searchTestID` | `.search_test_id(..)` | `string` | 无 | UI 测试查找搜索框所用的 id（`nsh/test` 的 `id:`），与 `testID` 指向选择框自己的视图一样。 |
+| `query` | `.query(..)` | `string` | 无 | 搜索词，由应用持有（需要 `searchable`）。 |
+| `defaultQuery` | `.default_query(..)` | `string` | 无 | 没有 `query` 时每次打开的初始搜索词。 |
 | `cleanable` | `.cleanable(..)` | `boolean` | `false` | 有选中条目时显示清除按钮；按下会清空值（`onChange({ value: null })`）。 |
 | `disabled` | `.disabled(..)` | `boolean` | `false` | 保持关闭：触发元素不接受按压和键盘焦点，并应用 `disabled:` 样式。 |
 | `accessibilityLabel` | `.accessibility_label(..)` | `string` | 无 | 屏幕阅读器对它的称呼：这次选择是关于什么的。 |
@@ -283,6 +318,7 @@ fn fruit_select() -> impl IntoElement {
 | 事件 | Rust | 说明 |
 |---|---|---|
 | `onChange` | `.on_change(\|value\| ..)` | 用户选中了另一个条目（按压、Return 或 Space、在触发元素上输入跳转）：它的 `value`；清除按钮清空时为 `null`。设置 `value` 以跟随它。 |
+| `onQueryChange` | `.on_query_change(\|query\| ..)` | 用户在搜索框中输入了内容：`{ query }`。设置 `query` 以跟随它。 |
 | `onOpenChange` | `.on_open_change(\|e\| ..)` | 列表打开或关闭了，附带原因。设置 `open` 以跟随它。 |
 | `onOpen` | `.on_open(\|\| ..)` | 列表已显示；作为 sheet 时，在它完全进入之后。 |
 | `onClose` | `.on_close(\|\| ..)` | 列表已消失；作为 sheet 时，在它完全离开之后。应用关闭它时也会触发。 |

@@ -239,48 +239,13 @@ fn open_notes() {
 
 ## Signing in on the web
 
-`open_auth_session` opens a provider's sign-in page (an OAuth authorization URL) and
-answers with the callback URL it redirects to: iOS shows it in an
-`ASWebAuthenticationSession` sheet (`.ephemeral(true)` keeps it apart from the user's
-Safari data), Android in a Custom Tab, the macOS, Windows and Linux backends in the
-system browser. Outside iOS the callback comes back as a link of a scheme the app
-claims (`nsh.json` `schemes`); the session takes it, so `next_url_scheme_open` never
-hears it. The answer is `Completed(url)` or `Cancelled` (the user closed the page or
-came back to the app without signing in). A session with nothing to bring its
-callback back fails at once with `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`: one whose
-scheme the app does not claim, and every one on the web and the GPUI and terminal
-backends, where no link of the app's schemes reaches the app. The page's URL needs
-the `openUrl` capability, as `open_url` does.
+Sign-in sessions (an OAuth 2 authorization page that redirects back to the app) moved out of NSH core into the [nsh-oauth2](https://github.com/longbridge/nsh-oauth2) nshm. It works from Rust and TSX: iOS shows `ASWebAuthenticationSession`, Android a Custom Tab, the desktops the system browser.
 
-When the app learns the user signed in some other way while the page still shows (a
-device code approved on a page that never redirects back), `close_auth_session()`
-closes it: the session answers `Cancelled`, and iOS and Android take the page away and
-bring the app back. A page in a desktop browser stays open. With no session waiting,
-it does nothing.
-
-```rust
-use nsh_core::{
-    auth_session::{AuthSessionOutcome, AuthSessionRequest},
-    prelude::*,
-};
-
-fn sign_in(authorize_url: String) {
-    let session = open_auth_session(AuthSessionRequest::new(authorize_url, "myapp"));
-    spawn(async move {
-        match session.await {
-            Ok(AuthSessionOutcome::Completed(callback)) => log::info!("signed in: {callback}"),
-            Ok(_) => {} // Cancelled.
-            Err(error) => log::warn!("no sign-in page: {error}"),
-        }
-    });
-}
+```sh
+nsh add github:longbridge/nsh-oauth2
 ```
 
-In tests, `Headless::on_auth_session` gives the platform an in-app session and ends
-each one with the outcome given, and `keep_auth_sessions_open` leaves each one open
-until the app closes it (`screen().auth_session_showing()`); without either the page
-is in `opened_urls()` and `open_with_url` delivers the callback (not in a test run as
-the web, where the session fails at once).
+`nsh_core::element::open_auth_session` and `close_auth_session` were removed from core. Use `nsh_oauth2::open_auth_session` and `nsh_oauth2::close_auth_session`, which take the same `AuthSessionRequest` and answer with the same outcome and error types.
 
 ## Extending a Rust app with TSX
 
@@ -448,8 +413,8 @@ updates, Rust edits rebuild and restart the app. The CLI bundles and compiles th
 exports from its description; the development hosts and `nsh test`'s headless runner are built with your crate and
 QuickJS.
 
-`examples/rust-exports` in the repository is the reference for exporting: a small TSX app whose crate exports one
-component (props required, defaulted and optional, an event, children), one module (a function of each kind) and
+`examples/rust-exports` in the repository is the reference for exporting: a small TSX app whose crate exports
+components (required, defaulted and optional props, an event, and node or string children), one module (a function of each kind) and
 one class (a constructor, methods, a getter and a setter, a static, an `async` member, another instance as an
 argument, a callback Rust posts to, `dispose()` and `using`), each with a short doc comment, and tests, in Rust and
 in TypeScript (`App.test.tsx`), that press through the app and check what each one shows.
@@ -457,6 +422,15 @@ in TypeScript (`App.test.tsx`), that press through the app and check what each o
 `examples/gallery-rs` in the repository is a complete Rust app: every demo is Rust, `nsh run examples/gallery-rs
 --target web` (or `ios`, `android`, …) runs its root, `nsh test examples/gallery-rs` runs its tests headless, and
 `cargo run -p gallery-native` starts it on the desktop backend.
+
+### Reading string children
+
+Declare `pub children: Prop<SharedString>` in a Rust component's `#[derive(Props)]` struct to receive the string
+between its JSX tags. The generated TypeScript props include `children: string`. For example, both
+`<TextChild>**bold**</TextChild>` and `<TextChild>{source()}</TextChild>` pass a string to Rust. The string keeps
+characters such as the Markdown asterisks. Read `props.children.get()` in a reactive binding or computation to
+follow changes when `source` is a signal. To place the caller's JSX nodes in the component's view, use a
+`Prop<Children>` slot.
 
 ### Render functions and the app's classes
 

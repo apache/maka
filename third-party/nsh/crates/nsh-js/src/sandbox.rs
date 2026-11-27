@@ -349,14 +349,18 @@ const HARDEN: &str = r#"
   const deny = (label) => function () {
     throw new TypeError(label + " is disabled: nsh runs no code from strings (development builds allow it)");
   };
-  const replace = (fn, value) => {
+  // `Function.prototype.constructor` stays writable here: `tame` below turns
+  // it into the accessor that lets `fn.constructor = …` define an own
+  // property (libraries such as axios assign it on functions), then freezes
+  // the prototype. The other function prototypes are not tamed.
+  const replace = (fn, value, tamed = false) => {
     Object.defineProperty(Object.getPrototypeOf(fn), "constructor", {
-      value, writable: false, enumerable: false, configurable: false,
+      value, writable: tamed, enumerable: false, configurable: tamed,
     });
   };
   const blocked = deny("the Function constructor");
   blocked.prototype = Function.prototype;
-  replace(function () {}, blocked);
+  replace(function () {}, blocked, true);
   replace(async function () {}, deny("the AsyncFunction constructor"));
   replace(function* () {}, deny("the GeneratorFunction constructor"));
   replace(async function* () {}, deny("the AsyncGeneratorFunction constructor"));

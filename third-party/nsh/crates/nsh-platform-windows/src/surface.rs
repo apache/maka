@@ -1124,7 +1124,9 @@ impl Surface {
                 self.events_handled.set(events);
                 crate::text_input::engine_caught_up(self);
             }
-            Message::Run(task) => task.run(),
+            // A module's main-thread function: this surface is current
+            // while it runs (`crate::element_bounds`, `crate::presenting_window`).
+            Message::Run(task) => crate::presenting::run_for(Rc::downgrade(self), || task.run()),
         }
         false
     }
@@ -1174,6 +1176,7 @@ impl Surface {
         }
         crate::access::batch_applied(self);
         crate::input::batch_applied(self);
+        crate::box_none::batch_applied(self);
         for command in notifications {
             crate::notifications::command(self, command);
         }

@@ -20,9 +20,10 @@
 //! order: a point inside a text's frame is in that text; otherwise, when the
 //! point sits below a text in a closer, horizontally disjoint column than any
 //! text whose row contains the point, it stays in that column (clamping to the
-//! vertically nearer text above or below in the column) so multi-column gaps,
-//! card margins, space beneath a shorter sidebar and unequal-height table
-//! cells do not jump sideways; otherwise, among the texts whose rows (vertical
+//! vertically nearer text above or below in the column, but not one below the
+//! end of the point's row) so multi-column gaps, card margins, space beneath a
+//! shorter sidebar and unequal-height table cells do not jump sideways or into
+//! the next row; otherwise, among the texts whose rows (vertical
 //! extent) contain the point, the horizontally nearest one; above every text,
 //! the first text's start; between rows or below a column, the vertically
 //! nearer text above or below in the point's column (with the text above on a
@@ -1269,9 +1270,12 @@ fn hit(texts: &impl SelectionTexts, point: Point<Points>) -> Option<TextPosition
 
     // 3. The texts on the point's row: the horizontally nearest.
     let mut nearest: Option<(usize, Points)> = None;
+    // Where the row ends: the bottom of its tallest text.
+    let mut row_bottom = Points::ZERO;
     for i in 0..count {
         let frame = texts.frame(i);
         if point.y >= frame.top() && point.y < frame.bottom() {
+            row_bottom = row_bottom.max(frame.bottom());
             let distance = h_dist(frame);
             if nearest.is_none_or(|(_, best)| distance < best) {
                 nearest = Some((i, distance));
@@ -1290,8 +1294,13 @@ fn hit(texts: &impl SelectionTexts, point: Point<Points>) -> Option<TextPosition
             && h_dist(texts.frame(a)) < row_h_dist
         {
             return Some(match col_below {
+                // A text starting past the row's end is the next row's (a
+                // table row a wrapped cell makes taller): the point is
+                // still on its own row.
                 Some((b, to_below))
-                    if to_below < to_above && h_dist(texts.frame(b)) < row_h_dist =>
+                    if to_below < to_above
+                        && h_dist(texts.frame(b)) < row_h_dist
+                        && texts.frame(b).top() < row_bottom =>
                 {
                     start_of(b)
                 }
@@ -3230,6 +3239,34 @@ mod tests {
         model.drag(&texts, at(260.0, 75.0));
         assert_eq!(model.bounds(), Some((pos(1, 1), pos(1, 5))));
         assert_eq!(model.text(&texts), "IKit");
+    }
+
+    #[test]
+    fn a_tall_wrapped_cell_keeps_a_drag_beside_it_in_its_row() {
+        // A Markdown table laid out as a TextView draws it: each cell's
+        // text as wide as the cell less its padding, the cells of a row
+        // as tall as its tallest, whose last cell wraps onto four lines.
+        let texts = Fake::new(&[
+            ("Name", (12.0, 8.0, 136.0, 20.0)),
+            ("Notes", (172.0, 8.0, 236.0, 20.0)),
+            ("Alpha", (12.0, 44.0, 136.0, 20.0)),
+            ("One\nTwo\nThree\nFour", (172.0, 44.0, 236.0, 80.0)),
+            ("Beta", (12.0, 140.0, 136.0, 20.0)),
+            ("Five", (172.0, 140.0, 236.0, 20.0)),
+        ]);
+        let mut model = SelectionModel::new();
+        model.press(&texts, at(12.0, 50.0), 1, false);
+        // Down the first column through the blank under `Alpha`, still in
+        // its row (the cells end at y=132): the selection keeps to `Alpha`
+        // and does not reach into the next row's `Beta`.
+        for y in [70.0, 90.0, 110.0, 123.0] {
+            model.drag(&texts, at(80.0, y));
+            assert_eq!(model.bounds(), Some((pos(2, 0), pos(2, 5))), "at y={y}");
+            assert_eq!(model.text(&texts), "Alpha", "at y={y}");
+        }
+        // Into the next row, it reaches it.
+        model.drag(&texts, at(36.0, 150.0));
+        assert_eq!(model.bounds(), Some((pos(2, 0), pos(4, 3))));
     }
 
     #[test]

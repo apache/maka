@@ -65,6 +65,8 @@ pub(crate) struct Attrs {
     pub(crate) taskbar: bool,
     /// `pointerEvents: "none"`.
     pub(crate) click_through: bool,
+    /// `pointerEvents: "box-none"` ([`crate::box_none`]).
+    pub(crate) box_none: bool,
     pub(crate) transparent: bool,
     pub(crate) backdrop: Backdrop,
     pub(crate) shadow: bool,
@@ -93,6 +95,7 @@ impl Default for Attrs {
             level: WindowLevel::Normal,
             taskbar: true,
             click_through: false,
+            box_none: false,
             transparent: false,
             backdrop: Backdrop::None,
             shadow: true,
@@ -145,6 +148,7 @@ impl Attrs {
         );
         if let Some(pointer) = diff.pointer_events {
             self.click_through = pointer == WindowPointerEvents::None;
+            self.box_none = pointer == WindowPointerEvents::BoxNone;
         }
     }
 
@@ -240,6 +244,10 @@ pub(crate) fn styles(kind: WindowKind, attrs: &Attrs, owned: bool) -> (u32, u32)
         // Clicks go to the windows below, of any process: only a layered
         // window's `WS_EX_TRANSPARENT` passes them on.
         ex |= WS_EX_LAYERED.0 | WS_EX_TRANSPARENT.0;
+    } else if attrs.box_none {
+        // Layered, so that `WS_EX_TRANSPARENT` passes presses on where it
+        // has no views ([`crate::box_none`] sets it).
+        ex |= WS_EX_LAYERED.0;
     }
     if attrs.taskbar && (owned || ex & WS_EX_TOOLWINDOW.0 != 0) {
         // In the taskbar although owned, or a tool window.
@@ -660,6 +668,12 @@ pub(crate) fn sync(surface: &Surface, hwnd: HWND, before: Option<Attrs>, after: 
             || b.maximizable != after.maximizable
     });
     restyle(hwnd, shell, &after);
+    if changed(&|b| b.box_none != after.box_none)
+        && let Some(id) = crate::window::root_id(hwnd)
+        && let Some(surface) = crate::window::surface_of(hwnd)
+    {
+        crate::box_none::set(&surface, id, hwnd, after.box_none);
+    }
     if frame {
         crate::chrome::frame_changed(surface, hwnd);
     }
@@ -714,11 +728,15 @@ fn restyle(hwnd: HWND, shell: &Shell, attrs: &Attrs) {
     // SAFETY: plain queries and calls on a live window of this thread.
     unsafe {
         let owned = GetWindow(hwnd, GW_OWNER).is_ok_and(|o| !o.is_invalid());
-        let next = styles(shell.kind.get(), attrs, owned);
+        let mut next = styles(shell.kind.get(), attrs, owned);
         let current = (
             GetWindowLongPtrW(hwnd, GWL_STYLE) as u32,
             GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32,
         );
+        if attrs.box_none {
+            // Where the cursor is decides it ([`crate::box_none`]).
+            next.1 |= current.1 & WS_EX_TRANSPARENT.0;
+        }
         let (mut style, ex) = restyled(current, next);
         if crate::window::is_full_screen(hwnd) {
             crate::window::set_windowed_style(hwnd, (style & STYLE_MASK) as isize);
@@ -1167,6 +1185,26 @@ mod tests {
     }
 
     #[test]
+    fn a_box_none_window_is_layered_and_passes_where_the_cursor_says() {
+        let mut attrs = Attrs::of_kind(WindowKind::Popup);
+        let mut diff = WindowAttributes::default();
+        diff.pointer_events = Some(WindowPointerEvents::BoxNone);
+        attrs.merge(&diff);
+        assert!(attrs.box_none && !attrs.click_through);
+        let (_, ex) = styles(WindowKind::Popup, &attrs, false);
+        // Layered, and passing presses on only when the cursor is over no
+        // view of its (`box_none`), not by its styles.
+        assert_ne!(ex & WS_EX_LAYERED.0, 0);
+        assert_eq!(ex & WS_EX_TRANSPARENT.0, 0);
+        // `auto` again: neither.
+        diff.pointer_events = Some(WindowPointerEvents::Auto);
+        attrs.merge(&diff);
+        assert!(!attrs.box_none);
+        let (_, ex) = styles(WindowKind::Popup, &attrs, false);
+        assert_eq!(ex & (WS_EX_LAYERED.0 | WS_EX_TRANSPARENT.0), 0);
+    }
+
+    #[test]
     fn restyling_keeps_the_windows_own_bits() {
         let current = (
             WS_OVERLAPPEDWINDOW.0 | WS_VISIBLE.0 | WS_MAXIMIZE.0 | WS_DISABLED.0,
@@ -1353,6 +1391,7 @@ mod tests {
         assert!(before.close_on_blur);
         assert!(!shell.attrs().close_on_blur);
         assert!(shell.attrs().click_through);
+        assert!(!shell.attrs().box_none);
         assert!(shell.attrs().custom_caption(), "a popup has no frame");
         assert_eq!(caption_buttons(&shell.attrs()), vec![HTCLOSE]);
         assert_eq!(

@@ -692,10 +692,26 @@ struct Notifications {
 struct UrlScheme {
     /// The links the app claims: its schemes and web links.
     links: crate::url_scheme::AppLinks,
-    /// Links no listener took yet, at most [`crate::url_scheme::MAX_PENDING`].
-    pending: std::collections::VecDeque<String>,
-    /// The listener waiting for a link.
-    next: Option<AnswerSlot<String>>,
+    /// The links some listener has yet to hear, by number, at most
+    /// [`crate::url_scheme::MAX_PENDING`]: those no listener took yet (from
+    /// [`Self::unheard`] on), and those a listener missed between two calls.
+    recent: std::collections::VecDeque<(u64, String)>,
+    /// The number of the next link.
+    next_number: u64,
+    /// The first link that came while nothing listened and no listener
+    /// took yet, which the next new listener gets.
+    unheard: u64,
+    /// The tasks that listen, each with the number of the next link it is
+    /// to hear: a task awaiting links in a loop is not waiting between two
+    /// calls, and hears the links that came meanwhile at its next call.
+    listeners: Vec<(u64, u64)>,
+    /// The calls waiting for a link, with their task: each gets the next
+    /// one.
+    next: Vec<(Option<u64>, AnswerSlot<String>)>,
+    /// The waits for a link of one scheme (lowered), in the order they
+    /// came: the first takes the next link of its scheme, which no other
+    /// listener gets ([`crate::element::next_url_scheme_open_for`]).
+    next_of_scheme: Vec<(String, AnswerSlot<String>)>,
     /// Address moves no listener took yet
     /// ([`crate::url_scheme::AppUrlChange`]), kept once something listened
     /// ([`Self::hears_changes`]), at most [`crate::url_scheme::MAX_PENDING`].
@@ -711,21 +727,109 @@ struct UrlScheme {
     address: crate::url_scheme::AppUrlCell,
 }
 
-/// The answer of a web sign-in session ([`crate::auth_session`]).
-type AuthSessionAnswer = AnswerSlot<
-    Result<crate::auth_session::AuthSessionOutcome, crate::auth_session::AuthSessionError>,
->;
+impl UrlScheme {
+    /// Hands `url`, a link for the app's listeners, to those waiting, and
+    /// keeps it for those that are not (and for the next new listener when
+    /// none was waiting).
+    fn open(&mut self, url: String, alive: impl Fn(u64) -> bool) {
+        let number = self.next_number;
+        self.next_number += 1;
+        self.listeners.retain(|&(task, _)| alive(task));
+        if self.recent.len() == crate::url_scheme::MAX_PENDING
+            && let Some((dropped, _)) = self.recent.pop_front()
+            && dropped >= self.unheard
+        {
+            log::warn!(
+                "link dropped: {} came while nothing listened",
+                crate::url_scheme::MAX_PENDING
+            );
+            self.unheard = dropped + 1;
+        }
+        self.recent.push_back((number, url.clone()));
+        // A listener whose answer went (its task ended, or it lost a
+        // `select!`) leaves the link to the others.
+        self.next
+            .retain(|(_, answer)| crate::element::task::awaited(answer));
+        // Came while something listened: the listeners between two calls
+        // hear it at their next, and a listener that starts later does not
+        // (only links that came while nothing listened wait for one).
+        if !self.next.is_empty() || !self.listeners.is_empty() {
+            self.unheard = number + 1;
+        }
+        if !self.next.is_empty() {
+            for (task, answer) in std::mem::take(&mut self.next) {
+                if let Some(task) = task {
+                    self.heard(task, number);
+                }
+                answer.borrow_mut().deliver(url.clone());
+            }
+        }
+        self.trim();
+    }
 
-/// The web sign-in session waiting for its end ([`crate::auth_session`]).
-struct AuthSession {
-    /// The request, as the platform's answers name it.
-    id: u32,
-    /// The callback scheme (lower case): a link of it ends the session.
-    scheme: String,
-    answer: AuthSessionAnswer,
-    /// The URL request that opens the page in the system browser, where
-    /// the platform shows no session: the browser not opening fails it.
-    opening: Option<u32>,
+    /// Answers a call of `task` (none: outside a task) waiting for a link:
+    /// with the first link the task has not heard, a new listener's being
+    /// the first no listener took; else with the next one to come.
+    fn listen(
+        &mut self,
+        task: Option<u64>,
+        answer: AnswerSlot<String>,
+        alive: impl Fn(u64) -> bool,
+    ) {
+        self.listeners.retain(|&(task, _)| alive(task));
+        let known = task.and_then(|task| {
+            self.listeners
+                .iter()
+                .find(|&&(listener, _)| listener == task)
+                .map(|&(_, next)| next)
+        });
+        let from = known.unwrap_or(self.unheard);
+        if let Some((number, url)) = self.recent.iter().find(|(n, _)| *n >= from).cloned() {
+            self.unheard = self.unheard.max(number + 1);
+            if let Some(task) = task {
+                self.heard(task, number);
+            }
+            answer.borrow_mut().deliver(url);
+        } else {
+            if let Some(task) = task
+                && known.is_none()
+            {
+                self.listeners.push((task, self.next_number));
+            }
+            self.next
+                .retain(|(_, answer)| crate::element::task::awaited(answer));
+            self.next.push((task, answer));
+        }
+        self.trim();
+    }
+
+    /// `task` heard link `number`.
+    fn heard(&mut self, task: u64, number: u64) {
+        match self
+            .listeners
+            .iter_mut()
+            .find(|(listener, _)| *listener == task)
+        {
+            Some((_, next)) => *next = number + 1,
+            None => self.listeners.push((task, number + 1)),
+        }
+    }
+
+    /// Lets go of the links every listener heard.
+    fn trim(&mut self) {
+        let keep = self
+            .listeners
+            .iter()
+            .map(|&(_, next)| next)
+            .fold(self.unheard, u64::min);
+        while self
+            .recent
+            .front()
+            .is_some_and(|&(number, _)| number < keep)
+        {
+            self.recent.pop_front();
+        }
+    }
 }
 
 /// Files the system opened the app with ([`crate::file_type`]).
@@ -914,12 +1018,6 @@ pub(super) struct Components {
     /// Colors being picked on the screen, by request id: their answers.
     screen_colors: FxHashMap<u32, AnswerSlot<Option<crate::Hsla>>>,
     next_screen_color: u32,
-    /// The shares waiting for the platform's answer
-    /// ([`crate::EventKind::Share`]), by request.
-    shares:
-        FxHashMap<u32, AnswerSlot<Result<crate::share::ShareOutcome, crate::share::ShareError>>>,
-    /// The web sign-in session waiting for its callback, if any.
-    auth_session: Option<AuthSession>,
     /// Requests on local paths (`pick_paths`, `open_path`, ...), by
     /// request id: their answers.
     file_requests: FxHashMap<u32, FileAnswer>,
@@ -1070,8 +1168,6 @@ impl Default for Components {
             next_app_settings_open: 1,
             screen_colors: FxHashMap::default(),
             next_screen_color: 1,
-            shares: FxHashMap::default(),
-            auth_session: None,
             file_requests: FxHashMap::default(),
             next_file_request: 1,
             next_clipboard_read: 1,
@@ -1627,7 +1723,13 @@ impl<M: TextEngine> Core<M> {
             self.needs_layout = true;
         }
         let ratio = self.components.environment.pixel_ratio;
+        let window = self.components.environment.window;
         self.components.environment = environment;
+        // Width and orientation variants follow the window `windowSize()`
+        // reports (`Core::class_window`).
+        if window != environment.window {
+            self.restyle_where(crate::tailwind::deps::WIDTH | crate::tailwind::deps::HEIGHT);
+        }
         if ratio != environment.pixel_ratio {
             self.repick_images(ratio, environment.pixel_ratio);
         }
@@ -6476,28 +6578,29 @@ impl<M: TextEngine> Core<M> {
             log::warn!("link dropped: {dropped}");
             return;
         }
-        // The callback of the waiting sign-in session ends it: it is the
-        // session's answer, never a link the app navigates by (nor its
-        // address, which would keep the credentials it carries).
-        if !page
-            && change.is_none()
-            && self
-                .components
-                .auth_session
-                .as_ref()
-                .is_some_and(|s| crate::auth_session::is_callback(&url, &s.scheme))
-        {
-            self.end_auth_session(
-                None,
-                Ok(crate::auth_session::AuthSessionOutcome::Completed(url)),
-            );
-            return;
+        let links = &mut self.components.url_schemes;
+        // A link a wait for its scheme takes is that wait's alone (a sign-in
+        // session's callback): no listener of the app's hears it, and it
+        // does not become the app's address.
+        if !quiet && change.is_none() {
+            let scheme = url.split_once(':').map_or("", |(scheme, _)| scheme);
+            links
+                .next_of_scheme
+                .retain(|(_, answer)| crate::element::task::awaited(answer));
+            if let Some(at) = links
+                .next_of_scheme
+                .iter()
+                .position(|(waited, _)| waited.eq_ignore_ascii_case(scheme))
+            {
+                let (_, answer) = links.next_of_scheme.remove(at);
+                answer.borrow_mut().deliver(url);
+                return;
+            }
         }
-        self.components.url_schemes.address.set(url.clone());
+        links.address.set(url.clone());
         if quiet {
             return;
         }
-        let links = &mut self.components.url_schemes;
         if let Some(reason) = change {
             if !links.hears_changes {
                 return;
@@ -6513,18 +6616,8 @@ impl<M: TextEngine> Core<M> {
             links.changes.push_back(change);
             return;
         }
-        if let Some(answer) = links.next.take() {
-            answer.borrow_mut().deliver(url);
-            return;
-        }
-        if links.pending.len() == crate::url_scheme::MAX_PENDING {
-            log::warn!(
-                "link dropped: {} came while nothing listened",
-                crate::url_scheme::MAX_PENDING
-            );
-            links.pending.pop_front();
-        }
-        links.pending.push_back(url);
+        let executor = &self.components.executor;
+        links.open(url, |task| executor.has_task(task));
     }
 
     /// The schemes the app claims (`nsh.json` `schemes`,
@@ -6975,12 +7068,25 @@ impl<M: TextEngine> Core<M> {
             Action::Audio(action) => self.audio_action(action),
             Action::Notification(action) => self.notification_action(action),
             Action::LoginItem(enabled, answer) => self.login_item_action(enabled, answer),
-            Action::NextUrlSchemeOpen(answer) => {
+            Action::NextUrlSchemeOpen(task, answer) => {
+                let executor = &self.components.executor;
+                self.components
+                    .url_schemes
+                    .listen(task, answer, |task| executor.has_task(task));
+            }
+            Action::NextUrlSchemeOpenFor(scheme, answer) => {
                 let links = &mut self.components.url_schemes;
-                match links.pending.pop_front() {
-                    Some(url) => answer.borrow_mut().deliver(url),
-                    None => links.next = Some(answer),
+                let claimed = links.links.schemes().contains(&scheme)
+                    || (scheme == "https" && !links.links.web().is_empty());
+                if !claimed {
+                    log::warn!(
+                        "next_url_scheme_open_for: the app does not claim `{scheme}` (nsh.json `schemes`), so no link of it comes"
+                    );
                 }
+                links
+                    .next_of_scheme
+                    .retain(|(_, answer)| crate::element::task::awaited(answer));
+                links.next_of_scheme.push((scheme, answer));
             }
             Action::NextOpenFiles(answer) => {
                 let files = &mut self.components.open_files;
@@ -7077,13 +7183,6 @@ impl<M: TextEngine> Core<M> {
                     command: Command::PickScreenColor { id },
                 });
             }
-            Action::Share(request, answer) => self.start_share(request, answer),
-            Action::ShareAvailable(answer) => {
-                let available = self.components.environment.share && self.access.allows_share();
-                answer.borrow_mut().deliver(available);
-            }
-            Action::AuthSession(request, answer) => self.start_auth_session(request, answer),
-            Action::CloseAuthSession => self.close_auth_session(),
             Action::RenderCanvas(request, answer) => self.start_canvas_render(*request, answer),
             Action::FileRequest(request, answer) => {
                 use crate::file_dialog::FileRequest;
@@ -7115,191 +7214,6 @@ impl<M: TextEngine> Core<M> {
                     },
                 });
             }
-        }
-    }
-
-    /// Checks `request` and sends it to the platform's share sheet
-    /// ([`crate::share`]); `answer` gets how it ended. Request ids are
-    /// unique in the process, as offscreen renders' are: a sheet still
-    /// open when a hot reload replaced the core must not answer the new
-    /// core's request of the same number.
-    fn start_share(
-        &mut self,
-        request: crate::share::ShareRequest,
-        answer: AnswerSlot<Result<crate::share::ShareOutcome, crate::share::ShareError>>,
-    ) {
-        use crate::share::{ShareError, ShareOutcome};
-        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
-        let refused = if !self.components.environment.share {
-            Some(ShareError::unavailable("this platform has no share sheet"))
-        } else if !self.access.allows_share() {
-            Some(ShareError {
-                code: Some(crate::element::codes::ACCESS_DENIED.into()),
-                message: crate::share::NOT_GRANTED.into(),
-            })
-        } else {
-            request.check().err().map(ShareError::failed)
-        };
-        if let Some(error) = refused {
-            answer.borrow_mut().deliver(Err(error));
-            return;
-        }
-        // One sheet at a time: the one still showing ends as dismissed and
-        // the platform replaces it, so a sheet the platform never answered
-        // cannot hold every later share back.
-        for (_, earlier) in self.components.shares.drain() {
-            earlier.borrow_mut().deliver(Ok(ShareOutcome::dismissed()));
-        }
-        // The anchor goes to the platform as a view it shows, which it
-        // places the sheet at wherever that view is (a modal, a window).
-        let anchor = request.anchor.filter(|&node| {
-            self.key(node).is_ok_and(|key| {
-                self.nodes[key as usize].created && (key == self.root || self.in_tree(key))
-            })
-        });
-        let id = loop {
-            let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            if id != 0 {
-                break id;
-            }
-        };
-        self.components.shares.insert(id, answer);
-        let _ = self.apply_op(Op::Command {
-            id: crate::ROOT_ID,
-            command: Command::Share {
-                id,
-                sheet: Box::new(crate::share::ShareSheet::new(request, anchor)),
-            },
-        });
-    }
-
-    /// Checks `request` and starts its sign-in session
-    /// ([`crate::auth_session`]): sent to the platform where it shows
-    /// sessions, opened in the system browser elsewhere; `answer` gets how
-    /// it ended. Request ids are unique in the process, as shares' are.
-    fn start_auth_session(
-        &mut self,
-        request: crate::auth_session::AuthSessionRequest,
-        answer: AuthSessionAnswer,
-    ) {
-        use crate::auth_session::{AuthSessionError, AuthSessionOutcome, AuthSessionPage};
-        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
-        let in_app = self.components.environment.auth_session;
-        let scheme = request.scheme();
-        let refused = if let Err(wrong) = request.check() {
-            Some(AuthSessionError::failed(wrong))
-        } else if !self.access.allows_open_url(&request.url) {
-            let denied = crate::open_url::not_granted(&request.url);
-            self.deny(denied.message().to_owned());
-            Some(AuthSessionError {
-                code: Some(crate::element::codes::ACCESS_DENIED.into()),
-                message: denied.message().to_owned(),
-            })
-        } else if !in_app && !self.components.environment.scheme_links {
-            // This platform hands the app no links of its schemes (the web,
-            // the GPUI and terminal backends): the callback could never come
-            // back.
-            Some(AuthSessionError::unavailable(format!(
-                "openAuthSession: no in-app sign-in here, and no link of `{scheme}:` can reach the app on this platform"
-            )))
-        } else if !in_app
-            && !self
-                .components
-                .url_schemes
-                .links
-                .schemes()
-                .contains(&scheme)
-        {
-            // Only a link of a scheme the app claims brings the callback
-            // back to it here; without one the session could never end.
-            Some(AuthSessionError::unavailable(format!(
-                "openAuthSession: no in-app sign-in here, and `{scheme}:` is not a scheme the app claims (nsh.json `schemes`)"
-            )))
-        } else {
-            None
-        };
-        if let Some(error) = refused {
-            answer.borrow_mut().deliver(Err(error));
-            return;
-        }
-        // One session at a time: the one still waiting ends as cancelled
-        // (the platform closes it where it can), so a session whose
-        // callback never came cannot hold every later one back.
-        if let Some(earlier) = self.components.auth_session.take() {
-            earlier
-                .answer
-                .borrow_mut()
-                .deliver(Ok(AuthSessionOutcome::Cancelled));
-        }
-        let id = loop {
-            let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            if id != 0 {
-                break id;
-            }
-        };
-        let page = AuthSessionPage::new(&request);
-        let opening = if in_app {
-            let _ = self.apply_op(Op::Command {
-                id: crate::ROOT_ID,
-                command: Command::AuthSession {
-                    id,
-                    page: Box::new(page),
-                },
-            });
-            None
-        } else {
-            // As `open_url`: the engine asks the embedding app, then the
-            // platform; whether it opened comes back to `answer_open_url`.
-            let open = self.components.next_url_open;
-            self.components.next_url_open = open.wrapping_add(1);
-            let (_, opened) = crate::element::Answer::<bool>::new();
-            self.components.url_opens.insert(open, opened);
-            self.components.url_requests.push((open, page.url));
-            Some(open)
-        };
-        self.components.auth_session = Some(AuthSession {
-            id,
-            scheme,
-            answer,
-            opening,
-        });
-    }
-
-    /// Closes the app's waiting sign-in session, if any: answers it as
-    /// cancelled and, where the platform shows it, has the platform close
-    /// it. A page in the system browser stays open: nothing closes it.
-    fn close_auth_session(&mut self) {
-        let Some(session) = self.components.auth_session.take() else {
-            return;
-        };
-        session
-            .answer
-            .borrow_mut()
-            .deliver(Ok(crate::auth_session::AuthSessionOutcome::Cancelled));
-        if session.opening.is_none() {
-            let _ = self.apply_op(Op::Command {
-                id: crate::ROOT_ID,
-                command: Command::CloseAuthSession(session.id),
-            });
-        }
-    }
-
-    /// Ends the waiting sign-in session `id` (any, `None`) with `result`.
-    fn end_auth_session(
-        &mut self,
-        id: Option<u32>,
-        result: Result<
-            crate::auth_session::AuthSessionOutcome,
-            crate::auth_session::AuthSessionError,
-        >,
-    ) {
-        let session = &mut self.components.auth_session;
-        if session
-            .as_ref()
-            .is_some_and(|s| id.is_none_or(|id| s.id == id))
-            && let Some(session) = session.take()
-        {
-            session.answer.borrow_mut().deliver(result);
         }
     }
 
@@ -7532,18 +7446,6 @@ impl<M: TextEngine> Core<M> {
     pub fn answer_open_url(&mut self, id: u32, opened: bool) {
         if let Some(answer) = self.components.url_opens.remove(&id) {
             answer.borrow_mut().deliver(opened);
-        }
-        if !opened
-            && let Some(session) = &self.components.auth_session
-            && session.opening == Some(id)
-        {
-            let session = session.id;
-            self.end_auth_session(
-                Some(session),
-                Err(crate::auth_session::AuthSessionError::failed(
-                    "openAuthSession: the browser did not open the sign-in page",
-                )),
-            );
         }
     }
 
@@ -8188,23 +8090,6 @@ impl<M: TextEngine> Core<M> {
                 if let Some(answer) = self.components.screen_colors.remove(&(request as u32)) {
                     answer.borrow_mut().deliver(color);
                 }
-                true
-            }
-            EventKind::Share if id == crate::ROOT_ID => {
-                let Some((request, result)) = crate::share::answer_from_payload(payload) else {
-                    return false;
-                };
-                if let Some(answer) = self.components.shares.remove(&request) {
-                    answer.borrow_mut().deliver(result);
-                }
-                true
-            }
-            EventKind::AuthSession if id == crate::ROOT_ID => {
-                let Some((request, result)) = crate::auth_session::answer_from_payload(payload)
-                else {
-                    return false;
-                };
-                self.end_auth_session(Some(request), result);
                 true
             }
             EventKind::CanvasImage if id == crate::ROOT_ID => self.answer_canvas_render(payload),

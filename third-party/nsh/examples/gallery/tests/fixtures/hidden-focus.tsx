@@ -1,6 +1,7 @@
 // Links, controls and inputs kept mounted in hidden views, one `display: none`
 // from the start and one hidden after it showed, before a control that
-// shows and tabs that X hides. `hidden-focus.test.tsx` runs it.
+// shows, tabs that X hides and a field that Ctrl+H hides.
+// `hidden-focus.test.tsx` runs it.
 import { keymap, mount, platform, signal, Text, View } from "nsh";
 import { Input, Link, Tab, Tabs } from "nsh/base";
 
@@ -10,7 +11,9 @@ function App() {
   const choice = signal("One");
   const shown = signal(true);
   const away = signal(false);
+  const fieldAway = signal(false);
   keymap.bind("x", () => away.set(true));
+  keymap.bind("ctrl+h", () => fieldAway.set(true));
   // Laid out once, then hidden: its views had frames before.
   setTimeout(() => shown.set(false), 100);
   const box = { width: 120, height: 32, justifyContent: "center", backgroundColor: "#e5e5e5" } as const;
@@ -23,6 +26,8 @@ function App() {
     <Input
       placeholder={name}
       onFocus={() => note(`${name} focused`)}
+      onBlur={() => note(`${name} blurred`)}
+      onChange={({ value }) => note(`${name} = ${value}`)}
       style={{ width: 120, height: 32, borderWidth: 1, borderColor: "#d4d4d4" }}
     />
   );
@@ -63,9 +68,11 @@ function App() {
           {tab("Two")}
         </Tabs>
       </View>
+      <View style={{ display: fieldAway() ? "none" : "flex" }}>{field("Away field")}</View>
       <Text>{`Log: ${log().join(", ")}`}</Text>
       <Text>{shown() ? "Panel shown" : "Panel hidden"}</Text>
       <Text>{away() ? "Tabs hidden" : "Tabs shown"}</Text>
+      <Text>{fieldAway() ? "Field hidden" : "Field shown"}</Text>
       <Text>{`Platform: ${platform.os}`}</Text>
     </View>
   );

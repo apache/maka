@@ -227,6 +227,7 @@ export const exclusionRules = [
         'platform/computer-use/THIRD_PARTY_NOTICES',
         'products/maka/cli/THIRD_PARTY_NOTICES.txt',
         'products/maka/workbench/tests/fonts/OFL.txt',
+        'third-party/nsh/website/src/lib/nsmetry/LICENSE',
       )(path) || path.startsWith('scripts/rust/licenses/'),
   },
   {

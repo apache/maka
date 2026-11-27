@@ -21,12 +21,26 @@ It works on every platform, the web included.
 ## t
 
 ```ts
-function t(key: string, options?: { locale?: string; [name: string]: unknown }): string;
+function t<K extends TranslationKey>(
+  key: K,
+  options?: Translations[K] & { locale?: LocaleTag },
+): string;
+// Without `locales/`:
+// function t(key: string, options?: { locale?: string; [name: string]: unknown }): string;
 ```
 
 The text of `key` in the language the app shows: the first of the user's preferred languages
 (`localeSettings().languages`) the app has translations in, else `locale()`'s.
 
+- **Type checking**: when the app has a `locales/` directory, `nsh` generates `.nsh/types/nsh/translations.d.ts`
+  (mirroring `.nsh/types/nsh/tokens.d.ts`), augmenting `Translations` and `TranslationLocales`. `nsh check` and editors
+  check `key` (`TranslationKey`), require `options` whenever the key's message has `%{name}` placeholders (optional
+  otherwise), and offer `LocaleTag` autocomplete. Without `locales/`, `TranslationKey` and `LocaleTag` fall back to
+  `string`.
+- When `locales/` is present, passing a plain `string` variable as `key` requires typing the variable (for example
+  `TranslationKey` or a template-literal union like `` `status.${kind}` ``) or asserting it (`key as TranslationKey`),
+  and calling keys loaded only at run time with `addTranslations` and arbitrary parameters can cast `t` (for example
+  `(t as (key: string, options?: { locale?: LocaleTag; [name: string]: unknown }) => string)`).
 - `options`' members other than `locale` fill the text's `%{name}` patterns, written as text (`String(value)`).
 - `options.locale` asks for the text in another language.
 - A key a language lacks comes from the language without its last subtag (`zh-Hant-TW`, `zh-Hant`, `zh`), then from
@@ -35,13 +49,17 @@ The text of `key` in the language the app shows: the first of the user's preferr
   user's settings and, in development, the files.
 
 ```tsx
-<Text>{t("cart.items", { count: items().length })}</Text>
+t("hello");
+t("messages.hello", { name: "Jason" });
+t("hello", { locale: "zh-CN" });
+
+<Text>{t("cart.items", { count: items().length })}</Text>;
 ```
 
 ## setLocale
 
 ```ts
-function setLocale(locale: string | null): void;
+function setLocale(locale: LocaleTag | null): void;
 ```
 
 Shows the app in `locale`, a BCP 47 tag (`"zh-CN"`), whatever the user's language: `t`, `locale()`, the first of

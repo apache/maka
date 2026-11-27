@@ -61,6 +61,8 @@ pub(crate) struct WebIvars {
     defer_downloads: Cell<bool>,
     /// The web view's `allowOrigin`, from its latest props.
     allow_origin: RefCell<Option<nsh_core::access::WebOrigin>>,
+    /// The web view's `allowNavigation`, from its latest props.
+    allow_navigation: RefCell<Option<nsh_core::access::WebHosts>>,
     navigation: Cell<Option<usize>>,
     /// Only these navigations may report an expected policy interruption.
     downloading: RefCell<FxHashSet<usize>>,
@@ -107,7 +109,11 @@ define_class!(
                 || self
                     .ivars()
                     .access
-                    .allows_webview_with(&url, self.ivars().allow_origin.borrow().as_ref());
+                    .allows_webview_in(
+                        &url,
+                        self.ivars().allow_origin.borrow().as_ref(),
+                        self.ivars().allow_navigation.borrow().as_ref(),
+                    );
             if !allowed {
                 log::warn!(target: "js", "web view navigation to {url} is not granted");
                 self.send(
@@ -254,6 +260,7 @@ impl WebHandler {
             events_downloads: Cell::new(false),
             defer_downloads: Cell::new(false),
             allow_origin: RefCell::default(),
+            allow_navigation: RefCell::default(),
             navigation: Cell::default(),
             downloading: RefCell::default(),
             evaluations,
@@ -291,6 +298,12 @@ impl WebHandler {
     /// The web view's `allowOrigin`: its next navigations are checked with it.
     pub(crate) fn set_allow_origin(&self, origin: Option<nsh_core::access::WebOrigin>) {
         *self.ivars().allow_origin.borrow_mut() = origin;
+    }
+
+    /// The web view's `allowNavigation`: its next navigations are checked
+    /// with it.
+    pub(crate) fn set_allow_navigation(&self, hosts: Option<nsh_core::access::WebHosts>) {
+        *self.ivars().allow_navigation.borrow_mut() = hosts;
     }
 
     /// The host is going: WebKit stops writing its transfers.
@@ -562,6 +575,8 @@ impl WebHost {
         self.handler.set_defer_downloads(p.defer_downloads);
         // Before the source loads: it applies to that navigation.
         self.handler.set_allow_origin(p.allow_origin.clone());
+        self.handler
+            .set_allow_navigation(p.allow_navigation.clone());
         if !self.made {
             // The core keeps `incognito` and the URL schemes from changing
             // once it is made.

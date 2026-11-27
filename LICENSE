@@ -340,15 +340,23 @@ third-party/nsh contains NSH initially imported from
 https://github.com/M4n5ter/nsh at revision
 de176695240d550f2b303643b8019146c7989e7f and synchronized with
 https://github.com/longbridge/nsh through revision
-a901baa2e2d82a17066abb589b542b0a90890e0a.
+3b2fd5876b5865b0f3fe6ff875a3514164fd3134.
 Copyright 2026 Longbridge <https://longbridge.com>.
 Original license texts, the complete source inventory and local integration
 changes are recorded in third-party/nsh/{LICENSE-APACHE,upstream.json,SOURCE.md}.
 The snapshot preserves the separate licenses for its bundled icy_sixel
 sources, LLRT type definitions, browser polyfills, KaTeX fonts, sound
 fixtures, and example and test fonts.
+The vendored NsMetry JavaScript SDK from
+https://github.com/huacnlee/nsmetry at revision 35f6d75 retains its MIT
+license in third-party/nsh/website/src/lib/nsmetry/LICENSE.
 The IBM Plex Sans test font in products/maka/workbench/tests/fonts retains
 its SIL Open Font License in the adjacent OFL.txt.
+
+Maka for iOS also includes Longbridge's nsh-system-controls 0.1.0
+(Apache License 2.0) from https://crates.io/crates/nsh-system-controls/0.1.0.
+The published archive contains LICENSE-APACHE and records upstream revision
+a1c8d5f1807f2ab0c60ccf3e59bb8598e9a6ff97 in .cargo_vcs_info.json.
 
 async-io timer source (adapted, Apache License 2.0 OR MIT)
 

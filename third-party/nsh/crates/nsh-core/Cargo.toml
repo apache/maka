@@ -43,8 +43,6 @@ naga = { workspace = true, optional = true }
 wuff.workspace = true
 # Fonts' family names (`text::font_family`).
 ttf-parser.workspace = true
-# `nsh/mobile`'s `DateTimePicker` values (`mobile.rs`).
-chrono.workspace = true
 
 [features]
 # SVG images for the native backends (`svg`: sniffing, sizes and rasters with

@@ -110,6 +110,19 @@ echo 'await app.press("Add")' | nsh test App.tsx --trace --target ios   # the sa
 
 `perf commit: 10 ops, 151µs (list js 2µs), 8 mount items, 27 nodes` is one commit. Use `--trace` to see which native views a change creates or updates: a press that recreates a list means a binding is wrong. In Rust, set `EngineConfig::trace = true` and call `app.observe(..)`. `--limits` (TSX) runs the app under an embedding host's limits: `--limits memory=128MB,call=500ms`.
 
+## Driving the window the developer has open
+
+A bug that only shows in the developer's `nsh run` / `nsh dev` window (after many hot updates, say) does not show in a
+fresh `nsh test` run. `nsh test --attach` takes the same steps and queries in that running window instead, on the
+macOS and GPUI hosts, from this machine only:
+
+```sh
+echo 'console.log(app.texts()); await app.press("Save"); await app.screenshot("now.png")' | nsh test --attach
+nsh test --attach=8790 --device gpui          # a session's port; one of its hosts
+```
+
+`open` takes no options there, and the app keeps running after ([testing guide](https://nsh.dev/docs/testing-and-trace.md#driving-a-running-session)).
+
 ## Platforms and prerequisites
 
 Each desktop packages only on itself. Phones are reached from a computer.

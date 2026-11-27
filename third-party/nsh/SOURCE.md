@@ -20,7 +20,7 @@
 # Native Shell (NSH)
 
 This directory contains NSH from [`longbridge/nsh`](https://github.com/longbridge/nsh),
-synchronized through revision `a901baa2e2d82a17066abb589b542b0a90890e0a`.
+synchronized through revision `3b2fd5876b5865b0f3fe6ff875a3514164fd3134`.
 The original import came from `M4n5ter/nsh`, branch
 `tui/terminal-backend`, at `de176695240d550f2b303643b8019146c7989e7f`.
 
@@ -52,9 +52,21 @@ bound rows. Keyed changes use NSH's `ListDiff` and sibling placement logic.
 AppKit uses the upstream keyboard monitor for both raw keys and scoped
 shortcuts. Windows uses the upstream selection lifecycle when text changes.
 
+Virtual-list scope replacement, pointer-focus override eligibility and GPU
+surface collapse/static shader redraw use upstream #3516, #3532 and #3533.
+The List items memo also drives empty, separator and viewability checks for
+indexed sources. NSH's optional `Share` module now lives in `nsh-extra`;
+Maka does not register it.
+
 Asset builds use upstream app roots, package-relative paths and default unresolved-import errors; built-in plugin builds declare the Maka
 repository as their shared root. Callers migrate with upstream rather than
 keeping aliases or older implementations.
+
+The iOS shell links the official [`nsh-system-controls` 0.1.0](https://crates.io/crates/nsh-system-controls/0.1.0)
+extension for UIKit segmented controls and switches. The crates.io release is
+from revision `a1c8d5f1807f2ab0c60ccf3e59bb8598e9a6ff97`. Its Cargo dependencies
+use the same vendored NSH types as the host; the UI compiler and runtime register
+the extension's own module.
 
 Installed plugin modules are immutable compiled artifacts. A compiler contract
 change requires rebuilding and repinning external UI packages; invalidating a
@@ -72,7 +84,7 @@ terminal surfaces. Desktop window operations take explicit `WindowRef` values.
   Direct2D offscreen terminal surfaces and the TUI image store. GPUI and its
   embed example remain retired.
 - **Embedding and packages:** `EmbeddedHost` binds the main `AppView` window to
-  `ROOT_ID`; configured host loading, lazy plugin chunks,
+  `ROOT_ID` and already mounts plain JS roots inline (#3528). Configured host loading, lazy plugin chunks,
   `import.meta.assetBase` resource namespaces, main-thread lifecycle hooks and
   terminal inspection are required by Maka's shells and plugin composition.
 - **Source-aware reading:** TextView preserves canonical source identity,
@@ -92,13 +104,17 @@ terminal surfaces. Desktop window operations take explicit `WindowRef` values.
 - **Native lifecycle:** terminal surfaces keep host ownership of windows and
   event loops while honoring menu labels, quit requests and system session
   termination. Stopping an engine revokes its input and frame receipts.
+- **Shader submission and retirement (upstream #3534):** Metal uploads and
+  surface copies share the submission queue with surface and readback draws.
+  Apple and Windows surface pools keep frames that finish during collection
+  when they are newer than the selected frame.
 
 ## Maintenance and verification
 
-Local test adjustments: `mouse.test.mjs` expects pointer metadata
-(`pointerType`, pressure and tilt). AppKit's `menu_labels`, `menu_lifetime`
-and `text_view_selection` find layer-backed text through accessibility (#2997);
-selection drags use accessibility frames converted to window coordinates.
+The Web mouse fixtures use upstream's pointer metadata assertions (#3566).
+AppKit's local `menu_labels`, `menu_lifetime` and `text_view_selection` tests
+find layer-backed text through accessibility (#2997); selection drags use
+accessibility frames converted to window coordinates.
 
 Compare retained changes against each recorded upstream baseline. Remove local
 patches when upstream supplies the same behavior; migrate all product, plugin,

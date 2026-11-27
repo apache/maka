@@ -153,6 +153,27 @@ yet.
 the highlight goes and `onSelectionChange` hears `""`. A bar of actions over the selection calls it once its action is
 done. In Rust it is `ElementRef::clear_selection`.
 
+`ref.selectAll()` does the opposite: it selects all the text of the selectable view the node is or is inside, as the
+selection menu's Select All does. On phones the handles and the edit menu show, so the user can narrow the selection
+and copy part of it. Use it where a long press is already taken, for example a chat message whose long press opens a
+menu with "Select text":
+
+```tsx
+let message!: ViewRef;
+
+<View ref={message} selectable>
+  <Text>
+    Prices rose <Text class="font-bold">4%</Text> this quarter.
+  </Text>
+</View>;
+
+// The menu's "Select text" item:
+message.selectAll();
+```
+
+The texts keep their styling, which an `Input` would lose. `onSelectionChange` hears the selected text as after a
+drag. In Rust it is `ElementRef::select_all`.
+
 ### As Markdown or HTML
 
 A `selectable` `TextView`'s ref reads its selection when the app asks: `selectedText({ format })` gives the selected

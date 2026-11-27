@@ -80,6 +80,13 @@ pub(crate) const COMPONENTS: &[Component] = &[
         hosts: None,
     },
     Component {
+        name: "windows-linker",
+        what: "linker of the Windows runner (`nsh package --target windows`)",
+        paths: &["runtime/windows/nsh-windows-app.link/bin"],
+        per_host: false,
+        hosts: Some(&["windows-x86_64"]),
+    },
+    Component {
         name: "gpui",
         what: "GPUI development host (`--target gpui`)",
         paths: &["runtime/gpui"],

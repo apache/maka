@@ -65,8 +65,9 @@ trusted: every limit and check is enforced in Rust, never in JS.
   writing the system clipboard; the copy menu of selectable text is the user's own act and needs none), `picker`
   (`nsh`'s `Picker`: showing the system's picker, whose picked files reach the app; denied, a pick rejects. Also
   `nsh-extra`'s `Photos`, checked in each call of its JS face but `access` (`photos/mod.rs` `granted`): its photos
-  reach the app as picked ones do, and the user's permission is the whole app's), `share` (`nsh`'s `Share`:
-  showing the system's share sheet; denied, `Share.show` rejects; each shared file also needs `fs.read`), `speech`
+  reach the app as picked ones do, and the user's permission is the whole app's), `share` (`nsh-extra`'s `Share`:
+  showing the system's share sheet; checked in its JS face's `show` and in its Rust `share` against the engine's
+  access; denied, `Share.show` rejects; each shared file also needs `fs.read`), `speech`
   (`nsh-extra`'s `Speech`: the microphone and the system's speech recognizer, whose transcript reaches the app; checked
   in its JS face's `start` (`speech/mod.rs` `granted`) and in its Rust `recognize` against the engine's access; denied,
   `Speech.start` throws and a Rust session ends with `not-allowed`), `audio` (`nsh`'s `Sound` and `AudioPlayer`: making sound; denied, `Sound.load` rejects and
@@ -102,7 +103,7 @@ trusted: every limit and check is enforced in Rust, never in JS.
 - Enforced in Rust: `fetch` in the engine (`access.rs`; refused requests never reach the network, and redirects are
   followed by the engine with `follow_redirects` off for the platform, so every hop is checked — hops are issued on the
   engine thread when a hop's head arrives; a streamed request body is not sent again, so a 307 / 308 then fails; a hop to another origin, `nsh_core::access::is_same_origin`, drops `Authorization`, `Cookie` and `Proxy-Authorization` from it and every later hop, as Fetch drops `Authorization`); remote images, placeholders, canvas images, `Image.getSize` / `prefetch`, video sources, web view
-  sources and inline HTML's base URLs, trusted web view input (`Command::SendInput`), the status bar, the clipboard, the picker, the share sheet, the application menu and window opening (`Command::Desktop` but `PopupMenu`, `OpenWindow` and
+  sources and inline HTML's base URLs, trusted web view input (`Command::SendInput`), the status bar, the clipboard, the picker, the application menu and window opening (`Command::Desktop` but `PopupMenu`, `OpenWindow` and
   the app's own windows' commands), sounds and players (`AudioAction::Open`) and host calls in the core (`Core::check_prop`, the commit's commands and actions;
   each refusal is logged once, target `js`, saying which key to add); top-level web view navigations on the platforms
   (`WKNavigationDelegate decidePolicyForNavigationAction` / `WebViewClient.shouldOverrideUrlLoading` → `Native.allowsWebview`).

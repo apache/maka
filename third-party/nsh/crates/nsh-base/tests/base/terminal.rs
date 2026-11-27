@@ -402,10 +402,11 @@ fn text_origins<C: Component<Props = ()>>() -> std::collections::HashMap<String,
         .collect()
 }
 
-/// [`ApproxTextEngine`] as a terminal lays text out: a line is one row
-/// whatever the style's line height, as the TUI's cell engine draws it,
-/// so a line `1.2 ×` its font tall stays one Cell where an explicit
-/// `lineHeight` (a text view's body, code, headings) would round up to two.
+/// [`ApproxTextEngine`] as a terminal lays text out: as the TUI's cell
+/// engine draws it, a line is one row whatever a span's or the root
+/// strut's line height. A line `1.2 ×` its font tall stays one Cell where
+/// an explicit `lineHeight` (a text view's body, code, headings) would
+/// round up to two.
 struct TerminalText;
 
 impl TextEngine for TerminalText {
@@ -421,6 +422,10 @@ impl TextEngine for TerminalText {
         alignments: &AttachmentAlignments,
     ) -> Self::Prepared {
         let mut text = text.clone();
+        if let Some(strut) = &mut text.paragraph_strut {
+            strut.line_height = Points::ZERO;
+            strut.line_height_multiple = 0.0;
+        }
         for span in &mut text.spans {
             span.style.line_height = Points::ZERO;
             span.style.line_height_multiple = 0.0;

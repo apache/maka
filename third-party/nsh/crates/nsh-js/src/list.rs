@@ -380,10 +380,13 @@ pub(crate) fn render(cx: *mut JsContext, props: JsValue) -> Result<JsValue, JsVa
             }
         }
     }
-    if has(cx, props, "empty") {
+    let items = lists(cx).map.borrow().get(&id).map(|d| d.items);
+    if has(cx, props, "empty")
+        && let Some(items) = items
+    {
         // SAFETY: a placeholder for the empty cell's state (owner, node).
         let state = unsafe { qjs::JS_NewArray(cx) };
-        let func = native(cx, empty_run, 0, &mut [node, props, state]);
+        let func = native(cx, empty_run, 0, &mut [node, props, state, items]);
         unsafe { qjs::JS_FreeValue(cx, state) };
         let r = reactive::render_effect(cx, func);
         unsafe { qjs::JS_FreeValue(cx, r) };
@@ -1024,10 +1027,13 @@ unsafe extern "C" fn empty_run(
     _magic: c_int,
     data: *mut JsValue,
 ) -> JsValue {
-    // SAFETY: three data values; values got are freed.
+    // SAFETY: four data values; values got are freed.
     unsafe {
-        let (list, props, state) = (*data, *data.add(1), *data.add(2));
-        let each = get(cx, props, "each");
+        let (list, props, state, items) = (*data, *data.add(1), *data.add(2), *data.add(3));
+        let each = qjs::JS_Call(cx, items, UNDEFINED, 0, ptr::null_mut());
+        if qjs::JS_IsException(each) {
+            return each;
+        }
         let empty = match source_length(cx, each) {
             Ok(len) => len == 0,
             Err(error) => {
@@ -1203,7 +1209,7 @@ fn make_cell(cx: *mut JsContext, list: NodeId, slot: u32, first: u32) -> Result<
                 cx,
                 separated_run,
                 0,
-                &mut [content, props, index, holder, owner],
+                &mut [content, props, index, holder, owner, items],
             );
             unsafe { qjs::JS_FreeValue(cx, holder) };
             let r = dom::insert_value_at(cx, cell, between, None);
@@ -1287,14 +1293,23 @@ unsafe extern "C" fn separated_run(
     _magic: c_int,
     data: *mut JsValue,
 ) -> JsValue {
-    // SAFETY: five data values; values got are freed or returned.
+    // SAFETY: six data values; values got are freed or returned.
     unsafe {
-        let (content, props, index, holder) = (*data, *data.add(1), *data.add(2), *data.add(3));
+        let (content, props, index, holder, items) = (
+            *data,
+            *data.add(1),
+            *data.add(2),
+            *data.add(3),
+            *data.add(5),
+        );
         let i = qjs::JS_Call(cx, index, UNDEFINED, 0, ptr::null_mut());
         let mut n = 0f64;
         qjs::JS_ToFloat64(cx, &mut n, i);
         qjs::JS_FreeValue(cx, i);
-        let each = get(cx, props, "each");
+        let each = qjs::JS_Call(cx, items, UNDEFINED, 0, ptr::null_mut());
+        if qjs::JS_IsException(each) {
+            return each;
+        }
         let len = match source_length(cx, each) {
             Ok(len) => len,
             Err(error) => {
@@ -1443,7 +1458,7 @@ unsafe extern "C" fn report_later(
 /// Calls `onViewableItemsChange` with the items now viewable and those
 /// that changed, unless the range is the one reported last.
 fn report(cx: *mut JsContext, id: NodeId) -> JsValue {
-    let (props, (first, last), (prev_first, prev_last)) = {
+    let (props, items, (first, last), (prev_first, prev_last)) = {
         let mut map = lists(cx).map.borrow_mut();
         let Some(d) = map.get_mut(&id) else {
             return UNDEFINED;
@@ -1454,13 +1469,22 @@ fn report(cx: *mut JsContext, id: NodeId) -> JsValue {
         let r = (
             // SAFETY: a dup for the reads below.
             unsafe { qjs::JS_DupValue(cx, d.props) },
+            unsafe { qjs::JS_DupValue(cx, d.items) },
             d.latest,
             d.reported,
         );
         d.reported = d.latest;
         r
     };
-    let each = get(cx, props, "each");
+    let each = reactive::untracked_with(cx, || unsafe {
+        qjs::JS_Call(cx, items, UNDEFINED, 0, ptr::null_mut())
+    });
+    // SAFETY: `items` was duped above; free it before returning early on error.
+    unsafe { qjs::JS_FreeValue(cx, items) };
+    if unsafe { qjs::JS_IsException(each) } {
+        unsafe { qjs::JS_FreeValue(cx, props) };
+        return each;
+    }
     let key_of = get(cx, props, "keyExtractor");
     let len = match source_length(cx, each) {
         Ok(len) => len,
@@ -2407,6 +2431,72 @@ mod tests {
                 DiffRun::Kept { from: 11, len: 1 },
             ],
         );
+    }
+
+    #[test]
+    fn list_reads_each_once_through_its_items_memo() {
+        let host = Host::with_options(HostOptions::default()).unwrap();
+        host.eval_source(
+            r#"
+            import { List, mount, signal } from "nsh";
+            import { text } from "nsh:rt";
+            const data = signal([{ id: "a" }, { id: "b" }, { id: "c" }]);
+            const state = globalThis.memoCheck = { reads: 0, reports: [], data };
+            mount(() => List({
+                get each() { state.reads++; return data(); },
+                keyExtractor: item => item.id,
+                empty: () => text("empty"),
+                separator: () => text("-"),
+                onViewableItemsChange: info => state.reports.push(info),
+                children: item => text(item().id),
+            }));
+            "#,
+        )
+        .unwrap();
+        let mut ops = Vec::new();
+        host.take_ops(&mut ops);
+        let list = ops
+            .iter()
+            .find_map(|op| match op {
+                Op::Create {
+                    id,
+                    tag: nsh_core::Tag::List,
+                } => Some(*id),
+                _ => None,
+            })
+            .unwrap();
+        let check = |source| assert!(host.eval_script("memo-each", source).unwrap(), "{source}");
+        check("memoCheck.reads === 1");
+        host.bind_list(list, &[(0, 0), (1, 1), (2, 2)]);
+        host.bind_list(list, &[(0, 2), (1, 1), (2, 0)]);
+        check("memoCheck.reads === 1");
+        for (first, last) in [(0, 1), (1, 2)] {
+            host.dispatch_event(
+                list,
+                nsh_core::EventKind::ViewableItemsChange,
+                &nsh_core::EventPayload::Map(vec![
+                    ("first", nsh_core::PayloadValue::Number(first as f64)),
+                    ("last", nsh_core::PayloadValue::Number(last as f64)),
+                ]),
+            );
+        }
+        check("memoCheck.reads === 1");
+        check(
+            "memoCheck.reports.length === 2 && memoCheck.reports[1].viewableItems.map(t => t.key).join(',') === 'b,c'",
+        );
+        check("memoCheck.data.set([{ id: 'x' }, { id: 'y' }]); memoCheck.reads === 2");
+        host.bind_list(list, &[(0, 0), (1, 1)]);
+        host.dispatch_event(
+            list,
+            nsh_core::EventKind::ViewableItemsChange,
+            &nsh_core::EventPayload::Map(vec![
+                ("first", nsh_core::PayloadValue::Number(0.0)),
+                ("last", nsh_core::PayloadValue::Number(1.0)),
+            ]),
+        );
+        check("memoCheck.reads === 2");
+        check("memoCheck.reports[2].viewableItems.map(t => t.key).join(',') === 'x,y'");
+        check("memoCheck.data.set([]); memoCheck.reads === 3");
     }
 
     fn diffs(ops: &[Op]) -> Vec<ListDiff> {

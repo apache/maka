@@ -1189,8 +1189,11 @@ impl Nav {
         set_shift(&view, (0.0, 0.0));
         set_fade(&view, 1.0);
         let mut restored = false;
+        // A field hidden meanwhile (`display: none` around it) is not given
+        // the focus back, as a custom view that is no stop is not.
         if let Some(field) = restore
             && field.attached()
+            && crate::keyboard::seen(&field)
             && crate::text_input::focused(surface).is_none()
             && is_ancestor(&self.focus_scope(surface), &field)
         {
@@ -1689,6 +1692,7 @@ pub(crate) fn release(surface: &Rc<Surface>, view: &NshView) {
     set_fade(view, 1.0);
     if let Some(field) = restore
         && field.attached()
+        && crate::keyboard::seen(&field)
         && crate::text_input::focused(surface).is_none()
     {
         crate::text_input::focus(&field);

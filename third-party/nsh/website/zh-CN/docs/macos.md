@@ -253,6 +253,14 @@ view.load(Bundle::source(code).into());
 `AppOptions { transparent: true, ..Default::default() }` 为自定义 Rust 宿主的 `run_app` 窗口提供透明的初始默认值，让未绘制的区域显示窗口后面的内容。显式主窗口属性及后续窗口更新优先于这个默认值。标准宿主保持此选项为 `false`，但可以通过窗口配置请求透明；视图的 `behindWindow` 材质本身不会让窗口透明。
 嵌入的 `AppView` 不会改动它所在的窗口：需要同样效果时，请把自己的 `NSWindow` 设为 nonopaque，并给它透明的 `backgroundColor`。
 
+## 在 Rust 中显示系统界面
+
+需要显示系统界面（分享菜单、popover、sheet）的 Rust 代码，从发起调用的那个 surface 显示它。在主线程任务（`run_on_main_thread`）里，
+`nsh_platform_macos::presenting_view(mtm)` 是没有元素作为锚点时显示它的视图：surface 中用户所在的可见窗口的内容视图，被嵌入时是
+surface 自己的视图；surface 不在任何可见窗口里时为 `None`。`native_view(mtm, node)` 是这个 surface 中某个元素的 `NSView`（元素
+`ref` 的节点，即模块函数的 `NodeRef` 参数；`ROOT_ID` 是 surface 的根视图），无论它在 surface 的哪个窗口里：属于这个元素的菜单从它弹出。
+NSH 的视图是翻转坐标的（flipped）。两者都要在任务运行时取得。它们只用于锚定和显示系统界面：模块绝不修改、重新挂载、改变样式或移除 NSH 拥有的视图。
+
 ## 来自其他代码的通知
 
 远程通知以及其他原生代码安排的通知不会触发 `Notifications` 的 `press`，而是交给 Rust 代码用
@@ -264,7 +272,7 @@ view.load(Bundle::source(code).into());
 运行环境是桌面环境：安全区和键盘高度为 0，`idiom()` 是桌面（`platform.idiom` 为 `"desktop"`），`os_version()`（`platform.version`）为 macOS 的版本号，
 深色模式实时跟随系统外观。见[设备与环境](./device-and-environment.md)。
 
-输入是桌面输入：鼠标、触控板（带惯性的滚动、捏合和旋转）和键盘。触控板轻点产生的按下和抬起即使连续到达，也会短暂显示应用的 `active:` 反馈；按压回调仍在抬起时触发。开启减少动态效果时，视觉状态仍立即释放。可缩放的滚动视图用触控板捏合或 Control + 滚轮以指针为中心缩放，缩放后可以双向滚动。可选择的文本通过拖动、双击和三击选择，用 Cmd+C 复制。
+输入是桌面输入：鼠标、触控板（带惯性的滚动，越过边缘时像 AppKit 的滚动视图一样拉伸并回弹；捏合和旋转）和键盘。触控板轻点产生的按下和抬起即使连续到达，也会短暂显示应用的 `active:` 反馈；按压回调仍在抬起时触发。开启减少动态效果时，视觉状态仍立即释放。可缩放的滚动视图用触控板捏合或 Control + 滚轮以指针为中心缩放，缩放后可以双向滚动。可选择的文本通过拖动、双击和三击选择，用 Cmd+C 复制。
 Escape、Option+Left、Cmd+[ 和鼠标的后退键会关闭最新的对话框或在栈中返回（焦点在输入框或网页中时，Escape 只会离开它；
 网页先收到这些按键，它自己用掉的不会触发返回）；`Dialog` 是覆盖整个窗口的一层，显示应用的弹出层和背景。页面在顶部显示它的 `header`。
 点击 `Input` 的任意位置（包括内边距）都会把光标放到最近的位置。

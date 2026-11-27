@@ -5,13 +5,22 @@
 //! increment and decrement step it; a disabled slider takes none of it; the
 //! app owns a controlled value, and an uncontrolled slider keeps its own. In
 //! a right-to-left layout a horizontal slider runs from the right: its
-//! `min` at the right, drags and Left raising it.
+//! `min` at the right, drags and Left raising it. Content drawn in a thumb
+//! follows that thumb's hover, drag and keyboard focus through its
+//! `group-*:` classes.
 
-use std::sync::{Arc, Mutex};
+use std::{
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
 
-use nsh_base::{SliderValue, slider};
+use nsh_base::{SliderThumbContext, SliderValue, slider};
 use nsh_core::{
-    EventKind, EventPayload, MountItem, PayloadValue, Size,
+    EventKind, EventPayload, MountItem, NodeId, PayloadValue, PointerType, ROOT_ID, Size,
+    TouchEvent, TouchPhase, TouchPoint,
     geometry::{Axis, point},
     platform::Os,
     prelude::*,
@@ -472,4 +481,216 @@ fn screen_readers_hear_a_drags_value_at_its_end() {
     app.drop_held().unwrap();
     app.wait_for("text:Ends 60").unwrap();
     assert_eq!(sent.lock().unwrap().said.last(), Some(&Some(60.0)));
+}
+
+/// How many times each run of [`Bubbles`] drew its thumbs' content, by
+/// its `run`.
+static DRAWN: Mutex<Vec<Arc<AtomicUsize>>> = Mutex::new(Vec::new());
+
+#[derive(Clone, PartialEq, Props)]
+struct BubblesProps {
+    /// Its counter in [`DRAWN`].
+    run: u32,
+}
+
+/// The states a thumb's content follows, by the `group-*:` variant that
+/// marks each.
+const STATES: &[(&str, &str)] = &[
+    ("hover", "group-hover"),
+    ("dragging", "group-data-dragging"),
+    ("focus", "group-focus-visible"),
+];
+
+/// A range slider from 0 to 100 by 5 on a track 200 long (thumbs `Low` and
+/// `High`, 10 square), each thumb drawing a mark per state its `group-*:`
+/// class colors (`start-hover`, `end-dragging`, ...); the app's value.
+#[component]
+fn Bubbles(props: BubblesProps) -> impl IntoElement {
+    let value = signal(SliderValue::Range(20.0, 60.0));
+    let drawn = DRAWN.lock().unwrap()[props.run as usize].clone();
+    let el = slider()
+        .step(5.0)
+        .accessibility_label("High")
+        .start_accessibility_label("Low")
+        .track_style(|s| s.w(px(200.0)).h(px(20.0)).justify_center())
+        .indicator_style(|s| s.h(px(4.0)))
+        .thumb_style(|s| s.size(px(10.0)))
+        .value(move || value.get())
+        .on_change(move |v: &SliderValue| value.set(*v))
+        .render_thumb(move |thumb: &SliderThumbContext| {
+            drawn.fetch_add(1, Ordering::Relaxed);
+            let name = if thumb.start { "start" } else { "end" };
+            let mut content = view();
+            for (state, variant) in STATES {
+                content = content.child(
+                    view()
+                        .test_id(&format!("{name}-{state}"))
+                        .size(px(2.0))
+                        .app_class(SharedString::from(format!("{variant}:bg-[#0000ff]"))),
+                );
+            }
+            content
+        });
+    view()
+        .child(view().p(px(20.0)).child(el))
+        .child(text(move || format!("Value {}", show(value.get()))))
+}
+
+/// [`Bubbles`] on a headless surface of `os`, and how many times it drew
+/// its thumbs' content.
+fn start_bubbles(os: Os) -> (Headless, Arc<AtomicUsize>) {
+    let count = Arc::new(AtomicUsize::new(0));
+    let run = {
+        let mut drawn = DRAWN.lock().unwrap();
+        drawn.push(count.clone());
+        drawn.len() as u32 - 1
+    };
+    let mut config = EngineConfig {
+        viewport: Size::new(px(400.0), px(844.0)),
+        ..EngineConfig::new(nsh_testing::windowed_root_with::<Bubbles>(move || {
+            BubblesProps { run }
+        }))
+    };
+    config.environment.os = os;
+    let mut app = Headless::start(config).expect("the engine starts");
+    app.wait_for("text:Value 20-60").unwrap();
+    (app, count)
+}
+
+/// The thumbs' marks their states color now, as `start-hover`, ...
+fn marked(app: &mut Headless) -> Vec<String> {
+    app.wait(Duration::from_millis(50)).unwrap();
+    let mut on = Vec::new();
+    for thumb in ["start", "end"] {
+        for (state, _) in STATES {
+            let id = format!("{thumb}-{state}");
+            let style = app.screen().view_style(&format!("id:{id}")).unwrap();
+            if style.and_then(|s| s.background_color).is_some() {
+                on.push(id);
+            }
+        }
+    }
+    on
+}
+
+#[test]
+fn a_thumbs_content_follows_the_pointer_over_it_and_its_drag() {
+    let (mut app, drawn) = start_bubbles(Os::MacOs);
+    assert!(marked(&mut app).is_empty());
+    // The mouse over the start thumb: its content alone.
+    app.hover("label:Low").unwrap();
+    assert_eq!(marked(&mut app), ["start-hover"]);
+    app.hover("text:Value 20-60").unwrap();
+    assert!(marked(&mut app).is_empty());
+    // Pressed on the end thumb: dragging from the press, before it moves.
+    app.drag_and_hold(
+        "label:High",
+        point(px(0.0), px(0.0)),
+        DragOptions::default(),
+    )
+    .unwrap();
+    assert!(marked(&mut app).contains(&"end-dragging".to_owned()));
+    assert!(!marked(&mut app).contains(&"start-dragging".to_owned()));
+    app.drop_held().unwrap();
+    assert!(!marked(&mut app).iter().any(|m| m.ends_with("-dragging")));
+    // Drawn once per thumb: the states are classes, nothing drawn again.
+    app.drag(
+        "label:High",
+        point(px(20.0), px(0.0)),
+        DragOptions::default(),
+    )
+    .unwrap();
+    app.wait_for("text:Value 20-70").unwrap();
+    assert_eq!(drawn.load(Ordering::Relaxed), 2);
+}
+
+/// A finger's `phase` on the track, `x` along it. A selector's drag goes to
+/// the view it names and the views around it, so naming the slider never
+/// reaches the track inside it: the track is the view around the
+/// indicator around the thumbs.
+fn touch_track(app: &mut Headless, phase: TouchPhase, x: f32) {
+    let nodes = app.screen().layout_nodes();
+    let parent = |id: NodeId| {
+        nodes
+            .iter()
+            .find(|n| n.id == id)
+            .map(|n| n.parent)
+            .expect("on screen")
+    };
+    let thumb = app.screen().id("label:High").unwrap();
+    let track = parent(parent(thumb));
+    let bounds = nodes
+        .iter()
+        .find(|n| n.id == track)
+        .expect("on screen")
+        .bounds;
+    // The view found is the track [`Bubbles`] makes 200 long: the slider's
+    // parts were laid out otherwise.
+    assert_eq!(bounds.size.width, px(200.0), "the track");
+    let origin = bounds.origin;
+    let location = point(px(x), px(10.0));
+    let payload = EventPayload::Touch(Box::new(TouchEvent {
+        phase,
+        timestamp: 0.0,
+        modifiers: Default::default(),
+        activated: None,
+        points: vec![TouchPoint {
+            id: 1,
+            target: track,
+            path: if phase == TouchPhase::Start {
+                vec![track]
+            } else {
+                Vec::new()
+            },
+            page: origin + location,
+            location,
+            changed: true,
+            pointer_type: PointerType::Touch,
+            pressure: 0.5,
+            tilt_x: 0.0,
+            tilt_y: 0.0,
+            coalesced: Vec::new(),
+            eraser: false,
+            barrel: false,
+        }],
+    }));
+    app.engine()
+        .control()
+        .dispatch_event(ROOT_ID, EventKind::Touch, payload);
+}
+
+#[test]
+fn a_press_on_the_track_marks_the_thumb_it_moves() {
+    let (mut app, _) = start_bubbles(Os::Ios);
+    // At 75% of the track: past the middle of the two thumbs (40%), so the
+    // end's thumb jumps there, dragging until the finger lifts.
+    touch_track(&mut app, TouchPhase::Start, 150.0);
+    app.wait_for("text:Value 20-75").unwrap();
+    assert_eq!(marked(&mut app), ["end-dragging"]);
+    touch_track(&mut app, TouchPhase::End, 150.0);
+    assert!(marked(&mut app).is_empty());
+}
+
+#[test]
+fn a_finger_on_a_thumb_marks_it_before_it_moves() {
+    let (mut app, _) = start_bubbles(Os::Ios);
+    app.drag_and_hold("label:Low", point(px(0.0), px(0.0)), DragOptions::default())
+        .unwrap();
+    assert_eq!(marked(&mut app), ["start-dragging"]);
+    assert!(app.shows("Value 20-60"));
+    app.drop_held().unwrap();
+    assert!(marked(&mut app).is_empty());
+}
+
+#[test]
+fn a_ranges_content_shows_the_focus_of_the_thumb_the_keyboard_is_on() {
+    let (mut app, _) = start_bubbles(Os::MacOs);
+    // Tab reaches the start thumb, then the end's: one shows the focus.
+    app.press_key("tab").unwrap();
+    assert_eq!(marked(&mut app), ["start-focus"]);
+    app.press_key("tab").unwrap();
+    assert_eq!(marked(&mut app), ["end-focus"]);
+    app.press_key("right").unwrap();
+    app.wait_for("text:Value 20-65").unwrap();
+    assert_eq!(marked(&mut app), ["end-focus"]);
 }

@@ -851,7 +851,7 @@ pub(crate) fn cargo_as(cmd: &mut Command, doing: [&str; 2], what: &str) -> anyho
         let line = strip_ansi(line);
         let line = line.trim_start();
         if let Some(rest) = line.strip_prefix("Compiling ") {
-            step.status(rest.split(' ').next().unwrap_or(rest));
+            step.status(compiling(rest));
         }
         warnings += generated_warnings(line);
     })
@@ -866,6 +866,19 @@ pub(crate) fn cargo_as(cmd: &mut Command, doing: [&str; 2], what: &str) -> anyho
     };
     step.done_with(format!("{done} {what}"), note.as_deref());
     Ok(())
+}
+
+/// The crate cargo's "Compiling <crate> v0.1.0 (…)" names, for the
+/// step's status: none for the crates nsh generates for a Rust app
+/// (`nsh-app-charts-ef5aa537-describe`), long names that mean nothing to
+/// the app's author.
+fn compiling(rest: &str) -> &str {
+    let name = rest.split(' ').next().unwrap_or(rest);
+    if name.starts_with("nsh-app-") {
+        ""
+    } else {
+        name
+    }
 }
 
 /// The count in cargo's "warning: `crate` (lib) generated 2 warnings".
@@ -935,6 +948,16 @@ pub(crate) fn quiet(cmd: &mut Command) -> std::io::Result<(std::process::Child, 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_status_names_the_crate_cargo_compiles_but_not_generated_ones() {
+        assert_eq!(compiling("serde v1.0.228"), "serde");
+        assert_eq!(compiling("charts v0.1.0 (/app/charts)"), "charts");
+        assert_eq!(
+            compiling("nsh-app-charts-ef5aa537-describe v0.0.0 (/app/.nsh/rust)"),
+            ""
+        );
+    }
 
     #[test]
     fn test_failures_carry_the_compilers_diagnostics() {

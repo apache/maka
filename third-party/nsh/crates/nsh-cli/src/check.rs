@@ -116,6 +116,20 @@ pub(crate) fn check(entry: &Path, tsc: Option<&Path>, args: &[String]) -> anyhow
     Ok(())
 }
 
+/// Warns when the app's `locales/` directory has missing keys or mismatched
+/// `%{name}` placeholders across locales, or cannot be read.
+pub(crate) fn warn_locales(entry: &Path) {
+    let app = nsh_bundler::app_dir::app_dir_of(entry);
+    match nsh_i18n::read_translations(&app) {
+        Ok(translations) => {
+            for warning in nsh_bundler::translation_warnings(&translations) {
+                crate::ui::warn(warning);
+            }
+        }
+        Err(err) => crate::ui::warn(err),
+    }
+}
+
 /// Checks the crates of `app` with `cargo check --all-targets` (their
 /// tests and examples too), each in its own directory, so it builds in the
 /// workspace and target directory `cargo` there uses; fails on the first

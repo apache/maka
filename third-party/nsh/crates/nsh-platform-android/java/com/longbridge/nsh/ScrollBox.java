@@ -719,6 +719,24 @@ final class ScrollBox extends FrameLayout implements Node {
                 // An inner scroll view claimed this touch on its down: it decides, and ending the touch
                 // here would cancel it under the finger (a horizontal pager in a vertical list).
                 if (childClaimed) break;
+                // A pan of a view the touch went to takes a drag this view has no content to move for (a card
+                // stack in a vertical list): it starts on this move, so ending the touch here would cancel it
+                // before it could. It goes before the scroll views around, as one that takes no user input still
+                // reports it can scroll (a host's paging container with swiping turned off), but not before this
+                // view's pull to refresh or a pan around it (a sheet), which keep the drag as they do without it.
+                Box inner = null;
+                if (!scrolls(dx, dy) && scroller instanceof ViewGroup) {
+                    inner = innerPan((ViewGroup) scroller, e.getDownTime(), dx, dy);
+                }
+                if (inner != null && !aroundPans(dx, dy)) {
+                    // The platform scroll view would intercept this very move when it is also past the slop along
+                    // its axis (a quick diagonal drag), before the pan sees it; the flag resets on the next down.
+                    // A pan whose `panActivation` may still fail leaves it able to scroll the rest of the drag.
+                    if (!inner.panGated()) {
+                        ((ViewGroup) scroller).requestDisallowInterceptTouchEvent(true);
+                    }
+                    break;
+                }
                 if (!scrolls(dx, dy) && aroundTakes(dx, dy)) {
                     parent.requestDisallowInterceptTouchEvent(false);
                     yielded = true;
@@ -746,14 +764,68 @@ final class ScrollBox extends FrameLayout implements Node {
      * its edge (the stretch from Android 12, the glow before) as a scroll view at its end does.
      */
     private boolean aroundTakes(float dx, float dy) {
-        if (dy > 0 && Math.abs(dy) > Math.abs(dx) && canPull()) return true;
+        if (aroundPans(dx, dy)) return true;
         boolean across = Math.abs(dx) > Math.abs(dy);
         for (ViewParent p = getParent(); p instanceof View; p = p.getParent()) {
             View v = (View) p;
-            if (v instanceof Box && ((Box) v).takesPan(dx, dy)) return true;
             if (across ? v.canScrollHorizontally(dx < 0 ? 1 : -1) : v.canScrollVertically(dy < 0 ? 1 : -1)) return true;
         }
         return false;
+    }
+
+    /**
+     * Whether this view's pull to refresh or a pan of a view around it takes a drag by ({@code dx}, {@code dy}) px
+     * that this view has no content to move for.
+     *
+     * @param dx the drag along x, px
+     * @param dy the drag along y, px
+     * @return whether the pull or a pan around takes the drag
+     */
+    private boolean aroundPans(float dx, float dy) {
+        if (dy > 0 && Math.abs(dy) > Math.abs(dx) && canPull()) {
+            return true;
+        }
+        for (ViewParent p = getParent(); p instanceof View; p = p.getParent()) {
+            if (p instanceof Box && ((Box) p).takesPan(dx, dy)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * The view inside {@code group} on the path of the touch that went down at {@code downTime} whose pan takes a
+     * drag by ({@code dx}, {@code dy}) px. Only the views that took the touch's DOWN count, so `pointerEvents`, hit
+     * slop, overflow, clip paths and views drawn over the pan decide as they did for the DOWN.
+     *
+     * @param group the view to search inside
+     * @param downTime the down time of the touch
+     * @param dx the drag along x, px
+     * @param dy the drag along y, px
+     * @return that view, or null
+     */
+    private static Box innerPan(ViewGroup group, long downTime, float dx, float dy) {
+        for (int i = group.getChildCount() - 1; i >= 0; i--) {
+            View c = group.getChildAt(i);
+            if (c instanceof Box) {
+                Box b = (Box) c;
+                if (!b.took(downTime)) {
+                    continue;
+                }
+                if (b.takesPanInside(dx, dy)) {
+                    return b;
+                }
+            } else if (c instanceof ScrollBox && !((ScrollBox) c).took(downTime)) {
+                continue;
+            }
+            if (c instanceof ViewGroup) {
+                Box b = innerPan((ViewGroup) c, downTime, dx, dy);
+                if (b != null) {
+                    return b;
+                }
+            }
+        }
+        return null;
     }
 
     /** Before the scroll view sees {@code e}: whether it ends the touch. */

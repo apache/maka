@@ -96,8 +96,20 @@ fn since_process_start() -> Option<f64> {
 
 use nsh_core::time::Instant;
 
-/// Samples kept for the distributions (frames, commits).
+/// Samples kept for the frame distributions.
 const CAPACITY: usize = 120;
+
+/// The span the commit distributions ([`PerfSnapshot::js`],
+/// [`PerfSnapshot::layout`], [`PerfSnapshot::items`]) cover: the commits
+/// of the last few seconds, however often the app commits. A count of
+/// records would span 2 s of a screen committing 60 times a second and a
+/// minute of one committing twice, which then reads mostly the screens
+/// before it.
+const COMMIT_WINDOW: Duration = Duration::from_secs(5);
+
+/// The most commits kept: past 200 commits a second the window is the
+/// last [`COMMIT_CAPACITY`] commits instead.
+const COMMIT_CAPACITY: usize = 1024;
 
 /// The span [`PerfSnapshot::gc`] covers: long enough to hold the idle
 /// collections the engine makes at most every 5 s while it has work.
@@ -229,11 +241,12 @@ pub struct PerfSnapshot {
     pub dropped: f32,
     /// Commits per second over the last second.
     pub commits: f32,
-    /// The app's code per commit.
+    /// The app's code per commit, over the commits of the last
+    /// [`COMMIT_WINDOW`] (none while the app made none).
     pub js: Stat,
-    /// The core's work per commit.
+    /// The core's work per commit, over the same commits.
     pub layout: Stat,
-    /// Mean mount items per commit.
+    /// Mean mount items per commit, over the same commits.
     pub items: f32,
     /// How long batches waited between the engine thread handing them over
     /// and the main thread applying them.
@@ -305,7 +318,7 @@ impl Default for PerfMonitor {
                 refresh: None,
                 last_vsync: None,
                 ticks: VecDeque::with_capacity(CAPACITY),
-                commits: VecDeque::with_capacity(CAPACITY),
+                commits: VecDeque::new(),
                 commit_warmup: WARMUP,
                 latencies: VecDeque::with_capacity(CAPACITY),
                 busy: VecDeque::new(),
@@ -387,12 +400,22 @@ impl PerfMonitor {
 
     /// Engine thread: a wake-up that committed.
     pub fn record_commit(&self, timing: CommitTiming) {
+        self.record_commit_at(Instant::now(), timing);
+    }
+
+    fn record_commit_at(&self, at: Instant, timing: CommitTiming) {
         let mut inner = self.lock();
         if inner.commit_warmup > 0 {
             inner.commit_warmup -= 1;
             return;
         }
-        push(&mut inner.commits, (Instant::now(), timing));
+        let commits = &mut inner.commits;
+        while commits.front().is_some_and(|&(then, _)| {
+            commits.len() >= COMMIT_CAPACITY || at.duration_since(then) > COMMIT_WINDOW
+        }) {
+            commits.pop_front();
+        }
+        commits.push_back((at, timing));
     }
 
     /// Engine thread: a wake-up was busy for `busy`.
@@ -482,16 +505,16 @@ impl PerfMonitor {
             0.0
         };
         let commits = inner.commits.iter().filter(|&&(at, _)| recent(at)).count() as f32;
-        let items = match inner.commits.len() {
+        // The commits of the window: none once the app went quiet for it.
+        let windowed: Vec<CommitTiming> = inner
+            .commits
+            .iter()
+            .filter(|&&(at, _)| now.duration_since(at) <= COMMIT_WINDOW)
+            .map(|&(_, c)| c)
+            .collect();
+        let items = match windowed.len() {
             0 => 0.0,
-            n => {
-                inner
-                    .commits
-                    .iter()
-                    .map(|(_, c)| c.items as f32)
-                    .sum::<f32>()
-                    / n as f32
-            }
+            n => windowed.iter().map(|c| c.items as f32).sum::<f32>() / n as f32,
         };
         let busy: Duration = inner
             .busy
@@ -514,8 +537,8 @@ impl PerfMonitor {
             frame,
             dropped,
             commits,
-            js: Stat::of(inner.commits.iter().map(|(_, c)| c.js)),
-            layout: Stat::of(inner.commits.iter().map(|(_, c)| c.layout)),
+            js: Stat::of(windowed.iter().map(|c| c.js)),
+            layout: Stat::of(windowed.iter().map(|c| c.layout)),
             items,
             latency: Stat::of(inner.latencies.iter().copied()),
             engine_busy: busy.as_secs_f32() / RATE_WINDOW.as_secs_f32() * 100.0,
@@ -794,6 +817,58 @@ mod tests {
         assert_eq!(snapshot.js.mean, ms(1));
         assert_eq!(snapshot.layout.p95, ms(2));
         assert_eq!(snapshot.items, 4.0);
+    }
+
+    /// The commit readings cover the last few seconds, not a count of
+    /// records: a screen committing rarely reads its own commits, not the
+    /// busy screen before it.
+    #[test]
+    fn commits_over_a_time_window() {
+        let monitor = PerfMonitor::new();
+        let start = Instant::now();
+        let commit = |js| CommitTiming {
+            js: ms(js),
+            layout: ms(1),
+            ops: 1,
+            items: 2,
+        };
+        for _ in 0..WARMUP {
+            monitor.record_commit_at(start, commit(0));
+        }
+        // A busy screen: 60 slow commits a second for 2 s.
+        let mut at = start;
+        for _ in 0..120 {
+            at += Duration::from_micros(16_667);
+            monitor.record_commit_at(at, commit(12));
+        }
+        // Then a quiet one: one quick commit a second.
+        for _ in 0..8 {
+            at += Duration::from_secs(1);
+            monitor.record_commit_at(at, commit(2));
+        }
+        let snapshot = monitor.snapshot_at(at);
+        assert_eq!(snapshot.js.max, ms(2));
+        assert_eq!(snapshot.js.p95, ms(2));
+        assert_eq!(snapshot.items, 2.0);
+        // Only the window's commits are kept.
+        assert!(monitor.lock().commits.len() <= 6);
+        // Five quiet seconds later nothing is left to read.
+        let snapshot = monitor.snapshot_at(at + COMMIT_WINDOW + ms(1));
+        assert_eq!(snapshot.js, Stat::default());
+        assert_eq!(snapshot.items, 0.0);
+    }
+
+    #[test]
+    fn commits_kept_are_bounded() {
+        let monitor = PerfMonitor::new();
+        let start = Instant::now();
+        for i in 0..(WARMUP + 3000) {
+            monitor.record_commit_at(
+                start + Duration::from_micros(i.into()),
+                CommitTiming::default(),
+            );
+        }
+        assert_eq!(monitor.lock().commits.len(), COMMIT_CAPACITY);
     }
 
     /// The collections of the last 10 seconds: how many, and the longest.

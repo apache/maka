@@ -81,9 +81,8 @@ final class Mounter {
     final int[] dialogColors = new int[10];
     /**
      * The language the app's text shows in ({@code encode.rs} {@code Command::TextLocale}), which
-     * the state words services read ({@link A11y}) and the date and time pickers' values and
-     * dialogs ({@link DateTimePickerComponent}) follow; null until the core names one (English state
-     * words, the system's language for the pickers).
+     * the state words services read ({@link A11y}) follow; null until the core names one (English
+     * state words).
      */
     java.util.Locale textLocale;
     /** The alerts shown and not answered yet, by dialog id: what {@link SystemUi#closeDialog} takes back. */
@@ -313,8 +312,8 @@ final class Mounter {
         tapEndsSelection = false;
     }
 
-    /** The outermost selectable view {@code text} is in (an area inside another is part of it), or null. */
-    SelectableView selectableViewOf(TextBox text) {
+    /** The outermost selectable view {@code text} is or is in (an area inside another is part of it), or null. */
+    SelectableView selectableViewOf(View text) {
         if (selectableViews.size() == 0) return null;
         SelectableView outer = null;
         for (Object v = text; v instanceof View; v = ((View) v).getParent()) {
@@ -375,9 +374,6 @@ final class Mounter {
         this.density = host.getResources().getDisplayMetrics().density;
         this.images = images;
         components.put(TabBarComponent.NAME, c -> new TabBarComponent(context, c, this::night));
-        components.put(SwitchComponent.NAME, c -> new SwitchComponent(context, c, this::night));
-        components.put(DateTimePickerComponent.NAME,
-                c -> new DateTimePickerComponent(context, c, this::night, () -> textLocale));
         components.put(MenuButtonComponent.NAME, c -> new MenuButtonComponent(context, c, this::night));
         components.put(ContextMenuComponent.NAME, c -> new ContextMenuComponent(context, c, this::night));
         images.redirects = (base, location) -> Native.mediaRedirect(handle(), base, location);
@@ -407,8 +403,8 @@ final class Mounter {
      * none) may navigate to {@code url} (the app's capabilities). The origin
      * is compared in Rust.
      */
-    boolean allowsWebview(String url, String origin) {
-        return Native.allowsWebview(handle(), url, origin);
+    boolean allowsWebview(String url, String origin, String hosts) {
+        return Native.allowsWebview(handle(), url, origin, hosts);
     }
 
     /** Whether the running app's web pages may capture {@code kind} (its {@code webview.media}). */
@@ -525,6 +521,9 @@ final class Mounter {
                     if (v instanceof ImageBox && presses && ((ImageBox) v).press == null) {
                         ((ImageBox) v).press = new Pressable(v, this, id);
                     }
+                    if (v instanceof InputBox && presses && ((InputBox) v).press == null) {
+                        ((InputBox) v).press = new Pressable(v, this, id, false, true);
+                    }
                     if (v instanceof TextBox || v instanceof ImageBox) {
                         v.setClickable(presses || (v instanceof TextBox && ((TextBox) v).hasLinks()));
                     }
@@ -592,12 +591,6 @@ final class Mounter {
                         View v = views.valueAt(i);
                         if (v instanceof ComponentBox && ((ComponentBox) v).component instanceof TabBarComponent) {
                             ((TabBarComponent) ((ComponentBox) v).component).appearanceChanged();
-                        }
-                        if (v instanceof ComponentBox && ((ComponentBox) v).component instanceof SwitchComponent) {
-                            ((SwitchComponent) ((ComponentBox) v).component).appearanceChanged();
-                        }
-                        if (v instanceof ComponentBox && ((ComponentBox) v).component instanceof DateTimePickerComponent) {
-                            ((DateTimePickerComponent) ((ComponentBox) v).component).appearanceChanged();
                         }
                         if (v instanceof StackBox.ScreenBox) ((StackBox.ScreenBox) v).appearanceChanged();
                     }
@@ -1219,6 +1212,7 @@ final class Mounter {
         keyParents.delete(id);
         slops.remove(id);
         a11y.remove(id);
+        held.remove(id);
         if (accessibilityClicked == v) accessibilityClicked = null;
     }
 
@@ -2009,7 +2003,8 @@ final class Mounter {
     void outputs(float[] out) {
         if (out == null || out.length == 0) return;
         for (int i = 1; i + 2 < out.length; i += 3) {
-            View v = views.get(Float.floatToRawIntBits(out[i]));
+            int id = Float.floatToRawIntBits(out[i]);
+            View v = views.get(id);
             if (v == null) continue;
             float value = out[i + 2];
             int prop = (int) out[i + 1];
@@ -2024,57 +2019,141 @@ final class Mounter {
                 if (v instanceof CanvasBox) ((CanvasBox) v).setSlot(prop - CANVAS_ARG, value);
                 continue;
             }
-            switch (prop) {
-                case 0: v.setAlpha(Math.max(0, Math.min(1, value))); break;
-                case 1: v.setTranslationX((mirror(v) == 2 ? -1 : 1) * value * density); break;
-                case 2: v.setTranslationY(value * density); break;
-                case 3: v.setScaleX(mirror(v) != 0 ? -value : value); v.setScaleY(value); break;
-                case 4: v.setScaleX(mirror(v) != 0 ? -value : value); break;
-                case 5: v.setScaleY(value); break;
-                case 6: v.setRotation((mirror(v) == 2 ? -1 : 1) * value); break;
-                case 8:
-                case 9: {
-                    if ((int) out[i + 1] == 8) v.setRotationX(value);
-                    else v.setRotationY((mirror(v) == 2 ? -1 : 1) * value);
-                    Decor decor = decor(v);
-                    if (decor != null) decor.applyBackface(v);
-                    break;
+            if (prop <= LAST_LOOK) {
+                Held h = held.get(id);
+                if (!inSight(v)) {
+                    if (h == null) held.put(id, h = new Held());
+                    h.put(prop, value);
+                    listenForHeld();
+                    continue;
                 }
-                case 10: setPerspective(v, value); break;
-                case 7: {
-                    Decor decor = decor(v);
-                    int color = Float.floatToRawIntBits(value);
-                    if (decor != null && decor.fill != color) {
-                        decor.fill = color;
-                        v.invalidate();
-                    }
-                    break;
-                }
-                case 11: {
-                    Decor decor = decor(v);
-                    int color = Float.floatToRawIntBits(value);
-                    if (decor != null && (decor.borderColors[0] != color || decor.borderColors[1] != color
-                            || decor.borderColors[2] != color || decor.borderColors[3] != color)) {
-                        java.util.Arrays.fill(decor.borderColors, color);
-                        v.invalidate();
-                    }
-                    break;
-                }
-                case 12:
-                    if (v instanceof TextBox) ((TextBox) v).setColor(true, Float.floatToRawIntBits(value));
-                    break;
-                case 15: {
-                    // A sticky cell sticks further in: its scroll view pins it again.
-                    int id = Float.floatToRawIntBits(out[i]);
-                    Float old = stickyOffsets.put(id, value * density);
-                    ScrollBox s = stickyHosts.get(id);
-                    if (s != null && (old == null || old != value * density)) s.pinSticky();
-                    break;
-                }
-                default: break;
+                if (h != null) h.mask &= ~(1 << prop);
+            }
+            animated(v, id, prop, value);
+        }
+        if (held.size() > 0) showHeld();
+        if (out[0] != 0) host.requestFrames();
+    }
+
+
+    /** The last property code of a view's look (alpha through a text's color, `animation.rs`). */
+    private static final int LAST_LOOK = 12;
+
+    /** A view's latest animated look properties while out of sight. */
+    private static final class Held {
+        /** Which properties hold a value (bit per code). */
+        int mask;
+        final float[] values = new float[LAST_LOOK + 1];
+
+        void put(int prop, float value) {
+            // A uniform scale (3) sets both axes: drop the single axes held before it.
+            if (prop == 3) mask &= ~((1 << 4) | (1 << 5));
+            values[prop] = value;
+            mask |= 1 << prop;
+        }
+    }
+
+    /**
+     * The latest animated look of the views out of sight, set once they come
+     * into sight. A view's look changing out of sight (a loop on a card
+     * scrolled away) would make the window draw a frame for nothing on every
+     * tick: HWUI redraws the window for any view that changes, seen or not.
+     */
+    private final SparseArray<Held> held = new SparseArray<>();
+    private final android.graphics.Rect sight = new android.graphics.Rect();
+    /** Sets the held values of the views come into sight before a frame draws (a scroll, a pop). */
+    private android.view.ViewTreeObserver.OnPreDrawListener heldListener;
+
+    /**
+     * Whether `v` may show: its parent is shown and partly on screen. The
+     * parent, not the view: a view moved out by its own transform would
+     * otherwise never move back in.
+     */
+    private boolean inSight(View v) {
+        if (!(v.getParent() instanceof View)) return true;
+        View parent = (View) v.getParent();
+        return parent.isShown() && parent.getGlobalVisibleRect(sight);
+    }
+
+    private void listenForHeld() {
+        if (heldListener != null) return;
+        heldListener = () -> {
+            showHeld();
+            return true;
+        };
+        host.getViewTreeObserver().addOnPreDrawListener(heldListener);
+    }
+
+    /** Sets the held values of the views now in sight. */
+    private void showHeld() {
+        for (int i = held.size() - 1; i >= 0; i--) {
+            Held h = held.valueAt(i);
+            int id = held.keyAt(i);
+            View v = views.get(id);
+            if (h.mask != 0 && v != null && !inSight(v)) continue;
+            held.removeAt(i);
+            if (v == null) continue;
+            for (int prop = 0; prop <= LAST_LOOK; prop++) {
+                if ((h.mask & (1 << prop)) != 0) animated(v, id, prop, h.values[prop]);
             }
         }
-        if (out[0] != 0) host.requestFrames();
+        if (held.size() == 0 && heldListener != null) {
+            android.view.ViewTreeObserver observer = host.getViewTreeObserver();
+            if (observer.isAlive()) observer.removeOnPreDrawListener(heldListener);
+            heldListener = null;
+        }
+    }
+
+    /** Sets animated property `prop` of view `id`. */
+    private void animated(View v, int id, int prop, float value) {
+        switch (prop) {
+            case 0: v.setAlpha(Math.max(0, Math.min(1, value))); break;
+            case 1: v.setTranslationX((mirror(v) == 2 ? -1 : 1) * value * density); break;
+            case 2: v.setTranslationY(value * density); break;
+            case 3: v.setScaleX(mirror(v) != 0 ? -value : value); v.setScaleY(value); break;
+            case 4: v.setScaleX(mirror(v) != 0 ? -value : value); break;
+            case 5: v.setScaleY(value); break;
+            case 6: v.setRotation((mirror(v) == 2 ? -1 : 1) * value); break;
+            case 8:
+            case 9: {
+                if (prop == 8) v.setRotationX(value);
+                else v.setRotationY((mirror(v) == 2 ? -1 : 1) * value);
+                Decor decor = decor(v);
+                if (decor != null) decor.applyBackface(v);
+                break;
+            }
+            case 10: setPerspective(v, value); break;
+            case 7: {
+                Decor decor = decor(v);
+                int color = Float.floatToRawIntBits(value);
+                if (decor != null && decor.fill != color) {
+                    decor.fill = color;
+                    v.invalidate();
+                }
+                break;
+            }
+            case 11: {
+                Decor decor = decor(v);
+                int color = Float.floatToRawIntBits(value);
+                if (decor != null && (decor.borderColors[0] != color || decor.borderColors[1] != color
+                        || decor.borderColors[2] != color || decor.borderColors[3] != color)) {
+                    java.util.Arrays.fill(decor.borderColors, color);
+                    v.invalidate();
+                }
+                break;
+            }
+            case 12:
+                if (v instanceof TextBox) ((TextBox) v).setColor(true, Float.floatToRawIntBits(value));
+                break;
+            case 15: {
+                // A sticky cell sticks further in: its scroll view pins it again.
+                Float old = stickyOffsets.put(id, value * density);
+                ScrollBox s = stickyHosts.get(id);
+                if (s != null && (old == null || old != value * density)) s.pinSticky();
+                break;
+            }
+            default: break;
+        }
     }
 
     // --- Navigation ----------------------------------------------------------
@@ -2341,19 +2420,13 @@ final class Mounter {
     /**
      * The activity goes, to be made again for a configuration change ({@link NshView#leaveActivity}): what the app
      * shows in windows of the activity's own goes off it now, or the activity would leak with them. Dialogs and
-     * alerts come back in {@link #enterWindows}; menus and date pickers close, as when the user leaves them.
+     * alerts come back in {@link #enterWindows}; menus close, as when the user leaves them.
      */
     void leaveWindows() {
         moving = true;
         movedKeyboard = fieldWithKeyboard();
         movedFocus = host.findFocus();
         SystemMenus.dismissOf(context);
-        for (int i = 0; i < views.size(); i++) {
-            View v = views.valueAt(i);
-            if (v instanceof ComponentBox && ((ComponentBox) v).component instanceof DateTimePickerComponent) {
-                ((DateTimePickerComponent) ((ComponentBox) v).component).closeDialog();
-            }
-        }
         java.util.ArrayList<java.util.function.Supplier<Runnable>> alerts = new java.util.ArrayList<>();
         for (int i = 0; i < dialogMoves.size(); i++) alerts.add(dialogMoves.valueAt(i));
         for (java.util.function.Supplier<Runnable> alert : alerts) movedDialogs.add(alert.get());
@@ -2934,6 +3007,12 @@ final class Mounter {
                 }
                 break;
             }
+            case 69: {
+                // ref.selectAll(): every text of the selectable view v is or is in.
+                SelectableView area = v != null ? selectableViewOf(v) : null;
+                if (area != null) area.selectAll();
+                break;
+            }
             case 21: {
                 String name = string(objects, b.getInt());
                 String json = string(objects, b.getInt());
@@ -3042,36 +3121,6 @@ final class Mounter {
                 audio().command(b, objects);
                 break;
             }
-            case 58: {
-                // `encode.rs` `Command::Share`: the request, the title and the
-                // text (each after whether it is there), then the files.
-                Share.Request request = new Share.Request();
-                request.id = b.getInt();
-                boolean hasTitle = b.getInt() != 0;
-                String title = (String) objects[b.getInt()];
-                boolean hasText = b.getInt() != 0;
-                String text = (String) objects[b.getInt()];
-                request.title = hasTitle ? title : null;
-                request.text = hasText ? text : null;
-                request.files = new String[b.getInt()];
-                for (int i = 0; i < request.files.length; i++) request.files[i] = (String) objects[b.getInt()];
-                request.mounter = this;
-                Share.show(context, request);
-                break;
-            }
-            case 59: {
-                // `encode.rs` `Command::AuthSession`: the request, the page, the callback scheme, ephemeral.
-                int request = b.getInt();
-                String url = (String) objects[b.getInt()];
-                String scheme = (String) objects[b.getInt()];
-                boolean ephemeral = b.getInt() != 0;
-                AuthSession.open(context, this, request, url, scheme, ephemeral);
-                break;
-            }
-            case 61:
-                // `encode.rs` `Command::CloseAuthSession`: the request the app closed.
-                AuthSession.close(b.getInt());
-                break;
             case 26: {
                 int request = b.getInt();
                 String url = (String) objects[b.getInt()];
@@ -3184,13 +3233,6 @@ final class Mounter {
             }
             case 64: {
                 textLocale = java.util.Locale.forLanguageTag((String) objects[b.getInt()]);
-                // Date and time pickers show their values in it.
-                for (int i = 0; i < views.size(); i++) {
-                    View view = views.valueAt(i);
-                    if (view instanceof ComponentBox && ((ComponentBox) view).component instanceof DateTimePickerComponent) {
-                        ((DateTimePickerComponent) ((ComponentBox) view).component).textLocaleChanged();
-                    }
-                }
                 // Services keep copies of the nodes: those with state words read them again.
                 android.view.accessibility.AccessibilityManager manager = host.accessibility();
                 // Without a running service there is no copy to refresh.
@@ -3249,9 +3291,10 @@ final class Mounter {
                 String injected = optString(b, objects), before = optString(b, objects), ua = optString(b, objects);
                 boolean scroll = b.getInt() != 0, js = b.getInt() != 0, incognito = b.getInt() != 0;
                 boolean zoomable = b.getInt() != 0;
-                String allowOrigin = optString(b, objects);
+                String allowOrigin = optString(b, objects), allowNavigation = optString(b, objects);
                 if (v instanceof WebBox) {
-                    ((WebBox) v).configure(source, injected, before, ua, scroll, js, incognito, zoomable, allowOrigin);
+                    ((WebBox) v).configure(source, injected, before, ua, scroll, js, incognito, zoomable, allowOrigin,
+                            allowNavigation);
                 }
                 break;
             }

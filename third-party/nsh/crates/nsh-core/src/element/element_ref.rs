@@ -331,6 +331,14 @@ impl ElementRef {
         self.send(Command::ClearSelection);
     }
 
+    /// Selects all the text of the selectable view the element is or is
+    /// inside (TS: `ref.selectAll()`), as the selection menu's Select All
+    /// does: its texts are highlighted, phones show the handles and the
+    /// edit menu, and the selectable view hears `on_text_selection_change`.
+    pub fn select_all(&self) {
+        self.send(Command::SelectAll);
+    }
+
     /// Moves the screen reader's focus to the element (TS:
     /// `setAccessibilityFocus(ref)`).
     pub fn set_accessibility_focus(&self) {

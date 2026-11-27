@@ -11,9 +11,11 @@
 // lifecycle (`onOpen`, `onClose`) and Escape, back or the backdrop heard
 // (`onCancel`), the clear button of a select's own value
 // (`cleanable`, `onChange(null)`), and the search field's name for screen
-// readers (`searchAccessibilityLabel`) and its test id (`searchTestID`), and
-// the states the app gives its trigger element kept beside the select's.
-// Its script checks each.
+// readers (`searchAccessibilityLabel`) and its test id (`searchTestID`), the
+// search's query the app owns (`query`, `onQueryChange`: its rows mark the
+// match) or the field's own from `defaultQuery`, and the states the app
+// gives its trigger element kept beside the select's. Its script checks
+// each.
 import { Text, View, signal } from "nsh";
 import { Select } from "nsh/base";
 
@@ -27,6 +29,14 @@ const FOOD = [
 
 const titleOf = (value: string | null) => FOOD.find((f) => f.value === value)?.title ?? "none";
 
+// The title with the query's first match between underscores.
+const mark = (title: string, query: string) => {
+  const at = query ? title.toLowerCase().indexOf(query.toLowerCase()) : -1;
+  if (at < 0) return title;
+  const end = at + query.length;
+  return `${title.slice(0, at)}_${title.slice(at, end)}_${title.slice(end)}`;
+};
+
 function App() {
   const value = signal<string | null>(null);
   const open = signal(false);
@@ -38,6 +48,7 @@ function App() {
   const asked = signal("Asked: none");
   const found = signal("Find: none");
   const cleared = signal("Own: none");
+  const searched = signal("");
   return (
     <View style={{ flex: 1, paddingTop: 20, gap: 4 }}>
       <Text>{changed()}</Text>
@@ -47,6 +58,7 @@ function App() {
       <Text>{asked()}</Text>
       <Text>{found()}</Text>
       <Text>{cleared()}</Text>
+      <Text>{`Query: ${searched() || "none"}`}</Text>
       <Select
         items={[{ value: "start", title: "OpenAtStart" }]}
         defaultOpen
@@ -122,6 +134,25 @@ function App() {
         onOpenChange={({ open: next, reason }) => found.set(`Find: ${next} ${reason}`)}
         accessibilityLabel="Find"
         trigger={<View testID="find" style={{ height: 30 }}><Text>FindTrigger</Text></View>}
+      />
+      <Select
+        items={FOOD}
+        searchable
+        query={searched()}
+        onQueryChange={({ query: next }) => searched.set(next)}
+        onClose={() => searched.set("")}
+        searchAccessibilityLabel="AskField"
+        accessibilityLabel="Ask"
+        renderItem={(item) => <Text>{mark(item.title, searched())}</Text>}
+        trigger={<View testID="ask" style={{ height: 30 }}><Text>AskTrigger</Text></View>}
+      />
+      <Select
+        items={FOOD}
+        searchable
+        defaultQuery="ca"
+        searchAccessibilityLabel="PresetField"
+        accessibilityLabel="Preset"
+        trigger={<View testID="preset" style={{ height: 30 }}><Text>PresetTrigger</Text></View>}
       />
       <Select
         items={FOOD}

@@ -303,6 +303,29 @@ impl Headless {
         }
     }
 
+    /// `ref.selectAll()` on view `id`: selects every text of the
+    /// selectable view `id` is or is inside, as the backends' Select All.
+    pub(super) fn select_all_in(&mut self, id: NodeId) {
+        let Some(area) = self.screen.selection_area(id) else {
+            return;
+        };
+        if self.selection.as_ref().map(|s| s.area) != Some(area) {
+            self.clear_selection();
+        }
+        let texts = self.area_texts(area);
+        let selection = self.selection.get_or_insert_with(|| AreaSelection {
+            area,
+            model: SelectionModel::new(),
+            dragging: false,
+            over_press: false,
+            reported: Selected::default(),
+            kept: KeptRows::default(),
+        });
+        selection.model.texts_changed(&texts);
+        selection.model.select_all(&texts);
+        self.report_area_selection(&texts);
+    }
+
     /// Clears the selection; its view hears it if it heard of one.
     fn clear_selection(&mut self) {
         let Some(mut selection) = self.selection.take() else {

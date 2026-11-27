@@ -465,6 +465,14 @@ pub(crate) const NODE_METHODS: &[(&str, c_int, &str, &str)] = &[
         ),
     ),
     (
+        "selectAll",
+        0,
+        decl!("(): void"),
+        decl!(
+            "Selects all the text of the `selectable` view this view is or is inside, as the selection menu's Select All does: the texts are highlighted (on phones with the handles and the edit menu) and the selectable view hears `onSelectionChange`."
+        ),
+    ),
+    (
         "setSelection",
         2,
         decl!("(start: number, end?: number): void"),

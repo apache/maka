@@ -12,20 +12,6 @@ use crate::geometry::{Bounds, Edges, Points, Size};
 /// the same name).
 pub const TAB_BAR_COMPONENT: &str = "nsh/tab-bar";
 
-/// The native component of `nsh/mobile`'s `SegmentedControl`, which the iOS
-/// backend registers itself (`UISegmentedControl`).
-pub const SEGMENTED_CONTROL_COMPONENT: &str = "nsh/segmented-control";
-
-/// The native component of `nsh/mobile`'s `Switch`, which the iOS backend
-/// (`UISwitch`) and the Android backend register themselves
-/// (`SwitchComponent.java`'s `NAME` keeps the same name).
-pub const SWITCH_COMPONENT: &str = "nsh/switch";
-
-/// The native component of `nsh/mobile`'s `DateTimePicker`, which the iOS
-/// backend (`UIDatePicker`) and the Android backend register themselves
-/// (`DateTimePickerComponent.java`'s `NAME` keeps the same name).
-pub const DATE_TIME_PICKER_COMPONENT: &str = "nsh/date-time-picker";
-
 /// The native component of `nsh/base`'s `MenuButton`, which the iOS backend
 /// registers itself (a `UIButton` showing its `UIMenu` as its primary
 /// action), and the Android backend (a button showing the system's popup
@@ -545,33 +531,18 @@ pub struct Environment {
     /// ([`crate::Command::RenderCanvas`], `OffscreenCanvas`); without it,
     /// a render fails at once with `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`.
     pub canvas_render: bool,
-    /// The platform shows the system's share sheet
-    /// ([`crate::Command::Share`], `Share.show`); without it, a share fails
-    /// at once with `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`.
-    pub share: bool,
     /// The platform opens the app's own page in the system's settings
     /// ([`crate::Command::OpenAppSettings`], `nsh/mobile`'s
     /// `AppSettings.open`: iOS and Android); without it, opening it fails at
     /// once with `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`
     /// ([`crate::mobile::open_app_settings`]).
     pub app_settings: bool,
-    /// The platform shows web sign-in sessions
-    /// ([`crate::Command::AuthSession`]: iOS's
-    /// `ASWebAuthenticationSession`, Android's Custom Tabs); without it,
-    /// a session opens the system browser and waits for a link of a scheme
-    /// the app claims where the platform hands it such links
-    /// ([`Self::scheme_links()`]), and fails at once elsewhere
-    /// ([`crate::auth_session`]).
-    pub auth_session: bool,
     /// Whether the platform hands the app links of the schemes it claims
     /// (`nsh.json` `schemes`, [`crate::element::next_url_scheme_open`]).
     /// `None` (the default): as NSH's native backends on [`Self::os`],
     /// every OS but the web, where a page hears only its own address. The
     /// GPUI and terminal backends, which hear no links, say `Some(false)`,
-    /// as does a platform built outside NSH that hears none. Without it, a
-    /// sign-in session the platform does not show itself
-    /// ([`Self::auth_session`]) fails at once, since nothing could bring
-    /// its callback back ([`Self::scheme_links()`]).
+    /// as does a platform built outside NSH that hears none.
     pub scheme_links: Option<bool>,
     /// The platform handles file requests ([`crate::Command::FileRequest`]).
     /// Desktops implement the full set; mobile platforms answer the open
@@ -715,9 +686,7 @@ impl Default for Environment {
             screen_color: false,
             clipboard_write_result: false,
             canvas_render: false,
-            share: false,
             app_settings: false,
-            auth_session: false,
             scheme_links: None,
             file_requests: false,
             notifications: false,
@@ -2480,8 +2449,10 @@ mod tests {
 /// `Desktop(SetAttributes(..))`, `Desktop(SetAttributes`), so commands with
 /// different payloads share one warning.
 pub fn warn_unsupported(backend: &str, command: &dyn std::fmt::Debug) {
-    use std::collections::HashSet;
-    use std::sync::{Mutex, OnceLock};
+    use std::{
+        collections::HashSet,
+        sync::{Mutex, OnceLock},
+    };
 
     static SEEN: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
     let debug = format!("{command:?}");

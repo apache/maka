@@ -648,12 +648,12 @@ impl Ctx {
         input.config.borrow().paste_behavior == nsh_core::PasteBehavior::Insert
     }
 
-    /// Whether the editor offers Paste for what a text view's own paste
-    /// leaves out (images, files), while the app listens to pastes.
+    /// Whether the editor offers Paste while the app listens to pastes
+    /// (`onPaste`), whenever the pasteboard holds any type (including
+    /// images, files and app-custom types).
     fn pastes_more(&self) -> bool {
         self.get().is_some_and(|(_, view, _)| {
-            view.state().events.contains(EventKind::Paste)
-                && crate::system::has_pasted_files(&NSPasteboard::generalPasteboard())
+            pastes_for_events(view.state().events, &NSPasteboard::generalPasteboard())
         })
     }
 
@@ -1737,8 +1737,8 @@ define_text_view!(
             }
         }
 
-        /// Paste is offered for images and files too while the app
-        /// listens; Copy for text selected around the input.
+        /// Paste is offered for any pasteboard type while the app listens;
+        /// Copy for text selected around the input.
         #[unsafe(method(validateUserInterfaceItem:))]
         fn validate(&self, item: &ProtocolObject<dyn NSValidatedUserInterfaceItem>,
         ) -> objc2::runtime::Bool {
@@ -1782,6 +1782,14 @@ define_text_view!(
         }
     }
 );
+
+/// Whether Paste is enabled on behalf of a view's event listeners: true
+/// when `events` includes `EventKind::Paste` and `pasteboard` holds at
+/// least one type (so custom types, images and files enable Paste even
+/// when `NSTextView` cannot read them itself).
+fn pastes_for_events(events: nsh_core::EventMask, pasteboard: &NSPasteboard) -> bool {
+    events.contains(EventKind::Paste) && crate::system::has_pasted_types(pasteboard)
+}
 
 /// The surface of text area `area`, for its drags.
 fn area_surface(area: &TextArea) -> Option<Rc<Surface>> {
@@ -2049,8 +2057,8 @@ define_text_view!(
             }
         }
 
-        /// Paste is offered for images and files too while the app
-        /// listens; Copy for text selected around the input.
+        /// Paste is offered for any pasteboard type while the app listens;
+        /// Copy for text selected around the input.
         #[unsafe(method(validateUserInterfaceItem:))]
         fn validate(&self, item: &ProtocolObject<dyn NSValidatedUserInterfaceItem>,
         ) -> objc2::runtime::Bool {
@@ -5709,5 +5717,34 @@ mod tests {
     fn keys() {
         assert_eq!(key_of("\n"), "Enter");
         assert_eq!(key_of("x"), "x");
+    }
+
+    #[test]
+    fn paste_validation_for_listener_accepts_any_type_only_when_listening() {
+        let mut paste_events = nsh_core::EventMask::default();
+        paste_events.set(EventKind::Paste, true);
+
+        let mut other_events = nsh_core::EventMask::default();
+        other_events.set(EventKind::ChangeText, true);
+
+        let custom = NSPasteboard::pasteboardWithUniqueName();
+        custom.clearContents();
+        custom.setData_forType(
+            Some(&objc2_foundation::NSData::with_bytes(br#"{"text":"hi"}"#)),
+            &NSString::from_str("com.example.custom-content"),
+        );
+
+        let empty = NSPasteboard::pasteboardWithUniqueName();
+        empty.clearContents();
+
+        assert!(pastes_for_events(paste_events, &custom));
+        assert!(!pastes_for_events(paste_events, &empty));
+        assert!(!pastes_for_events(other_events, &custom));
+        assert!(!pastes_for_events(nsh_core::EventMask::default(), &custom));
+
+        for pb in [&custom, &empty] {
+            // SAFETY: NSPasteboard's method; these private test pasteboards are not used again.
+            let _: () = unsafe { msg_send![pb, releaseGlobally] };
+        }
     }
 }

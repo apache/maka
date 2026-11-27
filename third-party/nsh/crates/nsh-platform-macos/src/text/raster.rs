@@ -10,18 +10,24 @@
 //! window server shows as it is. The page's first frame shows its text,
 //! and the commit only carries the surfaces.
 //!
-//! A raster is a picture of one `MountItem::Text` at the size its view's
-//! `MountItem::Frame` in the same batch gives it, at the window's backing
-//! scale. Whatever it cannot know draws on the main thread as before: a
-//! layer of another size or density (a view still waiting to be placed, a
-//! scaled ancestor), a selection, an animated or transitioning color. A
-//! raster is shown once, when its view is first drawn; every later redraw
+//! A raster is a picture of one `MountItem::Text` at its view's known
+//! `MountItem::Frame` size (remembered across batches in [`State`], so an
+//! updated text whose frame did not change—such as a recycled list
+//! cell—still paints off the main thread), at the window's backing scale.
+//! Whatever it cannot know draws on the main thread as before: a layer of
+//! another size or density (a view still waiting to be placed, a scaled
+//! ancestor), a selection, an animated or transitioning color, or a
+//! colors-only re-paint keeping the same layout (`super::damage` partial
+//! redraw). A raster is shown once when its text draws; every later redraw
 //! (selection, colors, density) is Core Animation's again, and a text out
 //! of sight when its batch is applied drops its raster
 //! ([`super::drop_raster`]), so no picture waits for a view that may never
 //! show.
 
-use std::sync::Arc;
+use std::{
+    any::Any,
+    sync::{Arc, Weak},
+};
 
 use nsh_core::{AttributedText, MountBatch, MountItem, NodeId, Points, Size, TextLayout};
 use objc2::rc::Retained;
@@ -37,7 +43,7 @@ use objc2_io_surface::{
     kIOSurfaceColorSpace, kIOSurfaceHeight, kIOSurfacePixelFormat, kIOSurfaceWidth,
 };
 use objc2_quartz_core::CALayer;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::CoreTextLayout;
 
@@ -100,29 +106,55 @@ impl Rasters {
     }
 }
 
-/// Paints the texts of `batch` whose view gets a frame in it (new views,
-/// resized ones) at the backing `scale`, on the engine thread and as many
-/// others as there are texts to share (up to [`MAX_THREADS`]). Each view's
-/// last text item counts: the earlier are replaced before anything draws.
-pub(crate) fn prerender(batch: &MountBatch, scale: CGFloat) -> Rasters {
-    if !(scale.is_finite() && scale > 0.0) {
-        return Rasters::default();
-    }
-    let mut sizes: FxHashMap<NodeId, Size<Points>> = FxHashMap::default();
+/// What [`prerender`] remembers across a surface's batches so a text
+/// updated without a new `MountItem::Frame` (such as a recycled `<List>`
+/// cell whose relative frame did not change) still paints off the main
+/// thread at its known view size.
+#[derive(Default)]
+pub(crate) struct State {
+    /// Last known `MountItem::Frame` size of each live node.
+    sizes: FxHashMap<NodeId, Size<Points>>,
+    /// Weak handle to the last pre-rendered `TextLayout` of each live text
+    /// node, so colors-only updates that keep the same layout
+    /// (`super::damage` partial redraws) do not re-rasterize the whole text
+    /// into a new surface.
+    layouts: FxHashMap<NodeId, Weak<dyn Any + Send + Sync>>,
+}
+
+/// Paints the texts of `batch` that are new, re-laid out, or resized at
+/// the backing `scale` using each view's latest `MountItem::Frame` size in
+/// `state`, on the engine thread and as many others as there are texts to
+/// share (up to [`MAX_THREADS`]). Each view's last text item counts: the
+/// earlier are replaced before anything draws. Same-layout updates at the
+/// same view size are skipped so partial color redraws keep their backing
+/// store.
+pub(crate) fn prerender(batch: &MountBatch, scale: CGFloat, state: &mut State) -> Rasters {
+    let mut resized: FxHashSet<NodeId> = FxHashSet::default();
     let mut texts: FxHashMap<NodeId, usize> = FxHashMap::default();
     for (i, item) in batch.items.iter().enumerate() {
         match item {
+            MountItem::Create { id, .. } => {
+                state.sizes.remove(id);
+                state.layouts.remove(id);
+            }
             MountItem::Frame { id, frame } => {
-                sizes.insert(*id, frame.size);
+                if state.sizes.insert(*id, frame.size) != Some(frame.size) {
+                    resized.insert(*id);
+                }
             }
             MountItem::Text { id, .. } => {
                 texts.insert(*id, i);
             }
             MountItem::Delete { id } => {
+                state.sizes.remove(id);
+                state.layouts.remove(id);
                 texts.remove(id);
             }
             _ => {}
         }
+    }
+    if !(scale.is_finite() && scale > 0.0) {
+        return Rasters::default();
     }
     let mut jobs: Vec<Job<'_>> = texts
         .into_iter()
@@ -136,7 +168,16 @@ pub(crate) fn prerender(batch: &MountBatch, scale: CGFloat) -> Rasters {
             else {
                 return None;
             };
-            let size = sizes.get(&id)?;
+            let size = state.sizes.get(&id)?;
+            let same_layout = state
+                .layouts
+                .get(&id)
+                .and_then(Weak::upgrade)
+                .is_some_and(|prev| Arc::ptr_eq(&prev, &layout.0));
+            state.layouts.insert(id, Arc::downgrade(&layout.0));
+            if same_layout && !resized.contains(&id) {
+                return None;
+            }
             Some(Job {
                 id,
                 text,
@@ -365,7 +406,7 @@ mod tests {
     use objc2_io_surface::IOSurfaceLockOptions;
     use objc2_quartz_core::CALayer;
 
-    use super::{super::CoreTextEngine, prerender};
+    use super::{super::CoreTextEngine, State, prerender};
 
     /// What the probe layer paints.
     type Paint = Box<dyn Fn(&CGContext)>;
@@ -531,7 +572,7 @@ mod tests {
             ],
         };
         let scale: CGFloat = 2.0;
-        let mut rasters = prerender(&batch, scale);
+        let mut rasters = prerender(&batch, scale, &mut State::default());
         let MountItem::Text {
             text,
             layout,
@@ -599,5 +640,102 @@ mod tests {
             worst <= 2,
             "colors differ by up to {worst} in {differing} pixels"
         );
+    }
+
+    #[test]
+    fn updated_text_reuses_remembered_frame_size_until_deleted() {
+        let engine = CoreTextEngine::default();
+        let mut state = State::default();
+        let scale: CGFloat = 2.0;
+
+        // Batch 1: initial frame + text yields a raster and remembers the size.
+        let (first, size) = text_item(&engine, 2);
+        let view = Size::new(size.width + Points(8.0), size.height + Points(6.0));
+        let mut rasters = prerender(
+            &MountBatch {
+                items: vec![
+                    MountItem::Frame {
+                        id: 2,
+                        frame: Bounds::new(Point::default(), view),
+                    },
+                    first.clone(),
+                ],
+            },
+            scale,
+            &mut state,
+        );
+        let MountItem::Text {
+            text: first_text,
+            layout: first_layout,
+            content,
+            ..
+        } = &first
+        else {
+            unreachable!()
+        };
+        assert!(rasters.take(2, first_text, first_layout).is_some());
+
+        // Batch 2: updated text with a new layout (e.g. a recycled List cell)
+        // and no MountItem::Frame reuses the remembered view size.
+        let (second, _) = text_item(&engine, 2);
+        let MountItem::Text {
+            text: second_text,
+            layout: second_layout,
+            ..
+        } = &second
+        else {
+            unreachable!()
+        };
+        let mut rasters = prerender(
+            &MountBatch {
+                items: vec![second.clone()],
+            },
+            scale,
+            &mut state,
+        );
+        assert!(rasters.take(2, second_text, second_layout).is_some());
+
+        // Batch 3: same layout at the same size (e.g. partial color redraw)
+        // skips pre-rendering so partial invalidation keeps its backing store.
+        let recolored_text = second_text.clone();
+        let mut rasters = prerender(
+            &MountBatch {
+                items: vec![MountItem::Text {
+                    id: 2,
+                    text: recolored_text.clone(),
+                    layout: second_layout.clone(),
+                    content: *content,
+                }],
+            },
+            scale,
+            &mut state,
+        );
+        assert!(rasters.take(2, &recolored_text, second_layout).is_none());
+
+        // Batch 4 & 5: deleting the node forgets its frame size.
+        let _ = prerender(
+            &MountBatch {
+                items: vec![MountItem::Delete { id: 2 }],
+            },
+            scale,
+            &mut state,
+        );
+        let (after_delete, _) = text_item(&engine, 2);
+        let MountItem::Text {
+            text: after_text,
+            layout: after_layout,
+            ..
+        } = &after_delete
+        else {
+            unreachable!()
+        };
+        let mut rasters = prerender(
+            &MountBatch {
+                items: vec![after_delete.clone()],
+            },
+            scale,
+            &mut state,
+        );
+        assert!(rasters.take(2, after_text, after_layout).is_none());
     }
 }

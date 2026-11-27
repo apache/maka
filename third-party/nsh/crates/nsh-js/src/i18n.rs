@@ -433,14 +433,39 @@ unsafe extern "C" fn add_translations(
     reactive::finish_value(cx, UNDEFINED)
 }
 
+/// TypeScript declarations for `nsh/i18n`: augmented by
+/// `.nsh/types/nsh/translations.d.ts` when the app has a `locales/` directory.
+pub(crate) const TYPES: &str = r#"/**
+ * The app's translation keys and their `%{name}` parameters. nsh declares
+ * the app's (`.nsh/types/nsh/translations.d.ts`, from `locales/`).
+ */
+export interface Translations {}
+
+/**
+ * The locale tags the app's `locales/` directory provides. nsh declares
+ * the app's (`.nsh/types/nsh/translations.d.ts`, from `locales/`).
+ */
+export interface TranslationLocales {}
+
+/** A translation key from `locales/`, or `string` when the app has no `locales/`. */
+export type TranslationKey = keyof Translations extends never ? string : keyof Translations;
+
+/** A known locale tag from `locales/` with autocomplete, while accepting any BCP 47 tag. */
+export type LocaleTag = keyof TranslationLocales extends never
+  ? string
+  : keyof TranslationLocales | (string & {});
+"#;
+
 /// The exports of `nsh/i18n`.
 pub(crate) const EXPORTS: &[Item] = &[
     (
         "t",
         Export::Function(t, 2),
         Ts::function(
-            "The text of `key` in the language the app shows: the first of the user's\npreferred languages (`localeSettings().languages`) the app has\ntranslations in, else `locale()`'s. From the app's `locales/` files (rust-i18n's formats) and any\nadded with `addTranslations`: `t(\"hello\")`,\n`t(\"messages.hello\", { name: \"Jason\" })` fills `%{name}`, and\n`{ locale: \"zh-CN\" }` asks for another language. A key a language lacks\ncomes from the language without its last subtag (`zh-Hant`, then `zh`),\nthen from English; where none has it, the text is `<locale>.<key>`.\nReading it follows the language and translations, so a view that shows\nit changes with `setLocale` and `addTranslations`.",
-            &["(key: string, options?: { locale?: string; [name: string]: unknown }): string"],
+            "The text of `key` in the language the app shows: the first of the user's\npreferred languages (`localeSettings().languages`) the app has\ntranslations in, else `locale()`'s. From the app's `locales/` files (rust-i18n's formats) and any\nadded with `addTranslations`: `t(\"hello\")`,\n`t(\"messages.hello\", { name: \"Jason\" })` fills `%{name}`, and\n`{ locale: \"zh-CN\" }` asks for another language. When the app has `locales/`,\nkeys and `%{name}` parameters are checked against `.nsh/types/nsh/translations.d.ts`.\nA key a language lacks comes from the language without its last subtag\n(`zh-Hant`, then `zh`), then from English; where none has it, the text\nis `<locale>.<key>`. Reading it follows the language and translations,\nso a view that shows it changes with `setLocale` and `addTranslations`.",
+            &[
+                "<K extends TranslationKey>(key: K, ...args: K extends keyof Translations ? (keyof Translations[K] extends never ? [options?: { locale?: LocaleTag }] : [options: Translations[K] & { locale?: LocaleTag }]) : [options?: { locale?: string; [name: string]: unknown }]): string",
+            ],
         ),
     ),
     (
@@ -448,7 +473,7 @@ pub(crate) const EXPORTS: &[Item] = &[
         Export::Function(set_locale, 1),
         Ts::function(
             "Shows the app in `locale` (a BCP 47 tag, `\"zh-CN\"`) whatever the\nuser's language: `locale()`, `t` and `Intl` follow it; `null` follows\nthe user's again.",
-            &["(locale: string | null): void"],
+            &["(locale: LocaleTag | null): void"],
         ),
     ),
     (

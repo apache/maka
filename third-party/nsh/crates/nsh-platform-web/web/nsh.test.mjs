@@ -8,8 +8,8 @@ import test from "node:test";
 
 const source = await readFile(new URL("nsh.js", import.meta.url), "utf8");
 // `Player` is not exported; the page only gets it from `createPlayer`.
-const { Player, keyCode, elementTag, runtimeSheet, charLength, clipChars, webNetwork, webShareAllowed } = await import(
-  `data:text/javascript,${encodeURIComponent(`${source}\nexport { Player, keyCode, runtimeSheet, charLength, clipChars, webNetwork, webShareAllowed };`)}`
+const { Player, keyCode, elementTag, runtimeSheet, charLength, clipChars, webNetwork } = await import(
+  `data:text/javascript,${encodeURIComponent(`${source}\nexport { Player, keyCode, runtimeSheet, charLength, clipChars, webNetwork };`)}`
 );
 
 test("the network is the browser's link, none while it is offline", () => {
@@ -954,6 +954,63 @@ test("Tab stops are the pressables and the focusable views, pressable or not", (
   delete globalThis.document;
 });
 
+test("an input's view is no Tab stop, pressable or focusable: its field is its one stop", () => {
+  const { player } = fakePlayer();
+  player.updateAria = () => {};
+  globalThis.document = { activeElement: null };
+  try {
+    const stop = (el) => {
+      player.updateFocusable(el);
+      return el.hasAttribute("tabindex") ? el.tabIndex : null;
+    };
+    const input = (pressable, props, field = true) =>
+      Object.assign(focusView(pressable, props), { _kind: "input", _field: field ? focusView(false, {}) : undefined });
+    assert.equal(stop(input(true, {})), null, "an input that listens for presses (a combo box's)");
+    assert.equal(stop(input(true, {}, false)), null, "its presses before its field");
+    // As on the desktops, `focusable` does not make a second stop of it.
+    assert.equal(stop(input(false, { focusable: true })), null, "focusable");
+    assert.equal(stop(input(true, { focusable: true })), null, "focusable and pressable");
+    // A view that takes presses stays a stop.
+    assert.equal(stop(Object.assign(focusView(true, {}), { _kind: "view" })), 0, "a pressable view");
+    assert.equal(stop(Object.assign(focusView(false, { focusable: true }), { _kind: "view" })), 0, "a focusable view");
+  } finally {
+    delete globalThis.document;
+  }
+});
+
+test("an input that takes presses is no button, and keeps the role its app gives it", () => {
+  const { player } = fakePlayer();
+  const element = (fields) => {
+    const attrs = new Map();
+    return {
+      attrs, style: {}, classList: { toggle() {} },
+      getAttribute: (name) => attrs.get(name) ?? null,
+      setAttribute: (name, value) => attrs.set(name, value),
+      removeAttribute: (name) => attrs.delete(name),
+      ...fields,
+    };
+  };
+  const role = (el) => {
+    player.updateAria(el);
+    return el.attrs.get("role") ?? null;
+  };
+  const field = element({ tagName: "INPUT" });
+  const input = element({ _kind: "input", _pressable: true, _props: { label: "Search" }, _field: field });
+  assert.equal(role(input), null, "no button around its text box");
+  assert.equal(field.attrs.get("aria-label"), "Search", "its name stays on its field");
+  assert.equal(role(element({ _kind: "input", _pressable: true, _props: {} })), null, "before its field");
+  // A role of its app's still applies.
+  input._props.role = "search";
+  assert.equal(role(input), "searchbox");
+  // A combo box is its field, as before.
+  input._props.role = "combobox";
+  assert.equal(role(input), null);
+  assert.equal(field.attrs.get("role"), "combobox");
+  // A view that takes presses is still a button.
+  assert.equal(role(element({ _kind: "view", _pressable: true, _props: {} })), "button");
+  assert.equal(role(element({ _kind: "view", _pressable: true, _props: { role: "link" } })), "link");
+});
+
 test("a view laid out at no size, as in a display none subtree, is no Tab stop, nor is its field", () => {
   const { player } = fakePlayer();
   player.updateAria = () => {};
@@ -1788,6 +1845,97 @@ test("a press in a dialog over the window reports its place in the window", () =
   });
 });
 
+test("a press on a text field is its input's, after the focus it gives", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  inPage(() => {
+    globalThis.document.elementFromPoint = () => null;
+    globalThis.document.hasFocus = () => true;
+    const { player, sent } = dialogPlayer(false);
+    const focused = [];
+    const field = {
+      classList: { contains: (name) => name === "nsh-field" },
+      closest: () => null,
+      focus: () => focused.push("field"),
+    };
+    player.editable = (target) => target === field;
+    const view = (id, events, input) => ({
+      _id: id,
+      _events: new Set(events),
+      _props: {},
+      _tracked: 0,
+      _field: input ? field : undefined,
+      getBoundingClientRect: () => ({ left: 600, top: 300, right: 700, bottom: 340 }),
+      closest: () => null,
+    });
+    const row = view(8, ["onPress"], false);
+    const listening = view(9, ["onPress"], true);
+    const quiet = view(10, [], true);
+    /** Presses `input` (in a pressable row) with `pointerType`, on its
+     * field or on the padding around it (`at` the input itself). */
+    const press = (input, pointerType, at = field) => {
+      sent.length = 0;
+      player.viewOf = (target) => (target === field || target === input ? input : null);
+      player.ancestors = () => [input, row];
+      const e = { pointerId: 1, pointerType, button: 0, buttons: 1, clientX: 640, clientY: 320, target: at };
+      player.pointerDown(e);
+      player.pointerUp({ ...e, buttons: 0 }, false);
+      return sent.map(([name]) => name);
+    };
+    // A click focuses the field as it goes down: the input hears the press
+    // as it ends, the row around it nothing; so on the padding around the
+    // field.
+    globalThis.document.activeElement = field;
+    assert.deepEqual(press(listening, "mouse"), ["onPress"]);
+    assert.deepEqual(press(listening, "mouse", listening), ["onPress"]);
+    // A click whose focus went elsewhere (the app moved it) is pressed all
+    // the same: it waits for nothing.
+    globalThis.document.activeElement = null;
+    assert.deepEqual(press(listening, "mouse"), ["onPress"]);
+    assert.equal(player.fieldPress, null);
+    // An input that does not listen leaves the press to no one, on its
+    // field or around it.
+    assert.deepEqual(press(quiet, "mouse"), []);
+    assert.deepEqual(press(quiet, "mouse", quiet), []);
+    assert.deepEqual(press(quiet, "touch"), []);
+    assert.deepEqual(press(quiet, "touch", quiet), []);
+    // A tap on an unfocused field: the browser focuses it after the finger
+    // lifts, and the press follows that focus, once.
+    assert.deepEqual(press(listening, "touch"), []);
+    player.fieldPressed(field);
+    player.fieldPressed(field);
+    assert.deepEqual(sent.map(([name]) => name), ["onPress"]);
+    // So does one on the padding around the field.
+    assert.deepEqual(press(listening, "touch", listening), []);
+    player.fieldPressed(field);
+    assert.deepEqual(sent.map(([name]) => name), ["onPress"]);
+    // A tap whose focus did not come is pressed by its click on the input.
+    assert.deepEqual(press(listening, "touch"), []);
+    player.fieldClicked({ target: listening });
+    assert.deepEqual(sent.map(([name]) => name), ["onPress"]);
+    // One whose focus never came is dropped by the next press, by a click
+    // elsewhere, or once the mouse events of its tap are over: a focus
+    // that comes later reports none.
+    assert.deepEqual(press(listening, "touch"), []);
+    player.pointerDown({ pointerId: 2, pointerType: "touch", button: 0, clientX: 10, clientY: 10, target: {} });
+    player.fieldPressed(field);
+    assert.deepEqual(press(listening, "touch"), []);
+    player.fieldClicked({ target: {} });
+    player.fieldPressed(field);
+    assert.deepEqual(press(listening, "touch"), []);
+    t.mock.timers.tick(999);
+    assert.notEqual(player.fieldPress, null);
+    t.mock.timers.tick(1);
+    player.fieldPressed(field);
+    assert.deepEqual(sent, []);
+    // The mouse down of a press on the padding around a field gives the
+    // field the focus, and no view around it does.
+    let prevented = false;
+    player.mouseDown({ target: listening, button: 0, preventDefault: () => (prevented = true) });
+    assert.ok(prevented);
+    assert.deepEqual(focused, ["field"]);
+  });
+});
+
 test("the page does not scroll under a dialog or an alert over the window", () => {
   const cases = [
     [true, true, true],
@@ -2481,6 +2629,71 @@ test("a screen effect over an animated shader asks for one shader frame at a tim
   } finally {
     [globalThis.requestAnimationFrame, globalThis.devicePixelRatio] = saved;
   }
+});
+
+/**
+ * Runs `f(player, view, frames, drawn)` with a canvas view whose draws are
+ * counted, and the frames `requestAnimationFrame` was asked for.
+ */
+async function withCanvasView(f) {
+  const { player } = fakePlayer();
+  const view = { _id: 7, _kind: "canvas" };
+  const drawn = [];
+  player.view = (id) => (id === view._id ? view : null);
+  player.draw = (el) => drawn.push(el._ops);
+  const frames = [];
+  const saved = globalThis.requestAnimationFrame;
+  globalThis.requestAnimationFrame = (callback) => frames.push(callback);
+  try {
+    await f(player, view, frames, drawn);
+  } finally {
+    globalThis.requestAnimationFrame = saved;
+  }
+}
+
+const task = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+test("a canvas redrawn by several batches before a frame is drawn once, at the frame", async () => {
+  await withCanvasView(async (player, view, frames, drawn) => {
+    // Each pointer move or socket message is a task with a batch of its own.
+    for (const ops of [["a"], ["b"], ["c"]]) {
+      player.op_cv(["cv", view._id, ops]);
+      await task();
+    }
+    assert.deepEqual(drawn, [], "nothing is drawn before the frame");
+    assert.equal(frames.length, 1, "one frame asked for");
+    frames.shift()(16);
+    assert.deepEqual(drawn, [["c"]], "the last drawing, once");
+    assert.equal(frames.length, 0);
+  });
+});
+
+test("a canvas an animation frame changes is drawn in that frame", async () => {
+  await withCanvasView(async (player, view, frames, drawn) => {
+    view._ops = ["path"];
+    view._slots = [0];
+    // The engine's frame steps a canvas slot (`canvas:0`) in its batch.
+    player.wasm.nsh_frame = () => {
+      player.op_a(["a", view._id, "canvas:0", "0.5"]);
+      return -1;
+    };
+    player.requestFrame();
+    assert.equal(frames.length, 1);
+    frames.shift()(16);
+    await Promise.resolve();
+    assert.deepEqual(drawn, [["path"]], "drawn before the frame's paint");
+    assert.equal(frames.length, 0, "not left for the next frame");
+  });
+});
+
+test("a picture of a canvas draws its pending drawing first", async () => {
+  await withCanvasView(async (player, view, frames, drawn) => {
+    player.op_cv(["cv", view._id, ["new"]]);
+    player.flushDraws();
+    assert.deepEqual(drawn, [["new"]]);
+    frames.shift()(16);
+    assert.deepEqual(drawn, [["new"]], "the frame has nothing left to draw");
+  });
 });
 
 test("a picture taken again reads the styles of what changed only", () => {
@@ -4995,52 +5208,6 @@ test("a web view's relative URL is the site's where the page names its base", ()
   }
 });
 
-test("share reports shared, dismissed and unavailable, never shared when it could not", async () => {
-  const { player } = fakePlayer();
-  const got = [];
-  player.event = (_, name, value) => got.push([name, value]);
-  const saved = Object.getOwnPropertyDescriptor(globalThis, "navigator");
-  const browser = (share, canShare) =>
-    Object.defineProperty(globalThis, "navigator", { value: { share, canShare }, configurable: true });
-  try {
-    const shared = [];
-    browser(async (data) => { shared.push(data); });
-    await player.share(1, "Docs", null, "https://example.com/docs", false);
-    assert.deepEqual(shared, [{ title: "Docs", url: "https://example.com/docs" }]);
-    browser(async () => { throw Object.assign(new Error("closed"), { name: "AbortError" }); });
-    await player.share(2, null, "Hello", null, false);
-    // Files never reach the browser.
-    browser(async () => assert.fail("shared files"));
-    await player.share(3, null, "Hello", null, true);
-    browser(async () => assert.fail("shared what it cannot"), () => false);
-    await player.share(4, null, "Hello", null, false);
-    browser(undefined);
-    await player.share(5, null, "Hello", null, false);
-    browser(async () => { throw Object.assign(new Error("no activation"), { name: "NotAllowedError" }); });
-    await player.share(6, null, "Hello", null, false);
-    // An earlier share's sheet still open.
-    browser(async () => { throw Object.assign(new Error("in progress"), { name: "InvalidStateError" }); });
-    await player.share(7, null, "Hello", null, false);
-    // Anything else is a failure without a code.
-    browser(async () => { throw new TypeError("bad data"); });
-    await player.share(8, null, "Hello", null, false);
-    const unavailable = "ERR_FEATURE_UNAVAILABLE_ON_PLATFORM";
-    assert.deepEqual(got.map(([name, v]) => [name, v.id, v.action ?? v.code ?? "error"]), [
-      ["onShare", 1, "shared"],
-      ["onShare", 2, "dismissed"],
-      ["onShare", 3, unavailable],
-      ["onShare", 4, unavailable],
-      ["onShare", 5, unavailable],
-      ["onShare", 6, unavailable],
-      ["onShare", 7, unavailable],
-      ["onShare", 8, "error"],
-    ]);
-  } finally {
-    if (saved) Object.defineProperty(globalThis, "navigator", saved);
-    else delete globalThis.navigator;
-  }
-});
-
 test("window blur resets hoverButtons and cancels all active pointers", () => {
   const windowListeners = new Map();
   const savedWindow = globalThis.window;
@@ -5208,49 +5375,4 @@ test("point, corner, wheel, context menu, pinch, and scrollbar drag undo ancesto
     if (savedStyle === undefined) delete globalThis.getComputedStyle;
     else globalThis.getComputedStyle = savedStyle;
   }
-});
-
-test("sharing is available when the browser says the document may share", () => {
-  const share = () => {};
-  const canShare = (answer) => (data) => {
-    assert.equal(typeof data.text, "string", "canShare gets valid share data");
-    return answer;
-  };
-  // No share sheet at all.
-  assert.equal(webShareAllowed({}, {}), false);
-  assert.equal(webShareAllowed(undefined, {}), false);
-  // `canShare` is the answer, and a throw is "no".
-  assert.equal(webShareAllowed({ share, canShare: canShare(true) }, {}), true);
-  assert.equal(webShareAllowed({ share, canShare: canShare(false) }, {}), false);
-  assert.equal(
-    webShareAllowed({ share, canShare: () => { throw new TypeError("no"); } }, {}),
-    false,
-  );
-  // With `canShare` the policy is never asked by name (that is what logs
-  // "Unrecognized feature").
-  const asked = [];
-  const policy = { features: () => [], allowsFeature: (name) => (asked.push(name), false) };
-  assert.equal(webShareAllowed({ share, canShare: canShare(true) }, { permissionsPolicy: policy }), true);
-  assert.deepEqual(asked, []);
-});
-
-test("without canShare the permissions policy decides, and an unlisted name is not asked", () => {
-  const nav = { share() {} };
-  const asked = [];
-  const policy = (features, allowed) => ({
-    features: () => features,
-    allowsFeature: (name) => (asked.push(name), allowed),
-  });
-  // Listed: the policy's answer, for `permissionsPolicy` and the older `featurePolicy`.
-  assert.equal(webShareAllowed(nav, { permissionsPolicy: policy(["web-share"], true) }), true);
-  assert.equal(webShareAllowed(nav, { permissionsPolicy: policy(["web-share"], false) }), false);
-  assert.equal(webShareAllowed(nav, { featurePolicy: policy(["web-share"], false) }), false);
-  assert.deepEqual(asked, ["web-share", "web-share", "web-share"]);
-  // Not listed: the browser does not gate sharing on it; no lookup, no console warning.
-  asked.length = 0;
-  assert.equal(webShareAllowed(nav, { permissionsPolicy: policy(["camera"], false) }), true);
-  assert.deepEqual(asked, []);
-  // No policy API at all.
-  assert.equal(webShareAllowed(nav, {}), true);
-  assert.equal(webShareAllowed(nav, undefined), true);
 });

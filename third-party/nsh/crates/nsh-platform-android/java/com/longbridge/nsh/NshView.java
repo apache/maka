@@ -1328,6 +1328,22 @@ public class NshView extends FrameLayout {
         if (nav != null) nav.shaderFrame(pixels, width, height, replaces, overflow);
     }
 
+    private final android.graphics.Rect sightRect = new android.graphics.Rect();
+
+    /**
+     * Which of the shader views {@code ids} can be seen: shown, and not
+     * entirely clipped away by an ancestor (scrolled out of a scroll view).
+     * Called by libnsh on the UI thread during {@link Native#tick}.
+     */
+    boolean[] shadersInSight(int[] ids) {
+        boolean[] shown = new boolean[ids.length];
+        for (int i = 0; i < ids.length; i++) {
+            View v = mounter.view(ids[i]);
+            shown[i] = v != null && v.isShown() && v.getGlobalVisibleRect(sightRect);
+        }
+        return shown;
+    }
+
     /** A screen shader's frame where it replaces the surface. */
     @Override
     protected void dispatchDraw(android.graphics.Canvas canvas) {
@@ -1356,6 +1372,20 @@ public class NshView extends FrameLayout {
         main.post(() -> {
             if (handle != 0) Native.runMainThreadTasks(handle);
         });
+    }
+
+    /** {@code nsh::native_view}: the view of node {@code id}, or null. UI thread. */
+    View nativeView(int id) {
+        return mounter.view(id);
+    }
+
+    /**
+     * {@code nsh::presenting_activity}: the activity the view shows in, or null when it is in none that can show
+     * anything (finishing or destroyed). UI thread.
+     */
+    Activity presentingActivity() {
+        Activity activity = activity(getContext());
+        return activity == null || activity.isFinishing() || activity.isDestroyed() ? null : activity;
     }
 
     void reportError(String message) {

@@ -1,15 +1,14 @@
-//! `nsh`'s `Share`: the system's share sheet ([`crate::share`]). The app
-//! hands it text, a link or local files and the user picks where they go.
-//! Needs the `share` capability when the app declares capabilities (else
-//! `show` rejects with `ERR_ACCESS_DENIED`); each file is checked against
-//! `capabilities.fs.read` as `fs/promises` reads it.
+//! `Share`'s JS face (TS: `import { Share } from "nsh-extra"`), named as
+//! its TypeScript types (`ShareContent`, `ShareResult`, `ShareAction`).
 
-use crate::{
-    element::{JsError, JsObject, Later, NodeRef, PropEnum, System, codes, module},
-    share::{ShareError, ShareRequest},
-};
+use nsh_core::{element::NodeRef, prelude::*};
 
-/// The system's share sheet.
+use super::{MAX_FILES, MAX_TEXT_BYTES, MAX_URL_BYTES, NOT_GRANTED, ShareRequest};
+
+/// The system's share sheet. Needs the `share` capability when the app
+/// declares capabilities (else `show` rejects with `ERR_ACCESS_DENIED`);
+/// each file is checked against `capabilities.fs.read` as `fs/promises`
+/// reads it.
 #[module]
 pub(crate) struct Share;
 
@@ -19,8 +18,8 @@ impl Share {
     /// macOS and in browsers with `navigator.share`, when the `share`
     /// capability is granted; `false` elsewhere, where `show` rejects with
     /// `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`.
-    pub(crate) fn available() -> Later<bool> {
-        Later::new(async { Ok::<_, JsError>(crate::prelude::share_available().await) })
+    pub(crate) async fn available() -> bool {
+        super::available().await
     }
 
     /// Shows the system's share sheet for `content`: its text, its link
@@ -37,29 +36,25 @@ impl Share {
     /// `RangeError` for content over the limits (1 MiB of text, 16 KiB of
     /// URL, 100 files), `ERR_ACCESS_DENIED` when the
     /// `share` capability or a file's `fs.read` grant is missing, `ENOENT`
-    /// for a file that does not exist, and
+    /// for a file that does not exist, `EISDIR` for a folder, and
     /// `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` where the platform has no
     /// share sheet, or none for this content (a file outside an Android
     /// app's own storage, a file a browser does not share).
     pub(crate) fn show(content: ShareContent, sys: System) -> Result<Later<ShareResult>, JsError> {
         if !sys.access.allows_share() {
-            return Err(JsError::access_denied(
-                crate::share::NOT_GRANTED,
-                "share",
-                "",
-            ));
+            return Err(JsError::access_denied(NOT_GRANTED, "share", ""));
         }
         let request = content.request(&sys)?;
         Ok(Later::new(async move {
-            match crate::prelude::share(request).await {
+            match super::show(request).await {
                 Ok(outcome) => Ok(ShareResult {
                     action: match outcome.action {
-                        crate::share::ShareAction::Dismissed => ShareAction::Dismissed,
+                        super::ShareAction::Dismissed => ShareAction::Dismissed,
                         _ => ShareAction::Shared,
                     },
                     target: outcome.target,
                 }),
-                Err(error) => Err(js_error(error)),
+                Err(error) => Err(error.to_js()),
             }
         }))
     }
@@ -85,35 +80,36 @@ pub(crate) struct ShareContent {
 }
 
 impl ShareContent {
+    /// Content of only `files`, as an app passes them.
+    #[cfg(test)]
+    pub(super) fn files(files: &[&str]) -> Self {
+        Self {
+            files: Some(files.iter().map(|file| (*file).to_owned()).collect()),
+            ..Self::default()
+        }
+    }
+
     /// The request this content makes, its files granted and resolved, or
     /// why it makes none.
-    fn request(self, sys: &System) -> Result<ShareRequest, JsError> {
+    pub(super) fn request(self, sys: &System) -> Result<ShareRequest, JsError> {
         let files = self.files.unwrap_or_default();
-        if files.len() > crate::share::MAX_FILES {
-            return Err(JsError::Range(format!(
-                "share: at most {} files",
-                crate::share::MAX_FILES
-            )));
+        if files.len() > MAX_FILES {
+            return Err(JsError::Range(format!("share: at most {MAX_FILES} files")));
         }
         for (name, value) in [("title", &self.title), ("text", &self.text)] {
-            if value
-                .as_ref()
-                .is_some_and(|v| v.len() > crate::share::MAX_TEXT_BYTES)
-            {
+            if value.as_ref().is_some_and(|v| v.len() > MAX_TEXT_BYTES) {
                 return Err(JsError::Range(format!(
-                    "share: `{name}` has at most {} bytes",
-                    crate::share::MAX_TEXT_BYTES
+                    "share: `{name}` has at most {MAX_TEXT_BYTES} bytes"
                 )));
             }
         }
         if self
             .url
             .as_ref()
-            .is_some_and(|url| url.len() > crate::share::MAX_URL_BYTES)
+            .is_some_and(|url| url.len() > MAX_URL_BYTES)
         {
             return Err(JsError::Range(format!(
-                "share: `url` has at most {} bytes",
-                crate::share::MAX_URL_BYTES
+                "share: `url` has at most {MAX_URL_BYTES} bytes"
             )));
         }
         let mut request = ShareRequest {
@@ -124,9 +120,7 @@ impl ShareContent {
             ..ShareRequest::default()
         };
         for file in &files {
-            request
-                .files
-                .push(crate::runtime::fs::shared_file(sys, file)?);
+            request.files.push(sys.readable_file(file)?);
         }
         request.check().map_err(JsError::Type)?;
         Ok(request)
@@ -152,13 +146,4 @@ pub(crate) struct ShareResult {
     /// Android's package, macOS's service); `null` elsewhere and when
     /// dismissed.
     target: Option<String>,
-}
-
-/// A failed share as JS gets it: an `Error` with the failure's `code`.
-fn js_error(error: ShareError) -> JsError {
-    match error.code.as_deref() {
-        Some(codes::ACCESS_DENIED) => JsError::access_denied(error.message, "share", ""),
-        Some(code) => JsError::Error(error.message.clone()).with_code(code),
-        None => JsError::Error(error.message),
-    }
 }

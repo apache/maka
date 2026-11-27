@@ -190,9 +190,10 @@ fn screen_readers_hear_a_list_box_of_emoji_by_name_under_named_groups() {
     assert_eq!(screen.count("role:option[grinning face]"), Ok(1));
     assert!(screen.shows("Smileys"));
     assert!(screen.count("role:header").unwrap() >= 1);
-    // Only the rows near the list are made.
+    // Only the rows near the viewport are made: at the top, the overscan
+    // above goes below.
     let made = screen.count("role:option").unwrap();
-    assert!((8..200).contains(&made), "{made} cells made");
+    assert!((8..300).contains(&made), "{made} cells made");
     assert!(!screen.shows("Nothing found"));
     // Browsing highlights nothing until a key or the pointer does.
     assert!(screen.shows("highlighted:none"));

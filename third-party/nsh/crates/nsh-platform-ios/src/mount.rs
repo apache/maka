@@ -873,11 +873,6 @@ pub(crate) struct Mounter {
     alert_tint: Option<nsh_core::element::AdaptiveColor>,
     /// The alerts shown and not answered yet (`Command::CloseDialog`).
     dialogs: crate::system::Dialogs,
-    /// The surface's share sheet, which a new share replaces
-    /// ([`crate::share`]).
-    share: crate::share::Current,
-    /// The sign-in session showing ([`crate::auth_session`]).
-    auth_session: crate::auth_session::Current,
     /// `SplitView`s' splits, by their native component's node
     /// ([`crate::split`]).
     splits: rustc_hash::FxHashMap<NodeId, crate::split::SplitHost>,
@@ -958,8 +953,6 @@ impl Mounter {
             leaving_screens: rustc_hash::FxHashMap::default(),
             alert_tint: None,
             dialogs: Default::default(),
-            share: Default::default(),
-            auth_session: Default::default(),
             hosts: Default::default(),
             dirty_stacks: Vec::new(),
             untransformed: Vec::new(),
@@ -2266,6 +2259,22 @@ impl Mounter {
             }
             return;
         }
+        if let Command::SelectAll = command {
+            // The outermost selectable view `id` is or is inside, as a
+            // press selects in it.
+            let mut area = None;
+            let mut at = Some(id);
+            while let Some(node) = at {
+                if let Some((_, responder)) = self.areas.iter().find(|(a, _)| *a == node) {
+                    area = Some(responder);
+                }
+                at = self.slot(node).and_then(|s| s.parent);
+            }
+            if let Some(responder) = area {
+                responder.select_everything();
+            }
+            return;
+        }
         let Some(s) = self.slot(id) else { return };
         match (command, &s.native) {
             (
@@ -2397,29 +2406,6 @@ impl Mounter {
                 native,
             ) if id == nsh_core::ROOT_ID => {
                 crate::picker::pick_files(request, asked, native.view(), &self.control);
-            }
-            (Command::AuthSession { id: request, page }, native) if id == nsh_core::ROOT_ID => {
-                crate::auth_session::open(
-                    request,
-                    &page,
-                    native.view(),
-                    &self.auth_session,
-                    &self.control,
-                );
-            }
-            (Command::CloseAuthSession(request), _) if id == nsh_core::ROOT_ID => {
-                crate::auth_session::close(request, &self.auth_session);
-            }
-            (Command::Share { id: request, sheet }, native) if id == nsh_core::ROOT_ID => {
-                let anchor = sheet.anchor.and_then(|anchor| self.ui_view(anchor));
-                crate::share::show(
-                    request,
-                    &sheet,
-                    native.view(),
-                    anchor.as_deref(),
-                    &self.share,
-                    &self.control,
-                );
             }
             (
                 Command::RenderCanvas {

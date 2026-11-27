@@ -12,9 +12,9 @@ use std::{
     time::Duration,
 };
 
-use nsh_base::{ComboboxEvent, SelectEntry, SelectItem, combobox};
+use nsh_base::{ComboboxEvent, OpenChangeReason, SelectEntry, SelectItem, combobox};
 use nsh_core::{
-    AccessibilityRole, MountItem, Size,
+    AccessibilityRole, Command, MountItem, Size,
     platform::{Idiom, Os},
     prelude::*,
 };
@@ -36,6 +36,10 @@ struct HarnessProps {
     default_query: Option<String>,
     /// A clear button `Clear` while an item is selected.
     cleanable: bool,
+    /// The app sets `open`, following `onOpenChange` except when a press
+    /// outside asks to close the list, which it keeps open; `onClose` is
+    /// logged as `close`.
+    refuse_press_outside: bool,
 }
 
 fn props() -> HarnessProps {
@@ -46,6 +50,7 @@ fn props() -> HarnessProps {
         controlled_query: false,
         default_query: None,
         cleanable: false,
+        refuse_press_outside: false,
     }
 }
 
@@ -68,7 +73,8 @@ fn tags() -> Vec<SelectItem> {
 /// A combobox of tags under a 160 × 30 trigger `Pick`, rows drawn as their
 /// titles (`renderItem`) and at half opacity while highlighted (`focus:`),
 /// a footer `Done`; the app's value as `Value: …`, its query as `Query: …`,
-/// what it heard as `Log: …`.
+/// what it heard as `Log: …`; F9 closes the list as the app (its `open`,
+/// when it sets one).
 #[component]
 fn Harness(props: HarnessProps) -> impl IntoElement {
     let value = signal(
@@ -89,6 +95,9 @@ fn Harness(props: HarnessProps) -> impl IntoElement {
         }
     };
     let controlled = props.controlled;
+    let open = signal(false);
+    on_key("f9", move |_| open.set(false));
+    let refuse_press_outside = props.refuse_press_outside;
     let mut el = combobox()
         .items(tags())
         .multiple(props.multiple)
@@ -116,6 +125,14 @@ fn Harness(props: HarnessProps) -> impl IntoElement {
         .on_open_change(move |e: &ComboboxEvent| {
             if let ComboboxEvent::OpenChange(next, reason) = e {
                 push(format!("openChange:{next}:{reason:?}"));
+                if !(refuse_press_outside && *reason == OpenChangeReason::PressOutside) {
+                    open.set(*next);
+                }
+            }
+        })
+        .on_close(move || {
+            if refuse_press_outside {
+                push("close".into());
             }
         })
         .w(px(200.0));
@@ -129,6 +146,9 @@ fn Harness(props: HarnessProps) -> impl IntoElement {
     }
     if let Some(q) = props.default_query.clone() {
         el = el.default_query(SharedString::from(q));
+    }
+    if refuse_press_outside {
+        el = el.open(move || Some(open.get()));
     }
     view()
         .pt(px(100.0))
@@ -620,6 +640,39 @@ fn tab_closes_the_list_and_the_focus_moves_on() {
     app.key("shift+tab");
     app.gone("role:listbox");
     app.log_ends("openChange:false:Focus confirm:none");
+}
+
+#[test]
+fn closed_by_the_app_after_it_kept_it_open_the_keyboard_goes_back_to_the_input() {
+    let mut app = start(HarnessProps {
+        refuse_press_outside: true,
+        ..props()
+    });
+    let input = app.screen().id("role:combobox").unwrap();
+    // Tab gives the input the keyboard, Down opens the list.
+    app.key("tab");
+    app.key("down");
+    app.wait_for("role:listbox").unwrap();
+    app.log_ends("openChange:true:TriggerPress");
+    // A press outside asks to close it; the app keeps it open.
+    app.press("id:elsewhere").unwrap();
+    app.log_ends("openChange:false:PressOutside");
+    app.wait(Duration::from_millis(100)).unwrap();
+    assert_eq!(app.screen().count("role:listbox").unwrap(), 1, "kept open");
+    // The app closes it itself: the keyboard goes back to the input (a
+    // press that focused a button of the popup, as on Windows and Linux,
+    // leaves it there), where Down opens it again.
+    app.key("f9");
+    app.gone("role:listbox");
+    app.log_ends("close");
+    let focused_input = app
+        .screen()
+        .commands()
+        .iter()
+        .any(|(id, c)| *id == input && *c == Command::Focus);
+    assert!(focused_input, "the log: {}", app.log());
+    app.key("down");
+    app.wait_for("role:listbox").unwrap();
 }
 
 #[test]

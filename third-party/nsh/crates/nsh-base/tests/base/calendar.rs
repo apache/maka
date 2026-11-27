@@ -4,12 +4,13 @@
 //! days are one stop of Tab whose arrows move the keyboard (Left and Right
 //! traded in a right-to-left layout, where the weeks run from the right);
 //! a half range previews the range a pick makes up to the day the mouse or
-//! the keyboard is on; several months show side by side from the week's
-//! first day; the items' states are their classes (`selected:`,
-//! `data-range-*:`, `focus:`), never `renderItem`'s: the keys, the mouse, a
-//! pick and the focus draw nothing again, a turn of the months draws the
-//! days it brings once each and makes no views of the calendar's. Today is 2026-10-28 (the engine's manual
-//! clock).
+//! the keyboard is on, and its start is reported, to keep as the app's
+//! value (which a value the app sets next replaces); several months show
+//! side by side from the week's first day; the items' states are their
+//! classes (`selected:`, `data-range-*:`, `focus:`), never `renderItem`'s:
+//! the keys, the mouse, a pick and the focus draw nothing again, a turn of
+//! the months draws the days it brings once each and makes no views of the
+//! calendar's. Today is 2026-10-28 (the engine's manual clock).
 
 use std::{
     collections::{BTreeSet, HashMap},
@@ -37,6 +38,8 @@ struct HarnessProps {
     months: u32,
     first_day: u32,
     weekends_disabled: bool,
+    /// Controlled, the app sets `value` to a range's start too.
+    holds_start: bool,
 }
 
 fn props() -> HarnessProps {
@@ -47,6 +50,7 @@ fn props() -> HarnessProps {
         months: 1,
         first_day: 0,
         weekends_disabled: false,
+        holds_start: false,
     }
 }
 
@@ -95,9 +99,12 @@ const ITEM_CLASS: &str = "focus:opacity-50 data-range-start:border-l data-range-
 
 #[component]
 fn Harness(props: HarnessProps) -> impl IntoElement {
-    let value = signal(props.value);
+    let initial = props.value;
+    let value = signal(initial);
     let log = signal(Vec::<String>::new());
+    let started = signal(Vec::<String>::new());
     let controlled = props.controlled;
+    let holds_start = props.holds_start;
     let mut el = calendar()
         .range(props.range)
         .number_of_months(props.months)
@@ -109,6 +116,12 @@ fn Harness(props: HarnessProps) -> impl IntoElement {
         .on_change(move |v: &Date| {
             log.update(|l| l.push(show(v)));
             if controlled {
+                value.set(*v);
+            }
+        })
+        .on_change_start(move |v: &Date| {
+            started.update(|l| l.push(show(v)));
+            if controlled && holds_start {
                 value.set(*v);
             }
         });
@@ -123,6 +136,17 @@ fn Harness(props: HarnessProps) -> impl IntoElement {
     view()
         .child(el)
         .child(text(move || format!("Log: {}", log.get().join(" "))))
+        .child(text(move || {
+            format!("Started: {}", started.get().join(" "))
+        }))
+        // The app's own control that sets the value back (a Cancel).
+        .child(
+            view()
+                .role(AccessibilityRole::Button)
+                .label("Reset")
+                .on_press(move || value.set(initial))
+                .child(text("Reset")),
+        )
 }
 
 /// What the batches mounted: the texts, the views' parents, the items'
@@ -301,6 +325,15 @@ fn log(app: &Headless) -> String {
         .unwrap_or_default()
 }
 
+/// The range starts `onChangeStart` reported, in order.
+fn started(app: &Headless) -> String {
+    app.screen()
+        .texts()
+        .into_iter()
+        .find_map(|t| t.strip_prefix("Started: ").map(str::to_owned))
+        .unwrap_or_default()
+}
+
 /// Waits until an item shows `spec`: its drawing ([`item`]), then the
 /// marks of its states ([`Seen::marks`]), those and no others.
 fn see(app: &mut App, spec: &str) {
@@ -347,6 +380,7 @@ fn a_press_picks_a_day_and_the_header_turns_the_month() {
         app.press("label:Previous month").unwrap();
         see(&mut app, "M10/2026");
         assert_eq!(log(&app), "2026-10-14 2026-12-01");
+        assert_eq!(started(&app), "", "one date has no start");
     }
 }
 
@@ -372,9 +406,11 @@ fn a_range_takes_two_presses_and_reports_once_complete() {
             ..props()
         });
         app.press("label:2026-10-20").unwrap();
-        // Half a range: its start, selected, no range marked yet.
+        // Half a range: its start, selected, no range marked yet; no
+        // value, its start reported apart.
         see(&mut app, "10-20*");
-        assert_eq!(log(&app), "", "half a range is not reported");
+        assert_eq!(log(&app), "", "half a range is no value");
+        assert_eq!(started(&app), "2026-10-20..-");
         app.press("label:2026-10-23").unwrap();
         // Every day of the range is selected (React Aria's), its ends and
         // the days between marked (shadcn's `data-range-*`).
@@ -388,7 +424,76 @@ fn a_range_takes_two_presses_and_reports_once_complete() {
         see(&mut app, "10-5*");
         see(&mut app, "10-21");
         assert_eq!(log(&app), "2026-10-20..2026-10-23");
+        assert_eq!(started(&app), "2026-10-20..- 2026-10-05..-");
+        // A day before the start starts it again there.
+        app.press("label:2026-10-02").unwrap();
+        see(&mut app, "10-2*");
+        see(&mut app, "10-5");
+        assert_eq!(started(&app), "2026-10-20..- 2026-10-05..- 2026-10-02..-");
+        assert_eq!(log(&app), "2026-10-20..2026-10-23");
     }
+}
+
+#[test]
+fn the_keys_report_a_range_start_as_a_press_does() {
+    for controlled in [false, true] {
+        let mut app = start(HarnessProps {
+            value: Date::Range(None, None),
+            controlled,
+            range: true,
+            ..props()
+        });
+        // Previous, the toggles, Next, then the days on today.
+        for _ in 0..5 {
+            app.press_key("tab").unwrap();
+        }
+        see(&mut app, "10-28@^");
+        // The start, previewed to itself (the keyboard's day).
+        app.press_key("space").unwrap();
+        see(&mut app, "10-28@*()^");
+        assert_eq!(started(&app), "2026-10-28..-");
+        assert_eq!(log(&app), "");
+        app.press_key("right").unwrap();
+        app.press_key("enter").unwrap();
+        see(&mut app, "10-29*]^");
+        assert_eq!(log(&app), "2026-10-28..2026-10-29");
+        // Return on a complete range starts the next one.
+        app.press_key("left").unwrap();
+        app.press_key("left").unwrap();
+        app.press_key("enter").unwrap();
+        see(&mut app, "10-27*()^");
+        assert_eq!(started(&app), "2026-10-28..- 2026-10-27..-");
+        assert_eq!(log(&app), "2026-10-28..2026-10-29");
+    }
+}
+
+#[test]
+fn an_app_that_keeps_a_range_start_as_its_value_replaces_it_with_the_next() {
+    let mut app = start(HarnessProps {
+        value: (d(2026, 10, 5), d(2026, 10, 7)).into(),
+        controlled: true,
+        range: true,
+        holds_start: true,
+        ..props()
+    });
+    see(&mut app, "10-6*~");
+    // The app keeps the start as its value (`[start, null]`).
+    app.press("label:2026-10-20").unwrap();
+    see(&mut app, "10-20*");
+    see(&mut app, "10-6");
+    assert_eq!(started(&app), "2026-10-20..-");
+    // The app's Cancel sets the range before back: the start is gone.
+    app.press("label:Reset").unwrap();
+    see(&mut app, "10-6*~");
+    see(&mut app, "10-20");
+    // So the next press starts a range again, not ends that one.
+    app.press("label:2026-10-21").unwrap();
+    see(&mut app, "10-21*");
+    see(&mut app, "10-6");
+    assert_eq!(started(&app), "2026-10-20..- 2026-10-21..-");
+    app.press("label:2026-10-23").unwrap();
+    see(&mut app, "10-22*~");
+    assert_eq!(log(&app), "2026-10-21..2026-10-23");
 }
 
 #[test]
@@ -462,16 +567,30 @@ fn a_half_range_previews_to_the_day_the_mouse_or_the_keyboard_is_on() {
 
 #[test]
 fn disabled_dates_take_no_press() {
-    let mut app = start(HarnessProps {
-        weekends_disabled: true,
-        ..props()
-    });
-    // 2026-10-24 is a Saturday.
-    see(&mut app, "10-24!");
-    assert!(app.press("label:2026-10-24").is_err(), "it takes no press");
-    app.press("label:2026-10-23").unwrap();
-    see(&mut app, "10-23*");
-    assert_eq!(log(&app), "2026-10-23");
+    for range in [false, true] {
+        let mut app = start(HarnessProps {
+            value: if range {
+                Date::Range(None, None)
+            } else {
+                Date::Single(None)
+            },
+            range,
+            weekends_disabled: true,
+            ..props()
+        });
+        // 2026-10-24 is a Saturday.
+        see(&mut app, "10-24!");
+        assert!(app.press("label:2026-10-24").is_err(), "it takes no press");
+        assert_eq!(started(&app), "", "a disabled day starts no range");
+        app.press("label:2026-10-23").unwrap();
+        see(&mut app, "10-23*");
+        if range {
+            assert_eq!(log(&app), "");
+            assert_eq!(started(&app), "2026-10-23..-");
+        } else {
+            assert_eq!(log(&app), "2026-10-23");
+        }
+    }
 }
 
 #[test]

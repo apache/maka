@@ -367,6 +367,13 @@ fn outline_corner(terminal: &Terminal<TestBackend>) -> Option<(u16, u16)> {
     })
 }
 
+/// The middle of the content whose top-left text starts at `(x, y)`: away
+/// from its edges, where a drop splits instead of merging.
+fn content_middle(terminal: &Terminal<TestBackend>, x: u16, y: u16) -> (u16, u16) {
+    let area = terminal.backend().buffer().area;
+    ((x + area.width) / 2, (y + area.height) / 2)
+}
+
 #[test]
 fn a_tab_dragged_to_a_group_s_right_edge_outlines_the_half_and_splits_there() {
     let (mut view, rx) = surface();
@@ -498,13 +505,13 @@ fn dragged_label_over_the_outline(rows: u16) {
 }
 
 #[test]
-fn a_tab_dragged_onto_a_group_s_tabs_outlines_it_over_what_it_shows() {
+fn a_tab_dragged_onto_a_group_s_content_outlines_it_over_what_it_shows() {
     let (mut view, rx) = surface();
     let mut terminal = Terminal::new(TestBackend::new(80, 12)).unwrap();
     view.load(App::Rust(Root::new::<Docked>(|| ()))).unwrap();
     draw_until(&mut view, &mut terminal, &rx, "Panel c");
     let (tab_x, tab_y) = find(&terminal, "Tab a").expect("tab a is drawn");
-    let (c_x, c_y) = find(&terminal, "Tab c").expect("tab c is drawn");
+    find(&terminal, "Tab c").expect("tab c is drawn");
     let (panel_x, panel_y) = find(&terminal, "Panel c").expect("c's panel is drawn");
     // The handle's line between the groups, on c's panel row.
     let buffer = terminal.backend().buffer();
@@ -512,11 +519,12 @@ fn a_tab_dragged_onto_a_group_s_tabs_outlines_it_over_what_it_shows() {
         .rev()
         .find(|&x| buffer[(x, panel_y)].symbol() == "│")
         .expect("the handle's line is drawn");
-    // Over c's tabs the drop merges into c: the outline is around all of
-    // c's content.
+    // Over the middle of c's content the drop merges into c: the outline
+    // is around all of c's content.
+    let (to_x, to_y) = content_middle(&terminal, panel_x, panel_y);
     view.handle(mouse(MouseKind::Down(MouseButton::Left), tab_x + 1, tab_y));
-    for x in (tab_x + 2..=c_x + 4).step_by(4).chain([c_x + 4]) {
-        view.handle(mouse(MouseKind::Move, x, c_y));
+    for x in (tab_x + 2..=to_x).step_by(4).chain([to_x]) {
+        view.handle(mouse(MouseKind::Move, x, to_y));
     }
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     loop {
@@ -545,7 +553,7 @@ fn a_tab_dragged_onto_a_group_s_tabs_outlines_it_over_what_it_shows() {
         "the handle's line beside the outline\n{}",
         dump(&terminal)
     );
-    view.handle(mouse(MouseKind::Up(MouseButton::Left), c_x + 4, c_y));
+    view.handle(mouse(MouseKind::Up(MouseButton::Left), to_x, to_y));
     // a left its group for c's: b is all its group has.
     draw_until(&mut view, &mut terminal, &rx, "Layout h([*b] [");
 }
@@ -755,11 +763,32 @@ fn a_drop_preview_is_an_accent_line_over_a_faint_accent_band() {
     });
     let inner = (panel_x + 1, panel_y + 1);
     let ground = terminal.backend().buffer()[inner].bg;
-    // Over c's tabs the drop merges into c: the preview is around all of
-    // c's content.
+    // Over c's tabs the drop lands on a slot of c's bar: one Cell of the
+    // accent's line marks it, and no outline is drawn.
     view.handle(mouse(MouseKind::Down(MouseButton::Left), tab_x + 1, tab_y));
     for x in (tab_x + 2..=c_x + 4).step_by(4).chain([c_x + 4]) {
         view.handle(mouse(MouseKind::Move, x, c_y));
+    }
+    draw_until_true(
+        &mut view,
+        &mut terminal,
+        &rx,
+        "the insertion line did not show",
+        |t| {
+            let buffer = t.backend().buffer();
+            (0..buffer.area.width).any(|x| buffer[(x, c_y)].fg == accent)
+        },
+    );
+    assert!(
+        outline_corner(&terminal).is_none(),
+        "a slot of the bar draws no outline\n{}",
+        dump(&terminal)
+    );
+    // Over the middle of c's content the drop merges into c: the preview
+    // is around all of c's content.
+    let (to_x, to_y) = content_middle(&terminal, panel_x, panel_y);
+    for x in (c_x + 4..=to_x).step_by(4).chain([to_x]) {
+        view.handle(mouse(MouseKind::Move, x, to_y));
     }
     draw_until_true(
         &mut view,
@@ -788,7 +817,7 @@ fn a_drop_preview_is_an_accent_line_over_a_faint_accent_band() {
         "the preview bands its Cells\n{}",
         dump(&terminal)
     );
-    view.handle(mouse(MouseKind::Up(MouseButton::Left), c_x + 4, c_y));
+    view.handle(mouse(MouseKind::Up(MouseButton::Left), to_x, to_y));
     draw_until(&mut view, &mut terminal, &rx, "Layout h([*b] [");
 }
 

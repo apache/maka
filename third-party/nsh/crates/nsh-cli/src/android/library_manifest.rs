@@ -656,13 +656,25 @@ pub(super) fn additions(
         }
     }
     let declared = super::declared_permissions(apk);
+    let receiver = super::receiver_permission(apk.package);
     let mut additions = Additions::default();
     for merging in &top {
         let element = &merging.element;
-        let nsh_declares = element.name == "uses-permission"
-            && element
-                .attribute("android:name")
-                .is_some_and(|name| declared.iter().any(|d| d == name));
+        let name = element.attribute("android:name");
+        let nsh_declares = match element.name.as_str() {
+            "uses-permission" => {
+                name.is_some_and(|name| name == receiver || declared.iter().any(|d| d == name))
+            }
+            // androidx's receiver permission, as NSH declares it; one
+            // declared otherwise stays, a conflict rather than a guess.
+            "permission" => {
+                name == Some(receiver.as_str())
+                    && element.attributes.len() == 2
+                    && element.attribute("android:protectionLevel") == Some("signature")
+                    && element.children.is_empty()
+            }
+            _ => false,
+        };
         if !nsh_declares {
             element.write(&mut additions.top, 4);
         }
@@ -1081,6 +1093,54 @@ mod tests {
         assert!(
             error.starts_with(CRATES) && error.contains("`tools:node=\"remove\"`"),
             "{error}"
+        );
+    }
+
+    #[test]
+    fn androidx_receiver_permission_is_declared_once() {
+        let placeholders = Placeholders::new("com.example.app", None);
+        // As androidx's core declares it: once; declared otherwise: kept,
+        // a conflict rather than a guess.
+        let name = "com.example.app.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION";
+        let element = |kind: &str, attributes: &[(&str, &str)]| Element {
+            name: kind.to_owned(),
+            attributes: attributes
+                .iter()
+                .map(|&(key, value)| (key.to_owned(), value.to_owned()))
+                .collect(),
+            children: Vec::new(),
+        };
+        let library = |protection: &str| Parts {
+            top: vec![
+                element(
+                    "permission",
+                    &[
+                        ("android:name", name),
+                        ("android:protectionLevel", protection),
+                    ],
+                ),
+                element("uses-permission", &[("android:name", name)]),
+            ],
+            ..Default::default()
+        };
+        let added = additions(
+            &test_apk(),
+            &placeholders,
+            vec![(library("signature"), FROM.to_owned())],
+        )
+        .unwrap();
+        assert_eq!(added.top, "");
+        let added = additions(
+            &test_apk(),
+            &placeholders,
+            vec![(library("normal"), FROM.to_owned())],
+        )
+        .unwrap();
+        assert_eq!(
+            added.top,
+            format!(
+                "\n    <permission android:name=\"{name}\" android:protectionLevel=\"normal\" />"
+            )
         );
     }
 

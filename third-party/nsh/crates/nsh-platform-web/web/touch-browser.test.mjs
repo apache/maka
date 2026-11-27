@@ -220,3 +220,124 @@ test('a scroll view with nothing to scroll leaves the swipe to the scroll view a
     assert.equal(html.match(/data-result="([^"]*)"/)?.[1], 'passed');
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
+
+test('a press on a text field or around it reaches its input after the focus a tap gives it', { skip: !chromium }, async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'nsh-touch-browser-'));
+  try {
+    const source = await readFile(new URL('./nsh.js', import.meta.url), 'utf8');
+    const module = 'data:text/javascript;base64,' + Buffer.from(source + '\nexport { Player };').toString('base64');
+    await writeFile(join(dir, 'index.html'), `<!doctype html><style>body { margin:0; } #app { width:300px; height:200px; }</style>
+    <div id="app"></div>
+    <script type="module">
+      import { Player } from '${module}';
+      const check = (ok, message) => { if (!ok) throw Error(message); };
+      try {
+        const p = new Player(document.querySelector('#app'), { history: false });
+        p.size = [300, 200];
+        p.wasm = new Proxy({}, { get: () => () => -1 });
+        p.call = (f) => f(p.wasm);
+        const heard = [];
+        p.event = (id, name) => { if (name === 'onPress' || name === 'onFocus') heard.push(id + ' ' + name); };
+        p.installInput();
+        // A pressable row holding an input that opens a list on a press.
+        p.op_c(['c', 2, 'view']);
+        p.root.append(p.view(2));
+        p.op_f(['f', 2, 0, 0, 300, 200]);
+        p.op_e(['e', 2, ['onPress']]);
+        p.op_c(['c', 3, 'view']);
+        p.op_i(['i', 2, 3, null]);
+        p.op_f(['f', 3, 10, 10, 200, 40]);
+        p.op_in(['in', 3, { multiline: false, placeholder: '', editable: true, autoCapitalize: 'none' }, null]);
+        p.op_e(['e', 3, ['onPress']]);
+        const field = p.view(3)._field;
+        const pointer = (type, pointerType) => field.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true,
+          pointerId: 1, isPrimary: true, pointerType, button: 0, buttons: type === 'pointerup' ? 0 : 1, clientX: 50, clientY: 30 }));
+        const tap = (pointerType) => { heard.length = 0; pointer('pointerdown', pointerType); pointer('pointerup', pointerType); };
+        const click = () => field.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: 50, clientY: 30 }));
+
+        // A tap on the unfocused field: the browser focuses it from the mouse events it makes once the finger
+        // lifts, and the press comes after that focus, once (not again with the click that follows).
+        tap('touch');
+        check(heard.join() === '', 'before the focus: ' + heard);
+        field.dispatchEvent(new FocusEvent('focus'));
+        click();
+        check(heard.join() === '3 onFocus,3 onPress', 'tap: ' + heard);
+
+        // A tap whose focus does not come is pressed by its click.
+        tap('touch');
+        click();
+        check(heard.join() === '3 onPress', 'tap without a focus: ' + heard);
+
+        // A click on the focused field is pressed as it ends; the row around it hears no press.
+        field.focus();
+        check(document.activeElement === field, 'focused: ' + document.activeElement?.tagName);
+        tap('mouse');
+        check(heard.join() === '3 onPress', 'click: ' + heard);
+
+        // A tap whose focus does not come is forgotten once the mouse events of the tap are over (a key, a click
+        // elsewhere, a short wait): a focus that comes later another way reports no press.
+        const unfocused = (end) => async () => {
+          field.blur();
+          tap('touch');
+          await end();
+          field.dispatchEvent(new FocusEvent('focus'));
+          check(heard.join() === '3 onFocus', 'stale press: ' + heard);
+        };
+        await unfocused(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab' })))();
+        await unfocused(() => p.view(2).dispatchEvent(new MouseEvent('click', { bubbles: true })))();
+        await unfocused(() => new Promise((resolve) => setTimeout(resolve, 1100)))();
+
+        // The input's padding around its field is the field's too: a press there focuses the field and is the
+        // input's press, as on its text, and the row around it hears none.
+        p.op_ic(['ic', 3, 10, 5, 180, 30]);
+        const input = p.view(3);
+        const around = (type, pointerType) => input.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true,
+          pointerId: 1, isPrimary: true, pointerType, button: 0, buttons: type === 'pointerup' ? 0 : 1, clientX: 12, clientY: 12 }));
+        const mouse = (type) => input.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, button: 0,
+          buttons: type === 'mousedown' ? 1 : 0, clientX: 12, clientY: 12 }));
+        check(document.elementFromPoint(12, 12) === input, 'padding: ' + document.elementFromPoint(12, 12)?.className);
+        // A click: the focus as it goes down, the press as it ends.
+        field.blur();
+        heard.length = 0;
+        around('pointerdown', 'mouse');
+        mouse('mousedown');
+        check(document.activeElement === field, 'click around: ' + document.activeElement?.tagName);
+        around('pointerup', 'mouse');
+        mouse('mouseup');
+        mouse('click');
+        check(heard.join() === '3 onFocus,3 onPress', 'click around: ' + heard);
+        // A tap: the focus with the mouse events once the finger lifts, the press after it.
+        field.blur();
+        heard.length = 0;
+        around('pointerdown', 'touch');
+        around('pointerup', 'touch');
+        check(heard.join() === '', 'tap around, before the focus: ' + heard);
+        mouse('mousedown');
+        mouse('mouseup');
+        mouse('click');
+        check(document.activeElement === field, 'tap around: ' + document.activeElement?.tagName);
+        check(heard.join() === '3 onFocus,3 onPress', 'tap around: ' + heard);
+
+        // An input that does not listen leaves the press to no one, and a press around its field still focuses it.
+        p.op_e(['e', 3, []]);
+        tap('mouse');
+        tap('touch');
+        click();
+        check(heard.join() === '', 'not listening: ' + heard);
+        field.blur();
+        around('pointerdown', 'mouse');
+        mouse('mousedown');
+        around('pointerup', 'mouse');
+        mouse('click');
+        check(document.activeElement === field, 'not listening, around: ' + document.activeElement?.tagName);
+        check(heard.join() === '3 onFocus', 'not listening, around: ' + heard);
+        document.body.dataset.result = 'passed';
+      } catch (e) { document.body.dataset.result = 'failed: ' + e.message; }
+    </script>`);
+    const html = execFileSync(chromium, ['--headless', '--no-sandbox', '--disable-dev-shm-usage',
+      '--disable-gpu', '--no-first-run', '--no-default-browser-check', '--virtual-time-budget=5000',
+      '--user-data-dir=' + join(dir, 'profile'), '--dump-dom', pathToFileURL(join(dir, 'index.html')).href],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 60000, maxBuffer: 1024 * 1024 });
+    assert.equal(html.match(/data-result="([^"]*)"/)?.[1], 'passed');
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});

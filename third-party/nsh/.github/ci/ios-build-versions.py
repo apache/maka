@@ -33,15 +33,18 @@ def check(root, min_sdk, devices):
         if not versions:
             print(f"::error::{binary}: missing LC_BUILD_VERSION")
             failed = True
+        # Mac Catalyst links against the macOS SDK, which before Xcode 26 is
+        # numbered 3 below the iOS SDK (Xcode 16.4: iOS 18.5, macOS 15.5).
+        sdk_min = min_sdk - 3 if platform == "6" and min_sdk < 26 else min_sdk
         for actual_platform, minimum, sdk in versions:
             print(f"{runtime}: platform={actual_platform} minos={minimum} sdk={sdk}")
             if (
                 actual_platform != platform
                 or minimum not in ("15.0", "15.0.0")
-                or int(sdk.split(".")[0]) < min_sdk
+                or int(sdk.split(".")[0]) < sdk_min
             ):
                 print(
-                    f"::error::{binary}: expected platform {platform}, minos 15.0, SDK >= {min_sdk}"
+                    f"::error::{binary}: expected platform {platform}, minos 15.0, SDK >= {sdk_min}"
                 )
                 failed = True
     return int(failed)

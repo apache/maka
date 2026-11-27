@@ -69,6 +69,7 @@ use dispatch2::DispatchQueue;
 use nsh_core::{
     animation::AnimationValue,
     canvas::Damage,
+    geometry::{Points, Size},
     shader::{ShaderInput, ShaderLayer, ShaderRole},
 };
 use nsh_engine::shader::{Frame, PixelFormat, Renderer, ShaderView};
@@ -1439,7 +1440,19 @@ pub(crate) fn deleted(surface: &Surface, view: &NshView) {
 
 /// Its size changed: a frame of the new size is rendered.
 pub(crate) fn resized(surface: &Rc<Surface>, view: &NshView) {
-    if view.state().shader.is_some() && tick(view) {
+    {
+        let mut state = view.state_mut();
+        let size = state.frame.size;
+        let Some(shader) = state.shader.as_mut() else {
+            return;
+        };
+        // Screen shaders take their size from the window root in show_frame.
+        if !is_screen(shader.role) {
+            let scale = crate::view::backing_scale_of(view.ns()) as f32;
+            shader.view.set_size(size, scale);
+        }
+    }
+    if tick(view) {
         start(surface);
     }
 }
@@ -1514,15 +1527,24 @@ fn tick_due(view: &NshView) -> bool {
     tick_if(view, true)
 }
 
+fn collapsed(size: Size<Points>) -> bool {
+    size.width.0 <= 0.0 || size.height.0 <= 0.0
+}
+
 fn tick_if(view: &NshView, pictures_due: bool) -> bool {
     let surface = {
         let mut state = view.state_mut();
+        let size = state.frame.size;
         let Some(shader) = state.shader.as_mut() else {
             return false;
         };
+        // A collapsed view can be out of sight and still have a frame to clear.
+        let clear = collapsed(size)
+            && !is_screen(shader.role)
+            && (shader.view.surface().is_some() || shader.view.frame().width != 0);
         let due =
             shader.view.wants_frame() || (pictures_due && (shader.stale || shader.backdrop_stale));
-        if shader.ticking || shader.hidden || !due {
+        if shader.ticking || (!clear && (shader.hidden || !due)) {
             return false;
         }
         let Some(surface) = shader.surface.upgrade() else {
@@ -1676,8 +1698,10 @@ fn frame(surface: &Rc<Surface>) {
         if !deleted && !hidden {
             take_pictures(surface, &view, renderer, now);
         }
-        let more = !deleted && !hidden && render_view(surface, &view, renderer, now);
-        if more {
+        let more = !deleted
+            && (!hidden || collapsed(view.state().frame.size))
+            && render_view(surface, &view, renderer, now);
+        if more && !hidden {
             kept.push(view);
             continue;
         }

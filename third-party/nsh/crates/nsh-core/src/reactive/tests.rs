@@ -235,6 +235,48 @@ fn an_owner_disposes_what_it_made_when_it_runs_again() {
 }
 
 #[test]
+fn stale_owners_run_before_a_child_queued_first() {
+    let (outer, middle, inner) = (signal(0), signal(0), signal(0));
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let cleaned = Rc::new(Cell::new(0));
+    let log = seen.clone();
+    let cleanups = cleaned.clone();
+    let (root, ()) = with_root(Test, || {
+        render_effect(move || {
+            log.borrow_mut().push(("outer", get(outer)));
+            let log = log.clone();
+            let cleanups = cleanups.clone();
+            render_effect(move || {
+                log.borrow_mut().push(("middle", get(middle)));
+                let log = log.clone();
+                let cleanups = cleanups.clone();
+                render_effect(move || {
+                    log.borrow_mut().push(("inner", get(inner)));
+                    let cleanups = cleanups.clone();
+                    let _ = graph().on_cleanup(Box::new(move || {
+                        cleanups.set(cleanups.get() + 1);
+                    }));
+                });
+            });
+        });
+    });
+    seen.borrow_mut().clear();
+    // The child is first in the effect queue, but both owners must run
+    // before it. Their reruns dispose it and make its replacement once.
+    batch(Test, || {
+        set(inner, 1);
+        set(middle, 1);
+        set(outer, 1);
+    });
+    assert_eq!(*seen.borrow(), [("outer", 1), ("middle", 1), ("inner", 1)]);
+    assert_eq!(cleaned.get(), 1);
+    check_links();
+    dispose_owner(Test, root);
+    assert_eq!(cleaned.get(), 2);
+    check_links();
+}
+
+#[test]
 fn untracked_reads_make_no_edge() {
     let a = signal(0);
     let runs = Rc::new(Cell::new(0));
@@ -640,4 +682,57 @@ fn a_memo_that_failed_once_still_updates_the_memos_that_read_it() {
     set(a, 1);
     set(a, 2);
     assert_eq!(*seen.borrow(), vec![100, 102]);
+}
+
+/// Signal updates with one or many bindings, with setup and disposal
+/// outside the samples. Run both revisions with the same test:
+/// `cargo test --release -p nsh-core --lib bench_reactive_updates -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn bench_reactive_updates() {
+    use std::{hint::black_box, time::Instant};
+
+    for observers in [1, 32, 1024] {
+        let calls = Rc::new(Cell::new(0usize));
+        let last = Rc::new(Cell::new(0));
+        let (root, source) = with_root(Test, || {
+            let source = graph().owned_signal(0, Equals::Default);
+            for _ in 0..observers {
+                let calls = calls.clone();
+                let last = last.clone();
+                render_effect(move || {
+                    last.set(black_box(get(source)));
+                    calls.set(calls.get() + 1);
+                });
+            }
+            source
+        });
+        let mut value = 0i64;
+        for _ in 0..256 {
+            value += 1;
+            set(source, value);
+        }
+        let writes = (500_000 / observers).max(1000);
+        let mut samples = [0u128; 7];
+        for sample in &mut samples {
+            let start = Instant::now();
+            for _ in 0..writes {
+                value += 1;
+                set(source, black_box(value));
+            }
+            *sample = start.elapsed().as_nanos() / writes as u128;
+        }
+        assert_eq!(last.get(), value);
+        assert_eq!(calls.get(), observers * (value as usize + 1));
+        assert!(!graph().data.runaway);
+        samples.sort_unstable();
+        eprintln!(
+            "reactive {observers} observers: min / median {} / {} ns per write ({} ns per observer)",
+            samples[0],
+            samples[3],
+            samples[3] / observers as u128,
+        );
+        dispose_owner(Test, root);
+        check_links();
+    }
 }

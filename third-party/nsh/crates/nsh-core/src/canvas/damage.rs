@@ -917,6 +917,25 @@ mod tests {
     }
 
     #[test]
+    fn moving_only_a_curve_control_damages_both_positions() {
+        for curve in [
+            PathOp::QuadTo([c(50.0), S0, c(100.0), c(0.0)]),
+            PathOp::CubicTo([c(25.0), c(0.0), c(75.0), S0, c(100.0), c(0.0)]),
+        ] {
+            let ops = [
+                CanvasOp::Path(PathOp::MoveTo(c(0.0), c(0.0))),
+                CanvasOp::Path(curve),
+                CanvasOp::Fill(None, FillRule::NonZero),
+            ];
+            let before = scan(&ops, -80.0, 0.0);
+            let after = scan(&ops, 80.0, 0.0);
+            assert_eq!(before, r(-2.0, -82.0, 104.0, 84.0));
+            assert_eq!(after, r(-2.0, -2.0, 104.0, 84.0));
+            assert_eq!(before.union(after), r(-2.0, -82.0, 104.0, 164.0));
+        }
+    }
+
+    #[test]
     fn only_what_reads_changed_values_is_damaged() {
         let ops = pulse();
         // The ring of radius 10 at (100, 50), anti-aliasing around it.

@@ -370,6 +370,21 @@ use nsh_core::runtime::{UpdatePromptOptions, prompt_for_update};
 spawn(prompt_for_update(UpdatePromptOptions::default().quiet(true)));
 ```
 
+When the releases need credentials the app holds (a private GitHub repository, a CDN behind SSO), the app can
+download them itself and keep the rest of the flow. Call `set_updater_transport` once at startup, before the first
+check:
+
+```rust
+nsh_core::runtime::set_updater_transport(|url, from, sink| {
+    // Fetch `url` from byte `from` on (`Range: bytes=<from>-`), with the app's own credentials,
+    // and pass each piece to `sink(offset, bytes, total)`.
+    my_fetch(url, from, sink)
+});
+```
+
+The URLs still come from the packaged `nsh-updater.json`, so the app cannot point the update anywhere else. NSH still
+checks the signature, version, size and SHA-256, and still sends no credentials itself.
+
 For a flow of their own they use the `nsh-updater` crate directly with an HTTP client of their own:
 `Config::check` verifies the manifest, `Download` the archive, `Installation::install` replaces the app, and
 `nsh_core::element::desktop::restart()` starts the new version ([App Updates](../docs/app-updates.md#rust-apps)).

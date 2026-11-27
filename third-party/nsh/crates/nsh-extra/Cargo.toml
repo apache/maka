@@ -1,6 +1,6 @@
 [package]
 name = "nsh-extra"
-description = "NSH's official modules apps install with `nsh add` (an nshm), one Cargo feature each: `camera` takes photos with the system's camera, `location` reads the device's position, `photos` reads the user's recent photos, `push` receives remote notifications, `speech` recognizes what the user says."
+description = "NSH's official modules apps install with `nsh add` (an nshm), one Cargo feature each: `camera` takes photos with the system's camera, `location` reads the device's position, `photos` reads the user's recent photos, `push` receives remote notifications, `share` shows the system's share sheet, `speech` recognizes what the user says."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -36,6 +36,21 @@ photos = ["dep:tokio"]
 # `Push`: remote notifications with any push service (iOS, Android with a
 # push service's binding).
 push = ["dep:tokio"]
+# `Share`: the system's share sheet (iOS, Android, macOS, the web).
+share = [
+  "dep:tokio",
+  "dep:url",
+  "dep:block2",
+  "dep:dispatch2",
+  "dep:objc2",
+  "dep:nsh-platform-macos",
+  "dep:wasm-bindgen",
+  "dep:js-sys",
+  # The sheet on iOS (`UIActivityViewController`).
+  "objc2-ui-kit/UIActivity",
+  "objc2-ui-kit/UIActivityItemProvider",
+  "objc2-ui-kit/UIActivityViewController",
+]
 # `Speech`: speech recognized as the user talks (macOS, iOS, Android,
 # Windows, the web).
 speech = [
@@ -55,10 +70,12 @@ speech = [
 nsh-core.workspace = true
 log.workspace = true
 tokio = { workspace = true, features = ["sync"], optional = true }
+url = { workspace = true, optional = true }
 
-# Speech's recognizer and Location's CoreLocation on macOS; iOS has these
-# below.
+# Speech's recognizer, Location's CoreLocation and Share's menu on macOS
+# (which finds its views through the platform crate); iOS has these below.
 [target.'cfg(target_os = "macos")'.dependencies]
+nsh-platform-macos = { workspace = true, optional = true }
 objc2-core-location = { workspace = true, optional = true }
 block2 = { workspace = true, optional = true }
 dispatch2 = { workspace = true, optional = true }

@@ -3,7 +3,7 @@
 
 use nsh_core::{
     AccessibilityActionDef, AccessibilityValue,
-    element::{JsHost, JsIn, JsOwned, JsValue, PropError, Style, TsTypes, layout_rtl},
+    element::{JsHost, JsIn, JsOwned, JsValue, PropError, Renderer, Style, TsTypes, layout_rtl},
     geometry::{Along, Axis},
     prelude::*,
 };
@@ -155,6 +155,16 @@ impl From<SliderScale> for numeric::Scale {
     }
 }
 
+/// What a slider's `renderThumb` is told about the thumb it draws in:
+/// which thumb it is, never its state (the thumb's classes follow that).
+#[derive(Debug, Clone, Default, PartialEq, JsObject)]
+#[non_exhaustive]
+pub struct SliderThumbContext {
+    /// It is a range's start thumb; a range's end thumb and a single
+    /// value's only thumb are not (`gpui-base`'s `SliderThumb::start`).
+    pub start: bool,
+}
+
 /// The props of [`Slider`].
 #[derive(Debug, Clone, PartialEq, Props)]
 pub struct SliderProps {
@@ -221,13 +231,28 @@ pub struct SliderProps {
     pub range_style: Prop<Style>,
     /// The Tailwind classes of each thumb, centered on its value on the
     /// indicator (`size-4 rounded-full bg-background`); `hover:` under the
-    /// pointer, `active:` while it is dragged, `focus-visible:` with the
-    /// keyboard focus (`focus:` after a press or a drag too), `disabled:`
-    /// with the slider.
+    /// pointer, `active:` while it is dragged, `data-dragging:` while a
+    /// press on it or on the track moves it (from the press, before any
+    /// move, to the release), `focus-visible:` with the keyboard focus
+    /// (`focus:` after a press or a drag too), `disabled:` with the
+    /// slider. Each thumb is a `group`: the content `renderThumb` draws in
+    /// it follows these with `group-hover:`, `group-active:`,
+    /// `group-data-dragging:` and `group-focus-visible:`.
     pub thumb_class: Prop<Option<SharedString>>,
     /// The style of each thumb, over `thumbClass`.
     #[prop(default)]
     pub thumb_style: Prop<Style>,
+    /// Draws content in each thumb (`gpui-base`'s `SliderThumb` children)
+    /// from which thumb it is, never its state: a value bubble above it,
+    /// which moves with the thumb in the same frame as the pointer, and
+    /// shows with `group-hover:`, `group-data-dragging:` and
+    /// `group-focus-visible:` classes. Drawn once per thumb, laid out in
+    /// the thumb's box (over it, never sizing it); the content takes no
+    /// pointer (presses go to the thumb or the track under it) and is
+    /// hidden from screen readers (the thumb tells its label and value).
+    /// A range's end thumb draws over its start thumb. A terminal shows
+    /// its own thumb glyph without it.
+    pub render_thumb: Prop<Option<Renderer<SliderThumbContext>>>,
     /// The content after the track: a label, the value as text.
     pub children: Prop<Children>,
 }
@@ -315,6 +340,9 @@ struct Ctl {
     /// The indicator's frame in the track.
     rail: Stored<Bounds<Points>>,
     drag: Stored<Option<Drag>>,
+    /// The thumb a pointer's drag moves, from the press to the release
+    /// (its `data-dragging`).
+    dragging: Signal<Option<Thumb>>,
     /// The drag's value, shown from its first move until the app has
     /// answered the drag's last change: the thumb and the range follow the
     /// pointer in the same frame, natively, rather than after `onChange` has
@@ -435,6 +463,13 @@ impl Ctl {
         Some(range.snap(range.value_at(points / length)))
     }
 
+    /// The thumb a drag moves is now `thumb` (none once it ends).
+    fn set_dragging(self, thumb: Option<Thumb>) {
+        if self.dragging.get_untracked() != thumb {
+            self.dragging.set(thumb);
+        }
+    }
+
     /// A press on the track: the nearer thumb (a single value's only one)
     /// jumps to the value under the pointer, and a drag goes on from there.
     fn press_track(self, e: &ResponderEvent) {
@@ -460,6 +495,7 @@ impl Ctl {
             moved: false,
             undecided: false,
         }));
+        self.set_dragging(Some(thumb));
         self.drag_to(0.0);
     }
 
@@ -475,6 +511,7 @@ impl Ctl {
             moved: false,
             undecided,
         }));
+        self.set_dragging(Some(thumb));
     }
 
     /// The drag moved `offset` points toward `max` since it started.
@@ -495,6 +532,7 @@ impl Ctl {
         {
             drag.thumb = if v < start { Thumb::Start } else { Thumb::End };
             drag.undecided = false;
+            self.set_dragging(Some(drag.thumb));
         }
         drag.moved = true;
         let next = drag.value.with(drag.thumb, v);
@@ -515,6 +553,7 @@ impl Ctl {
         {
             self.cx.emit(SliderEvent::ChangeEnd(drag.value));
         }
+        self.set_dragging(None);
         if self.pending.get_untracked().is_some() {
             let (pending, drag) = (self.pending, self.drag);
             self.owner.run(|| {
@@ -559,7 +598,10 @@ impl Ctl {
 /// range and the thumbs on the indicator, then its children; the app's
 /// `class` and `style` style the slider, `<part>Class` / `<part>Style` the
 /// parts, whose `disabled:` follow the slider and whose thumbs show
-/// `hover:`, `active:` and `focus-visible:`.
+/// `hover:`, `active:`, `data-dragging:` and `focus-visible:`. Content the
+/// app draws in a thumb (`renderThumb`: a value bubble) moves with it and
+/// shows each thumb's own states through `group-*:` classes, natively: a
+/// range's bubble follows the thumb the pointer or the keyboard is on.
 ///
 /// In a terminal it shows the terminal's slider in place of the parts: a
 /// row of `─` as wide as the slider, `━` from `min` to the value (a range:
@@ -580,6 +622,7 @@ pub fn Slider(props: SliderProps, cx: Scope<SliderEvent>) -> impl IntoElement {
         mirrored: computed(move || axis == Axis::Horizontal && layout_rtl()),
         rail: stored(Bounds::default()),
         drag: stored(None),
+        dragging: signal(None),
         pending: signal(None),
         owner: Owner::current(),
         cx,
@@ -693,8 +736,34 @@ pub fn Slider(props: SliderProps, cx: Scope<SliderEvent>) -> impl IntoElement {
             .map(|v| match grid {
                 Some(_) => v,
                 None => v
+                    .group()
+                    .project_data("dragging", move || ctl.dragging.get() == Some(which))
                     .app_class(props.thumb_class)
-                    .inline_style(props.thumb_style),
+                    .inline_style(props.thumb_style)
+                    .child(dynamic(move || {
+                        props.render_thumb.get().map(|render| {
+                            let (key, start) = match which {
+                                Thumb::Start => ("start", true),
+                                Thumb::End => ("end", false),
+                            };
+                            // Over the thumb's box, so the content places
+                            // itself from the thumb (a bubble above it)
+                            // without sizing it. Decoration: the drag is
+                            // the thumb's, a press beside it the track's,
+                            // and screen readers hear the thumb's own
+                            // label and value, never a bubble's text
+                            // taken for the thumb's name.
+                            render
+                                .render(key, SliderThumbContext { start })
+                                .absolute()
+                                .top(px(0.0))
+                                .right(px(0.0))
+                                .bottom(px(0.0))
+                                .left(px(0.0))
+                                .pointer_events(PointerEvents::None)
+                                .accessibility_elements_hidden(true)
+                        })
+                    })),
             })
     };
     if let Some(grid) = grid {

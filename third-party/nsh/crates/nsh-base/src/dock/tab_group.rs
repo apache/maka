@@ -28,7 +28,9 @@
 //! (`split_placement_at`), except back onto its own group when that would
 //! change nothing. The drop indicator part, an overlay above the area,
 //! covers what the panel would take in the group the target names
-//! ([`super::DropPlaceholderBounds::for_placement`]). The release applies
+//! ([`super::DropPlaceholderBounds::for_placement`]); over a tab bar an
+//! insertion line between the tabs shows the slot instead ([`drop_line`]).
+//! The release applies
 //! one move ([`AreaCx::drop_at`]); a gesture the system takes away drops
 //! nothing.
 
@@ -39,8 +41,8 @@ use std::{
 
 use nsh_core::{
     AccessibilityState, RevealOptions, ScrollAlignment,
-    element::{LayoutAnimation, LayoutCurve, LayoutTransition},
-    geometry::{Bounds, Point, Points},
+    element::{LayoutAnimation, LayoutCurve, LayoutTransition, Renderer},
+    geometry::{Bounds, Point, Points, Size},
     prelude::*,
 };
 
@@ -88,12 +90,27 @@ pub(crate) fn tab_value(a: AreaCx, panel: &PanelId) -> Option<DockTab> {
 /// The toolbar at the end of the tab bar of `group`: what `renderToolbar`
 /// draws for its displayed tab, nothing without the prop or a shown panel.
 pub(crate) fn toolbar(a: AreaCx, group: Memo<Option<Group>>) -> AnyElement {
+    bar_part(a, group, |a| a.props.render_toolbar.get())
+}
+
+/// The content at the start of the tab bar of `group`, before its tabs:
+/// what `renderTabBarPrefix` draws for its displayed tab, nothing without
+/// the prop or a shown panel.
+pub(crate) fn prefix(a: AreaCx, group: Memo<Option<Group>>) -> AnyElement {
+    bar_part(a, group, |a| a.props.render_tab_bar_prefix.get())
+}
+
+fn bar_part(
+    a: AreaCx,
+    group: Memo<Option<Group>>,
+    renderer: impl Fn(AreaCx) -> Option<Renderer<DockTab>> + 'static,
+) -> AnyElement {
     let value = computed(move || {
         let shown = group.with(|g| g.as_ref().and_then(|g| shown_of(a, g)))?;
         tab_value(a, &shown)
     });
     dynamic(move || {
-        let render = a.props.render_toolbar.get()?;
+        let render = renderer(a)?;
         let value = value.get()?;
         Some(render.render(value.panel.to_string(), value))
     })
@@ -148,6 +165,7 @@ pub(crate) fn tab_group(a: AreaCx, node: NodeId) -> AnyElement {
                 .element_ref(&refs.bar)
                 .app_class(a.props.tab_bar_class)
                 .inline_style(a.props.tab_bar_style)
+                .child(prefix(a, group))
                 .child(tab_strip(each(
                     move || tabs.get(),
                     |panel: &PanelId| panel.clone(),
@@ -230,14 +248,16 @@ fn animate_indicator(fade: bool) {
 /// faint as the terminal's bands go.
 const DROP_WASH: f32 = 0.12;
 
-/// The drop indicator: while a drag would land on a group, over the part
-/// of its content frame the panel would take (all of it to merge, a half
-/// to split). It is an overlay in the root view, under the drag preview
+/// The drop indicator: while a drag would land on a group's content
+/// frame, over the part of it the panel would take (all of it to merge, a
+/// half to split). It is an overlay in the root view, under the drag preview
 /// (mounted again after it, `dock_area.rs` `drag_preview`), placed with
 /// the frame the drag measured, so it is drawn above everything in the
 /// area: the handles' lines, which lie over the edges of the groups beside
 /// them, never cover its edges, and no frame clips it. It moves from place to
-/// place, across groups too. The compact presentation has none.
+/// place, across groups too. The compact presentation has none, and a drag
+/// over a tab bar shows the insertion line ([`drop_line`]) instead: it is
+/// not drawn, nor `renderDropIndicator` called, for a tab bar's slot.
 ///
 /// In a terminal it is the region's outline, one Cell in the accent (the
 /// hue of the focus ring) around it, over a faint band of the accent: a
@@ -250,7 +270,11 @@ pub(crate) fn drop_indicator(a: AreaCx) -> AnyElement {
         if a.compact.get() {
             return None;
         }
-        a.drag.with(|drag| drag.as_ref().and_then(|d| d.target))
+        a.drag.with(|drag| {
+            drag.as_ref()
+                .and_then(|d| d.target)
+                .filter(|t| t.line.is_none())
+        })
     });
     when(
         move || target.with(Option::is_some),
@@ -264,36 +288,7 @@ pub(crate) fn drop_indicator(a: AreaCx) -> AnyElement {
                     }
                 })
             };
-            // The first place is where it appears; a later one, where it
-            // moves to.
-            let shown = Cell::new(None);
-            effect(move || {
-                let now = place();
-                let before = shown.replace(now);
-                if before != now && !terminal {
-                    animate_indicator(before.is_none());
-                }
-            });
-            // Once its overlay is shown (laid out, so opened in a commit
-            // before): the drag preview is mounted again, in a later commit,
-            // above it.
-            let opened = Cell::new(false);
-            overlay()
-                .on_layout(move |_: &Bounds<Points>| {
-                    if !opened.replace(true) {
-                        a.indicator_shown.update(|n| *n = n.wrapping_add(1));
-                    }
-                })
-                .pointer_events(PointerEvents::None)
-                .focusable(false)
-                .style_with(move |s| match place() {
-                    Some(p) => s
-                        .left(p.origin.x)
-                        .top(p.origin.y)
-                        .w(p.size.width)
-                        .h(p.size.height),
-                    None => s,
-                })
+            indicator_overlay(a, place)
                 .map(|v| match terminal {
                     true => v
                         .border(px(1.0))
@@ -322,6 +317,84 @@ pub(crate) fn drop_indicator(a: AreaCx) -> AnyElement {
         },
     )
     .into_element()
+}
+
+/// How thick the insertion line is: two points (one Cell in a terminal,
+/// `resolve_bar`).
+const LINE_THICKNESS: Points = px(2.0);
+
+/// The insertion line: while a drag would land on a slot of a tab bar
+/// (the compact strip's too), a thin line across the bar at the boundary
+/// between the tabs before and after the slot ([`slot_line`]), as the
+/// editors draw it; the content frame is not tinted then. An overlay as the
+/// drop indicator is, with its ordering under the drag preview and its
+/// motion, in the theme's focus-ring color (the accent in a terminal,
+/// where it jumps from Cell to Cell).
+pub(crate) fn drop_line(a: AreaCx) -> AnyElement {
+    let terminal = crate::terminal::is_terminal();
+    let line = computed(move || {
+        a.drag
+            .with(|drag| drag.as_ref().and_then(|d| d.target).and_then(|t| t.line))
+    });
+    when(
+        move || line.with(Option::is_some),
+        move || {
+            indicator_overlay(a, move || line.get()).map(|v| match terminal {
+                // A terminal draws no fills: the line is a Cell's border
+                // in the accent, `│` across a row of tabs (`─` down a
+                // column of them).
+                true => match line.with(|l| l.is_some_and(|l| l.size.width > l.size.height)) {
+                    true => v.border_t(px(1.0)),
+                    false => v.border_l(px(1.0)),
+                }
+                .border_color(crate::terminal::ACCENT),
+                false => v
+                    .bg(move || crate::theme::theme().ring)
+                    .rounded(LINE_THICKNESS * 0.5),
+            })
+        },
+    )
+    .into_element()
+}
+
+/// The overlay of the drop indicator or the insertion line, at `place`:
+/// it takes no touches, eases from place to place (fading in as it
+/// appears) outside a terminal, and once laid out bumps
+/// [`AreaCx::indicator_shown`], so the drag preview is mounted again above
+/// it.
+fn indicator_overlay(
+    a: AreaCx,
+    place: impl Fn() -> Option<Bounds<Points>> + Copy + 'static,
+) -> Overlay {
+    let terminal = crate::terminal::is_terminal();
+    // The first place is where it appears; a later one, where it moves to.
+    let shown = Cell::new(None);
+    effect(move || {
+        let now = place();
+        let before = shown.replace(now);
+        if before != now && !terminal {
+            animate_indicator(before.is_none());
+        }
+    });
+    // Once its overlay is shown (laid out, so opened in a commit before):
+    // the drag preview is mounted again, in a later commit, above it.
+    let opened = Cell::new(false);
+    overlay()
+        .on_layout(move |_: &Bounds<Points>| {
+            if !opened.replace(true) {
+                a.indicator_shown.update(|n| *n = n.wrapping_add(1));
+            }
+        })
+        .pointer_events(PointerEvents::None)
+        .focusable(false)
+        .style_with(move |s| match place() {
+            Some(p) => s
+                .left(p.origin.x)
+                .top(p.origin.y)
+                .w(p.size.width)
+                .h(p.size.height),
+            None => s,
+        })
 }
 
 /// The tab of panel `panel` (in group `source`; `None`: the compact
@@ -440,22 +513,86 @@ fn page_bounds(m: nsh_core::Measurement) -> Bounds<Points> {
     }
 }
 
+/// Whether tab bar `bar` lists its tabs top to bottom: it is taller than
+/// wide.
+fn is_vertical(bar: Bounds<Points>) -> bool {
+    bar.size.height > bar.size.width
+}
+
 /// The slot among `tabs` (left to right, or top to bottom when `bar` is
-/// taller than wide) that `at` is past, `panel` left out.
-fn slot_at(
+/// taller than wide) that `at` is past, `panel` left out, and the others
+/// in that order.
+fn slot_at<'t>(
     bar: Bounds<Points>,
-    tabs: &[(PanelId, Bounds<Points>)],
+    tabs: &'t [(PanelId, Bounds<Points>)],
     panel: &PanelId,
     at: Point<Points>,
-) -> (usize, Vec<PanelId>) {
-    let across = bar.size.height > bar.size.width;
+) -> (usize, Vec<&'t (PanelId, Bounds<Points>)>) {
+    let across = is_vertical(bar);
     let mut others: Vec<&(PanelId, Bounds<Points>)> =
         tabs.iter().filter(|(p, _)| p != panel).collect();
     let key = |b: &Bounds<Points>| if across { b.center().y } else { b.center().x };
     crate::sort::sort_by(&mut others, |x, y| key(&x.1).0.total_cmp(&key(&y.1).0));
     let pointer = if across { at.y } else { at.x };
     let index = others.iter().filter(|(_, b)| key(b) < pointer).count();
-    (index, others.into_iter().map(|(p, _)| p.clone()).collect())
+    (index, others)
+}
+
+/// The insertion line at slot `index` of tab bar `bar` whose tabs (the
+/// dragged one left out) are `others`, in the order [`slot_at`] gives:
+/// `thickness` across, the bar's height (its width for a vertical bar)
+/// long, centered on the boundary between the tab before the slot and the
+/// one after it (the first tab's start for the first slot, the last one's
+/// end for the last; the bar's start with no tabs), kept inside the bar.
+fn slot_line(
+    bar: Bounds<Points>,
+    others: &[Bounds<Points>],
+    index: usize,
+    thickness: Points,
+) -> Bounds<Points> {
+    let vertical = is_vertical(bar);
+    // A frame's start and end along the bar.
+    let span = |b: &Bounds<Points>| match vertical {
+        true => (b.origin.y, b.origin.y + b.size.height),
+        false => (b.origin.x, b.origin.x + b.size.width),
+    };
+    let (bar_start, bar_end) = span(&bar);
+    let before = index
+        .checked_sub(1)
+        .and_then(|i| others.get(i))
+        .map(|b| span(b).1);
+    let after = others.get(index).map(|b| span(b).0);
+    let boundary = match (before, after) {
+        (Some(end), Some(start)) => (end + start) * 0.5,
+        (Some(end), None) => end,
+        (None, Some(start)) => start,
+        (None, None) => bar_start,
+    };
+    let along = (boundary - thickness * 0.5)
+        .max(bar_start)
+        .min(bar_end - thickness);
+    match vertical {
+        true => Bounds {
+            origin: Point {
+                x: bar.origin.x,
+                y: along,
+            },
+            size: Size {
+                width: bar.size.width,
+                height: thickness,
+            },
+        },
+        false => Bounds {
+            origin: Point {
+                x: along,
+                y: bar.origin.y,
+            },
+            size: Size {
+                width: thickness,
+                height: bar.size.height,
+            },
+        },
+    }
 }
 
 impl AreaCx {
@@ -616,6 +753,7 @@ impl AreaCx {
                 side,
                 index: None,
                 content,
+                line: None,
             })
         })
     }
@@ -626,6 +764,16 @@ impl AreaCx {
     fn resolve_bar(self, drag: &TabDrag, zone: &Zone, at: Point<Points>) -> Option<DropAt> {
         let bar = zone.bar?;
         let (index, others) = slot_at(bar, &zone.tabs, &drag.panel, at);
+        // One Cell in a terminal: a Cell is wider and taller than a point,
+        // and a thinner line covers no Cell at all.
+        let thickness = match (crate::terminal::is_terminal(), is_vertical(bar)) {
+            (true, true) => crate::terminal::cell_height(),
+            (true, false) => crate::terminal::cell_width(),
+            (false, _) => LINE_THICKNESS,
+        };
+        let frames: Vec<Bounds<Points>> = others.iter().map(|(_, b)| *b).collect();
+        let line = Some(slot_line(bar, &frames, index, thickness));
+        let others: Vec<PanelId> = others.into_iter().map(|(p, _)| p.clone()).collect();
         match zone.group {
             Some(group) => {
                 if !self.droppable() {
@@ -636,6 +784,7 @@ impl AreaCx {
                     side: None,
                     index: Some(index),
                     content: zone.content.unwrap_or(bar),
+                    line,
                 })
             }
             None => {
@@ -653,9 +802,101 @@ impl AreaCx {
                         side: None,
                         index: Some(at),
                         content: bar,
+                        line,
                     })
                 })
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use nsh_core::geometry::{point, size};
+
+    use super::*;
+
+    fn frame(x: f32, y: f32, w: f32, h: f32) -> Bounds<Points> {
+        Bounds {
+            origin: point(px(x), px(y)),
+            size: size(px(w), px(h)),
+        }
+    }
+
+    /// A bar at (100, 50), 400 × 24, with tabs a, b and c 80 wide from its
+    /// start, 4 apart.
+    fn bar_of_three() -> (Bounds<Points>, Vec<(PanelId, Bounds<Points>)>) {
+        let bar = frame(100.0, 50.0, 400.0, 24.0);
+        let tabs = ["a", "b", "c"]
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                (
+                    PanelId::from(*p),
+                    frame(100.0 + 84.0 * i as f32, 50.0, 80.0, 24.0),
+                )
+            })
+            .collect();
+        (bar, tabs)
+    }
+
+    /// The line where dragging `panel` over the bar of three at `x` lands.
+    fn line_at(panel: &'static str, x: f32) -> (usize, Bounds<Points>) {
+        let (bar, tabs) = bar_of_three();
+        let (index, others) = slot_at(bar, &tabs, &panel.into(), point(px(x), px(60.0)));
+        let frames: Vec<_> = others.iter().map(|(_, b)| *b).collect();
+        (index, slot_line(bar, &frames, index, px(2.0)))
+    }
+
+    #[test]
+    fn the_first_slot_s_line_is_at_the_first_tab_s_start() {
+        // c dragged before a: the bar's start, kept inside it.
+        assert_eq!(line_at("c", 110.0), (0, frame(100.0, 50.0, 2.0, 24.0)));
+        // a dragged before b (where it was): b's start, centered on it.
+        assert_eq!(line_at("a", 150.0), (0, frame(183.0, 50.0, 2.0, 24.0)));
+    }
+
+    #[test]
+    fn a_middle_slot_s_line_is_centered_between_its_tabs() {
+        // c dragged between a (ending at 180) and b (starting at 184).
+        assert_eq!(line_at("c", 190.0), (1, frame(181.0, 50.0, 2.0, 24.0)));
+    }
+
+    #[test]
+    fn the_last_slot_s_line_is_at_the_last_tab_s_end() {
+        // a dragged past c, which ends at 348.
+        assert_eq!(line_at("a", 450.0), (2, frame(347.0, 50.0, 2.0, 24.0)));
+    }
+
+    #[test]
+    fn a_bar_with_no_other_tab_has_its_line_at_its_start() {
+        let bar = frame(0.0, 0.0, 300.0, 24.0);
+        assert_eq!(slot_line(bar, &[], 0, px(2.0)), frame(0.0, 0.0, 2.0, 24.0));
+    }
+
+    #[test]
+    fn a_vertical_bar_s_line_is_horizontal() {
+        // A bar 30 wide and 300 tall, tabs 30 × 40 down it, 10 apart.
+        let bar = frame(10.0, 100.0, 30.0, 300.0);
+        let tabs: Vec<(PanelId, Bounds<Points>)> = ["a", "b", "c"]
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                (
+                    PanelId::from(*p),
+                    frame(10.0, 100.0 + 50.0 * i as f32, 30.0, 40.0),
+                )
+            })
+            .collect();
+        let line = |y: f32| {
+            let (index, others) = slot_at(bar, &tabs, &"a".into(), point(px(25.0), px(y)));
+            let frames: Vec<_> = others.iter().map(|(_, b)| *b).collect();
+            (index, slot_line(bar, &frames, index, px(2.0)))
+        };
+        // Before b (starting at 150), between b (ending at 190) and c
+        // (starting at 200), after c (ending at 240).
+        assert_eq!(line(120.0), (0, frame(10.0, 149.0, 30.0, 2.0)));
+        assert_eq!(line(180.0), (1, frame(10.0, 194.0, 30.0, 2.0)));
+        assert_eq!(line(300.0), (2, frame(10.0, 239.0, 30.0, 2.0)));
     }
 }

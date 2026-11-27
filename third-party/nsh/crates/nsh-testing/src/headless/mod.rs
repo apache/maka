@@ -379,13 +379,6 @@ pub struct Headless {
     picks: Picks,
     /// The color the user picks on the screen ([`Headless::on_screen_color`]).
     screen_color: Option<nsh_core::Hsla>,
-    /// How the user answers the share sheet ([`Headless::on_share`]);
-    /// `None`: never (a sheet the platform never answers, in this crate's
-    /// tests).
-    share: Option<nsh_core::share::ShareOutcome>,
-    /// How the user ends the web sign-in sessions
-    /// ([`Headless::on_auth_session`]); `None`: never.
-    auth_session: Option<nsh_core::auth_session::AuthSessionOutcome>,
     /// The paths the user picks in the open dialog
     /// ([`Headless::on_pick_paths`]).
     picked_paths: Vec<std::path::PathBuf>,
@@ -634,8 +627,6 @@ impl Headless {
             dialogs: Dialogs::Default,
             picks: Picks::Default,
             screen_color: None,
-            share: Some(nsh_core::share::ShareOutcome::dismissed()),
-            auth_session: Some(nsh_core::auth_session::AuthSessionOutcome::Cancelled),
             picked_paths: Vec::new(),
             save_path: None,
             failing_images: Vec::new(),
@@ -1015,50 +1006,6 @@ impl Headless {
         self.set_environment("onScreenColor", |env| env.screen_color = true)
     }
 
-    /// The platform shows a share sheet
-    /// ([`nsh_core::platform::Environment::share`]), and the user answers
-    /// every share the app shows (`Share.show`, [`nsh_core::element::share`])
-    /// with `outcome`: shared (to a target, if it names one) or dismissed.
-    /// What the app shares is recorded ([`Screen::shares`]). Then waits
-    /// until the app is quiet.
-    pub fn on_share(&mut self, outcome: nsh_core::share::ShareOutcome) -> Result<(), String> {
-        let what = format!("onShare({})", outcome.action.as_str());
-        self.share = Some(outcome);
-        self.set_environment(&what, |env| env.share = true)
-    }
-
-    /// The platform shows web sign-in sessions in the app
-    /// ([`nsh_core::platform::Environment::auth_session`], as iOS does), and
-    /// the user ends every session the app opens
-    /// ([`nsh_core::element::open_auth_session`]) with `outcome`: a callback
-    /// URL or a cancellation. What the app opens is recorded
-    /// ([`Screen::auth_sessions`]). Then waits until the app is quiet.
-    ///
-    /// Without it, as on desktops, a session opens the page as `open_url`
-    /// does ([`Screen::opened_urls`]) and ends with a link of its callback
-    /// scheme ([`Headless::open_with_url`]); on the web, or with
-    /// [`field@nsh_core::platform::Environment::scheme_links`] `Some(false)`,
-    /// where no such link comes, it fails at once.
-    pub fn on_auth_session(
-        &mut self,
-        outcome: nsh_core::auth_session::AuthSessionOutcome,
-    ) -> Result<(), String> {
-        let what = format!("onAuthSession({outcome:?})");
-        self.auth_session = Some(outcome);
-        self.set_environment(&what, |env| env.auth_session = true)
-    }
-
-    /// The platform shows web sign-in sessions in the app, as
-    /// [`Headless::on_auth_session`] does, but the user ends none of them:
-    /// each stays open until the app closes it
-    /// ([`nsh_core::element::close_auth_session`]) or opens another
-    /// ([`Screen::auth_session_showing`]). Then waits until the app is
-    /// quiet.
-    pub fn keep_auth_sessions_open(&mut self) -> Result<(), String> {
-        self.auth_session = None;
-        self.set_environment("keepAuthSessionsOpen", |env| env.auth_session = true)
-    }
-
     /// The platform has file dialogs, a file manager and a trash
     /// ([`nsh_core::platform::Environment::file_requests`]), and the user
     /// picks `paths` whenever the app shows the open dialog (`pick_paths`;
@@ -1241,6 +1188,10 @@ impl Headless {
                     command: Command::ClearSelection,
                 } => self.clear_selection_in(*id),
                 MountItem::Command {
+                    id,
+                    command: Command::SelectAll,
+                } => self.select_all_in(*id),
+                MountItem::Command {
                     id: ROOT_ID,
                     command: Command::SetAppUrl(url),
                 } => self.set_page_url(url, false),
@@ -1359,17 +1310,6 @@ impl Headless {
                 fields.push(("color", PayloadValue::Number(f64::from(packed))));
             }
             control.dispatch_event(ROOT_ID, EventKind::ScreenColor, EventPayload::Map(fields));
-        }
-        for id in self.screen.take_share_answers() {
-            if let Some(outcome) = &self.share {
-                control.dispatch_event(ROOT_ID, EventKind::Share, outcome.payload(id));
-            }
-        }
-        for id in self.screen.take_auth_session_answers() {
-            if let Some(outcome) = &self.auth_session {
-                control.dispatch_event(ROOT_ID, EventKind::AuthSession, outcome.payload(id));
-                self.screen.auth_session_ended(id);
-            }
         }
         for (id, request) in self.screen.take_file_answers() {
             use nsh_core::file_dialog::FileRequest;
@@ -3674,244 +3614,6 @@ mod tests {
                 "mailto:help@example.com"
             ]
         );
-    }
-
-    /// Shares a link and shows how the share ended.
-    #[component]
-    fn Sharing() -> impl IntoElement {
-        let result = signal(String::from("nothing"));
-        let share_link = move |_: &()| {
-            let shared = share(
-                nsh_core::share::ShareRequest::new()
-                    .title("Docs")
-                    .url("https://example.com/docs"),
-            );
-            spawn(async move {
-                result.set(match shared.await {
-                    Ok(outcome) => match outcome.target {
-                        Some(target) => format!("{} {target}", outcome.action.as_str()),
-                        None => outcome.action.as_str().to_owned(),
-                    },
-                    Err(error) => error.code.unwrap_or_default(),
-                })
-            });
-        };
-        view()
-            .child(text(move || result.get()))
-            .child(text("Share").on_press(share_link))
-    }
-
-    #[test]
-    fn a_test_answers_the_share_sheet() {
-        let mut app =
-            Headless::start(EngineConfig::new(crate::windowed_root::<Sharing>())).unwrap();
-        app.first_render().unwrap();
-        // No share sheet until the test gives the platform one.
-        app.press("Share").unwrap();
-        app.wait_for("text:ERR_FEATURE_UNAVAILABLE_ON_PLATFORM")
-            .unwrap();
-        assert!(app.screen().shares().is_empty());
-
-        app.on_share(nsh_core::share::ShareOutcome::shared(Some("mail".into())))
-            .unwrap();
-        app.press("Share").unwrap();
-        app.wait_for("text:shared mail").unwrap();
-        app.on_share(nsh_core::share::ShareOutcome::dismissed())
-            .unwrap();
-        app.press("Share").unwrap();
-        app.wait_for("text:dismissed").unwrap();
-        let shares = app.screen().shares();
-        assert_eq!(shares.len(), 2);
-        assert_eq!(shares[0].url.as_deref(), Some("https://example.com/docs"));
-        assert_eq!(shares[0].title.as_deref(), Some("Docs"));
-        assert_eq!(shares[0].anchor, None);
-    }
-
-    #[test]
-    fn a_share_never_answered_does_not_hold_the_next_back() {
-        let mut app =
-            Headless::start(EngineConfig::new(crate::windowed_root::<Sharing>())).unwrap();
-        app.first_render().unwrap();
-        app.on_share(nsh_core::share::ShareOutcome::shared(None))
-            .unwrap();
-        // The platform loses the first sheet's answer.
-        app.share = None;
-        app.press("Share").unwrap();
-        app.wait_for("text:nothing").unwrap();
-        assert_eq!(app.screen().shares().len(), 1);
-        // The next share still reaches the platform, and the first ends as
-        // dismissed.
-        app.press("Share").unwrap();
-        app.wait_for("text:dismissed").unwrap();
-        assert_eq!(app.screen().shares().len(), 2);
-        app.share = Some(nsh_core::share::ShareOutcome::shared(Some("mail".into())));
-        app.press("Share").unwrap();
-        app.wait_for("text:shared mail").unwrap();
-        assert_eq!(app.screen().shares().len(), 3);
-    }
-
-    /// Opens a sign-in session ending with a `demo:` callback (closes it)
-    /// and shows how it ended; the links the app hears otherwise show
-    /// after it.
-    #[component]
-    fn SigningIn() -> impl IntoElement {
-        let result = signal(String::from("nothing"));
-        spawn(async move {
-            loop {
-                let link = next_url_scheme_open().await;
-                result.set(format!("link {link}"));
-            }
-        });
-        let sign_in = move |_: &()| {
-            let session = open_auth_session(
-                nsh_core::auth_session::AuthSessionRequest::new(
-                    "https://example.com/authorize",
-                    "demo",
-                )
-                .ephemeral(true),
-            );
-            spawn(async move {
-                use nsh_core::auth_session::AuthSessionOutcome;
-                result.set(match session.await {
-                    Ok(AuthSessionOutcome::Completed(url)) => format!("signed in {url}"),
-                    Ok(_) => "cancelled".into(),
-                    Err(error) => error.code.unwrap_or(error.message),
-                })
-            });
-        };
-        view()
-            .child(text(move || result.get()))
-            .child(text("Sign in").on_press(sign_in))
-            .child(text("Close").on_press(|_: &()| close_auth_session()))
-    }
-
-    #[test]
-    fn a_test_ends_the_in_app_sign_in_session() {
-        use nsh_core::auth_session::AuthSessionOutcome;
-        let mut app = Headless::start(EngineConfig::new(Root::of::<SigningIn>())).unwrap();
-        app.first_render().unwrap();
-        app.on_auth_session(AuthSessionOutcome::Completed("demo://done?code=7".into()))
-            .unwrap();
-        app.press("Sign in").unwrap();
-        app.wait_for("text:signed in demo://done?code=7").unwrap();
-        app.on_auth_session(AuthSessionOutcome::Cancelled).unwrap();
-        app.press("Sign in").unwrap();
-        app.wait_for("text:cancelled").unwrap();
-        let sessions = app.screen().auth_sessions();
-        assert_eq!(sessions.len(), 2);
-        assert_eq!(sessions[0].url, "https://example.com/authorize");
-        assert_eq!(sessions[0].callback_scheme, "demo");
-        assert!(sessions[0].ephemeral);
-        // The page opened in the app, not in the browser.
-        assert!(app.screen().opened_urls().is_empty());
-    }
-
-    #[test]
-    fn without_an_in_app_session_the_callback_link_ends_it() {
-        let root = || Root::of::<SigningIn>().url_schemes(["demo"]);
-        let mut app = Headless::start(EngineConfig::new(root())).unwrap();
-        app.first_render().unwrap();
-        app.press("Sign in").unwrap();
-        assert_eq!(
-            app.screen().opened_urls(),
-            ["https://example.com/authorize"]
-        );
-        app.wait_for("text:nothing").unwrap();
-        // The callback is the session's answer, not a link the app hears.
-        app.open_with_url("demo://done?code=8").unwrap();
-        app.wait_for("text:signed in demo://done?code=8").unwrap();
-        app.open_with_url("demo://later").unwrap();
-        app.wait_for("text:link demo://later").unwrap();
-        // A second session replaces one never answered.
-        app.press("Sign in").unwrap();
-        app.press("Sign in").unwrap();
-        app.wait_for("text:cancelled").unwrap();
-        // A browser that does not open fails it.
-        app.fail_open_urls("https://example.com/authorize").unwrap();
-        app.press("Sign in").unwrap();
-        app.wait_for("text:openAuthSession: the browser did not open the sign-in page")
-            .unwrap();
-
-        // Nothing brings a callback of a scheme the app does not claim back.
-        let mut app = Headless::start(EngineConfig::new(Root::of::<SigningIn>())).unwrap();
-        app.first_render().unwrap();
-        app.press("Sign in").unwrap();
-        app.wait_for("text:ERR_FEATURE_UNAVAILABLE_ON_PLATFORM")
-            .unwrap();
-        assert!(app.screen().opened_urls().is_empty());
-    }
-
-    #[test]
-    fn where_no_link_of_the_apps_schemes_comes_the_session_fails_at_once() {
-        let start = |os: Os, scheme_links: Option<bool>| {
-            let mut config = EngineConfig::new(Root::of::<SigningIn>().url_schemes(["demo"]));
-            config.environment.os = os;
-            config.environment.scheme_links = scheme_links;
-            let mut app = Headless::start(config).unwrap();
-            app.first_render().unwrap();
-            app
-        };
-        // The app claims `demo`: only the missing links can refuse it.
-        let refused = "text:ERR_FEATURE_UNAVAILABLE_ON_PLATFORM";
-        // The web hears only its page's address: the claimed scheme's link
-        // never comes, so the session fails instead of waiting forever.
-        let mut app = start(Os::Web, None);
-        app.press("Sign in").unwrap();
-        app.wait_for(refused).unwrap();
-        assert!(app.screen().opened_urls().is_empty());
-        // The same where the platform says it hears none, whatever the OS
-        // (the GPUI and terminal backends).
-        let mut app = start(Os::Ios, Some(false));
-        app.press("Sign in").unwrap();
-        app.wait_for(refused).unwrap();
-        assert!(app.screen().opened_urls().is_empty());
-        // A platform that says it hears them waits for the callback.
-        let mut app = start(Os::Web, Some(true));
-        app.press("Sign in").unwrap();
-        assert_eq!(
-            app.screen().opened_urls(),
-            ["https://example.com/authorize"]
-        );
-        app.open_with_url("demo://done?code=9").unwrap();
-        app.wait_for("text:signed in demo://done?code=9").unwrap();
-        // A session the platform shows itself needs no link.
-        let mut app = start(Os::Web, None);
-        app.on_auth_session(nsh_core::auth_session::AuthSessionOutcome::Completed(
-            "demo://done?code=10".into(),
-        ))
-        .unwrap();
-        app.press("Sign in").unwrap();
-        app.wait_for("text:signed in demo://done?code=10").unwrap();
-    }
-
-    #[test]
-    fn the_app_closes_its_sign_in_session() {
-        let mut app = Headless::start(EngineConfig::new(Root::of::<SigningIn>())).unwrap();
-        app.first_render().unwrap();
-        // With no session waiting, closing does nothing.
-        app.press("Close").unwrap();
-        app.wait_for("text:nothing").unwrap();
-        app.keep_auth_sessions_open().unwrap();
-        app.press("Sign in").unwrap();
-        assert_eq!(app.screen().auth_sessions().len(), 1);
-        assert!(app.screen().auth_session_showing());
-        app.wait_for("text:nothing").unwrap();
-        // Closed: answered as cancelled, and off the screen.
-        app.press("Close").unwrap();
-        app.wait_for("text:cancelled").unwrap();
-        assert!(!app.screen().auth_session_showing());
-
-        // In the system browser, the session ends as cancelled too; the
-        // callback link that comes later is an ordinary link.
-        let root = || Root::of::<SigningIn>().url_schemes(["demo"]);
-        let mut app = Headless::start(EngineConfig::new(root())).unwrap();
-        app.first_render().unwrap();
-        app.press("Sign in").unwrap();
-        app.press("Close").unwrap();
-        app.wait_for("text:cancelled").unwrap();
-        app.open_with_url("demo://done?code=9").unwrap();
-        app.wait_for("text:link demo://done?code=9").unwrap();
-        assert!(app.screen().auth_sessions().is_empty());
     }
 
     #[test]

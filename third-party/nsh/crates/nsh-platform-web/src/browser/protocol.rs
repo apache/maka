@@ -144,6 +144,7 @@ pub(crate) fn decode_command<'js>(name: &str, arg: Value<'js>) -> compat::Result
         "focus" => Command::Focus,
         "blur" => Command::Blur,
         "clearSelection" => Command::ClearSelection,
+        "selectAll" => Command::SelectAll,
         "reload" => Command::Reload,
         "goBack" => Command::GoBack,
         "goForward" => Command::GoForward,

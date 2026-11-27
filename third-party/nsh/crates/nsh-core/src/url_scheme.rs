@@ -13,8 +13,10 @@
 //! those [`AppLinks::check`] accepts, so the app hears what the system was
 //! told and no more (a link another app sends to Android's activity
 //! directly is checked too), and holds them until the app listens
-//! ([`crate::element::next_url_scheme_open`]), at most [`MAX_PENDING`].
-//! Nothing navigates on its own: what a link opens is the app's.
+//! ([`crate::element::next_url_scheme_open`]), at most [`MAX_PENDING`]. A
+//! module waiting for a link of one scheme
+//! ([`crate::element::next_url_scheme_open_for`]) takes those alone while
+//! it waits. Nothing navigates on its own: what a link opens is the app's.
 //!
 //! The core also keeps the app's address ([`AppUrlCell`]); the platform
 //! reports moves of it the app did not make (the web's back and forward,

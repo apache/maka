@@ -257,6 +257,19 @@ impl FullScreenHide {
             Step::Wait
         }
     }
+
+    /// AppKit could not put it in full screen (`windowDidFailToEnterFullScreen:`):
+    /// it is still on its desktop, as if it had left.
+    fn failed_to_enter(&mut self) -> Step {
+        self.left()
+    }
+
+    /// AppKit could not take it out of full screen
+    /// (`windowDidFailToExitFullScreen:`): it is still in, as if it had
+    /// just entered (hidden, it tries to leave again).
+    fn failed_to_leave(&mut self) -> Step {
+        self.entered()
+    }
 }
 
 /// The app hides `window`, observed with `watch`: whether it is ordered
@@ -389,61 +402,14 @@ pub(crate) fn observe(surface: &Surface, target: Target, watch: &Watch, window: 
         }
     });
     let left_full_screen = RcBlock::new(move |_: NonNull<NSNotification>| {
-        let Some(surface) = Surface::with_key(key) else {
-            return;
-        };
-        let pending = with_watch(&surface, target, |w| {
-            (w.after_full_screen.take(), w.window())
-        });
-        if let Some((Some(placement), Some(window))) = pending {
-            with_watch(&surface, target, |w| {
-                apply_placement(w, &window, placement);
-            });
+        if let Some(surface) = Surface::with_key(key) {
+            left_full_screen(&surface, target, FullScreenHide::left);
         }
-        crate::window::left_full_screen(&surface, target);
-        report(&surface, target);
-        // Hidden in full screen: it goes now that it is back on the
-        // desktop it came from. Shown again on its way out, it enters the
-        // full screen asked for meanwhile.
-        let step = with_watch(&surface, target, |w| {
-            let step = w.full_screen_step(FullScreenHide::left);
-            if step != Step::OrderOut
-                && let Some(window) = w.window()
-            {
-                begin_held_full_screen(w, &window);
-            }
-            step
-        });
-        if step == Some(Step::OrderOut) {
-            crate::window::hidden_after_full_screen(&surface, target);
-        }
-        apply_held(key, target);
     });
     let entered_full_screen = RcBlock::new(move |_: NonNull<NSNotification>| {
-        let Some(surface) = Surface::with_key(key) else {
-            return;
-        };
-        // Hidden on its way into full screen: it leaves at once (on the
-        // main queue's next turn, as AppKit ignores `toggleFullScreen:`
-        // from within this notification), unless shown again meanwhile.
-        let leave = with_watch(&surface, target, |w| {
-            w.full_screen_step(FullScreenHide::entered) == Step::Leave
-        });
-        if leave == Some(true) {
-            DispatchQueue::main().exec_async(move || {
-                if let Some(surface) = Surface::with_key(key)
-                    && let Some(Some(window)) = with_watch(&surface, target, |w| {
-                        w.full_screen.get().hiding().then(|| w.window()).flatten()
-                    })
-                {
-                    window.toggleFullScreen(None);
-                }
-            });
-        } else {
-            apply_held(key, target);
+        if let Some(surface) = Surface::with_key(key) {
+            entered_full_screen(&surface, target, FullScreenHide::entered);
         }
-        report(&surface, target);
-        surface.follow_windows();
     });
     let will_enter = RcBlock::new(move |_: NonNull<NSNotification>| {
         if let Some(surface) = Surface::with_key(key) {
@@ -503,6 +469,79 @@ pub(crate) fn observe(surface: &Surface, target: Target, watch: &Watch, window: 
     watch
         .window
         .replace(Some(Weak::from_retained(&window.retain())));
+}
+
+/// `target`'s window is on its desktop again at the end of a transition:
+/// it left full screen, or AppKit could not put it in (`step`, which says
+/// which to [`FullScreenHide`]).
+fn left_full_screen(surface: &Surface, target: Target, step: fn(&mut FullScreenHide) -> Step) {
+    let key = surface.key();
+    let pending = with_watch(surface, target, |w| {
+        (w.after_full_screen.take(), w.window())
+    });
+    if let Some((Some(placement), Some(window))) = pending {
+        with_watch(surface, target, |w| {
+            apply_placement(w, &window, placement);
+        });
+    }
+    crate::window::left_full_screen(surface, target);
+    report(surface, target);
+    // Hidden in full screen: it goes now that it is back on the desktop it
+    // came from. Shown again on its way out, it enters the full screen
+    // asked for meanwhile.
+    let step = with_watch(surface, target, |w| {
+        let step = w.full_screen_step(step);
+        if step != Step::OrderOut
+            && let Some(window) = w.window()
+        {
+            begin_held_full_screen(w, &window);
+        }
+        step
+    });
+    if step == Some(Step::OrderOut) {
+        crate::window::hidden_after_full_screen(surface, target);
+    }
+    apply_held(key, target);
+}
+
+/// `target`'s window is in full screen at the end of a transition: it
+/// entered, or AppKit could not take it out (`step`).
+fn entered_full_screen(surface: &Surface, target: Target, step: fn(&mut FullScreenHide) -> Step) {
+    let key = surface.key();
+    // Hidden on its way into full screen: it leaves at once (on the main
+    // queue's next turn, as AppKit ignores `toggleFullScreen:` from within
+    // this notification), unless shown again meanwhile.
+    let leave = with_watch(surface, target, |w| w.full_screen_step(step) == Step::Leave);
+    if leave == Some(true) {
+        DispatchQueue::main().exec_async(move || {
+            if let Some(surface) = Surface::with_key(key)
+                && let Some(Some(window)) = with_watch(&surface, target, |w| {
+                    w.full_screen.get().hiding().then(|| w.window()).flatten()
+                })
+            {
+                window.toggleFullScreen(None);
+            }
+        });
+    } else {
+        apply_held(key, target);
+    }
+    report(surface, target);
+    surface.follow_windows();
+}
+
+/// AppKit could not put `target`'s window in full screen
+/// (`windowDidFailToEnterFullScreen:`, which only a window's delegate
+/// hears: there is no notification for it). The transition is over: a
+/// hide or a mode held through it goes ahead, and the window reports the
+/// mode it stayed in.
+pub(crate) fn failed_to_enter_full_screen(surface: &Surface, target: Target) {
+    left_full_screen(surface, target, FullScreenHide::failed_to_enter);
+}
+
+/// AppKit could not take `target`'s window out of full screen
+/// (`windowDidFailToExitFullScreen:`), as [`failed_to_enter_full_screen`].
+pub(crate) fn failed_to_leave_full_screen(surface: &Surface, target: Target) {
+    entered_full_screen(surface, target, FullScreenHide::failed_to_leave);
 }
 
 /// A full screen transition of `target`'s window ended: the last mode or
@@ -971,6 +1010,44 @@ mod tests {
         assert_eq!(m.take_held(), None);
         assert_eq!(m.left(), Step::OrderOut);
         assert_eq!(m.take_held(), Some(placement));
+    }
+
+    #[test]
+    fn a_failed_full_screen_transition_ends_it() {
+        let normal = Request::Mode(WindowMode::Normal);
+        let full = Request::Mode(WindowMode::FullScreen);
+        // AppKit could not put it in: the mode asked for meanwhile applies,
+        // and later ones go through at once.
+        let mut m = FullScreenHide::default();
+        assert_eq!(m.request(full), Some(full));
+        assert_eq!(m.will_enter(), Step::Wait);
+        assert_eq!(m.request(normal), None);
+        assert_eq!(m.failed_to_enter(), Step::Wait);
+        assert_eq!(m.take_held(), Some(normal));
+        assert_eq!(m.request(full), Some(full));
+
+        // Hidden on its way in, it is still on its desktop: it goes.
+        let mut m = FullScreenHide::default();
+        assert_eq!(m.will_enter(), Step::Wait);
+        assert_eq!(m.hide(false), Step::Wait);
+        assert_eq!(m.failed_to_enter(), Step::OrderOut);
+        assert!(m.idle());
+
+        // AppKit could not take it out: still in, requests go through, and
+        // a hide that waited tries to leave again.
+        let mut m = FullScreenHide::default();
+        assert_eq!(m.will_leave(), Step::Wait);
+        assert_eq!(m.request(full), None);
+        assert_eq!(m.failed_to_leave(), Step::Wait);
+        assert_eq!(m.take_held(), Some(full));
+        assert_eq!(m.request(normal), Some(normal));
+
+        let mut m = FullScreenHide::default();
+        assert_eq!(m.hide(true), Step::Leave);
+        assert_eq!(m.will_leave(), Step::Wait);
+        assert_eq!(m.failed_to_leave(), Step::Leave);
+        assert_eq!(m.will_leave(), Step::Wait);
+        assert_eq!(m.left(), Step::OrderOut);
     }
 
     #[test]

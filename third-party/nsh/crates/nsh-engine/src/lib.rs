@@ -1000,6 +1000,9 @@ impl nsh_core::runtime::UpdaterHost for UpdaterOverNetwork {
         from: u64,
         sink: nsh_core::runtime::UpdaterSink<'_>,
     ) -> Result<(), String> {
+        if let Some(get) = nsh_core::runtime::updater_transport() {
+            return get(url, from, sink);
+        }
         const MAX_REDIRECTS: usize = 20;
         let mut current = url.to_owned();
         for hops in 0..=MAX_REDIRECTS {
@@ -3975,9 +3978,9 @@ impl<M: TextEngine> State<M> {
         let mut commit = std::mem::take(&mut self.perf_commit);
         if commit.ops > 0 || commit.items > 0 {
             commit.js = busy.saturating_sub(commit.layout);
-            // Each record as the monitor takes it. Its percentiles span its
-            // last 120 records (`perf::CAPACITY`), whenever they were made:
-            // with this a trace can give them for a stretch of its own.
+            // Each record as the monitor takes it. Its percentiles span the
+            // last few seconds (`perf::COMMIT_WINDOW`): with this a trace
+            // can give them for a stretch of its own.
             if self.trace {
                 log::info!(
                     target: "nsh::perf",
@@ -4514,9 +4517,7 @@ fn ui_environment(env: &Environment, window: Size<Points>) -> nsh_core::element:
         screen_color: env.screen_color,
         clipboard_write_result: env.clipboard_write_result,
         canvas_render: env.canvas_render,
-        share: env.share,
         app_settings: env.app_settings,
-        auth_session: env.auth_session,
         scheme_links: env.scheme_links(),
         file_requests: env.file_requests,
         notifications: env.notifications,

@@ -1,6 +1,6 @@
 import { type JSX, mount, signal, Text, View } from "nsh";
 import { Slider, type SliderValue } from "nsh/base";
-import { desktop, Log, Panel, sliderFill, sliderLook, sliderValueClass, sliderValueStyle, Split, ui, controlSize, plainRow, RowLabel, sectionSurface } from "./palette";
+import { desktop, Log, Panel, sliderBubbleClass, sliderBubbleText, sliderFill, sliderLook, sliderValueClass, sliderValueStyle, Split, ui, controlSize, plainRow, RowLabel, sectionSurface } from "./palette";
 
 // The look is the shared layer's `sliderLook` and `sliderFill` (BJORK UI's
 // slider in the palette's tones): an 8-point rail, a fill that deepens at its
@@ -8,7 +8,8 @@ import { desktop, Log, Panel, sliderFill, sliderLook, sliderValueClass, sliderVa
 // brightens under the pointer and while dragged, the keyboard's focus ring
 // around the thumb, and 35% when disabled. The spread holds only what never
 // changes; the fill follows the value as a prop of its own. The demo shows a slider with its value column, a
-// bare one, a range, a disabled one and vertical bands, each named above it.
+// bare one, a range whose thumbs carry a value bubble (`renderThumb`: shown under the pointer, while dragged and with
+// the keyboard's focus), a disabled one and vertical bands, each named above it.
 const show = (v: SliderValue) => (typeof v === "number" ? `${v}` : `${v[0]}–${v[1]}`);
 const clock = (seconds: number) => `${Math.floor(seconds / 60)}:${String(Math.round(seconds) % 60).padStart(2, "0")}`;
 const LENGTH = 225;
@@ -91,6 +92,11 @@ function App() {
               startAccessibilityLabel="Minimum price"
               accessibilityLabel="Maximum price"
               rangeStyle={sliderFill(price()[0] / 1000, price()[1] / 1000)}
+              renderThumb={({ start }) => (
+                <View class={sliderBubbleClass()}>
+                  <Text class={sliderBubbleText}>{`$${price()[start ? 0 : 1]}`}</Text>
+                </View>
+              )}
               {...sliderLook()}
             />
           </Row>

@@ -111,6 +111,7 @@ nsh-terminal = { path = "third-party/nsh/crates/nsh-terminal" }
 nsh-updater = { path = "third-party/nsh/crates/nsh-updater" }
 nsh-platform-linux = { path = "third-party/nsh/crates/nsh-platform-linux", default-features = false, features = ["js", "svg", "updater", "websocket", "zlib", "crypto", "editor", "emoji-picker", "highlight", "math", "plot", "rich-editor", "term"] }
 nsh-core = { path = "third-party/nsh/crates/nsh-core" }
+nsh-system-controls = "0.1.0"
 nsh-engine = { path = "third-party/nsh/crates/nsh-engine" }
 nsh-js = { path = "third-party/nsh/crates/nsh-js" }
 nsh-platform-tui = { path = "third-party/nsh/crates/nsh-platform-tui" }
@@ -330,6 +331,10 @@ opt-level = 3
 opt-level = 3
 
 [patch.crates-io]
+# Native Shell extension modules must share the host's vendored NSH types.
+nsh-core = { path = "third-party/nsh/crates/nsh-core" }
+nsh-platform-ios = { path = "third-party/nsh/crates/nsh-platform-ios" }
+nsh-platform-android = { path = "third-party/nsh/crates/nsh-platform-android" }
 zbus = { git = "https://github.com/maka-agent/cua", rev = "2778d8c1f0bfb99f3c8d9399650ede1bc8ad22d5" }
 nom = { git = "https://github.com/maka-agent/cua", rev = "2778d8c1f0bfb99f3c8d9399650ede1bc8ad22d5" }
 reqwest = { path = "third-party/reqwest" }

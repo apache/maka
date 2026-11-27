@@ -4,14 +4,18 @@
 // screen readers hear as the value (`dateFormat`), the app's items
 // (`renderItem`, given what an item is, never its state; `itemStyle`),
 // weekends that take no press (`disabledMatcher`), the week's first day,
-// Previous and Next; a range of the picker's own (`defaultValue`) over
-// two months with a preset, its days styled by their `data-range-*:` and
+// Previous and Next; a range of the picker's own (`defaultValue`) over two
+// months with a preset and its description (a second line in a look of its
+// own, read after the label), its days styled by their `data-range-*:` and
 // `data-outside:` classes and their content by `group-data-*:`, a half
-// range's preview up to the day under the mouse by `data-range-preview-*:`; and
-// a date and time whose sheet a tap on a day closes and which opens
-// again for the time (`timePrecision`, `hourCycle`, the time's label and
-// segments). The
-// dates are fixed, so nothing depends on today. Its script checks each.
+// range's start reported (`onChangeStart({ value })`) and its preview up to
+// the day under the mouse by `data-range-preview-*:`; and a date and time
+// whose sheet a tap on a day closes and which opens again for the time
+// (`timePrecision`, `hourCycle`, the time's label and segments); and a range
+// that commits on Apply: picks stay pending in a sheet the app keeps open
+// (`open`, a `select` in `onOpenChange` not followed), with the app's
+// `header` and a `footer` whose Apply commits and closes it. The dates are
+// fixed, so nothing depends on today. Its script checks each.
 import { Text, View, signal } from "nsh";
 import { type CalendarEntry, DatePicker, type DatePickerValue } from "nsh/base";
 
@@ -39,6 +43,9 @@ function App() {
   const opened = signal("Open: none");
   const trip = signal("Trip: none");
   const meet = signal("Meet: none");
+  const stay = signal<DatePickerValue>(["2026-10-05", "2026-10-07"]);
+  const stayOpen = signal(false);
+  const stayed = signal("Stay: none");
   return (
     <View style={{ flex: 1, paddingTop: 20, gap: 4 }}>
       <Text>{`Due: ${due()}`}</Text>
@@ -67,11 +74,13 @@ function App() {
         range
         defaultValue={["2026-10-05", "2026-10-07"]}
         onChange={({ value }) => trip.set(`Trip: ${JSON.stringify(value)}`)}
+        onChangeStart={({ value }) => trip.set(`Trip: start ${JSON.stringify(value)}`)}
         accessibilityLabel="Trip"
         numberOfMonths={2}
-        presets={[{ label: "Week", value: ["2026-10-19", "2026-10-25"] }]}
+        presets={[{ label: "Week", value: ["2026-10-19", "2026-10-25"], description: "Oct 19-25" }]}
         presetsStyle={{ backgroundColor: "#0000ff" }}
         presetStyle={{ backgroundColor: "#00ff00" }}
+        presetDescriptionStyle={{ color: "#ff0000" }}
         itemClass="group data-range-start:bg-[#ff0000] data-range-middle:bg-[#00ff00] data-range-end:bg-[#0000ff] data-range-preview-start:bg-[#ff00ff] data-range-preview-middle:bg-[#ffff00] data-range-preview-end:bg-[#00ffff] data-outside:opacity-50"
         renderItem={(item) => <Item item={item} />}
         trigger={<View testID="trip" style={{ height: 30 }}><Text>TripTrigger</Text></View>}
@@ -89,6 +98,32 @@ function App() {
         renderItem={(item) => <Item item={item} />}
         trigger={<View testID="meet" style={{ height: 30 }}><Text>MeetTrigger</Text></View>}
       />
+      <DatePicker
+        range
+        value={stay()}
+        onChange={({ value }) => stay.set(value)}
+        open={stayOpen()}
+        onOpenChange={({ open, reason }) => {
+          if (reason !== "select") stayOpen.set(open);
+        }}
+        accessibilityLabel="Stay"
+        renderItem={(item) => <Item item={item} />}
+        header={<Text>StayHeader</Text>}
+        footer={
+          <View
+            testID="stayApply"
+            style={{ height: 30 }}
+            onPress={() => {
+              stayed.set(`Stay: ${JSON.stringify(stay())}`);
+              stayOpen.set(false);
+            }}
+          >
+            <Text>StayApply</Text>
+          </View>
+        }
+        trigger={<View testID="stay" style={{ height: 30 }}><Text>StayTrigger</Text></View>}
+      />
+      <Text>{stayed()}</Text>
     </View>
   );
 }

@@ -2602,6 +2602,10 @@ impl AppView {
                 self.selection.clear_in(&self.tree, id);
                 self.surface.wake.notify();
             }
+            for id in std::mem::take(&mut self.tree.select_all_requests) {
+                self.selection.select_in(&self.tree, &self.geometry, id);
+                self.surface.wake.notify();
+            }
             if let Some(control) = self.surface.control() {
                 let scope = crate::navigation::focus_scope(&self.tree);
                 let mut keep = Vec::new();

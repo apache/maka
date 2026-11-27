@@ -88,15 +88,9 @@ pub struct Environment {
     /// The platform renders canvas drawings offscreen into images
     /// ([`crate::platform::Environment::canvas_render`]).
     pub canvas_render: bool,
-    /// The platform shows the system's share sheet
-    /// ([`crate::platform::Environment::share`]).
-    pub share: bool,
     /// The platform opens the app's page in the system's settings
     /// ([`crate::platform::Environment::app_settings`]).
     pub app_settings: bool,
-    /// The platform shows web sign-in sessions
-    /// ([`crate::platform::Environment::auth_session`]).
-    pub auth_session: bool,
     /// Links of the schemes the app claims reach it
     /// ([`field@crate::platform::Environment::scheme_links`], resolved: `true`
     /// on every OS but the web unless the platform says otherwise).
@@ -176,9 +170,7 @@ impl Default for Environment {
             screen_color: false,
             clipboard_write_result: false,
             canvas_render: false,
-            share: false,
             app_settings: false,
-            auth_session: false,
             scheme_links: true,
             file_requests: false,
             notifications: false,

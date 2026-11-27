@@ -6,18 +6,24 @@
 //! - **The popup** is `Select`'s (`popup::dropdown`): at the trigger on
 //!   the desktops, a sheet at the bottom on touch screens; a press outside,
 //!   the backdrop, Escape and back close it, the trigger and Return open
-//!   and close it. It holds the presets (`presets`, a column of buttons),
-//!   the calendar (`calendar.rs`'s grid, every prop of `Calendar`'s passed
-//!   on) and, with `timePrecision` for a single date, a time field
-//!   (`time_field.rs`) under it.
+//!   and close it. It holds the app's `header`, the presets (`presets`, a
+//!   column of buttons, each its label and an optional description under
+//!   it), the calendar (`calendar.rs`'s grid, every prop of `Calendar`'s
+//!   passed on) and, with `timePrecision` for a single date, a time field
+//!   (`time_field.rs`) under it, then the app's `footer`.
 //! - **Picking** (`DatePickerState::select_date`): a complete date (a day,
-//!   a range's end) is the value and closes the popup; with `timePrecision`
-//!   the popup stays open for the time on the desktops, every change is
-//!   reported, and a press on the selected day again closes it, while on
-//!   touch screens (the sheet) a tap on a day picks it at its time and
-//!   closes the sheet, as without a time. A preset is the value and
-//!   closes it. The clear button (`cleanable`) and Delete / Backspace on
-//!   the trigger clear it.
+//!   a range's end) is the value and closes the popup; a range's start
+//!   keeps it open for the end, reported by `onChangeStart` as
+//!   `Calendar`'s (a start the app does not set as `value` goes when the
+//!   popup closes); with `timePrecision` the popup stays open for the time
+//!   on the desktops, every change is reported, and a press on the
+//!   selected day again closes it, while on touch screens (the sheet) a
+//!   tap on a day picks it at its time and closes the sheet, as without a
+//!   time. A preset is the value and closes it. Each close is asked
+//!   through `onOpenChange` with its reason (`select` for a pick), so an
+//!   app that controls `open` keeps the popup open on a pick and closes it
+//!   from its `footer`'s Apply. The clear button (`cleanable`) and
+//!   Delete / Backspace on the trigger clear it.
 //! - **The value** is `value` and `onChange({ value })`: ISO dates, as
 //!   HTML's `<input type="date">` (`"2026-10-28"`, `[start, end]`), or with
 //!   `timePrecision` dates and times as `datetime-local`'s
@@ -288,6 +294,11 @@ pub struct DateRangePreset {
     pub label: SharedString,
     /// What it sets: a date, a range or dates and times (kept as given).
     pub value: DateTime,
+    /// A second line under the label (the dates it stands for, "Sep 1 –
+    /// Sep 30"), a part of its own (`presetDescriptionClass`), which
+    /// screen readers read after the label.
+    #[prop(skip_none)]
+    pub description: Option<SharedString>,
 }
 
 impl DateRangePreset {
@@ -296,6 +307,7 @@ impl DateRangePreset {
         Self {
             label: label.into(),
             value: date.into(),
+            description: None,
         }
     }
 
@@ -304,6 +316,7 @@ impl DateRangePreset {
         Self {
             label: label.into(),
             value: (start, end).into(),
+            description: None,
         }
     }
 
@@ -312,7 +325,14 @@ impl DateRangePreset {
         Self {
             label: label.into(),
             value: value.into(),
+            description: None,
         }
+    }
+
+    /// A second line under the label, which screen readers read after it.
+    pub fn description(mut self, description: impl Into<SharedString>) -> Self {
+        self.description = Some(description.into());
+        self
     }
 }
 
@@ -432,6 +452,12 @@ pub struct DatePickerProps {
     /// too, which its label inherits.
     #[prop(default)]
     pub preset_style: Prop<TextPartStyle>,
+    /// The classes of each preset's description, its second line.
+    pub preset_description_class: Prop<Option<SharedString>>,
+    /// The inline style of each preset's description, over its classes
+    /// and the text styles it inherits from the preset.
+    #[prop(default)]
+    pub preset_description_style: Prop<TextPartStyle>,
     /// The classes of the calendar.
     pub calendar_class: Prop<Option<SharedString>>,
     /// The inline style of the calendar, over its classes.
@@ -514,16 +540,33 @@ pub struct DatePickerProps {
     /// What opens the popup when pressed: the app's element (showing the
     /// value, a placeholder, an icon), which the popup is placed against.
     pub trigger: Prop<Option<Slot>>,
+    /// What the popup (or sheet) shows above the presets and the calendar
+    /// (`gpui-component`'s `Command::header`): typed start and end fields,
+    /// a title. The app's element, styled by its own classes
+    /// (`headerClass` stays the calendar's header, as `Calendar`'s). Its
+    /// keyboard stops come before the calendar's.
+    pub header: Prop<Option<Slot>>,
+    /// What the popup (or sheet) shows below the presets, the calendar and
+    /// the time (`gpui-component`'s `Combobox::footer`): Cancel and Apply.
+    /// Its keyboard stops come after the calendar's.
+    pub footer: Prop<Option<Slot>>,
 }
 
 /// The events of a [`DatePicker`].
 #[derive(Debug, Clone, PartialEq, Event)]
+#[non_exhaustive]
 pub enum DatePickerEvent {
     /// The user changed the value (a day, a range's end, a preset, the
     /// time, the clear button). With `timePrecision`, every edit while the
     /// popup is open.
     #[args(value)]
     Change(PickedDate),
+    /// The user started a range in the popup (`[start, null]`, as
+    /// `Calendar`'s `onChangeStart`): the popup stays open for its end,
+    /// reported by `onChange`. A start the app does not set as `value`
+    /// goes when the popup closes.
+    #[args(value)]
+    ChangeStart(PickedDate),
     /// The popup opened or closed, with why: set `open` to follow it.
     #[args(open, reason)]
     OpenChange(bool, OpenChangeReason),
@@ -553,9 +596,14 @@ fn display_format(precision: Option<TimePrecision>, cycle: HourCycle) -> String 
 /// the desktops the popup stays open after a day is picked (the selected
 /// day again closes it), while on touch screens a tap on a day closes it.
 /// `presets` add buttons that set the value, `cleanable` a button that
-/// clears it. The value is `value` and `onChange` (or the
-/// picker's own, from `defaultValue`). Every prop of `Calendar` passes on
-/// to its calendar. It looks like nothing: the app styles every part.
+/// clears it; `header` and `footer` are the app's content above and
+/// below them in the popup. An app that controls `open` keeps it open on a
+/// pick (`onOpenChange` with the reason `select`) and closes it from its
+/// `footer` (Cancel / Apply, a pending value committed on Apply). The
+/// value is `value` and `onChange` (or the picker's own, from
+/// `defaultValue`); `onChangeStart` reports a range's start while its end
+/// is still to pick. Every prop of `Calendar` passes on to its calendar.
+/// It looks like nothing: the app styles every part.
 ///
 /// In a terminal the trigger shows a `Select`'s marks over the end of its
 /// band: `▾` on the Cell before its last and, while there is a date to clear, `×` three
@@ -598,7 +646,6 @@ pub fn DatePicker(props: DatePickerProps, cx: Scope<DatePickerEvent>) -> impl In
     crate::popup::note_focus_origin(move || open.get(), anchor);
     let width = signal(None::<Points>);
     let focused = signal(false);
-    let closed_by = stored(None::<OpenChangeReason>);
     let change: Rc<dyn Fn(bool, OpenChangeReason)> = Rc::new(move |next, reason| {
         if next && props.disabled.get_untracked() {
             return;
@@ -606,10 +653,12 @@ pub fn DatePicker(props: DatePickerProps, cx: Scope<DatePickerEvent>) -> impl In
         if open.get_untracked() == next {
             return;
         }
-        if !next {
-            closed_by.replace(Some(reason));
-        }
-        open.request(next, || cx.emit(DatePickerEvent::OpenChange(next, reason)));
+        // The reason a close keeps says where the keyboard goes (`back`):
+        // none once the app kept it open, so its own close later (its
+        // `footer`'s Apply) gives the focus back.
+        open.request_for(next, reason, || {
+            cx.emit(DatePickerEvent::OpenChange(next, reason))
+        });
     });
     let report = move |next: DateTime| {
         if matches!(props.value.get_untracked(), DatePickerValue::Uncontrolled) {
@@ -693,7 +742,7 @@ pub fn DatePicker(props: DatePickerProps, cx: Scope<DatePickerEvent>) -> impl In
         // Back to the trigger, unless a press outside or the app's
         // `onChange` took the keyboard somewhere else.
         back: Rc::new(move |popup| {
-            if closed_by.replace(None) != Some(OpenChangeReason::PressOutside) {
+            if open.take_closed_by() != Some(OpenChangeReason::PressOutside) {
                 anchor.focus_back(popup);
             }
         }),
@@ -755,6 +804,14 @@ pub fn DatePicker(props: DatePickerProps, cx: Scope<DatePickerEvent>) -> impl In
             let picked: Rc<dyn Fn(Date)> = {
                 let change = change.clone();
                 Rc::new(move |d: Date| {
+                    // A range's start: the popup stays for its end.
+                    if !d.is_complete() {
+                        cx.emit(DatePickerEvent::ChangeStart(PickedDate {
+                            value: with_times(d),
+                            time_precision: props.time_precision.get_untracked(),
+                        }));
+                        return;
+                    }
                     // On the desktops the popup stays for the time and a
                     // press on the selected day again confirms it
                     // (`gpui-component`'s double click). A touch screen
@@ -786,9 +843,13 @@ pub fn DatePicker(props: DatePickerProps, cx: Scope<DatePickerEvent>) -> impl In
                         .map(|p| {
                             let change = change.clone();
                             let label = p.label.clone();
+                            let description = p.description.clone();
                             view()
                                 .role(AccessibilityRole::Button)
                                 .label(label.clone())
+                                .when_some(description.clone(), |v, d| {
+                                    v.accessibility_description(d)
+                                })
                                 // Not a stop of Tab (`gpui-component`'s
                                 // `tab_stop(false)`).
                                 .focusable(false)
@@ -805,6 +866,15 @@ pub fn DatePicker(props: DatePickerProps, cx: Scope<DatePickerEvent>) -> impl In
                                     change(false, OpenChangeReason::Select);
                                 })
                                 .child(text(label))
+                                .when_some(description, |v, d| {
+                                    v.child(
+                                        text(d)
+                                            .app_class(props.preset_description_class)
+                                            .inline_style(move || {
+                                                props.preset_description_style.get()
+                                            }),
+                                    )
+                                })
                                 .into_element()
                         })
                         .collect::<Vec<_>>();
@@ -849,13 +919,17 @@ pub fn DatePicker(props: DatePickerProps, cx: Scope<DatePickerEvent>) -> impl In
                 .app_class(props.calendar_class)
                 .inline_style(props.calendar_style)
                 .children(calendar::calendar_view(grid, picked));
+            // The app's header and footer around the content, so the
+            // keyboard's stops go header, calendar, footer.
             vec![
+                props.header.place(|h| h),
                 view()
                     .app_class(props.content_class)
                     .inline_style(props.content_style)
                     .child(presets)
                     .child(view().child(calendar).child(time))
                     .into_element(),
+                props.footer.place(|f| f),
             ]
         })
     };

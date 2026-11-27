@@ -39,7 +39,7 @@ use std::{
     path::PathBuf,
     rc::{Rc, Weak},
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Instant,
@@ -129,6 +129,9 @@ struct Sink {
     /// The backing scale of the surface's window (`f64` bits), which its
     /// texts are painted at ([`Surface::raster_scale`]).
     raster_scale: Arc<AtomicU64>,
+    /// Live node sizes and layouts remembered across batches so updated
+    /// texts without a new frame still paint off the main thread.
+    raster_state: Mutex<crate::text::RasterState>,
 }
 
 impl Sink {
@@ -153,7 +156,13 @@ impl MountSink for Sink {
         // The texts are painted here, off the main thread, which then only
         // shows them: Core Animation would draw each in its commit.
         let scale = f64::from_bits(self.raster_scale.load(Ordering::Relaxed));
-        let rasters = crate::text::prerender(&batch, scale);
+        let rasters = {
+            let mut state = self
+                .raster_state
+                .lock()
+                .unwrap_or_else(|err| err.into_inner());
+            crate::text::prerender(&batch, scale, &mut state)
+        };
         let sent = self.perf.load(Ordering::Relaxed).then(Instant::now);
         self.send(Message::Batch(batch, sent, rasters));
     }
@@ -246,9 +255,6 @@ pub(crate) struct Surface {
     /// The app's own windows (`Window.open`), by the dialog root each
     /// shows ([`crate::window`]).
     pub(crate) windows: RefCell<rustc_hash::FxHashMap<NodeId, crate::window::AppWindow>>,
-    /// The share menu showing and the share it started
-    /// ([`crate::share`]).
-    pub(crate) share: crate::share::Showing,
     /// Pointer input state ([`crate::input`]).
     pub(crate) input: crate::input::Input,
     /// The text selection ([`crate::text::Selected`]).
@@ -307,9 +313,14 @@ pub(crate) struct Surface {
     /// scroll indicator fading out, keyframes repeating forever): what
     /// [`Surface::moving`] and [`Surface::animating`] do not count.
     cosmetic_frames: Cell<usize>,
-    /// The model of a test session's app (`nsh test --target`).
+    /// The model of the app the agent's steps see: a test session's (`nsh
+    /// test --target`), or a development session's (`nsh test --attach`).
     #[cfg(feature = "dev")]
     test_model: RefCell<Option<std::sync::Arc<nsh_testing::agent::Model>>>,
+    /// Whether a test drives the app (`nsh test --target`), not only an
+    /// attached session's steps ([`Surface::testing`]).
+    #[cfg(feature = "dev")]
+    testing: Cell<bool>,
     /// The display link, once something wanted frames, and the root it
     /// was made from (it is made again from another window's:
     /// [`Surface::follow_windows`]).
@@ -448,7 +459,6 @@ impl Surface {
             anim: RefCell::new(UiAnimation::default()),
             nav: RefCell::default(),
             windows: RefCell::default(),
-            share: Default::default(),
             input: Default::default(),
             selection: Default::default(),
             engine: RefCell::new(None),
@@ -478,6 +488,8 @@ impl Surface {
             cosmetic_frames: Cell::new(0),
             #[cfg(feature = "dev")]
             test_model: RefCell::default(),
+            #[cfg(feature = "dev")]
+            testing: Cell::new(false),
             link: RefCell::new(None),
             link_rate: Cell::new(None),
             link_screen_max: Cell::new(0.0),
@@ -558,6 +570,7 @@ impl Surface {
             chunks: self.chunks.borrow().clone(),
             wake: self.terminal_wake.borrow().clone(),
             raster_scale: self.raster_scale.clone(),
+            raster_state: Mutex::default(),
         };
         *self.rx.borrow_mut() = Some(rx);
         *self.pending.borrow_mut() = pending;
@@ -930,7 +943,9 @@ impl Surface {
                 self.resize_late.set(false);
                 crate::window::laid_out(self, id, size);
             }
-            Message::Run(task) => task.run(),
+            // A module's main-thread function: this surface is current
+            // while it runs (`crate::native_view`, `crate::presenting_view`).
+            Message::Run(task) => crate::presenting::run_for(Rc::downgrade(self), || task.run()),
             Message::LoadChunk(id) => {
                 // The chunk's file name is its id: `is_chunk_name`
                 // (nsh-js) restricted it to a plain `<stem>.js`, so this
@@ -1126,11 +1141,18 @@ impl Surface {
             || !self.queued.borrow().is_empty()
     }
 
-    /// Keeps the model `nsh test --target` steps see of the app
+    /// Keeps the model the agent's steps see of the app
     /// ([`nsh_testing::agent::Model`]): every batch applied and every error
-    /// go to it from now on.
+    /// go to it from now on. `testing`: a test drives the app (`nsh test
+    /// --target`, [`Surface::testing`]); otherwise `nsh test --attach` may
+    /// drive it as it runs.
     #[cfg(feature = "dev")]
-    pub(crate) fn set_test_model(&self, model: Option<std::sync::Arc<nsh_testing::agent::Model>>) {
+    pub(crate) fn set_test_model(
+        &self,
+        model: Option<std::sync::Arc<nsh_testing::agent::Model>>,
+        testing: bool,
+    ) {
+        self.testing.set(testing && model.is_some());
         *self.test_model.borrow_mut() = model;
     }
 
@@ -1411,7 +1433,7 @@ impl Surface {
     /// Whether `nsh test --target` drives the app ([`Surface::set_test_model`]).
     pub(crate) fn testing(&self) -> bool {
         #[cfg(feature = "dev")]
-        return self.test_model.borrow().is_some();
+        return self.testing.get();
         #[cfg(not(feature = "dev"))]
         false
     }

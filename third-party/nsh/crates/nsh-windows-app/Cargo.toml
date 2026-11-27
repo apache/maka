@@ -47,6 +47,7 @@ log.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 nsh-base.workspace = true
+nsh-core.workspace = true
 nsh-platform-windows.workspace = true
 # Over-the-air packages of the app's code (`nsh_engine::updates`).
 nsh-engine.workspace = true

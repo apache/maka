@@ -106,7 +106,9 @@ cargo xtask android-embed    # writes dist/nsh/embed/android/{nsh,nsh-dev}.aar
 
 The AAR holds the Java runtime and `libnsh.so` for `arm64-v8a`, `armeabi-v7a` and `x86_64`, with their symbols: the
 app's Gradle build strips them when it packages the app and keeps the symbols for its crash reports. It declares the
-`INTERNET` and `ACCESS_NETWORK_STATE` permissions and needs **API 26** (Android 8) or newer. It carries its R8 rules (`proguard.txt`), which a
+`INTERNET` and `ACCESS_NETWORK_STATE` permissions, and the signature permission
+`${applicationId}.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION` (androidx's name, so the two merge) that keeps the receivers
+registered at run time to the app before Android 13, and needs **API 26** (Android 8) or newer. It carries its R8 rules (`proguard.txt`), which a
 minified build applies on its own: the native library finds the runtime's classes by name, so `com.longbridge.nsh`
 stays as it is.
 
@@ -412,10 +414,22 @@ result code and the intent the other app returned), across configuration changes
 whether an installed app answers the intent. Android 11+ shows an app only the apps its manifest queries: a crate
 declares its queries in its `Cargo.toml` ([What the packaged app needs](./nshm.md#what-the-packaged-app-needs)).
 `output_file(env, name)` makes a new file in the app's cache with a `content://` URI the other app writes through the
-app's file provider (`MediaStore.EXTRA_OUTPUT`), and `picker::prepare_image(path, name, &request)` prepares an image
+app's file provider (`MediaStore.EXTRA_OUTPUT`); `content_uri(env, path)` is the `content://` URI and MIME type another
+app reads an existing file of the app's own storage through (`EXTRA_STREAM` of a share or an "open with" intent),
+`None` for a file outside it. `picker::prepare_image(path, name, &request)` prepares an image
 file as `Picker.pickImages` does. `with_env(f)` runs `f` with the thread's JNI environment (code of the app and its nshm; other crates reach the VM through `ndk-context` above) and returns its result, or the JNI error (a Java exception is
 logged and cleared). A request made while the app is in the background fails with `ActivityError::NoActivity`. `nsh-extra`'s camera
 (`crates/nsh-extra/src/camera/android.rs`) uses all of them.
+
+## Presenting from Rust
+
+Rust code that shows system UI (a popup menu, a dialog, a share sheet) shows it from the surface whose code asked. In
+a UI-thread task (`run_on_main_thread`), `nsh::presenting_activity(env)` is the activity that surface's view is in, to
+show UI over when no element anchors it (`None` when the view is in no activity that can show anything), and
+`nsh::native_view(env, node)` is the `View` of an element of that surface (the node of its `ref`, a `NodeRef` argument
+of a module function; `ROOT_ID` for the surface's root view), in the surface or one of its modals: the anchor of a
+popup that belongs to the element. Both give a global reference, `None` outside such a task, or the JNI error. Take
+them while the task runs. They are for anchoring and presenting system UI only: a module never changes, re-parents, restyles or removes a view NSH owns.
 
 ## Java listeners in Rust
 
@@ -429,6 +443,18 @@ listens to `SpeechRecognizer` this way. Only interfaces can be implemented so: a
 ([Java code](./packaging.md#java-code)). A method that returns a primitive must get a value boxed as its type
 (`java.lang.Boolean` for `boolean`): returning `None` there, or a call after the `Proxy` is dropped, throws a
 `NullPointerException` in Java.
+
+## Broadcasts in Rust
+
+An Android API that answers with a broadcast (the app a chooser's `IntentSender` reports the user chose, a
+`PendingIntent` an alarm or a notification sends back, a finished download) is heard by
+`receiver::register(env, action, handler)`: a receiver of that action, registered on the application, whose
+broadcasts reach `handler` (the broadcast `Intent`) on the UI thread, so the crate ships no `BroadcastReceiver`
+subclass. It is not exported: it hears the app's own broadcasts (aim the `PendingIntent`'s intent at the app's
+package) and the system's, never other apps'. On Android 12 and below that takes a signature permission, which the
+runtime's manifest declares, so a broadcast another system app sends as itself (`DOWNLOAD_COMPLETE`, from the download
+provider) may not arrive there. Keep the `Receiver` it returns while the broadcast may come; dropping it unregisters
+it.
 
 ## Notifications from other code
 

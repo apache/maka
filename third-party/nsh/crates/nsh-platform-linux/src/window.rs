@@ -329,7 +329,7 @@ pub(crate) struct AppWindow {
     /// It was active since it last showed (losing the focus closes it with
     /// `closeOnBlur` only then).
     active_once: bool,
-    /// It lets the pointer through (an empty input region).
+    /// It lets the pointer through somewhere (an input region of its own).
     no_input: bool,
     /// When it last showed activated (a count): the newest is the key
     /// window when the system tells none.
@@ -349,7 +349,7 @@ pub(crate) struct MainWindow {
     closing: bool,
     /// The displays are followed.
     displays_watched: bool,
-    /// It lets the pointer through (an empty input region).
+    /// It lets the pointer through somewhere (an input region of its own).
     no_input: bool,
     /// Its state when GTK last had a size for it: where a hidden window
     /// was left, as GTK drops a hidden widget's size (and on X11 the window
@@ -848,6 +848,7 @@ fn resize(surface: &Surface, view: &NshView, width: f32, height: f32) {
 
 /// A batch was mounted: the windows whose first frame it holds show.
 pub(crate) fn batch_applied(surface: &Rc<Surface>) {
+    box_none_changed(surface);
     let ready: Vec<NodeId> = {
         let mut windows = surface.windows.borrow_mut();
         if windows.is_empty() {
@@ -1305,42 +1306,203 @@ fn decoration_layout(layout: &str, minimize: bool, maximize: bool, close: bool) 
         .join(":")
 }
 
-/// Lets the pointer through window `id` (`pointerEvents: "none"`) with an
-/// empty input region, or gives it back.
+/// Lets the pointer through window `id` where it takes none, with its
+/// input region: everywhere (`pointerEvents: "none"`, an empty region) or
+/// outside the views that take it (`"box-none"`, given as its root draws:
+/// [`root_drawing`]); or gives it back. Again after every allocation: GTK
+/// sets the surface's input region itself (client-side shadows).
+///
+/// The window of a host the app is embedded in holds the host's own views
+/// too: `"box-none"` leaves it as it is.
 fn pass_pointer(surface: &Surface, id: NodeId) {
-    let none = |a: &WindowAttributes| a.pointer_events == Some(WindowPointerEvents::None);
-    // Whether it lets the pointer through, and whether it did.
-    let (window, none, was) = if id == ROOT_ID {
+    // How it lets the pointer through (`Some(box-none)`), and whether it did.
+    let mode = |a: &WindowAttributes| match a.pointer_events {
+        Some(WindowPointerEvents::None) => Some(false),
+        Some(WindowPointerEvents::BoxNone) if id != ROOT_ID || surface.standalone.get() => {
+            Some(true)
+        }
+        _ => None,
+    };
+    let (window, mode, was) = if id == ROOT_ID {
         let Some(window) = main_window(surface) else {
             return;
         };
         let mut main = surface.main_window.borrow_mut();
-        let now = none(&main.attributes);
-        (window, now, std::mem::replace(&mut main.no_input, now))
+        let now = mode(&main.attributes);
+        (
+            window,
+            now,
+            std::mem::replace(&mut main.no_input, now.is_some()),
+        )
     } else {
         let mut windows = surface.windows.borrow_mut();
         let Some(w) = windows.get_mut(&id) else {
             return;
         };
-        let now = none(&w.attributes);
+        let now = mode(&w.attributes);
         (
             w.window.clone(),
             now,
-            std::mem::replace(&mut w.no_input, now),
+            std::mem::replace(&mut w.no_input, now.is_some()),
         )
     };
+    if mode == Some(true) {
+        follow_layout(surface, id);
+        return;
+    }
+    forget_box_none(surface.key(), id);
     let Some(gdk_surface) = window.surface() else {
         return;
     };
-    if none {
-        // Again after every allocation: GTK sets the surface's input
-        // region itself (client-side shadows).
-        gdk_surface.set_input_region(Some(&cairo::Region::create()));
-    } else if was {
-        gdk_surface.set_input_region(None);
-        // GTK sets its own again at the next allocation.
-        window.queue_resize();
+    match mode {
+        Some(_) => gdk_surface.set_input_region(Some(&cairo::Region::create())),
+        None if was => {
+            gdk_surface.set_input_region(None);
+            // GTK sets its own again at the next allocation.
+            window.queue_resize();
+        }
+        None => {}
     }
+}
+
+// --- Windows that take the pointer only over their views ----------------------------
+
+/// A `"box-none"` window, whose input region follows its layout.
+struct BoxNone {
+    surface: u64,
+    id: NodeId,
+    root: glib::WeakRef<NshView>,
+    /// What its views take changed since its region was computed.
+    stale: bool,
+    /// The views' allocations it was computed for ([`crate::view::allocations`]).
+    allocations: u64,
+    /// The region it was last given (surface coordinates), until GTK sets
+    /// its own again.
+    given: Option<Vec<cairo::RectangleInt>>,
+}
+
+thread_local! {
+    static BOX_NONE: RefCell<Vec<BoxNone>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Window `id` is `"box-none"`, and may have lost its region: it is given
+/// again as its root draws next.
+fn follow_layout(surface: &Surface, id: NodeId) {
+    let Some(root) = root_view(surface, id) else {
+        return;
+    };
+    let key = surface.key();
+    BOX_NONE.with_borrow_mut(|w| {
+        w.retain(|e| e.root.upgrade().is_some());
+        match w.iter_mut().find(|e| e.surface == key && e.id == id) {
+            Some(e) => {
+                e.root = root.downgrade();
+                e.stale = true;
+                e.given = None;
+            }
+            None => w.push(BoxNone {
+                surface: key,
+                id,
+                root: root.downgrade(),
+                stale: true,
+                allocations: 0,
+                given: None,
+            }),
+        }
+    });
+    root.queue_draw();
+}
+
+fn forget_box_none(surface: u64, id: NodeId) {
+    BOX_NONE.with_borrow_mut(|w| w.retain(|e| !(e.surface == surface && e.id == id)));
+}
+
+/// A batch changed `surface`'s views: what they take may have changed with
+/// them, so its `"box-none"` windows' regions are computed again as their
+/// roots draw (where the views are is known only once GTK laid them out).
+fn box_none_changed(surface: &Surface) {
+    let key = surface.key();
+    let roots: Vec<NshView> = BOX_NONE.with_borrow_mut(|w| {
+        w.iter_mut()
+            .filter(|e| e.surface == key)
+            .filter_map(|e| {
+                e.stale = true;
+                e.root.upgrade()
+            })
+            .collect()
+    });
+    for root in roots {
+        root.queue_draw();
+    }
+}
+
+/// Root `root` draws a frame: GTK has laid its window out, and the frame
+/// is not on the screen yet. A `"box-none"` window whose views changed or
+/// moved since gets its input region for this frame ([`input_rects`]),
+/// when it is not the one it has.
+pub(crate) fn root_drawing(root: &NshView) {
+    let allocations = crate::view::allocations();
+    let Some((key, id)) = BOX_NONE.with_borrow(|w| {
+        w.iter()
+            .find(|e| e.root.upgrade().as_ref() == Some(root))
+            .filter(|e| e.stale || e.allocations != allocations)
+            .map(|e| (e.surface, e.id))
+    }) else {
+        return;
+    };
+    let Some(surface) = Surface::by_key(key) else {
+        return;
+    };
+    let Some(window) = gtk_window(&surface, id) else {
+        return;
+    };
+    let rects = input_rects(root, &window);
+    let changed = BOX_NONE.with_borrow_mut(|w| {
+        let Some(e) = w.iter_mut().find(|e| e.surface == key && e.id == id) else {
+            return false;
+        };
+        e.stale = false;
+        e.allocations = allocations;
+        if e.given.as_ref() == Some(&rects) {
+            return false;
+        }
+        e.given = Some(rects.clone());
+        true
+    });
+    if changed && let Some(gdk_surface) = window.surface() {
+        gdk_surface.set_input_region(Some(&cairo::Region::create_rectangles(&rects)));
+    }
+}
+
+/// The region `"box-none"` window `id` was last given, if any.
+#[cfg(test)]
+fn given_region(surface: &Surface, id: NodeId) -> Option<Vec<cairo::RectangleInt>> {
+    let key = surface.key();
+    BOX_NONE.with_borrow(|w| {
+        w.iter()
+            .find(|e| e.surface == key && e.id == id)
+            .and_then(|e| e.given.clone())
+    })
+}
+
+/// Where a view in `root` takes the pointer ([`crate::input::pointer_rects`])
+/// in `window`'s surface coordinates, out to whole pixels.
+fn input_rects(root: &NshView, window: &gtk::Window) -> Vec<cairo::RectangleInt> {
+    let Some(to_window) = root.compute_transform(window) else {
+        return Vec::new();
+    };
+    let (sx, sy) = window.surface_transform();
+    crate::input::pointer_rects(root)
+        .iter()
+        .map(|r| {
+            let b = to_window.transform_bounds(r);
+            let x = (b.x() as f64 + sx).floor();
+            let y = (b.y() as f64 + sy).floor();
+            let right = (b.x() as f64 + b.width() as f64 + sx).ceil();
+            let bottom = (b.y() as f64 + b.height() as f64 + sy).ceil();
+            cairo::RectangleInt::new(x as i32, y as i32, (right - x) as i32, (bottom - y) as i32)
+        })
+        .collect()
 }
 
 // --- Requests ---------------------------------------------------------------------------
@@ -2247,6 +2409,22 @@ pub(crate) fn key_window(surface: &Surface) -> Option<gtk::Window> {
         .or(main)
 }
 
+/// The visible window to present system UI from
+/// ([`crate::presenting_window`]): the one with the focus, else the window
+/// the surface is in, else the app's own window shown activated last.
+pub(crate) fn presenting_window(surface: &Surface) -> Option<gtk::Window> {
+    let main = main_window(surface).filter(|window| window.is_visible());
+    if main.as_ref().is_some_and(is_focused) {
+        return main;
+    }
+    let windows = surface.windows.borrow();
+    let shown = || windows.values().filter(|w| w.window.is_visible());
+    if let Some(active) = shown().find(|w| is_focused(&w.window)) {
+        return Some(active.window.clone());
+    }
+    main.or_else(|| shown().max_by_key(|w| w.shown).map(|w| w.window.clone()))
+}
+
 /// A key pressed in `window` (one of the app's own) that nothing in it
 /// used: as `window_key`. Whether it was taken.
 #[cfg(feature = "dev")]
@@ -2853,6 +3031,142 @@ mod tests {
             assert!(surface.fps_window().is_none());
             assert_eq!(panel.parent().as_ref(), Some(host.upcast_ref()));
             surface.disable_fps();
+        });
+    }
+
+    /// Views of the `box-none` container of `surface`, laid out as `(id,
+    /// x, y)` of 40 × 40, mounted as a batch is.
+    fn box_none_views(surface: &Rc<Surface>, views: &[(NodeId, f32, f32)]) {
+        use nsh_core::{MountItem, PointerEvents, ViewKind};
+
+        use crate::gtk_test::{apply, frame, view};
+
+        if !surface.mounter.borrow().views.contains_key(&2) {
+            apply(
+                surface,
+                &[
+                    MountItem::Create {
+                        id: 2,
+                        kind: ViewKind::View,
+                    },
+                    MountItem::Insert {
+                        parent: ROOT_ID,
+                        child: 2,
+                        before: None,
+                    },
+                    MountItem::Frame {
+                        id: 2,
+                        frame: frame(0.0, 0.0, 200.0, 200.0),
+                    },
+                ],
+            );
+            view(surface, 2).state_mut().props.pointer_events = PointerEvents::BoxNone;
+        }
+        for &(id, x, y) in views {
+            if !surface.mounter.borrow().views.contains_key(&id) {
+                apply(
+                    surface,
+                    &[
+                        MountItem::Create {
+                            id,
+                            kind: ViewKind::View,
+                        },
+                        MountItem::Insert {
+                            parent: 2,
+                            child: id,
+                            before: None,
+                        },
+                    ],
+                );
+            }
+            apply(
+                surface,
+                &[MountItem::Frame {
+                    id,
+                    frame: frame(x, y, 40.0, 40.0),
+                }],
+            );
+        }
+        batch_applied(surface);
+    }
+
+    fn box_none_attributes() -> WindowAttributes {
+        let mut diff = WindowAttributes::default();
+        diff.pointer_events = Some(WindowPointerEvents::BoxNone);
+        diff
+    }
+
+    /// A `box-none` window's input region is where its views are once GTK
+    /// laid them out: a view a batch moves or adds is taken where it went,
+    /// not where it was, from the frame that shows it there.
+    #[test]
+    fn a_box_none_windows_region_follows_its_views_as_they_are_laid_out() {
+        use crate::gtk_test::{run, show, surface, view, wait_until};
+
+        run(|| {
+            let surface = surface();
+            surface.standalone.set(true);
+            box_none_views(&surface, &[(4, 20.0, 20.0)]);
+            let window = show(&surface);
+            assert!(wait_until(
+                || view(&surface, 4).is_mapped() && view(&surface, 4).width() > 0
+            ));
+            main_attributes(&surface, &box_none_attributes());
+            // Whether the region it was given holds `(x, y)` of the root.
+            let covers = |x: f32, y: f32| {
+                let Some(p) = surface
+                    .root
+                    .compute_point(&window, &gtk::graphene::Point::new(x, y))
+                else {
+                    return false;
+                };
+                let (sx, sy) = window.surface_transform();
+                let (x, y) = ((p.x() as f64 + sx) as i32, (p.y() as f64 + sy) as i32);
+                given_region(&surface, ROOT_ID).is_some_and(|r| {
+                    r.iter().any(|r| {
+                        x >= r.x() && y >= r.y() && x < r.x() + r.width() && y < r.y() + r.height()
+                    })
+                })
+            };
+            assert!(wait_until(|| covers(30.0, 30.0)), "the view at first");
+            assert!(!covers(130.0, 130.0), "where nothing is");
+            // Moved by a batch.
+            box_none_views(&surface, &[(4, 120.0, 120.0)]);
+            let moved = wait_until(|| covers(130.0, 130.0));
+            let left = !covers(30.0, 30.0);
+            // Added by a batch.
+            box_none_views(&surface, &[(6, 60.0, 150.0)]);
+            let added = wait_until(|| covers(70.0, 160.0));
+            window.destroy();
+            assert!(moved, "where the moved view went");
+            assert!(left, "not where it was");
+            assert!(added, "where the added view is");
+        });
+    }
+
+    /// A host's window the app is embedded in holds the host's own views:
+    /// `box-none` leaves it as it is (`none` still lets the pointer through
+    /// all of it, as before).
+    #[test]
+    fn box_none_leaves_an_embedding_hosts_window_as_it_is() {
+        use crate::gtk_test::{run, show, surface, view, wait_until};
+
+        run(|| {
+            let surface = surface();
+            box_none_views(&surface, &[(4, 20.0, 20.0)]);
+            let window = show(&surface);
+            assert!(wait_until(|| view(&surface, 4).is_mapped()));
+            main_attributes(&surface, &box_none_attributes());
+            let host_untouched = !surface.main_window.borrow().no_input
+                && given_region(&surface, ROOT_ID).is_none()
+                && BOX_NONE.with_borrow(|w| w.iter().all(|e| e.surface != surface.key()));
+            let mut none = WindowAttributes::default();
+            none.pointer_events = Some(WindowPointerEvents::None);
+            main_attributes(&surface, &none);
+            let none_passes = surface.main_window.borrow().no_input;
+            window.destroy();
+            assert!(host_untouched, "box-none on a host's window");
+            assert!(none_passes, "none on a host's window");
         });
     }
 }

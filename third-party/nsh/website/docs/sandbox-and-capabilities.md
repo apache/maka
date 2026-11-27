@@ -277,7 +277,7 @@ capability is what decides which code reaches them.
 
 ### `share`
 
-`"share": true` lets the app show the system's share sheet ([`Share`](../modules/nsh.md#share)): the user chooses
+`"share": true` lets the app show the system's share sheet (`nsh-extra`'s [`Share`](./nshm.md#share)): the user chooses
 where the content goes. A shared file must also be readable under `fs.read`.
 
 ### `speech`
@@ -309,7 +309,8 @@ shortcuts, `Application.quit()`, `Application.setQuitMode()`, `Application.resta
 ([`AppSettings.open()`](../modules/nsh-mobile.md#appsettings) of `nsh/mobile`; for an embedded view, the embedding
 app's page). Without it they do nothing, `Application.launchAtLogin()` and `AppSettings.available()` resolve `false`,
 and `setLaunchAtLogin` and `AppSettings.open()` reject with `ERR_ACCESS_DENIED` (`permission` `"application"`). Context menus (`Menu.popup`) show in the app's own view, and windows the app opens are
-granted by [`windows`](#windows), so neither needs it.
+granted by [`windows`](#windows), so neither needs it. nsh.json's [`window`](./project-structure.md) launch settings are
+the host's, applied before the app runs, so they need neither.
 
 ### `homeDir`
 
@@ -335,7 +336,7 @@ for every kind but overlays, or an object that narrows it:
 | `kinds` | `string[]` | The kinds it may open: `"normal"`, `"dialog"`, `"panel"`, `"popup"`, `"overlay"`. Missing: every kind but `"overlay"`. |
 | `levels` | `string[]` | The levels its windows may float at: `"normal"`, `"floating"`, `"aboveDock"`, `"desktopIcon"`. Missing: every level. |
 | `max` | `number` | How many windows of its own may be open at once, the first window included. Missing: any number. |
-| `overlay` | `boolean` | Overlays and click-through windows (`pointerEvents: "none"`). Never granted unless declared, also for an app without `"capabilities"`. |
+| `overlay` | `boolean` | Overlays and click-through windows (`pointerEvents: "none"` or `"box-none"`). Never granted unless declared, also for an app without `"capabilities"`. |
 
 `overlay` is separate because a transparent, click-through window above every other can pass for the system's own UI.
 Every window needs the grant, the first one included: no window is privileged.

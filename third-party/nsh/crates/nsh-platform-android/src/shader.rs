@@ -12,7 +12,10 @@
 //! `Choreographer` ticking while a shader view has a frame to render or
 //! collect ([`ShaderView::wants_frame`]); each tick renders them, and a frame
 //! that comes back crosses to Java once (`NshView.shaderFrame`), which copies
-//! it into the view's bitmap.
+//! it into the view's bitmap. Before rendering, a tick asks Java once which
+//! of the views with a frame due can be seen (`NshView.shadersInSight`): one
+//! out of sight (a page under another, scrolled out of its scroll view)
+//! renders nothing, and the ticks go on until it shows again.
 //!
 //! Effects, transitions and shaders reading what is behind them take
 //! pictures Java makes (`Pictures.java`: the children, the backdrop, the
@@ -79,6 +82,9 @@ pub(crate) struct Shaders {
     navs: FxHashMap<u32, NavRun>,
     /// The engine was told there is no device ([`Shaders::take_unavailable`]).
     told_unavailable: bool,
+    /// The views asked about each frame ([`out_of_sight`]), kept for the
+    /// allocation.
+    asked: Vec<i32>,
 }
 
 /// A page or a dialog coming or going: when its view's transition clock
@@ -324,6 +330,15 @@ impl Shaders {
         let now = Instant::now();
         let mut more = false;
         let mut ended = Vec::new();
+        // The views that have a frame to render, asked at once whether they
+        // can be seen: one out of sight renders nothing until it shows again.
+        self.asked.clear();
+        self.asked.extend(
+            (self.views.iter())
+                .filter(|(id, view)| !self.navs.contains_key(id) && view.wants_frame())
+                .map(|(&id, _)| id as i32),
+        );
+        let hidden = out_of_sight(nsh_view, &self.asked);
         for (&id, view) in &mut self.views {
             if let Some(run) = self.navs.get(&id) {
                 // A page or a dialog: frames while its clock runs, and one
@@ -340,6 +355,14 @@ impl Shaders {
                     deliver(nsh_view, id, view.frame(), true, view.overflow().0);
                 }
                 more = true;
+                continue;
+            }
+            // Out of sight (out of the window, hidden, or clipped away by
+            // an ancestor: scrolled out of its scroll view): not rendered.
+            // It still wants frames, so the ticks go on and it renders once
+            // it shows again.
+            if hidden.contains(&id) {
+                more |= view.wants_frame();
                 continue;
             }
             // Until its pictures came, the children show as they are.
@@ -392,6 +415,37 @@ fn pictured(view: &ShaderView) -> bool {
             .iter()
             .filter(|&i| i != ShaderInput::Backdrop)
             .all(|i| view.has_input(i))
+    })
+}
+
+/// The views of `ids` that cannot be seen (`NshView.shadersInSight`): one
+/// call for all of them, each frame.
+fn out_of_sight(nsh_view: &JObject<'_>, ids: &[i32]) -> Vec<u32> {
+    if ids.is_empty() {
+        return Vec::new();
+    }
+    with_env(|env| {
+        let array = env.new_int_array(ids.len() as i32)?;
+        env.set_int_array_region(&array, 0, ids)?;
+        // SAFETY: matches the signature checked in `java::init`.
+        let shown = unsafe {
+            env.call_method_unchecked(
+                nsh_view,
+                java().view_shaders_in_sight,
+                ReturnType::Array,
+                &[JValue::Object(&array).as_jni()],
+            )
+        }?
+        .l()?;
+        let shown = jni::objects::JBooleanArray::from(shown);
+        let mut flags = vec![0u8; ids.len()];
+        env.get_boolean_array_region(&shown, 0, &mut flags)?;
+        Ok(ids
+            .iter()
+            .zip(flags)
+            .filter(|&(_, shown)| shown == 0)
+            .map(|(&id, _)| id as u32)
+            .collect())
     })
 }
 

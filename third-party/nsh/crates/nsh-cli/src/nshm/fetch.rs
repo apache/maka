@@ -21,6 +21,10 @@ use std::{
     io::Read as _,
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    sync::{
+        Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
 use anyhow::{Context as _, bail};
@@ -65,7 +69,16 @@ pub(crate) trait Fetch {
     ) -> anyhow::Result<String>;
     /// The installation root.
     fn root(&self) -> &Path;
+    /// Downloads, all at once, what [`Self::install`] will take of these
+    /// crates.io `packages`: only a head start, as `install` downloads
+    /// what is not there (and says what failed).
+    fn prefetch(&mut self, packages: &[(String, Candidate)]) {
+        let _ = packages;
+    }
 }
+
+/// The most `.crate` files [`Net::prefetch`] downloads at once.
+const PARALLEL_DOWNLOADS: usize = 8;
 
 /// [`Fetch`] from crates.io and Git into `root`.
 pub(crate) struct Net {
@@ -73,6 +86,9 @@ pub(crate) struct Net {
     agent: Option<ureq::Agent>,
     index: HashMap<String, Vec<Candidate>>,
     fetched: HashSet<String>,
+    /// `.crate` files downloaded ahead ([`Fetch::prefetch`]), by
+    /// `<name>-<version>`: taken by `install`.
+    downloaded: HashMap<String, Vec<u8>>,
 }
 
 impl Net {
@@ -82,6 +98,7 @@ impl Net {
             agent: None,
             index: HashMap::new(),
             fetched: HashSet::new(),
+            downloaded: HashMap::new(),
         }
     }
 
@@ -96,24 +113,7 @@ impl Net {
     }
 
     fn get(&mut self, url: &str) -> anyhow::Result<Option<Vec<u8>>> {
-        let mut response = self
-            .agent()
-            .get(url)
-            .call()
-            .with_context(|| format!("GET {url}"))?;
-        match response.status().as_u16() {
-            200 => {
-                let mut body = Vec::new();
-                response
-                    .body_mut()
-                    .as_reader()
-                    .read_to_end(&mut body)
-                    .with_context(|| format!("reading {url}"))?;
-                Ok(Some(body))
-            }
-            404 | 410 => Ok(None),
-            code => bail!("GET {url}: HTTP {code}"),
-        }
+        get(self.agent(), url)
     }
 
     /// The bare clone of `url`, fetched once in this run.
@@ -174,6 +174,26 @@ impl Net {
 impl Fetch for Net {
     fn root(&self) -> &Path {
         &self.root
+    }
+
+    fn prefetch(&mut self, packages: &[(String, Candidate)]) {
+        let wanted: Vec<(String, String)> = packages
+            .iter()
+            .filter_map(|(name, c)| {
+                let version = c.version.as_ref()?;
+                let key = format!("{name}-{version}");
+                let installed = installed_dir(name, &Origin::Registry, c).ok()?;
+                (!self.downloaded.contains_key(&key) && !self.root.join(installed).is_dir())
+                    .then(|| (key, format!("{DOWNLOADS}/{name}/{name}-{version}.crate")))
+            })
+            .collect();
+        if wanted.len() < 2 {
+            return;
+        }
+        let step = crate::ui::Step::start(format!("downloading {} nshm", wanted.len()));
+        let done = download_all(self.agent(), &wanted);
+        step.finish();
+        self.downloaded.extend(done);
     }
 
     fn candidates(&mut self, name: &str, origin: &Origin) -> anyhow::Result<Vec<Candidate>> {
@@ -305,11 +325,20 @@ impl Fetch for Net {
         let unpacked = match origin {
             Origin::Registry => {
                 let version = candidate.version.as_ref().context("a crate's version")?;
-                status("Downloading", format!("{name} v{version}"));
-                let url = format!("{DOWNLOADS}/{name}/{name}-{version}.crate");
-                let body = self
-                    .get(&url)?
-                    .with_context(|| format!("{name} v{version} is not on crates.io"))?;
+                let body = match self.downloaded.remove(&format!("{name}-{version}")) {
+                    Some(body) => body,
+                    None => {
+                        // A spinner while it downloads: the `Installed` line below
+                        // says it once it is there.
+                        let step = crate::ui::Step::start(format!("downloading {name} v{version}"));
+                        let url = format!("{DOWNLOADS}/{name}/{name}-{version}.crate");
+                        let body = self
+                            .get(&url)?
+                            .with_context(|| format!("{name} v{version} is not on crates.io"))?;
+                        step.finish();
+                        body
+                    }
+                };
                 if let Some(expected) = &candidate.checksum {
                     let actual = checksum(&body);
                     if &actual != expected {
@@ -376,7 +405,6 @@ impl Fetch for Net {
             Some(s) => format!("{base}/{s}"),
             None => base,
         };
-        let dir = self.root.join(&rel);
         let shown = if name.is_empty() {
             match origin {
                 Origin::Git { url, .. } => repo_dir(url)
@@ -394,11 +422,51 @@ impl Fetch for Net {
             (None, Some(c)) => format!(" #{}", &c[..c.len().min(12)]),
             _ => String::new(),
         };
-        status(
-            "Installed",
-            format!("{shown}{at} to {}", home_relative(&dir)),
-        );
+        status("Installed", format!("{shown}{at}"));
         Ok(rel)
+    }
+}
+
+/// The bodies of `urls` (`(key, url)`), up to [`PARALLEL_DOWNLOADS`] at a
+/// time, the threads sharing `agent` and its connections, by key: those that
+/// failed are left out.
+fn download_all(agent: &ureq::Agent, urls: &[(String, String)]) -> Vec<(String, Vec<u8>)> {
+    let next = AtomicUsize::new(0);
+    let done = Mutex::new(Vec::new());
+    std::thread::scope(|scope| {
+        for _ in 0..urls.len().min(PARALLEL_DOWNLOADS) {
+            scope.spawn(|| {
+                while let Some((key, url)) = urls.get(next.fetch_add(1, Ordering::Relaxed)) {
+                    if let Ok(Some(body)) = get(agent, url) {
+                        done.lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .push((key.clone(), body));
+                    }
+                }
+            });
+        }
+    });
+    done.into_inner().unwrap_or_else(|e| e.into_inner())
+}
+
+/// GET `url` with `agent`: its body, or `None` when there is none (404, 410).
+fn get(agent: &ureq::Agent, url: &str) -> anyhow::Result<Option<Vec<u8>>> {
+    let mut response = agent
+        .get(url)
+        .call()
+        .with_context(|| format!("GET {url}"))?;
+    match response.status().as_u16() {
+        200 => {
+            let mut body = Vec::new();
+            response
+                .body_mut()
+                .as_reader()
+                .read_to_end(&mut body)
+                .with_context(|| format!("reading {url}"))?;
+            Ok(Some(body))
+        }
+        404 | 410 => Ok(None),
+        code => bail!("GET {url}: HTTP {code}"),
     }
 }
 
@@ -407,15 +475,6 @@ impl Fetch for Net {
 fn own_crate(name: &str, origin: &Origin) -> Option<String> {
     (matches!(origin, Origin::Git { .. }) && rust_app::OWN_NSHM.contains(&name))
         .then(|| format!("crates/{name}"))
-}
-
-/// `path` with the user's home directory as `~`, as people write it.
-pub(crate) fn home_relative(path: &Path) -> String {
-    let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" });
-    match home.and_then(|h| path.strip_prefix(h).ok().map(Path::to_path_buf)) {
-        Some(rest) => format!("~/{}", rest.display()),
-        None => path.display().to_string(),
-    }
 }
 
 /// The directory, relative to the installation root, of `candidate` of
@@ -671,6 +730,128 @@ mod tests {
             rel
         );
         fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// `.crate` bytes holding `<name>-<version>/nsh.json`.
+    fn dot_crate(name: &str, version: &str) -> Vec<u8> {
+        let mut tar = tar::Builder::new(flate2::write::GzEncoder::new(
+            Vec::new(),
+            flate2::Compression::fast(),
+        ));
+        let body = format!(r#"{{"name":"{name}","version":"{version}"}}"#);
+        let mut header = tar::Header::new_gnu();
+        header.set_size(body.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        tar.append_data(
+            &mut header,
+            format!("{name}-{version}/nsh.json"),
+            body.as_bytes(),
+        )
+        .unwrap();
+        tar.into_inner().unwrap().finish().unwrap()
+    }
+
+    /// A crate downloaded ahead is installed without the network, its
+    /// checksum checked as one downloaded then.
+    #[test]
+    fn a_crate_downloaded_ahead_is_checked_and_installed() {
+        let root = std::env::temp_dir().join(format!("nsh-fetch-ahead-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let mut net = Net::new(root.clone());
+        let body = dot_crate("acme", "0.1.0");
+        let candidate = Candidate {
+            version: Some(semver::Version::new(0, 1, 0)),
+            commit: None,
+            checksum: Some(checksum(b"something else")),
+            yanked: false,
+        };
+        net.downloaded.insert("acme-0.1.0".into(), body.clone());
+        let err = net
+            .install("acme", &Origin::Registry, &candidate)
+            .unwrap_err();
+        assert!(err.to_string().contains("checksum"), "{err}");
+        assert!(!root.join("acme/0.1.0").exists());
+        assert_eq!(fs::read_dir(root.join("acme")).unwrap().count(), 0);
+
+        let candidate = Candidate {
+            checksum: Some(checksum(&body)),
+            ..candidate
+        };
+        net.downloaded.insert("acme-0.1.0".into(), body);
+        let rel = net.install("acme", &Origin::Registry, &candidate).unwrap();
+        assert_eq!(rel, "acme/0.1.0");
+        assert!(root.join("acme/0.1.0/nsh.json").is_file());
+        assert!(net.downloaded.is_empty());
+        // Nothing left beside it.
+        assert_eq!(fs::read_dir(root.join("acme")).unwrap().count(), 1);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Downloads run at once; one that fails is left out (for `install`
+    /// to download again and report).
+    #[test]
+    fn downloads_run_at_once() {
+        use std::{
+            io::{BufRead as _, BufReader, Write as _},
+            net::TcpListener,
+            sync::{Arc, atomic::AtomicUsize},
+            time::{Duration, Instant},
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let in_flight = Arc::new(AtomicUsize::new(0));
+        let most = Arc::new(AtomicUsize::new(0));
+        {
+            let (in_flight, most) = (in_flight.clone(), most.clone());
+            std::thread::spawn(move || {
+                for stream in listener.incoming() {
+                    let Ok(mut stream) = stream else { break };
+                    let (in_flight, most) = (in_flight.clone(), most.clone());
+                    std::thread::spawn(move || {
+                        let mut line = String::new();
+                        let mut reader = BufReader::new(stream.try_clone().unwrap());
+                        reader.read_line(&mut line).unwrap();
+                        while {
+                            let mut header = String::new();
+                            reader.read_line(&mut header).unwrap() > 2
+                        } {}
+                        let now = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+                        most.fetch_max(now, Ordering::SeqCst);
+                        // Held until another request is in flight too.
+                        let start = Instant::now();
+                        while most.load(Ordering::SeqCst) < 2
+                            && start.elapsed() < Duration::from_secs(10)
+                        {
+                            std::thread::sleep(Duration::from_millis(5));
+                        }
+                        let path = line.split_whitespace().nth(1).unwrap_or("").to_owned();
+                        let response = if path == "/missing" {
+                            "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                                .to_owned()
+                        } else {
+                            format!(
+                                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{path}",
+                                path.len()
+                            )
+                        };
+                        in_flight.fetch_sub(1, Ordering::SeqCst);
+                        stream.write_all(response.as_bytes()).unwrap();
+                    });
+                }
+            });
+        }
+        let urls: Vec<(String, String)> = ["a", "b", "c", "missing", "d"]
+            .iter()
+            .map(|k| ((*k).to_owned(), format!("http://127.0.0.1:{port}/{k}")))
+            .collect();
+        let mut net = Net::new(std::env::temp_dir());
+        let mut done = download_all(net.agent(), &urls);
+        done.sort();
+        let keys: Vec<&str> = done.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(keys, ["a", "b", "c", "d"]);
+        assert_eq!(done[0].1, b"/a");
+        assert!(most.load(Ordering::SeqCst) >= 2);
     }
 
     #[test]

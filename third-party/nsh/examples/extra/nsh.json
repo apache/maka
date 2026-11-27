@@ -2,9 +2,16 @@
   "name": "Extra",
   "id": "com.longbridge.nsh.extra",
   "dependencies": {
-    "nsh-extra": { "path": "../../crates/nsh-extra", "features": ["speech"] }
+    "nsh-extra": { "path": "../../crates/nsh-extra", "features": ["share", "speech"] }
   },
   "capabilities": {
-    "speech": true
+    "speech": true,
+    "windows": true,
+    "application": true,
+    "share": true,
+    "fs": {
+      "read": ["${dataDir}"],
+      "write": ["${dataDir}"]
+    }
   }
 }

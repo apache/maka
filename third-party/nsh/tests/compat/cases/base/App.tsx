@@ -28,6 +28,7 @@ import BaseSplitView from "./base-split-view";
 import BaseEditor from "./base-editor";
 import BaseEditorFonts from "./base-editor-fonts";
 import BaseHoverCard from "./base-hover-card";
+import BaseHostAccessibility from "./base-host-accessibility";
 import BaseLink from "./base-link";
 import BaseNavPage from "./base-nav-page";
 import BaseNavHeaderItems from "./base-nav-header-items";
@@ -58,6 +59,7 @@ import BaseRichEditorTables from "./base-rich-editor-tables";
 import BaseRichEditorView from "./base-rich-editor-view";
 import BaseSafeAreaKeyboard from "./base-safe-area-keyboard";
 import BaseCombobox from "./base-combobox";
+import BaseCalendar from "./base-calendar";
 import BaseCommand from "./base-command";
 import BaseDatePicker from "./base-date-picker";
 import BaseEmojiPicker from "./base-emoji-picker";
@@ -101,6 +103,7 @@ const cases: Record<string, () => JSX.Element> = {
   "base-editor": BaseEditor,
   "base-editor-fonts": BaseEditorFonts,
   "base-hover-card": BaseHoverCard,
+  "base-host-accessibility": BaseHostAccessibility,
   "base-link": BaseLink,
   "base-nav-page": BaseNavPage,
   "base-nav-header-items": BaseNavHeaderItems,
@@ -144,6 +147,7 @@ const cases: Record<string, () => JSX.Element> = {
   "base-progress": BaseProgress,
   "base-terminal": BaseTerminal,
   "base-combobox": BaseCombobox,
+  "base-calendar": BaseCalendar,
   "base-command": BaseCommand,
   "base-date-picker": BaseDatePicker,
   "base-emoji-picker": BaseEmojiPicker,

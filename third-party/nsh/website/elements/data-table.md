@@ -200,8 +200,8 @@ cell under the pointer (its `row` and `column`), a row's number (`row` only) or 
 press, the cell a menu was asked for has the `cellActive` part, or its row the `rowActive` part where cells do not
 select.
 
-Screen readers get a grid (named by `accessibilityLabel`) of column headers and cells, the selected ones said to be
-selected.
+Screen readers get a grid (named by `accessibilityLabel`) whose header and body rows hold their group labels,
+column headers and cells, the selected ones said to be selected.
 
 ### Dragging a range of cells
 

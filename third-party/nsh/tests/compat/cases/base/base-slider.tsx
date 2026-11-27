@@ -10,7 +10,9 @@
 // indicator, range and thumbs (`trackClass`, `trackStyle`,
 // `indicatorClass`, `indicatorStyle`, `rangeClass`, `rangeStyle`,
 // `thumbClass`, `thumbStyle`), whose `disabled:` classes follow the
-// slider. The parts' frames are how its script sees them.
+// slider, and content drawn in each thumb (`renderThumb`, told which
+// thumb it is) that follows its thumb's states through `group-*:`
+// classes. The parts' frames are how its script sees them.
 import { Text, View, signal } from "nsh";
 import { Slider } from "nsh/base";
 
@@ -57,6 +59,12 @@ function App() {
         accessibilityLabel="Max price"
         startAccessibilityLabel="Min price"
         onChange={({ value }) => price.set(value as [number, number])}
+        renderThumb={({ start }) => (
+          <View
+            testID={start ? "min-bubble" : "max-bubble"}
+            class="w-[4px] h-[4px] group-hover:bg-[#00ff00] group-data-dragging:bg-[#ff0000]"
+          />
+        )}
         {...parts}
       />
       <Text>{`Price ${price()[0]}-${price()[1]}`}</Text>

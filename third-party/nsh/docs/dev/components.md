@@ -658,7 +658,7 @@ accessibility states the components report (listbox, tree and tab rows their sel
 | `Checkbox` | `[✓]` (the `✓` in the accent), `[ ]` (muted) or `[–]` (the dash in the accent) and a space in place of the indicator, then the children in a view of their own beside it (a column: a choice card's title over its description) |
 | `Radio` | `[●]` (the dot in the accent) or `[ ]` (muted), a checkbox's width, and a space before the children, in a row (an app's own dot among its children is the app's to leave out) |
 | `Switch` | a checkbox's mark and a space in place of the track and thumb: on `[✓]`, off `[ ]`, as terminal apps show an on / off setting (a knob on a track would read as a slider); the role stays a switch for screen readers |
-| `Slider` | one row of `─` as wide as the slider, `━` from `min` to the value (a range: between its thumbs) in the accent, the rest muted, a `●` view per thumb on its value's Cell (focus, keys, drags and screen readers as elsewhere); vertical: a column of `│` / `┃` |
+| `Slider` | one row of `─` as wide as the slider, `━` from `min` to the value (a range: between its thumbs) in the accent, the rest muted, a `●` view per thumb on its value's Cell (focus, keys, drags and screen readers as elsewhere; no `renderThumb` content); vertical: a column of `│` / `┃` |
 | `Progress` | one row as wide as the bar: full Cells `█`, the partial Cell by eighths `▏▎▍▌▋▊▉`, then `░`, the filled Cells in the accent; indeterminate: a four-Cell segment moving one Cell every 120 ms (only while indeterminate; reduced motion: `░` only) |
 | `ColorSlider` | one row of Cells over the slider's width, each filled with the channel's color at that point of the track (role `Image`, hidden from screen readers: the terminal paints it as the color itself, quantized at 256 colors, no fill where it paints none) the thumb a `│` on the Cell of the value (`terminal::COLOR_THUMB`), no line along the track; the slider is the focusable adjustable control, keys as elsewhere, a press or a drag on a Cell picks its value (`color_picker/tui.rs`) |
 | `ColorArea` | a grid of such Cells filling the area, as many as its width and its whole rows hold (at most 240 by 64): the hue at each column's saturation and each row's brightness, the picked Cell `◆`; keys, presses and drags as elsewhere |
@@ -836,9 +836,11 @@ root become nodes the core creates itself. Apps without components pay one check
 element: at the view's first mount, before the host's native view is sent, the core gives the host the root's kind
 (`Core::retag`: a text, a screen, a modal, a list), so the root's props and children apply to it; a root that is a
 region goes in the host view. Besides the component's own props, JS sets a view's props on the host
-(`nsh_core::element::HOST_PROPS`, declared as `ComponentHostProps`): classes, styles, `testID`, `tooltip`,
+(`nsh_core::element::HOST_PROPS`, declared as `ComponentHostProps`): classes, styles, `testID`, its
+accessibility, `tooltip`,
 `onLayout`, the desktop file drops (`onFileDragEnter`, `onFileDragLeave`, `onFileDrop`), the mouse over it
-(`onMouseEnter`, `onMouseMove`, `onMouseLeave`, `onMouseUp`) and `onContextMenu`, so a component is a drop
+(`onMouseEnter`, `onMouseMove`, `onMouseLeave`, `onMouseUp`), `onContextMenu` and the actions assistive
+technologies perform (`onAccessibilityAction`), so a component is a drop
 destination, and hears the mouse, only where the app listens. A component's own prop or event of one of these names
 takes its place (`ComponentSpec::host_props`: JS sets the rest on the host, in QuickJS and in the browser, and its
 declaration omits it from `ComponentHostProps`): `DataTable`'s and `Editor`'s `onContextMenu` report a row and column
@@ -905,7 +907,11 @@ what changed.
 
 ## Children, slots and rows
 
-- JS inserts a component's children into the host; the core places them where the view's `Children` is, before the
+- A value prop named `children`, such as `children: Prop<SharedString>`, receives the JSX child as a typed value.
+  The compiler supplies it as `props.children`, and the JS face reads it in the ordinary prop effect, including
+  when a signal read by its getter changes. The generated TypeScript declaration for `Prop<SharedString>` is
+  `children: string`. Read `props.children.get()` in a Rust binding or computation to track the value.
+- For a `Children` slot, JS inserts a component's children into the host; the core places them where the view's `Children` is, before the
   node that follows it (or keeps them out of the tree while the view has none: a `Children` in a region that is not
   shown). The core sets the `Prop<Children>` when JS adds the first child or removes the last, so
   `props.children.get().is_empty()` in a binding follows it. With `children_each`, the children are an `Each` keyed by the child's node over a signal of the host's JS
@@ -1249,11 +1255,8 @@ desktop OS a press shows the same items with `popup_menu`; on the web the conten
 `ContextMenuComponent.java`) shows the system's menu from `MenuButton`'s item data, and `menu.rs` reports it with the
 drawn menu's events. Android has no context menu a held finger opens by itself, so `menu.rs` keeps the drawn menu's
 hold there and asks the component with `open` (and `at`, the held point); elsewhere, and without items, the menu is
-the drawn one. `nsh/mobile`'s `SegmentedControl` is the same kind of native
-component, `nsh/segmented-control` (`system_segmented_control.rs`), built as `TabBar` is; so is its `Switch`,
-`nsh/switch` (`system_switch.rs` on iOS, `SwitchComponent.java` on Android), and its `DateTimePicker`,
-`nsh/date-time-picker` (iOS `system_date_time_picker.rs`, Android `DateTimePickerComponent.java`): values cross to the
-platforms as their fields, never as strings to parse, and come back the same way.
+the drawn one. System-styled form controls (a segmented control, a switch, a date and time picker) are not native
+components of NSH's: they live in an nshm (`nsh-system-controls`), which registers its own native components.
 
 `HoverCard` (`hover_card.rs`) is `gpui-base`'s `HoverCard` on `Popover`'s overlay and presence. On the desktops the
 pointer is followed by Rust listeners, `onMouseEnter` / `onMouseLeave` on the `trigger` slot (the app's element) and on
@@ -1310,7 +1313,10 @@ with every prop of `Calendar` passed on (`calendar::Config`); opening it on the 
 days (`Grid::focus_days`). A complete date is the value and closes it with `"select"`; with a time the popup stays
 open on the desktops, each edit reported, until the selected day is pressed again (`gpui-component`'s double click),
 while in a sheet (touch screens, the `sheet` the content is made for) a tap on a day picks it at its time and closes,
-as a single date does: a touch has no double click (`api-naming.md`). The trigger's keys are bound while it has the
+as a single date does: a touch has no double click (`api-naming.md`). Each pick is reported before its `"select"`,
+so an app that controls `open` and does not follow a `"select"` keeps the popup open and closes it itself (a pending
+value committed from its `footer`). The app's `header` and `footer` slots are the popup's first and last children,
+around the content, so their Tab stops come before and after the calendar's. The trigger's keys are bound while it has the
 focus: Return opens and closes (`gpui-base`'s `Confirm`), Delete and Backspace clear while it is closed. The value
 crosses to JS in the HTML inputs' forms (`date`, `datetime-local`), at the precision of `timePrecision`
 (`PickedDate`).

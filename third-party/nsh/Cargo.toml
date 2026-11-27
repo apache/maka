@@ -94,7 +94,7 @@ ratex-types = "0.1.15"
 ratex-font = "0.1.15"
 # WOFF and WOFF2 fonts, decompressed to the TrueType / OpenType data the
 # text engines register (`nsh-core`'s `text::font_data`).
-wuff = "0.2.9"
+wuff = "0.2.10"
 oxc_sourcemap = "9"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -357,15 +357,9 @@ objc2-ui-kit = { version = "0.3.2", default-features = false, features = [
   "UIMenu",
   "UIMenuElement",
   "UIPreviewParameters",
-  "UISegmentedControl",
-  "UISwitch",
-  "UIDatePicker",
   "UISheetPresentationController",
   "UISplitViewController",
   "UIAlertController",
-  "UIActivity",
-  "UIActivityItemProvider",
-  "UIActivityViewController",
   "UIPopoverPresentationController",
   "UIPopoverSupport",
   "UIAccessibilityCustomAction",

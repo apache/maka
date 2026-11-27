@@ -113,13 +113,12 @@ pub enum PopoverEvent {
 #[component]
 pub fn Popover(props: PopoverProps, cx: Scope<PopoverEvent>) -> impl IntoElement {
     let open = OpenState::new(props.open, props.default_open);
-    // Why it last closed: a press outside put the focus where it pressed.
-    let closed_by = stored(None::<OpenChangeReason>);
+    // The reason a close keeps says where the keyboard goes: a press
+    // outside put the focus where it pressed.
     let change = move |next: bool, reason: OpenChangeReason| {
-        if !next {
-            closed_by.replace(Some(reason));
-        }
-        open.request(next, || cx.emit(PopoverEvent::OpenChange(next, reason)));
+        open.request_for(next, reason, || {
+            cx.emit(PopoverEvent::OpenChange(next, reason))
+        });
     };
     // A press outside or Escape: an attempt, which closes it when allowed
     // (none while it goes).
@@ -155,7 +154,7 @@ pub fn Popover(props: PopoverProps, cx: Scope<PopoverEvent>) -> impl IntoElement
         presence.focus_back_on_close(
             move || open.get(),
             move || {
-                if closed_by.get() != Some(OpenChangeReason::PressOutside) {
+                if open.take_closed_by() != Some(OpenChangeReason::PressOutside) {
                     anchor.focus_back(presence.popup());
                 }
             },
@@ -163,13 +162,15 @@ pub fn Popover(props: PopoverProps, cx: Scope<PopoverEvent>) -> impl IntoElement
     }
     lifecycle(
         move || presence.mounted(),
+        // A reason the focus's return did not read (the focus was not in
+        // the popup as it closed) goes as it opens or is gone.
         move || {
-            closed_by.replace(None);
+            open.take_closed_by();
             cx.emit(PopoverEvent::Open);
         },
         move || {
             cx.emit(PopoverEvent::Close);
-            closed_by.replace(None);
+            open.take_closed_by();
         },
     );
     // In a toolbar, the trigger is one of its items.

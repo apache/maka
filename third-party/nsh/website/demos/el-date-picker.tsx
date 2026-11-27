@@ -64,9 +64,11 @@ function App() {
     { label: "Tomorrow", value: iso(addDays(today, 1)) },
     { label: "Next Monday", value: iso(monday) },
   ];
+  // Each with the dates it stands for under its label.
+  const span = (label: string, start: Date, end: Date): DateRangePreset => ({ label, value: [iso(start), iso(end)], description: `${monthDay(iso(start))} – ${monthDay(iso(end))}` });
   const stays: DateRangePreset[] = [
-    { label: "This week", value: [iso(today), iso(addDays(today, (7 - today.getDay()) % 7))] },
-    { label: "Next 7 nights", value: [iso(today), iso(addDays(today, 7))] },
+    span("This week", today, addDays(today, (7 - today.getDay()) % 7)),
+    span("Next 7 nights", today, addDays(today, 7)),
   ];
   const stayTitle = () => {
     const r = stay();

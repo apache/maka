@@ -101,7 +101,10 @@ On Linux, a canvas out of sight (outside a clipping ancestor or the window) is n
 drawn until it comes into sight: its animations ask for no frames. Android, the web runtime and the GPUI backend (which rasterizes the drawing, text outlines
 included, with tiny-skia into a pixmap in device pixels: `nsh-platform-gpui` `canvas.rs`) still redraw the
 whole canvas. Numbers:
-`docs/dev/performance.md`.
+`docs/dev/performance.md`. The web runtime redraws a canvas once per display frame (`web/nsh.js` `drawSoon`): the
+batches between two frames (pointer moves, a stream of updates, each a task of its own) only mark it, and
+`requestAnimationFrame` replays the last drawing before the paint. A change made in a frame (an animated value the
+engine's `nsh_frame` steps) draws in that frame, and a shader's picture (`paintHost`) draws the pending ones first.
 
 Windows also omits a `source-over` paint whose current values cannot change a pixel before it builds the geometry,
 lays the text out or looks the bitmap up: zero `globalAlpha` (the shadow's alpha is multiplied by it, so it hides

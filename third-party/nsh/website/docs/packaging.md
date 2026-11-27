@@ -258,7 +258,9 @@ Development builds (`nsh run --target android`) always allow plain HTTP: they lo
 
 The manifest declares the permissions NSH's own features need: `INTERNET`, `ACCESS_NETWORK_STATE` for
 [`network()`](./device-and-environment.md#the-network), `POST_NOTIFICATIONS` for
-[notifications](./sandbox-and-capabilities.md#notifications), `RECORD_AUDIO` and `CAMERA` for a web view's `media`. `android.permissions` adds
+[notifications](./sandbox-and-capabilities.md#notifications), `RECORD_AUDIO` and `CAMERA` for a web view's `media`,
+and the signature permission `<package>.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION` (androidx's name) that keeps the
+receivers registered at run time to the app before Android 13. `android.permissions` adds
 others, for code of the app or an extension that calls Android itself: a bare name is one of Android's
 (`android.permission.<NAME>`), a dotted one is written as it is.
 

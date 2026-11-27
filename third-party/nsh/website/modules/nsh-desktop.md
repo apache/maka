@@ -210,7 +210,7 @@ Each platform shows a kind as its own windows of that role: an `NSPanel` on macO
 | Layering | `level` | `"normal"`, `"floating"` (above normal windows), `"aboveDock"` (above the Dock and the taskbar) or `"desktopIcon"` (macOS's desktop icon level, on every space; on Windows, the bottom of the z-order). |
 | | `taskbar` | It has a taskbar button (Windows). |
 | | `workspaces` | `"current"` or `"all"`: the workspaces (macOS's spaces) it shows on. |
-| | `pointerEvents` | `"auto"`, or `"none"`: clicks pass through it to what is below. Needs the `windows` capability's `overlay`. |
+| | `pointerEvents` | `"auto"`; `"none"`: clicks pass through it to what is below; or `"box-none"`: its root is like a view's `box-none`, so it takes clicks on its views and passes the rest through, as for a small panel in a larger transparent window ([below](#clicks-through-the-empty-areas)). `"none"` and `"box-none"` need the `windows` capability's `overlay`. |
 | Look | `transparent` | Its background is transparent: the app's views are all it shows. |
 | | `backdrop` | The system's material behind its content: `"none"`, `"window"`, `"sidebar"`, `"popover"` or `"hud"`. Each platform maps them to its own (macOS's visual effect materials, Windows 11's Mica and Acrylic). |
 | | `shadow` | The system's shadow around it. |
@@ -232,6 +232,27 @@ An attribute a platform's windows do not have is kept and has no effect there: t
 | Windows | The drag's rectangle is fixed in `WM_SIZING`: a side edge sets the height from the width, the top or bottom edge sets the width from the height, a corner follows its width. The edge the user holds stays under the pointer. `minSize` and `maxSize` still apply; a ratio they cannot meet gives way to them. |
 | Linux | No effect yet. GTK 4 has no call for it; Wayland has no aspect ratio for a resize at all (the compositor picks the size), and on X11 GDK 4 rewrites the whole `WM_NORMAL_HINTS` property, without an aspect field, each time it lays the window out, which includes every step of a drag, so a ratio set beside it would vanish while the user resizes. Draw the content letterboxed, or correct the size in `onBoundsChange` if you must. |
 | GPUI apps (Windows, Linux) | No effect: GPUI owns the window's resize loop. |
+| iOS, Android, Web, terminal | No windows: no effect. |
+
+### Clicks through the empty areas
+
+A popup that grows and shrinks often opens in a transparent window sized for its largest state. With `pointerEvents: "box-none"` the window takes a click only where it lands on one of its views; a click on the empty area around the panel reaches the window below, which takes the focus, so a popup that closes when it loses the focus (`closeOnBlur`) closes.
+
+The window's root is `box-none`, as a view's: its views follow their own `pointerEvents`, `hidden` and `hitSlop`, and a view that fills the window still takes the clicks on it. Mark such a wrapper `box-none` too; a background does not decide where the window takes clicks. The window's own title bar and frame let clicks through as well, so use it on frameless windows.
+
+```tsx
+<Window id="palette" kind="popup" transparent defaultSize={{ width: 640, height: 480 }} pointerEvents="box-none">
+  <View pointerEvents="box-none" class="flex-1 items-center">
+    <View class="w-96 rounded-xl bg-white p-3 shadow-lg">{/* the panel */}</View>
+  </View>
+</Window>
+```
+
+| Platform | What the user sees |
+|---|---|
+| macOS (AppKit and GPUI apps) | Clicks, wheels and hovers outside the views go to the window or desktop below. The window follows a layout change at once and a pointer move as it comes; a press keeps going to the window it started in until its button comes up. |
+| Windows (Win32 and GPUI apps) | The same: clicks, wheels and hovers outside the views go to the window or desktop below, a layout change takes effect at once, and a press keeps going to the window it started in until its button comes up. The window follows the pointer about once a frame while it shows. |
+| Linux (GTK and GPUI apps, Wayland and X11) | The window takes clicks only within its views, updated with every layout change; everything else goes to the window below. A rotated or skewed view and a rounded `clipPath` count by the box around them. |
 | iOS, Android, Web, terminal | No windows: no effect. |
 
 ### currentWindow
@@ -384,7 +405,7 @@ mount(App);
 
 ### Capabilities
 
-An app without `"capabilities"` in nsh.json may open windows of every kind except overlays. An app that declares its capabilities opens windows of its own when `capabilities.windows` grants them ([Sandbox and capabilities](../docs/sandbox-and-capabilities.md#windows)). Overlays and click-through windows (`pointerEvents: "none"`) are granted only when declared. `Window.open` and `<Window>` throw `ERR_ACCESS_DENIED` with `permission` `"windows"` and `resource` the window's id for a window not granted; an attribute not granted in `set()` is left as it is, with a warning.
+An app without `"capabilities"` in nsh.json may open windows of every kind except overlays. An app that declares its capabilities opens windows of its own when `capabilities.windows` grants them ([Sandbox and capabilities](../docs/sandbox-and-capabilities.md#windows)). Overlays and click-through windows (`pointerEvents: "none"` or `"box-none"`) are granted only when declared. `Window.open` and `<Window>` throw `ERR_ACCESS_DENIED` with `permission` `"windows"` and `resource` the window's id for a window not granted; an attribute not granted in `set()` is left as it is, with a warning.
 
 ## Application
 

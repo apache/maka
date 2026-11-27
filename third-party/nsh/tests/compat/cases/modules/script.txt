@@ -108,21 +108,6 @@ expect Files refused: rejected RangeError
 expect Size refused: rejected RangeError
 expect Files: pending
 covers [nsh] Picker
-# mod-share
-tap id:case-mod-share
-# no share sheet there: available() resolves false and show rejects as
-# unavailable, never as shared; content it refuses rejects first, by kind.
-expect Available: false
-expect Shown: not shown
-tap id:share
-expect Shown: rejected ERR_FEATURE_UNAVAILABLE_ON_PLATFORM
-expect Empty: rejected TypeError
-expect Local URL: rejected TypeError
-expect Many: rejected RangeError
-expect File: rejected ERR_ACCESS_DENIED
-expect Blank: rejected TypeError
-expect Long URL: rejected RangeError
-covers [nsh] Share
 # mod-app-settings
 tap id:case-mod-app-settings
 # no settings page of the app's own there: AppSettings.available() resolves
@@ -325,18 +310,11 @@ tap id:tab-next
 expect Tab: 1
 tap id:tab-rename
 frame id:tab-bar 0 784 390 60
+# A native component's accent, from its style.
+style id:tab-bar accentColor #34c759ff
 covers [nsh/mobile] isAvailable
 covers [nsh/mobile] TabBar
-covers [nsh/mobile] SegmentedControl
-# The system's switch shows the app's value, in its style's accent.
-expect Wi-Fi: true
-style id:wifi accentColor #34c759ff
-covers [nsh/mobile] Switch
 covers [styles] accentColor
-
-# The system's date and time picker shows the app's value.
-expect When: 2026-11-17T09:30
-covers [nsh/mobile] DateTimePicker
 # mod-haptics
 tap id:case-mod-haptics
 # every call goes through; a name Haptics does not know throws.

@@ -17,9 +17,9 @@
  * under the License.
  */
 
-import { cleanup, effect, safeAreaInsets, Scroll, signal, Text, View, token } from 'nsh';
+import { cleanup, effect, platform, safeAreaInsets, Scroll, signal, Text, View, token } from 'nsh';
 import { NavPage } from 'nsh/base';
-import { isAvailable, SegmentedControl } from 'nsh/mobile';
+import { SegmentedControl } from 'nsh-system-controls';
 import { formatCount, tr } from '../../locale';
 import {
   appendFileQuote,
@@ -197,7 +197,7 @@ export function ProjectFilesScreen(props: {
           }}
         >
           <If
-            when={isAvailable}
+            when={platform.os === 'ios'}
             else={
               <View
                 style={{

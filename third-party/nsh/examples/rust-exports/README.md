@@ -34,3 +34,13 @@ reads.
 How each kind of export runs, crosses and is typed: [Building with Rust](../../website/docs/rust.md) and, for
 NSH's developers, `docs/dev/rust-classes.md` (classes, module functions, callbacks) and `docs/dev/components.md`
 (components). `examples/gallery-rs` is a whole app written in Rust.
+
+### String children
+
+A Rust component can read a JSX string child by declaring a regular value prop
+named `children` with type `Prop<SharedString>`. The generated TSX API accepts
+`<TextChild>literal</TextChild>` or `<TextChild>{source()}</TextChild>`. Read the
+prop within a reactive computation or binding to follow updates. For arbitrary
+renderable child nodes, use the `Children` slot type.
+
+See `native/src/lib.rs` and `TextChild.tsx` for a runnable example.

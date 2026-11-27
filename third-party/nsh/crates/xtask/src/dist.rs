@@ -8,6 +8,7 @@
 //! dist/nsh/runtime/macos/{nsh-macos-host,nsh-macos-app}        development host, packaged app runner
 //! dist/nsh/runtime/linux/{nsh-linux-host,nsh-linux-app}        development host, packaged app runner
 //! dist/nsh/runtime/windows/{nsh-windows-host,nsh-windows-app}.exe  development host, packaged app runner
+//! dist/nsh/runtime/windows/nsh-windows-app.link/               the runner's link kit (x86_64), bin/ld.lld.exe its linker
 //! dist/nsh/runtime/gpui/nsh-gpui-host[.exe]                   development host (GPUI; apps embed it, never package it)
 //! dist/nsh/runtime/tui/nsh-tui-host[.exe]                     development host (the terminal, `nsh run --target tui`)
 //! dist/nsh/runtime/android/{release,dev}/                      classes.dex, lib/<abi>/libnsh.so (stripped),
@@ -144,16 +145,16 @@ pub(crate) fn dist() -> anyhow::Result<()> {
         }
     }
     if cfg!(windows) {
-        for (package, what) in [
-            ("nsh-windows-host", "the development host for Windows"),
-            ("nsh-windows-app", "the release runner for Windows"),
-        ] {
-            cargo(&["build", "--release", "-p", package], what)?;
-            copy_executable(
-                &release.join("release").join(exe(package)),
-                &out.join("runtime/windows").join(exe(package)),
-            )?;
-        }
+        let package = "nsh-windows-host";
+        cargo(
+            &["build", "--release", "-p", package],
+            "the development host for Windows",
+        )?;
+        copy_executable(
+            &release.join("release").join(exe(package)),
+            &out.join("runtime/windows").join(exe(package)),
+        )?;
+        windows_runner(&root, &release, &out.join("runtime/windows"))?;
     }
 
     // GPUI is the backend for embedding in GPUI apps: its development
@@ -497,6 +498,107 @@ pub(crate) fn cargo(args: &[&str], what: &str) -> anyhow::Result<()> {
             .args(args),
         what,
     )
+}
+
+/// The target of the Windows release runner on x86_64, linked by
+/// `nsh package` again from its link kit (#1644).
+const WINDOWS_GNULLVM: &str = "x86_64-pc-windows-gnullvm";
+
+/// The Windows release runner, into `runtime`. On x86_64 with a gnullvm C
+/// toolchain (llvm-mingw, `CC_x86_64_pc_windows_gnullvm`) it is built for
+/// gnullvm with its link kit `nsh-windows-app.link/` (objects and libraries
+/// without rustc's metadata, `link.rsp`) and the linker in the kit's
+/// `bin/ld.lld.exe` (the toolchain's `rust-lld`, the `windows-linker`
+/// component). Without one, and on arm64, it is built as before, for this
+/// machine and without a kit: `nsh package` then uses it as it is.
+fn windows_runner(root: &Path, release: &Path, runtime: &Path) -> anyhow::Result<()> {
+    let package = "nsh-windows-app";
+    let what = "the release runner for Windows";
+    let gnullvm = cfg!(target_arch = "x86_64");
+    if !gnullvm || env::var_os("CC_x86_64_pc_windows_gnullvm").is_none() {
+        if gnullvm {
+            term::warn(
+                "no gnullvm C toolchain (llvm-mingw, CC_x86_64_pc_windows_gnullvm): the Windows \
+                 runner is built without its link kit, and packaged apps keep every part",
+            );
+        }
+        cargo(&["build", "--release", "-p", package], what)?;
+        return copy_executable(
+            &release.join("release").join(exe(package)),
+            &runtime.join(exe(package)),
+        );
+    }
+    let built = release.join(WINDOWS_GNULLVM).join("release");
+    let runner = built.join(exe(package));
+    let link_args = built.join("nsh-windows-app.link-args.txt");
+    // Cargo runs rustc again, which prints the link's arguments, only when
+    // the runner is not there.
+    remove(&runner)?;
+    remove(&link_args)?;
+    // Without LTO: the kit's objects stay per crate, and the link drops the
+    // sections of a part an app does not import. `--config` wins over the
+    // release workflow's `CARGO_PROFILE_RELEASE_*`.
+    let print = format!("link-args={}", link_args.display());
+    cargo(
+        &[
+            "rustc",
+            "--release",
+            "-p",
+            package,
+            "--bin",
+            package,
+            "--target",
+            WINDOWS_GNULLVM,
+            "--config",
+            "profile.release.lto=false",
+            "--config",
+            "profile.release.codegen-units=16",
+            "--",
+            "-C",
+            "save-temps",
+            "--print",
+            &print,
+        ],
+        what,
+    )?;
+    copy_executable(&runner, &runtime.join(exe(package)))?;
+
+    let kit = runtime.join("nsh-windows-app.link");
+    let step = term::Step::start("making the Windows runner's link kit");
+    term::run(
+        Command::new("node")
+            .arg(root.join("crates/nsh-windows-app/script/link-kit.js"))
+            .arg(&link_args)
+            .arg(&kit),
+    )?;
+    copy(&rust_lld()?, &kit.join("bin/ld.lld.exe"))?;
+    step.done("made the Windows runner's link kit");
+    Ok(())
+}
+
+/// The `rust-lld` of the toolchain that builds the distribution.
+fn rust_lld() -> anyhow::Result<std::path::PathBuf> {
+    let rustc = |arg: &str| -> anyhow::Result<String> {
+        let output = Command::new(env::var_os("RUSTC").unwrap_or_else(|| "rustc".into()))
+            .arg(arg)
+            .output()
+            .context("run rustc")?;
+        anyhow::ensure!(output.status.success(), "rustc {arg} failed");
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    };
+    let sysroot = rustc("--print=sysroot")?;
+    let version = rustc("-vV")?;
+    let host = version
+        .lines()
+        .find_map(|line| line.strip_prefix("host: "))
+        .context("rustc -vV names no host")?;
+    let lld = Path::new(sysroot.trim())
+        .join("lib/rustlib")
+        .join(host.trim())
+        .join("bin")
+        .join(exe("rust-lld"));
+    anyhow::ensure!(lld.is_file(), "no rust-lld at {}", lld.display());
+    Ok(lld)
 }
 
 /// The file of executable `name` built for this machine (`nsh.exe` on
