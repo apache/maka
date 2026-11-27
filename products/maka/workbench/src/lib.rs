@@ -2220,9 +2220,23 @@ mod tests {
         app.wait_for("label:Checking external agents…").unwrap();
 
         app.press_key("f7").unwrap();
-        app.wait_for("label:Disable Codex").unwrap();
+        app.wait_for("role:switch[Codex]").unwrap();
         app.wait_for("text:0.42.0 · 5 models available").unwrap();
-        app.wait_for("label:Enable Claude Code").unwrap();
+        app.wait_for("role:switch[Claude Code]").unwrap();
+        assert_eq!(
+            app.screen()
+                .accessibility_state("role:switch[Codex]")
+                .unwrap()
+                .checked,
+            Some(nsh_core::Checked::True)
+        );
+        assert_eq!(
+            app.screen()
+                .accessibility_state("role:switch[Claude Code]")
+                .unwrap()
+                .checked,
+            Some(nsh_core::Checked::False)
+        );
         assert!(
             !app.screen()
                 .matches("label:Checking external agents…")
@@ -2241,7 +2255,7 @@ mod tests {
                 .origin
                 .y
         };
-        let codex_y = y_of(&app, "label:Disable Codex");
+        let codex_y = y_of(&app, "role:switch[Codex]");
 
         app.press_key("f6").unwrap();
         app.set_environment("background", |env| {
@@ -2252,21 +2266,21 @@ mod tests {
             env.lifecycle = nsh_core::platform::Lifecycle::Active;
         })
         .unwrap();
-        assert!(app.screen().matches("label:Disable Codex").unwrap());
-        assert!(app.screen().enabled("label:Disable Codex").unwrap());
+        assert!(app.screen().matches("role:switch[Codex]").unwrap());
+        assert!(app.screen().enabled("role:switch[Codex]").unwrap());
         assert!(
             !app.screen()
                 .matches("label:Checking external agents…")
                 .unwrap()
         );
-        assert_eq!(y_of(&app, "label:Disable Codex"), codex_y);
+        assert_eq!(y_of(&app, "role:switch[Codex]"), codex_y);
 
         app.press_key("f7").unwrap();
         assert!(app.settle());
-        assert!(app.screen().enabled("label:Disable Codex").unwrap());
-        assert_eq!(y_of(&app, "label:Disable Codex"), codex_y);
+        assert!(app.screen().enabled("role:switch[Codex]").unwrap());
+        assert_eq!(y_of(&app, "role:switch[Codex]"), codex_y);
 
-        app.press("label:Enable Claude Code").unwrap();
+        app.press("role:switch[Claude Code]").unwrap();
         app.wait_for("text:Confirm permissions and enable").unwrap();
         app.press("label:Cancel enabling external agents").unwrap();
         app.wait_for("label:Edit connection OpenAI").unwrap();
@@ -2282,13 +2296,26 @@ mod tests {
         app.wait_for("label:Edit model gpt-4.1").unwrap();
 
         app.press("label:Edit model gpt-4.1").unwrap();
-        app.wait_for("label:Use provider reasoning efforts: On")
+        app.wait_for("role:switch[Use provider reasoning efforts]")
             .unwrap();
+        assert_eq!(
+            app.screen()
+                .accessibility_state("role:switch[Use provider reasoning efforts]")
+                .unwrap()
+                .checked,
+            Some(nsh_core::Checked::True)
+        );
         assert!(!app.screen().matches("label:Support effort high").unwrap());
-        app.press("label:Use provider reasoning efforts: On")
+        app.press("role:switch[Use provider reasoning efforts]")
             .unwrap();
-        app.wait_for("label:Use provider reasoning efforts: Off")
-            .unwrap();
+        app.wait_for("label:Support effort high").unwrap();
+        assert_eq!(
+            app.screen()
+                .accessibility_state("role:switch[Use provider reasoning efforts]")
+                .unwrap()
+                .checked,
+            Some(nsh_core::Checked::False)
+        );
         assert!(app.screen().enabled("label:Support effort high").unwrap());
         app.wait_for("text:Save").unwrap();
 
@@ -2296,7 +2323,7 @@ mod tests {
         app.wait_for("text:Discard unsaved changes?").unwrap();
         app.press("text:Discard changes").unwrap();
         app.wait_for("label:Edit connection OpenAI").unwrap();
-        app.wait_for("label:Disable Codex").unwrap();
+        app.wait_for("role:switch[Codex]").unwrap();
     }
 
     #[test]
@@ -2304,8 +2331,8 @@ mod tests {
         let mut app = fixture("models-settings.tsx");
         app.set_viewport(Size::new(px(1040.0), px(900.0))).unwrap();
         app.press_key("f7").unwrap();
-        app.wait_for("role:switch[Disable Codex]").unwrap();
-        app.wait_for("role:switch[Enable Claude Code]").unwrap();
+        app.wait_for("role:switch[Codex]").unwrap();
+        app.wait_for("role:switch[Claude Code]").unwrap();
         app.wait_for("text:0.42.0 · 5 models available").unwrap();
 
         let bounds_of = |app: &nsh_testing::Headless, selector: &str| {
@@ -2319,11 +2346,12 @@ mod tests {
         };
 
         // External agent rows keep their label and description non-interactive; only the switch
-        // control on the right toggles the agent.
+        // control on the right toggles the agent, well clear of the label and hitSlop margin.
         let claude_label = bounds_of(&app, "text:Claude Code");
-        let claude_switch = bounds_of(&app, "role:switch[Enable Claude Code]");
-        assert!(claude_switch.size.width <= px(48.0));
-        assert!(claude_label.origin.x + claude_label.size.width < claude_switch.origin.x);
+        let claude_switch = bounds_of(&app, "role:switch[Claude Code]");
+        assert!(
+            claude_label.origin.x + claude_label.size.width + px(6.0) <= claude_switch.origin.x
+        );
         assert_eq!(app.screen().press_target("text:Claude Code").unwrap(), None);
         assert_eq!(
             app.screen()
@@ -2331,8 +2359,14 @@ mod tests {
                 .unwrap(),
             None
         );
+        assert!(app.press("text:Claude Code").is_err());
+        assert!(
+            !app.screen()
+                .matches("text:Confirm permissions and enable")
+                .unwrap()
+        );
 
-        app.press("role:switch[Enable Claude Code]").unwrap();
+        app.press("role:switch[Claude Code]").unwrap();
         app.wait_for("text:Confirm permissions and enable").unwrap();
         assert_eq!(
             app.screen()
@@ -2348,26 +2382,51 @@ mod tests {
         app.press("label:Cancel enabling external agents").unwrap();
         app.wait_for("label:Edit connection OpenAI").unwrap();
 
-        // Standard settings switches (outside External agents) follow the same rule.
+        // Standard settings switches keep a stable accessible name while their native checked
+        // state toggles.
         app.press("label:Edit connection OpenAI").unwrap();
         app.wait_for("label:Edit model gpt-4.1").unwrap();
         app.press("label:Edit model gpt-4.1").unwrap();
-        app.wait_for("role:switch[Use provider reasoning efforts: On]")
+        app.wait_for("role:switch[Use provider reasoning efforts]")
             .unwrap();
-        let reasoning_label = bounds_of(&app, "text:Use provider reasoning efforts");
-        let reasoning_switch = bounds_of(&app, "role:switch[Use provider reasoning efforts: On]");
-        assert!(reasoning_switch.size.width <= px(48.0));
-        assert!(reasoning_label.origin.x + reasoning_label.size.width < reasoning_switch.origin.x);
         assert_eq!(
             app.screen()
                 .press_target("text:Use provider reasoning efforts")
                 .unwrap(),
             None
         );
-        app.press("role:switch[Use provider reasoning efforts: On]")
+        assert_eq!(
+            app.screen()
+                .accessibility_state("role:switch[Use provider reasoning efforts]")
+                .unwrap()
+                .checked,
+            Some(nsh_core::Checked::True)
+        );
+        app.press("role:switch[Use provider reasoning efforts]")
             .unwrap();
-        app.wait_for("role:switch[Use provider reasoning efforts: Off]")
-            .unwrap();
+        app.wait_for("label:Support effort high").unwrap();
+        assert_eq!(
+            app.screen()
+                .accessibility_state("role:switch[Use provider reasoning efforts]")
+                .unwrap()
+                .checked,
+            Some(nsh_core::Checked::False)
+        );
+
+        // Terminal idiom also exposes and activates the switch without turning the row text into
+        // a press target.
+        let mut tui = headless_fixture_in(
+            "tests/fixtures/models-settings.tsx",
+            Size::new(px(640.0), px(384.0)),
+            true,
+            nsh_core::platform::Idiom::Terminal,
+        );
+        tui.wait_for("text:Checking external agents…").unwrap();
+        tui.press_key("f7").unwrap();
+        tui.wait_for("role:switch[Claude Code]").unwrap();
+        assert_eq!(tui.screen().press_target("text:Claude Code").unwrap(), None);
+        tui.press("role:switch[Claude Code]").unwrap();
+        tui.wait_for("text:Confirm permissions and enable").unwrap();
     }
 
     #[test]
@@ -2397,7 +2456,7 @@ mod tests {
         // Clicking Retry must reload externalAgents rather than connections.
         app.press_key("f9").unwrap();
         app.press("text:Retry").unwrap();
-        app.wait_for("label:Disable Codex").unwrap();
+        app.wait_for("role:switch[Codex]").unwrap();
         assert_eq!(
             app.screen()
                 .count("text:External runtime probe failed")
@@ -2407,7 +2466,7 @@ mod tests {
 
         // Host configureBatch conflict clears basis; header owns message, section offers Retry to reload.
         app.press_key("f11").unwrap();
-        app.press("label:Disable Codex").unwrap();
+        app.press("role:switch[Codex]").unwrap();
         app.wait_for("text:/These settings changed elsewhere/")
             .unwrap();
         assert_eq!(
@@ -2419,7 +2478,7 @@ mod tests {
         assert_eq!(app.screen().count("text:Retry").unwrap(), 1);
         app.press_key("f11").unwrap();
         app.press("text:Retry").unwrap();
-        app.wait_for("label:Disable Codex").unwrap();
+        app.wait_for("role:switch[Codex]").unwrap();
         assert_eq!(
             app.screen()
                 .count("text:/These settings changed elsewhere/")
@@ -2437,7 +2496,7 @@ mod tests {
         assert_eq!(app.screen().count("text:Retry").unwrap(), 2);
         app.press_key("f9").unwrap();
         app.press("text:Retry >> nth=0").unwrap();
-        app.wait_for("label:Disable Codex").unwrap();
+        app.wait_for("role:switch[Codex]").unwrap();
         assert_eq!(
             app.screen()
                 .count("text:/Connection catalog unavailable/")
@@ -2487,15 +2546,20 @@ mod tests {
         );
 
         // Dirty draft: Escape prompts Discard unsaved changes; second Escape keeps editing.
-        app.press("label:Use provider reasoning efforts: On")
+        app.press("role:switch[Use provider reasoning efforts]")
             .unwrap();
-        app.wait_for("label:Use provider reasoning efforts: Off")
-            .unwrap();
+        app.wait_for("label:Support effort high").unwrap();
         app.press_key("escape").unwrap();
         app.wait_for("text:Discard unsaved changes?").unwrap();
         app.press_key("escape").unwrap();
-        app.wait_for("label:Use provider reasoning efforts: Off")
-            .unwrap();
+        app.wait_for("label:Support effort high").unwrap();
+        assert_eq!(
+            app.screen()
+                .accessibility_state("role:switch[Use provider reasoning efforts]")
+                .unwrap()
+                .checked,
+            Some(nsh_core::Checked::False)
+        );
 
         // Back to app while dirty also protects unsaved edits before leaving Settings.
         app.press("label:Back to app").unwrap();

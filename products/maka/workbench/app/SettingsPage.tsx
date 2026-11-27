@@ -223,6 +223,8 @@ export type SettingsRowProps = {
   tone?: 'muted' | 'danger';
   /** A page below: draws the chevron. */
   opens?: boolean;
+  /** Draws the hairline above the row (default true). Pass false when an outer split row owns the line. */
+  line?: boolean;
   onPress?: () => void;
   accessibilityLabel?: string;
   disabled?: boolean;
@@ -274,12 +276,16 @@ export function SettingsRow(props: SettingsRowProps) {
       focusStyle={quietFocusStyle()}
       disabledStyle={controlDisabledStyle}
     >
-      <RowLine />
+      <If when={props.line !== false}>
+        <RowLine />
+      </If>
       {content()}
     </Button>
   ) : (
     <View style={rowStyle}>
-      <RowLine />
+      <If when={props.line !== false}>
+        <RowLine />
+      </If>
       {content()}
     </View>
   );
@@ -375,7 +381,7 @@ export function SettingsSwitch(props: {
   onPress(): void;
   trailing?: JSX.Element;
   status?: string;
-  /** Names the action instead of the state, such as "Enable Codex". */
+  /** Overrides the switch's accessible name when the row label alone is not specific enough. */
   accessibilityLabel?: string;
 }) {
   return (
@@ -390,13 +396,7 @@ export function SettingsSwitch(props: {
         <>
           {props.trailing}
           <SettingsSwitchControl
-            accessibilityLabel={
-              props.accessibilityLabel ??
-              tr('{label}: {state}', {
-                label: props.label,
-                state: props.checked ? tr('On') : tr('Off'),
-              })
-            }
+            accessibilityLabel={props.accessibilityLabel ?? props.label}
             checked={props.checked}
             disabled={props.disabled}
             onChange={props.onPress}

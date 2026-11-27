@@ -249,6 +249,7 @@ export function SettingsRootScreen(props: {
                 <IconBadge name="haptics" background={token('teal')} size={28} iconSize={16} />
               }
               title={tr('Haptic Feedback')}
+              accessible={false}
               trailing={
                 <Switch
                   accessibilityLabel={tr('Haptic Feedback')}

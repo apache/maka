@@ -183,6 +183,7 @@ export function ConnectionForm(props: { settings: ModelSettingsOwner }) {
                       </If>
                     }
                     opens
+                    line={false}
                     disabled={disabled() || owner.dirty()}
                     onPress={inputAction(owner.editModel, { ...owner.action(), id: id() })}
                   />
@@ -196,10 +197,7 @@ export function ConnectionForm(props: { settings: ModelSettingsOwner }) {
                   }}
                 >
                   <SettingsSwitchControl
-                    accessibilityLabel={tr('{label}: {state}', {
-                      label: name(id()),
-                      state: owner.enabledModels().has(id()) ? tr('On') : tr('Off'),
-                    })}
+                    accessibilityLabel={name(id())}
                     checked={owner.enabledModels().has(id())}
                     disabled={disabled() || owner.dirty()}
                     onChange={inputAction(owner.setModelEnabled, {

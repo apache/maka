@@ -446,6 +446,7 @@ export function QuickToolsSettings(props: {
                         leading={mark(item())}
                         description={summary(item()) || undefined}
                         opens
+                        line={false}
                         onPress={() => selected.set(item())}
                       />
                     </View>
@@ -458,10 +459,7 @@ export function QuickToolsSettings(props: {
                       }}
                     >
                       <SettingsSwitchControl
-                        accessibilityLabel={tr('{label}: {state}', {
-                          label: quick.title(item()),
-                          state: quick.toolEnabled(item()) ? tr('On') : tr('Off'),
-                        })}
+                        accessibilityLabel={quick.title(item())}
                         checked={quick.toolEnabled(item())}
                         disabled={!quick.ready()}
                         onChange={() => quick.toggleTool(item())}

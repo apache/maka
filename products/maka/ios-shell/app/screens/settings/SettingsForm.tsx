@@ -183,6 +183,7 @@ export function SettingSwitch(props: {
       title={props.title}
       disabled={props.disabled}
       divider={props.divider}
+      accessible={false}
       trailing={
         <Switch
           accessibilityLabel={props.title}
