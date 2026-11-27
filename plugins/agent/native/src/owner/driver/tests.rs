@@ -11046,8 +11046,6 @@ mod replaced_antigravity_cell_recovery {
                 .durable
                 .append(&claim, (&head).into(), close_changes, vec![returned_blob])
                 .await?;
-            claim.deactivate();
-            drop(claim);
 
             // Precondition: Cell is already Interrupted and child is known(),
             // yet cleanup is Unconfirmed so has_unsettled_effects() is still true.
@@ -11075,6 +11073,9 @@ mod replaced_antigravity_cell_recovery {
                 )?;
                 assert_eq!(updated, 1);
             }
+            // The live scheduler can recover the Run as soon as this claim is released.
+            claim.deactivate();
+            drop(claim);
             drive_via_queue(&seed.owner, &seed.session, seed.run).await?;
             let while_unconfirmed = seed.owner.durable.frontier(seed.run).await?;
             assert!(
