@@ -163,12 +163,15 @@ export function ThemeEditor() {
       });
     },
   };
-  const page = signal({ width: 0, height: 0 });
-  const place = (): PreviewPlace => {
-    const { width, height } = page();
-    if (platform.idiom === 'terminal' || width === 0) return 'inline';
-    if (width >= besideFrom) return 'beside';
-    return height >= aboveFrom ? 'above' : 'inline';
+  const terminal = platform.idiom === 'terminal';
+  const page = signal<PageSize | null>(null);
+  const layout = computed<PreviewLayout>(
+    () => (terminal ? { kind: 'inline' } : previewLayout(page())),
+    { equals: samePreviewLayout },
+  );
+  const beside = () => {
+    const current = layout();
+    return current.kind === 'beside' ? current : null;
   };
   const previewLook = () => dragged() ?? appearance.look();
   const controls = (
@@ -189,7 +192,7 @@ export function ThemeEditor() {
           </Each>
         </View>
       </SettingsSection>
-      <If when={place() === 'inline'}>
+      <If when={layout().kind === 'inline'}>
         <SettingsSection title={tr('Preview')}>
           <Specimen look={previewLook} />
         </SettingsSection>
@@ -210,53 +213,95 @@ export function ThemeEditor() {
       </SettingsSection>
     </SettingsBody>
   );
+  if (terminal) return controls;
   return (
     <View
       style={{ flex: 1, minHeight: 0 }}
-      onLayout={({ bounds }) => page.set({ width: bounds.size.width, height: bounds.size.height })}
+      onLayout={({ bounds: { size } }) => {
+        const prev = page();
+        if (!prev || prev.width !== size.width || prev.height !== size.height) {
+          page.set({ width: size.width, height: size.height });
+        }
+      }}
     >
-      <If when={place() === 'above'}>
+      <If when={layout().kind === 'above'}>
         <View
           style={{
             paddingHorizontal: settingsGutter,
             paddingTop: 4,
             paddingBottom: 12,
-            maxHeight: page().height * 0.4,
-            overflow: 'hidden',
             borderBottomWidth: 1,
-            borderColor: C.line,
+            borderBottomColor: C.line,
           }}
         >
-          <Specimen look={previewLook} compact />
+          <View style={{ borderRadius: radius(12), overflow: 'hidden' }}>
+            <Specimen look={previewLook} compact />
+          </View>
         </View>
       </If>
       <View style={{ flex: 1, minHeight: 0, flexDirection: 'row' }}>
         {controls}
-        <If when={place() === 'beside'}>
-          <View
-            style={{
-              width: Math.min(Math.max(page().width * 0.44, 360), 480),
-              marginLeft: besideGap - settingsGutter,
-              paddingTop: 4,
-              paddingRight: settingsGutter,
-            }}
-          >
-            <SettingsSection title={tr('Preview')}>
-              <Specimen look={previewLook} compact={page().height < 500} />
-            </SettingsSection>
-          </View>
+        <If when={beside()}>
+          {(column) => (
+            <View
+              style={{
+                width: column().width,
+                // SettingsBody already pads its right edge by settingsGutter.
+                marginLeft: besideGap - settingsGutter,
+                paddingTop: 4,
+                paddingRight: settingsGutter,
+              }}
+            >
+              <SettingsSection title={tr('Preview')}>
+                <Specimen look={previewLook} compact={column().compact} />
+              </SettingsSection>
+            </View>
+          )}
         </If>
       </View>
     </View>
   );
 }
 
-/** Where the preview stays in view while the controls below it scroll: beside them on a wide
- * page, above them on a narrow one, and among them on a page too short to spare the room. */
-type PreviewPlace = 'beside' | 'above' | 'inline';
+type PageSize = { width: number; height: number };
+
+/** Where the preview stays in view while the controls scroll: beside them on a wide page,
+ * above them on a narrow one tall enough for the compact preview, and among them otherwise. */
+type PreviewLayout =
+  | { kind: 'unmeasured' }
+  | { kind: 'inline' }
+  | { kind: 'above' }
+  | { kind: 'beside'; width: number; compact: boolean };
+
 const besideFrom = 840;
+const besideMinWidth = 360;
+const besideMaxWidth = 480;
+const besideShare = 0.44;
 const besideGap = 32;
-const aboveFrom = 480;
+const besideMinHeight = 300;
+const besideCompactBelow = 500;
+// Compact preview plus its padding and divider is ~217 pt (~237 pt when the reply wraps);
+// require enough height that it fits unclipped while leaving the controls most of the page.
+const aboveFrom = 560;
+
+function previewLayout(size: PageSize | null): PreviewLayout {
+  if (!size) return { kind: 'unmeasured' };
+  if (size.width >= besideFrom && size.height >= besideMinHeight) {
+    return {
+      kind: 'beside',
+      width: Math.min(Math.max(size.width * besideShare, besideMinWidth), besideMaxWidth),
+      compact: size.height < besideCompactBelow,
+    };
+  }
+  return { kind: size.height >= aboveFrom ? 'above' : 'inline' };
+}
+
+function samePreviewLayout(a: PreviewLayout, b: PreviewLayout): boolean {
+  if (a.kind !== b.kind) return false;
+  return (
+    a.kind !== 'beside' || (b.kind === 'beside' && a.width === b.width && a.compact === b.compact)
+  );
+}
 
 /** The look's name, undo and the way back to its preset, in the default colors: a look
  * whose text cannot be read still shows them. */
