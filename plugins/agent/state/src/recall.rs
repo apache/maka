@@ -127,6 +127,8 @@ pub struct SearchQuery {
     pub until: Option<u64>,
     pub exclude: Option<ExcludedTail>,
     pub limit: Option<usize>,
+    /// Restrict hits to transcript-visible rows and resolve their display anchors.
+    pub transcript_only: bool,
 }
 impl SearchQuery {
     fn normalize(&mut self) -> Result<(), StoreError> {

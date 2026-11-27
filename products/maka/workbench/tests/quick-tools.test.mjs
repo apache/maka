@@ -33,14 +33,7 @@ import {
 } from '../../../../plugins/application/quick-library/library.ts';
 import { symbols } from '../../../../plugins/application/symbols/symbols.ts';
 import { afterKeyword, search } from '../../../../plugins/shared/quick-search.ts';
-import {
-  homeRows,
-  MAX_USAGE,
-  parseUsage,
-  ranked,
-  recommended,
-  recordUse,
-} from '../app/quick-results.ts';
+import { MAX_USAGE, parseUsage, ranked, recommended, recordUse } from '../app/quick-results.ts';
 import {
   choose,
   entryMatch,
@@ -106,15 +99,6 @@ test('only used, rememberable results are recommended', () => {
     ['used'],
   );
   assert.deepEqual(recommended([{ key: 'used', remembered: false }], usage), []);
-});
-
-test('home suggests available commands once until personalized recommendations exist', () => {
-  const commands = ['bot', 'sessions', 'history', 'symbols', 'links'];
-  assert.deepEqual(homeRows([], commands), {
-    recommendations: ['bot', 'sessions', 'history', 'symbols'],
-    tools: ['links'],
-  });
-  assert.deepEqual(homeRows(['reply'], commands), { recommendations: ['reply'], tools: commands });
 });
 
 test('unread answers lead recommendations by reply time and do not require prior use', () => {

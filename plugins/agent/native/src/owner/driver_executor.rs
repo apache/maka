@@ -654,6 +654,19 @@ impl DriverExecutor {
         request: &Request,
         cancellation: &CancellationToken,
     ) -> Result<maka_sandbox::Sandbox, RunError> {
+        let current = self
+            .access
+            .data_writer()
+            .map_err(RunError::Internal)?
+            .query(maka_agent_state::memory::reads::ExternalConversation(
+                request.execution.session_id.clone(),
+            ))
+            .await?;
+        if current != request.conversation_key {
+            return Err(RunError::FrozenMemoryDenied(
+                "external conversation input revoked; start a new Run".into(),
+            ));
+        }
         let configuration = self.access.live_configuration().await?;
         self.authority_floor(request, cancellation, configuration)
             .await
@@ -1001,7 +1014,14 @@ impl ExternalPorts for DriverExecutor {
                 task_id: task,
                 language: view.spec.language,
                 execution: self.access.execution().clone(),
-                conversation_key: view.spec.session_id.clone(),
+                conversation_key: self
+                    .access
+                    .data_writer()
+                    .map_err(RunError::InvalidInput)?
+                    .query(maka_agent_state::memory::reads::ExternalConversation(
+                        view.spec.session_id.clone(),
+                    ))
+                    .await?,
                 content,
                 cwd: view.spec.workspace.clone(),
                 instructions,

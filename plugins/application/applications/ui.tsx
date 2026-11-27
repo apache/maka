@@ -33,7 +33,7 @@ const keywords = () =>
   localizedKeywords(['app', 'apps', 'Search applications'], 'launcher.keywords.applications');
 const applicationName = (path: string) => path.slice(path.lastIndexOf('/') + 1, -'.app'.length);
 
-function applicationIcons(host: ApplicationHost, input: QuickToolInput) {
+function applicationIcons(host: ApplicationHost) {
   const icons = new Map<string, () => string | undefined>();
   return (id: string) => {
     let icon = icons.get(id);
@@ -41,7 +41,7 @@ function applicationIcons(host: ApplicationHost, input: QuickToolInput) {
       const loaded = signal<string | undefined>(undefined);
       icon = loaded;
       icons.set(id, icon);
-      host.applicationIcon(id).then(loaded.set, input.report);
+      host.applicationIcon(id).then(loaded.set, () => loaded.set(undefined));
     }
     return icon();
   };
@@ -73,7 +73,7 @@ function runningActions(
 function macItems(input: QuickToolInput, host: ApplicationHost) {
   const installed = signal<readonly string[]>([]);
   host.installedApplications().then(installed.set, input.report);
-  const iconOf = applicationIcons(host, input);
+  const iconOf = applicationIcons(host);
   return computed(() =>
     search(installed(), input.query(), keywords(), (path) => [applicationName(path)], true).map(
       ({ item: path, match }): QuickItem => ({
@@ -115,7 +115,7 @@ function macItems(input: QuickToolInput, host: ApplicationHost) {
 function windowsItems(input: QuickToolInput, host: ApplicationHost) {
   const installed = signal<Awaited<ReturnType<ApplicationHost['startMenuApplications']>>>([]);
   host.startMenuApplications().then(installed.set, input.report);
-  const iconOf = applicationIcons(host, input);
+  const iconOf = applicationIcons(host);
   return computed(() =>
     search(installed(), input.query(), keywords(), (app) => [app.name], true).map(
       ({ item, match }): QuickItem => ({

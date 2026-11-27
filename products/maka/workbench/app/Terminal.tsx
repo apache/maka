@@ -437,7 +437,7 @@ export function Terminal(props: { model: TerminalModel }) {
           hoverStyle={controlHoverStyle()}
           focusStyle={controlFocusStyle()}
         >
-          <Icon name={copied() ? 'check' : 'copy'} color={copied() ? C.accent : C.secondary} />
+          <Icon name={copied() ? 'check' : 'copy'} color={copied() ? C.accentText : C.secondary} />
         </Button>
         <If when={model.local() && model.running()}>
           <Button

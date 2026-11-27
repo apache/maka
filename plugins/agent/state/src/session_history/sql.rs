@@ -993,7 +993,7 @@ pub(super) fn sources(
         match &delivery {
             DeliveryTarget::Run => {
                 let (spec, _) = spec(c, history, run)?;
-                if frozen.spec != spec {
+                if !frozen.matches_run_input(spec) {
                     return Err(invalid("original Run input differs from consumed request"));
                 }
             }

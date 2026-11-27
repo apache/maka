@@ -44,7 +44,14 @@ import {
   type ScopedSession,
 } from '../../state/sessions';
 import type { ServiceMethods } from '../../../../../../packages/plugin-sdk/src/generated/methods';
-import { modelBackend, readDefaultModel } from '../../state/settings/models';
+import {
+  loadModelCatalog,
+  labelModelChoices,
+  modelBackend,
+  modelConnectionLabels,
+  modelLabel,
+  resolveDefaultModel,
+} from '../../state/settings/models';
 import { settingsRpc } from '../../state/settings/rpc';
 import { SettingChoice } from '../settings/SettingsForm';
 import { spacing, type } from '../../theme/tokens';
@@ -71,7 +78,7 @@ export function NewChatSheet(props: {
   const workspaces = signal<WorkspaceOption[]>([]);
   const selectedWorkspaceId = signal('');
   const models = signal<AgentModelChoice[]>([]);
-  const defaultModel = signal<Awaited<ReturnType<typeof readDefaultModel>>>(null);
+  const defaultModel = signal<Awaited<ReturnType<typeof resolveDefaultModel>>>(null);
   const modelIndex = signal('');
   const presets = signal<ServiceMethods['agent']['presets']['output']>([]);
   const memberIds = signal<string[]>([]);
@@ -121,9 +128,16 @@ export function NewChatSheet(props: {
       listHostProjects(rootId, current),
       listHostDirectoryRoots(rootId),
       listHostModels(rootId, current),
-      settings ? readDefaultModel(rpc) : null,
+      settings ? loadModelCatalog(rpc) : null,
     ])
-      .then(([projects, roots, choices, model]) => {
+      .then(async ([projects, roots, choices, catalog]) => {
+        if (!current()) return;
+        const model = await resolveDefaultModel(rpc, catalog?.defaultTarget ?? null).catch(
+          (cause) => {
+            console.warn('Default model unavailable', cause);
+            return null;
+          },
+        );
         if (!current()) return;
         const opts: WorkspaceOption[] = projects.map((project) => ({
           id: 'proj:' + project.reference.id,
@@ -143,8 +157,14 @@ export function NewChatSheet(props: {
         }
         workspaces.set(opts);
         selectedWorkspaceId.set(opts[0]?.id ?? '');
-        models.set(choices);
-        defaultModel.set(model);
+        const labels = modelConnectionLabels(catalog);
+        models.set(labelModelChoices(choices, labels));
+        defaultModel.set(
+          model && {
+            ...model,
+            label: modelLabel(model.label, model.selection.connectionId, labels),
+          },
+        );
         readyGeneration.set(generation);
       })
       .catch((cause) => {

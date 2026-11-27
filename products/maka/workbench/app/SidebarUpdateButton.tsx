@@ -119,10 +119,10 @@ export function SidebarUpdateButton(props: {
             focusStyle={quietFocusStyle()}
             activeStyle={{ opacity: 0.85 }}
           >
-            <If when={installing()} else={<Icon name="download" size={15} color={C.background} />}>
+            <If when={installing()} else={<Icon name="download" size={15} color={C.onAccent} />}>
               <LoadingIndicator
                 size={15}
-                color={C.background}
+                color={C.onAccent}
                 label={tr('Stopping Maka Host and applying update…')}
               />
             </If>
@@ -195,7 +195,7 @@ export function SidebarUpdateButton(props: {
             focusStyle={quietFocusStyle()}
             activeStyle={{ opacity: 0.85 }}
           >
-            <Text style={{ ...captionTextStyle, fontWeight: '500', color: C.background }}>
+            <Text style={{ ...captionTextStyle, fontWeight: '500', color: C.onAccent }}>
               {tr('Restart to update')}
             </Text>
           </Button>

@@ -404,6 +404,13 @@ pub const MIGRATIONS: &[maka_event_log::migration::Migration] = &[
         configure: None,
         data: None,
     },
+    maka_event_log::migration::Migration {
+        version: 57,
+        description: "track pinned memory, source visibility and legacy read provenance",
+        sql: include_str!("../migrations/0057_pinned_memory.sql"),
+        configure: None,
+        data: Some(memory::migrate_pinned::migrate),
+    },
 ];
 
 #[cfg(test)]
@@ -415,7 +422,7 @@ mod migration_tests {
             .chain(super::MIGRATIONS)
             .copied()
             .collect();
-        for through in [0, 41].into_iter().chain(46..=53) {
+        for through in [0, 41].into_iter().chain(46..=56) {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("root.sqlite");
             let db = rusqlite::Connection::open(&path).unwrap();

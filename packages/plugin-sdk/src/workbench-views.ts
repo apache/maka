@@ -317,6 +317,8 @@ export interface SettingsPageNavigation {
   /** Returns a nested sub-page to its own root after `leave()` clears any unsaved draft. */
   returnToRoot?(): void;
   busy?(): boolean;
+  /** The page renders the shared operation error itself instead of the Settings header. */
+  ownsError?(): boolean;
   /** The page's one command, drawn beside its title. */
   action?(): SettingsPageAction | null;
 }

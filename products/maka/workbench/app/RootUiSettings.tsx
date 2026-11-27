@@ -18,7 +18,7 @@
  */
 
 import { inputAction, List, platform, signal, Text, View, windowSize } from 'nsh';
-import { SettingsRow } from './SettingsPage';
+import { cardRaisedActiveStyle, cardRaisedHoverStyle, SettingsRow } from './SettingsPage';
 import { Button, Input, Popover } from 'nsh/base';
 import { ChoiceIndicator } from './ChoiceIndicator';
 import { Icon } from './Icon';
@@ -28,13 +28,13 @@ import {
   bodyTextStyle,
   captionTextStyle,
   controlDisabledStyle,
-  controlFocusStyle,
   controlStyle,
   inputBorderRadius,
   inputTextStyle,
   C,
   floatingStyle,
   menuRowHoverStyle,
+  quietFocusStyle,
 } from './ui';
 
 export function RootUiSettings(props: { owner: RootUiSettingsOwner }) {
@@ -78,13 +78,14 @@ export function RootUiSettings(props: { owner: RootUiSettingsOwner }) {
                 paddingLeft: platform.idiom === 'terminal' ? 0 : 10,
                 paddingRight: platform.idiom === 'terminal' ? 0 : 6,
                 borderRadius: 8,
-                backgroundColor: platform.idiom === 'terminal' ? undefined : C.raised,
+                backgroundColor: platform.idiom === 'terminal' ? undefined : C.cardRaised,
                 flexDirection: 'row',
                 gap: 6,
                 alignItems: 'center',
               }}
-              hoverStyle={{ backgroundColor: C.line }}
-              focusStyle={controlFocusStyle()}
+              hoverStyle={cardRaisedHoverStyle()}
+              activeStyle={cardRaisedActiveStyle()}
+              focusStyle={quietFocusStyle()}
               disabledStyle={controlDisabledStyle}
             >
               <Text style={{ ...captionTextStyle, lineHeight: 20, color: C.text }}>{title()}</Text>

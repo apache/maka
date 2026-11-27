@@ -107,6 +107,7 @@ async fn message_cursor_emits_one_part_before_opening_later_bodies() {
     let mut cursor = compiler
         .open(
             MessageRecipe::User {
+                is_pinned_memory: false,
                 content: list(vec![
                     ContentRecipe::Text {
                         text: raw("first"),

@@ -206,6 +206,39 @@ impl UiScaleControl {
     }
 }
 
+fn prepare_setup(
+    presentation: &Presentation,
+    size: termina::WindowSize,
+    mode: crate::args::PresentationMode,
+) -> Result<Vec<u8>, String> {
+    let mut setup = SETUP.to_vec();
+    let mut state = presentation.state.lock().unwrap();
+    state.trace = frame_trace::Trace::from_env();
+    match mode {
+        crate::args::PresentationMode::Auto => {
+            setup.extend_from_slice(graphics::QUERY);
+            let tracing = state.trace.is_some();
+            state.pixels = Some(pixels::Inbox::new(
+                pixels::Capabilities {
+                    size,
+                    mouse: pixels::MouseCoordinates::Cells,
+                    protocol: None,
+                    synchronized: false,
+                    sixel_geometry: Default::default(),
+                    ui_scale: 1.0,
+                },
+                tracing,
+            ));
+            setup.extend(state.pixel_probe.query()?);
+            setup.extend(pixels::text_input::query());
+        }
+        crate::args::PresentationMode::Cells => {
+            state.graphics = graphics::Probe::disabled();
+        }
+    }
+    Ok(setup)
+}
+
 /// Runs the first-party terminal UI. Ctrl+Q cancels independently of the
 /// UI and writer; Ctrl+C retains the surface's copy/exit behavior.
 /// An error reports incomplete output restoration;
@@ -216,6 +249,7 @@ pub(crate) fn run(
     mut config: EngineConfig,
     stop: Arc<AtomicBool>,
     _native_jobs: tokio::sync::mpsc::UnboundedSender<NativeJob>,
+    mode: crate::args::PresentationMode,
 ) -> Result<(), String> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         return Err("the terminal shell requires a terminal on stdin and stdout".into());
@@ -256,32 +290,12 @@ pub(crate) fn run(
     config.context = config.context.with(maka_workbench::Foreground(
         presentation.activation.subscribe(),
     ));
-    let setup = [SETUP, graphics::QUERY].concat();
-    let setup = {
-        let mut setup = setup;
-        let mut state = presentation.state.lock().unwrap();
-        state.trace = frame_trace::Trace::from_env();
-        let tracing = state.trace.is_some();
-        state.pixels = Some(pixels::Inbox::new(
-            pixels::Capabilities {
-                size,
-                mouse: pixels::MouseCoordinates::Cells,
-                protocol: None,
-                synchronized: false,
-                sixel_geometry: Default::default(),
-                ui_scale: 1.0,
-            },
-            tracing,
-        ));
-        setup.extend(state.pixel_probe.query()?);
-        setup.extend(pixels::text_input::query());
-        setup
-    };
+    let setup = prepare_setup(&presentation, size, mode)?;
     output.submit([setup])?;
     let mut input = None;
     let result = (|| {
         input = Some(start_reader(presentation.clone(), reader)?);
-        {
+        if mode == crate::args::PresentationMode::Auto {
             let capabilities = pixels::select(&mut output, &presentation, size)?;
             if presentation.stop.load(Ordering::Acquire) || presentation.state.lock().unwrap().quit
             {
@@ -861,5 +875,42 @@ mod tests {
         );
         assert!(bytes.starts_with(b"SETUPFRAME"));
         assert!(bytes.ends_with(CLEANUP));
+    }
+
+    #[test]
+    fn cells_mode_disables_sixel_negotiation_across_startup_and_resize() {
+        fn feed_sixel_replies(inbox: &mut Inbox) {
+            let mut parser = termina::Parser::default();
+            parser
+                .parse(b"\x1b[?62;1;4;22c\x1b[6;17;9t", false)
+                .unwrap();
+            while let Some(event) = parser.pop() {
+                inbox.graphics.observe(&event);
+            }
+        }
+
+        let presentation = Presentation::default();
+        let size = termina::WindowSize {
+            cols: 80,
+            rows: 24,
+            pixel_width: Some(720),
+            pixel_height: Some(408),
+        };
+        let setup =
+            prepare_setup(&presentation, size, crate::args::PresentationMode::Cells).unwrap();
+        assert_eq!(setup, SETUP);
+
+        let mut inbox = presentation.state.lock().unwrap();
+        assert!(inbox.pixels.is_none());
+        inbox.graphics.flushed();
+        feed_sixel_replies(&mut inbox);
+        assert!(inbox.graphics.take_ready().is_none());
+        assert!(inbox.graphics.query().is_none());
+
+        inbox.push(crossterm::event::Event::Resize(100, 30));
+        assert!(inbox.graphics.query().is_none());
+        inbox.graphics.flushed();
+        feed_sixel_replies(&mut inbox);
+        assert!(inbox.graphics.take_ready().is_none());
     }
 }

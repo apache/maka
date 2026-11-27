@@ -23,7 +23,7 @@ import { tr } from './locale';
 import { batch, cleanup, computed, effect, inputAction, signal, Text, View, List } from 'nsh';
 import { Input } from 'nsh/base';
 import type { ListRef, Signal } from 'nsh';
-import { Button, Dialog } from 'nsh/base';
+import { Button } from 'nsh/base';
 import { keymap } from 'nsh';
 import { windowSize } from 'nsh';
 import { host as shell, platform } from 'nsh';
@@ -48,7 +48,7 @@ import { InlineCallout, RegionEmptyError } from './Feedback';
 import { Icon } from './Icon';
 import { WorkspaceLocations } from './WorkspaceLocations';
 import { dialogTop, ownTitleBar } from './chrome';
-import { dialogCardStyle } from './ModalDialog';
+import { dialogCardStyle, WindowDialog } from './ModalDialog';
 import { createSettingsOperations } from './settingsOperations';
 
 type Location = {
@@ -337,7 +337,7 @@ export function WorkspacePicker(props: {
   });
   void load();
   return (
-    <Dialog
+    <WindowDialog
       animation="none"
       closeOnEscape={!managing()}
       closeOnBackdropPress={!managing()}
@@ -509,7 +509,9 @@ export function WorkspacePicker(props: {
                   focusStyle={controlFocusStyle()}
                   disabledStyle={controlDisabledStyle}
                 >
-                  <Text style={{ color: C.accent, fontSize: 13 }}>{tr('Manage locations')}</Text>
+                  <Text style={{ color: C.accentText, fontSize: 13 }}>
+                    {tr('Manage locations')}
+                  </Text>
                 </Button>
                 <If when={ownTitleBar && host.localFolderPicker !== false}>
                   <View style={{ flex: 1 }} />
@@ -522,8 +524,8 @@ export function WorkspacePicker(props: {
                     focusStyle={controlFocusStyle()}
                     disabledStyle={controlDisabledStyle}
                   >
-                    <Icon name="folder" color={C.accent} />
-                    <Text style={{ color: C.accent, fontSize: 13 }}>
+                    <Icon name="folder" color={C.accentText} />
+                    <Text style={{ color: C.accentText, fontSize: 13 }}>
                       {picking() ? tr('Opening folder…') : tr('Choose folder…')}
                     </Text>
                   </Button>
@@ -639,7 +641,7 @@ export function WorkspacePicker(props: {
                       flexDirection: 'row',
                       alignItems: 'center',
                       gap: 12,
-                      backgroundColor: isSelected(entry()) ? C.line : C.surface,
+                      backgroundColor: isSelected(entry()) ? C.pressed : C.surface,
                     }}
                     hoverStyle={{ backgroundColor: C.raised }}
                     focusStyle={{ backgroundColor: C.raised }}
@@ -678,11 +680,11 @@ export function WorkspacePicker(props: {
                   style={{ ...controlStyle, backgroundColor: C.accent }}
                   hoverStyle={{ backgroundColor: C.accentHover }}
                   focusStyle={{ backgroundColor: C.accentHover }}
-                  disabledStyle={{ ...controlDisabledStyle, backgroundColor: C.line }}
+                  disabledStyle={{ ...controlDisabledStyle, backgroundColor: C.pressed }}
                 >
                   <Text
                     style={{
-                      color: currentDirectory(read) && !error() ? C.background : C.muted,
+                      color: currentDirectory(read) && !error() ? C.onAccent : C.muted,
                       fontSize: 13,
                       lineHeight: 16,
                       fontWeight: '600',
@@ -696,6 +698,6 @@ export function WorkspacePicker(props: {
           );
         }}
       </Each>
-    </Dialog>
+    </WindowDialog>
   );
 }

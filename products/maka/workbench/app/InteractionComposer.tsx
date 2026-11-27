@@ -113,7 +113,7 @@ export function InteractionAction(props: {
         alignItems: 'center',
         gap: 8,
         backgroundColor: primaryFill()
-          ? C.accent
+          ? C.accentText
           : props.selected || (props.primary && props.disabled)
             ? C.cardRaised
             : C.card,
@@ -128,7 +128,7 @@ export function InteractionAction(props: {
       <If when={props.icon}>
         <Icon
           name={props.icon!}
-          color={primaryFill() ? C.background : terminalDisabled() ? C.muted : C.secondary}
+          color={primaryFill() ? C.onAccent : terminalDisabled() ? C.muted : C.secondary}
         />
       </If>
       <If when={!props.iconOnly}>
@@ -136,7 +136,7 @@ export function InteractionAction(props: {
           style={{
             ...bodyTextStyle,
             flexShrink: 1,
-            color: primaryFill() ? C.background : terminalDisabled() ? C.muted : C.text,
+            color: primaryFill() ? C.onAccent : terminalDisabled() ? C.muted : C.text,
             fontWeight: props.primary ? '600' : '400',
           }}
         >
@@ -1097,7 +1097,7 @@ export function InteractionComposer({
           >
             <View style={{ gap: 8 }}>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                <Icon name="check" color={C.accent} />
+                <Icon name="check" color={C.accentText} />
                 <Text
                   style={[
                     {

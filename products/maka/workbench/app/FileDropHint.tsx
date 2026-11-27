@@ -62,11 +62,11 @@ export function FileDropHint(props: { radius: number }) {
       >
         {fan.map((icon) => (
           <View style={{ transform: [{ translateY: icon.lift }, { rotate: icon.rotate }] }}>
-            <Icon name={icon.name} color={C.accent} size={28} />
+            <Icon name={icon.name} color={C.accentText} size={28} />
           </View>
         ))}
       </View>
-      <Text style={{ ...captionTextStyle, color: C.accent }}>{tr('Drop files here')}</Text>
+      <Text style={{ ...captionTextStyle, color: C.accentText }}>{tr('Drop files here')}</Text>
     </View>
   );
 }

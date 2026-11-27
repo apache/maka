@@ -21,7 +21,7 @@ use maka_remote_client::{
     Attachments, DeviceIdentity, HostProfile, PendingPairing, ReadResource, RelayAuthorization,
     RemoteCallHandle, RemoteClientError, RemoteHostConnection, SavedHosts, TlsTrust,
 };
-use nsh_engine::{HostCall, HostChannel};
+use nsh_engine::{HostCall, HostCaller, HostChannel};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
@@ -389,7 +389,16 @@ impl HostBridge {
                 let bridge = bridge.clone();
                 bridge.runtime.clone().spawn(async move {
                     if name == "ios.subscribe" {
-                        match bridge.open_subscription(data).await {
+                        let caller = bridge.channel.caller(&call);
+                        let opened = tokio::select! {
+                            biased;
+                            _ = caller.closed() => return,
+                            result = tokio::time::timeout(
+                                Duration::from_secs(30),
+                                bridge.open_subscription(data, caller.clone()),
+                            ) => result.unwrap_or_else(|_| Err("Host subscription setup timed out".into())),
+                        };
+                        match opened {
                             Ok((root, id, generation, start)) => {
                                 call.reply(Ok(
                                     json!({ "rootId": root, "subscriptionId": id, "generation": generation }),
@@ -1281,6 +1290,7 @@ impl Bridge {
     async fn open_subscription(
         &self,
         data: Value,
+        caller: HostCaller,
     ) -> Result<(RootId, String, u64, oneshot::Sender<()>), String> {
         let rpc = read_only_rpc(data)?;
         let (root, active, calls) = self.calls(&rpc).await?;
@@ -1299,19 +1309,29 @@ impl Bridge {
         let key = id.clone();
         let host_root = root.clone();
         let task = self.runtime.spawn(async move {
-            if wait.await.is_err() {
-                return;
-            }
-            let outcome = loop {
-                match subscription.next().await {
-                    Ok(Some(item)) => bridge.emit(
-                        "ios.subscriptionItem",
-                        json!({
-                            "rootId": host_root, "subscriptionId": key, "generation": generation, "item": item,
-                        }),
-                    ),
-                    Ok(None) => break None,
-                    Err(err) => break Some(err.to_string()),
+            let outcome = if wait.await.is_err() {
+                None
+            } else {
+                loop {
+                    let next = tokio::select! {
+                        biased;
+                        _ = caller.closed() => break None,
+                        next = subscription.next() => next,
+                    };
+                    match next {
+                        Ok(Some(item)) => {
+                            if !caller.send(
+                                "ios.subscriptionItem",
+                                json!({
+                                    "rootId": host_root, "subscriptionId": key, "generation": generation, "item": item,
+                                }),
+                            ).expect("valid subscription event name") {
+                                break None;
+                            }
+                        }
+                        Ok(None) => break Some(None),
+                        Err(err) => break Some(Some(err.to_string())),
+                    }
                 }
             };
             let mut state = bridge.state.lock().await;
@@ -1319,12 +1339,14 @@ impl Bridge {
                 && host.subscriptions.get(&key).is_some_and(|(current, _)| *current == generation)
             {
                 host.subscriptions.remove(&key);
-                bridge.emit(
-                    "ios.subscriptionEnded",
-                    json!({
-                        "rootId": host_root, "subscriptionId": key, "generation": generation, "error": outcome,
-                    }),
-                );
+                if let Some(error) = outcome {
+                    caller.send(
+                        "ios.subscriptionEnded",
+                        json!({
+                            "rootId": host_root, "subscriptionId": key, "generation": generation, "error": error,
+                        }),
+                    ).expect("valid subscription event name");
+                }
             }
         });
         let host = state
@@ -1484,7 +1506,10 @@ mod tests {
             for call in ["ios.hostQuery", "ios.subscribe", "ios.hostMutate"] {
                 let args = json!({"endpoint":"web","method":"saveKey","input":input});
                 let error = if call == "ios.subscribe" {
-                    bridge.open_subscription(args).await.unwrap_err()
+                    bridge
+                        .open_subscription(args, bridge.channel.caller(&HostCall::default()))
+                        .await
+                        .unwrap_err()
                 } else if call == "ios.hostMutate" {
                     bridge.mutate(args, None).await.unwrap_err()
                 } else {
@@ -1633,7 +1658,7 @@ mod tests {
                 mutation.unwrap_err(),
                 "remote Host anchor no longer matches UI"
             );
-            assert!(matches!(attached.bridge.open_subscription(stale).await,
+            assert!(matches!(attached.bridge.open_subscription(stale, attached.bridge.channel.caller(&HostCall::default())).await,
                 Err(reason) if reason == "remote Host anchor no longer matches UI"));
         })
         .await

@@ -822,7 +822,9 @@ mod tests {
         let store = Store::new(data.clone(), DriverDomain::new(data)?)?;
         let mut policy = policy_view(None);
         let empty = ContentBlob::new(vec![]);
-        let tool_selection = ContentBlob::json(&serde_json::json!({ "services": [] }))?;
+        let tool_selection = ContentBlob::json(&serde_json::json!({
+            "definitions": [], "directOnly": [], "services": [], "internalBindings": {}
+        }))?;
         let input = ContentBlob::json(&RunInput::Message {
             content: "original provider recovery fixture".to_string().into(),
             request_fingerprint: None,

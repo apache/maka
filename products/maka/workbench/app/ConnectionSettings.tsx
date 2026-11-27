@@ -24,7 +24,7 @@ import { ConnectionAdvanced, ConnectionForm } from './ConnectionForm';
 import { ExternalAgentConfirmation, ExternalAgentSection } from './ExternalAgentSettings';
 import { ProviderPicker } from './ProviderPicker';
 import { ConnectionModel } from './ConnectionModel';
-import { LoadingIndicator } from './Loading';
+import { SettingsSkeleton } from './Loading';
 import { tr } from './locale';
 import { UsageLimits } from './UsageLimits';
 import {
@@ -98,7 +98,7 @@ function ConnectionList(props: {
   const empty = () =>
     !owner.loading() &&
     !props.externalAgents?.loading() &&
-    !owner.error() &&
+    !owner.connectionsFailed() &&
     !owner.connections().length &&
     !props.externalAgents?.runtimes().some((runtime) => runtime.enabled) &&
     !owner.connectionQuery().trim();
@@ -172,7 +172,7 @@ function ConnectionList(props: {
           <If when={!owner.filteredConnections().length && !owner.loading()}>
             <SettingsRow label={tr('No matching connections.')} tone="muted" />
           </If>
-          <If when={owner.next() !== null && !owner.error()}>
+          <If when={owner.next() !== null && !owner.connectionsFailed()}>
             <SettingsRow
               label={tr('Show more')}
               tone="muted"
@@ -193,10 +193,10 @@ function ConnectionList(props: {
 export function Status(props: { owner: ModelSettingsOwner; retry(): void }) {
   return (
     <>
-      <If when={props.owner.loading()}>
-        <LoadingIndicator label={tr('Loading settings…')} />
+      <If when={props.owner.loading() && !props.owner.connections().length}>
+        <SettingsSkeleton padded={false} rows={3} label={tr('Loading settings…')} />
       </If>
-      <If when={!props.owner.loading() && props.owner.error()}>
+      <If when={!props.owner.loading() && props.owner.connectionsFailed()}>
         <SettingsProblem retry={props.retry} />
       </If>
     </>

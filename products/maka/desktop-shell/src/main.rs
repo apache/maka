@@ -153,7 +153,12 @@ fn answer(arguments: impl IntoIterator<Item = std::ffi::OsString>) -> Option<Str
             return Some(format!(
                 "{version}\n\nStarted by `maka desktop --root PATH`, which names the Host in \
                  {ROOT}, {ENDPOINT} and {EPOCH}, and itself in {LAUNCHER}. Opened \
-                 without them, it runs `maka desktop` beside it."
+                 without them, it runs `maka desktop` beside it.{}",
+                if cfg!(windows) {
+                    " Windows shortcuts can pass desktop options such as --root PATH directly."
+                } else {
+                    ""
+                }
             ));
         }
         if argument == "--version" || argument == "-V" {
@@ -250,7 +255,7 @@ fn launcher_path(shell: &std::path::Path) -> Result<PathBuf, String> {
 }
 
 /// Runs `maka desktop` from the directory the launcher stages the shell in,
-/// which opens a window of its own for the default (or restarted) Root.
+/// forwarding Windows shortcut arguments or defaulting to the restarted Root.
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 fn launch() -> Result<(), String> {
     let shell = std::env::current_exe()
@@ -259,10 +264,13 @@ fn launch() -> Result<(), String> {
     let launcher = launcher_path(&shell)?;
     let mut command = std::process::Command::new(&launcher);
     command.arg("desktop");
-    if let Some(root) = std::env::var_os(maka_updater::RESTART_ROOT_ENV) {
-        if !root.is_empty() {
-            command.arg("--root").arg(root);
-        }
+    #[cfg(windows)]
+    command.args(std::env::args_os().skip(1));
+    if command.get_args().len() == 1
+        && let Some(root) =
+            std::env::var_os(maka_updater::RESTART_ROOT_ENV).filter(|root| !root.is_empty())
+    {
+        command.arg("--root").arg(root);
     }
     command
         .env_remove(maka_updater::RESTART_ROOT_ENV)

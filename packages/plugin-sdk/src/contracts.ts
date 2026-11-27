@@ -10892,6 +10892,10 @@ export const contracts: {
                 type: 'boolean',
                 default: false,
               },
+              refresh: {
+                type: 'boolean',
+                default: false,
+              },
             },
             additionalProperties: false,
           },
@@ -11302,6 +11306,10 @@ export const contracts: {
             properties: {
               runtime: {
                 $ref: '#/$defs/AgentNativeRuntime',
+              },
+              refresh: {
+                type: 'boolean',
+                default: false,
               },
             },
             additionalProperties: false,
@@ -16341,6 +16349,16 @@ export const contracts: {
                       },
                     ],
                   },
+                  resolvedAnchor: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/HistoryRowAddress',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                 },
                 additionalProperties: false,
                 required: ['kind', 'through', 'chunks', 'before', 'after'],
@@ -18788,6 +18806,512 @@ export const contracts: {
                     const: 'external_writers_not_fenced',
                   },
                 ],
+              },
+            },
+          },
+          resources: {},
+        },
+        historyImages: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentHistoryImagesRead',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+                minLength: 1,
+              },
+              through: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 1,
+                maximum: 9007199254740991,
+              },
+              position: {
+                description: 'Any original row in the Run whose images are listed.',
+                $ref: '#/$defs/HistoryRowAddress',
+              },
+              after: {
+                type: ['integer', 'null'],
+                format: 'uint64',
+                minimum: 0,
+                maximum: 9007199254740991,
+                default: null,
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId', 'through', 'position'],
+            $defs: {
+              HistoryRowAddress: {
+                description:
+                  'An original row within the actual read capability supplied by the caller.\nMarker paths are relative to that capability; none of these fields grants access.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'live',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sequence', 'fact', 'itemIndex'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'snapshot',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'sequence', 'fact', 'itemIndex'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'imported',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      messageOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      partOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'messageOrdinal', 'partOrdinal'],
+                  },
+                ],
+              },
+              FactId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentHistoryImages',
+            description:
+              "The Run's tool results that produced images, oldest first, each with its call.",
+            type: 'object',
+            properties: {
+              tools: {
+                type: 'array',
+                items: {
+                  $ref: '#/$defs/HistoryTool',
+                },
+              },
+              next: {
+                type: ['integer', 'null'],
+                format: 'uint64',
+                minimum: 0,
+              },
+            },
+            required: ['tools'],
+            $defs: {
+              HistoryTool: {
+                description:
+                  'Canonical references at the requested fence, never execution authority.\nBoth references are present only for a unique same-Turn call/result pair\nwith matching origin and parentage. An unpaired row retains its own reference.',
+                type: 'object',
+                properties: {
+                  toolUseId: {
+                    type: 'string',
+                  },
+                  call: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/HistoryToolCall',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  result: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/HistoryToolResult',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['toolUseId', 'call', 'result'],
+              },
+              HistoryToolCall: {
+                type: 'object',
+                properties: {
+                  ancestorToolUseIds: {
+                    description:
+                      'Recorded ancestors in this Turn, nearest first; display references only.',
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  origin: {
+                    $ref: '#/$defs/HistoryToolCallOrigin',
+                  },
+                  presentation: {
+                    description:
+                      'Opaque display contract captured at dispatch; no execution authority.',
+                    type: ['string', 'null'],
+                    default: null,
+                  },
+                  position: {
+                    $ref: '#/$defs/HistoryRowAddress',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                  title: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/DisplayText',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  pending: {
+                    description:
+                      'This native Turn is still open at the history fence; not execution authority.',
+                    type: 'boolean',
+                  },
+                  dispatched: {
+                    description:
+                      'A unique original Host dispatch is recorded at this fence; not liveness.',
+                    type: 'boolean',
+                  },
+                  externalTarget: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ExternalToolTarget',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'ancestorToolUseIds',
+                  'origin',
+                  'position',
+                  'name',
+                  'title',
+                  'pending',
+                  'dispatched',
+                ],
+              },
+              HistoryToolCallOrigin: {
+                description:
+                  "Who made a call: a model step, a script the model wrote, a tool's own work\nthrough the Host SDK, or a foreign record.",
+                type: 'string',
+                enum: ['provider', 'executor', 'code_mode', 'host_sdk', 'imported'],
+              },
+              HistoryRowAddress: {
+                description:
+                  'An original row within the actual read capability supplied by the caller.\nMarker paths are relative to that capability; none of these fields grants access.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'live',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sequence', 'fact', 'itemIndex'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'snapshot',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'sequence', 'fact', 'itemIndex'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'imported',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      messageOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      partOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'messageOrdinal', 'partOrdinal'],
+                  },
+                ],
+              },
+              FactId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              DisplayText: {
+                description:
+                  'Presentation text is distinct from the stable identity used for navigation.',
+                type: 'object',
+                properties: {
+                  fallback: {
+                    type: 'string',
+                  },
+                  translations: {
+                    type: 'object',
+                    additionalProperties: {
+                      type: 'string',
+                    },
+                    default: {},
+                  },
+                },
+                additionalProperties: false,
+                required: ['fallback'],
+              },
+              ExternalToolTarget: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'command',
+                      },
+                      command: {
+                        type: 'string',
+                      },
+                      cwd: {
+                        type: ['string', 'null'],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'command'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'file',
+                      },
+                      path: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'search',
+                      },
+                      query: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'query'],
+                  },
+                ],
+              },
+              HistoryToolResult: {
+                type: 'object',
+                properties: {
+                  settlement: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ToolSettlement',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  position: {
+                    $ref: '#/$defs/HistoryRowAddress',
+                  },
+                  isError: {
+                    description:
+                      'A failed or unknown effect, or a returned result that reports failure.',
+                    type: 'boolean',
+                  },
+                  image: {
+                    description:
+                      'The result exposes an unindexed image distinct from its indexed projection images.',
+                    type: 'boolean',
+                  },
+                  images: {
+                    description: 'Images in the model projection, readable by index.',
+                    type: 'integer',
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  details: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ToolResultDetails',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['settlement', 'position', 'isError', 'image', 'images'],
+              },
+              ToolSettlement: {
+                description:
+                  'Recorded Host settlement for presentation; returned is not business success.\nForeign/provider results do not establish this Host evidence.',
+                type: 'string',
+                enum: ['returned', 'failed', 'unknown', 'rejected'],
+              },
+              ToolResultDetails: {
+                type: 'object',
+                properties: {
+                  exitCode: {
+                    type: ['integer', 'null'],
+                    format: 'int32',
+                  },
+                  durationMs: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
               },
             },
           },
@@ -25764,6 +26288,16 @@ export const contracts: {
                       },
                     ],
                   },
+                  resolvedAnchor: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/HistoryRowAddress',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                 },
                 additionalProperties: false,
                 required: ['kind', 'through', 'chunks', 'before', 'after'],
@@ -28870,6 +29404,67 @@ export const contracts: {
               RunId: {
                 type: 'string',
                 format: 'uuid',
+              },
+            },
+          },
+          resources: {},
+        },
+        loadedMemories: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'LoadedMemoriesRead',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+              },
+              runId: {
+                $ref: '#/$defs/RunId',
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId', 'runId'],
+            $defs: {
+              RunId: {
+                type: 'string',
+                format: 'uuid',
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'Array_of_LoadedMemory',
+            type: 'array',
+            items: {
+              $ref: '#/$defs/LoadedMemory',
+            },
+            $defs: {
+              LoadedMemory: {
+                description:
+                  'The exact assertion and management revision admitted to a Run, in projection order.',
+                type: 'object',
+                properties: {
+                  scope: {
+                    type: 'string',
+                  },
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  assertion: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['scope', 'id', 'revision', 'assertion'],
               },
             },
           },

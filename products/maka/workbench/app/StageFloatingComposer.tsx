@@ -75,9 +75,9 @@ export function StageFloatingComposer(props: {
       props.exitFullscreen();
       return;
     }
-    const reason = session.blockedReason();
-    if (reason) {
-      toast.show({ id: 'stage-composer.refused', tone: 'warning', message: reason });
+    const block = session.sendBlock();
+    if (block) {
+      toast.show({ id: 'stage-composer.refused', tone: 'warning', message: block.message });
       return;
     }
     session.submit({ text });
@@ -155,7 +155,7 @@ export function StageFloatingComposer(props: {
           <Icon
             name={running() ? 'statusRecorded' : 'conversation'}
             size={14}
-            color={running() ? C.accent : C.muted}
+            color={running() ? C.accentText : C.muted}
           />
           <Text
             style={[
@@ -303,7 +303,7 @@ export function StageFloatingComposer(props: {
             <Icon
               name={running() ? 'stop' : 'send'}
               size={14}
-              color={running() || canSend() ? C.chrome : C.muted}
+              color={running() ? C.chrome : canSend() ? C.onAccent : C.muted}
             />
           </Button>
         </View>

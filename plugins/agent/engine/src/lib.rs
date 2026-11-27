@@ -72,6 +72,9 @@ pub enum RunError {
     ReconciliationRequired(String),
     #[error("invalid execution input: {0}")]
     InvalidInput(String),
+    /// Current authorization forbids sending this frozen input on any retry.
+    #[error("{0}")]
+    FrozenMemoryDenied(String),
     #[error("model is unavailable")]
     ModelUnavailable,
     #[error("model authentication is required")]

@@ -28,6 +28,7 @@ use maka_event_log::root_store::{RetainedWorkSettlement, SessionWorkLease, WorkE
 pub(super) enum OriginalScope {
     Driver {
         driver: Option<Arc<driver::NativeDriver>>,
+        cells: Option<Arc<driver_cells::RunCells>>,
         effects: WorkEffects,
         state: maka_agent_state::Store,
         pending: Option<Box<maka_agent_engine::PendingPublication>>,
@@ -74,6 +75,14 @@ impl OriginalScope {
                 driver: Some(driver),
                 ..
             } => driver.join_original_workers().await,
+            Self::Driver {
+                driver: None,
+                cells: Some(cells),
+                ..
+            } => {
+                cells.join_original_workers().await;
+                Ok(())
+            }
             Self::Preparation(Some(model)) => model.original_worker_join().await,
             _ => Ok(()),
         }
@@ -100,6 +109,11 @@ impl OriginalScope {
                 driver: Some(driver),
                 ..
             } => driver.original_cleanup_signals().await,
+            Self::Driver {
+                driver: None,
+                cells: Some(cells),
+                ..
+            } => cells.original_cleanup_signals(),
             _ => Vec::new(),
         }
     }
@@ -107,6 +121,7 @@ impl OriginalScope {
         match self {
             Self::Driver {
                 driver,
+                cells,
                 effects,
                 state,
                 pending,
@@ -114,9 +129,16 @@ impl OriginalScope {
                 if let Some(pending) = pending {
                     pending.reconcile(state).await?;
                 }
-                let closed = match driver {
-                    Some(driver) => driver.original_cleanup_confirmed().await?,
-                    None => pending.is_some(),
+                let closed = match (driver, cells) {
+                    (Some(driver), _) => driver.original_cleanup_confirmed().await?,
+                    (None, Some(cells)) => {
+                        cells.coordinator.cancel();
+                        cells.close_original_workers();
+                        cells.coordinator.is_idle()
+                            && !cells.has_original_workers()
+                            && cells.original_cleanup_confirmed().await?
+                    }
+                    (None, None) => pending.is_some(),
                 };
                 Ok(closed && !effects.has_pending())
             }
@@ -240,9 +262,15 @@ impl RetainedScope {
                 };
                 model_changes = original.model_changes();
                 match original.as_ref() {
-                    OriginalScope::Driver { driver, .. } => {
-                        if let Some(driver) = driver
-                            && let Some(runtime) = driver.run_cells()
+                    OriginalScope::Driver {
+                        driver,
+                        cells: preflight_cells,
+                        ..
+                    } => {
+                        if let Some(runtime) = driver
+                            .as_ref()
+                            .and_then(|driver| driver.run_cells())
+                            .or(preflight_cells.as_ref())
                         {
                             let (js, python, coordinator) = runtime.physical_changes();
                             for receiver in [js, python, coordinator] {

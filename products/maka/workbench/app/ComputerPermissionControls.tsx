@@ -57,7 +57,7 @@ export function PermissionButton(props: {
       <Text
         style={{
           ...bodyTextStyle,
-          color: props.primary ? C.background : C.text,
+          color: props.primary ? C.onAccent : C.text,
           fontWeight: props.primary ? '600' : '400',
         }}
       >

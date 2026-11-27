@@ -256,7 +256,10 @@ impl Engine {
                     "Expected a native external executor Run".into(),
                 ));
             }
-            if view.has_unsettled_recovery() || view.cells.values().any(|cell| cell.pending()) {
+            if self.resolve_recovered_cells(claim, &view, at).await? {
+                continue;
+            }
+            if view.has_unsettled_recovery() {
                 return Ok(None);
             }
             let diagnostic = "The external executor changed while the run was interrupted";
@@ -283,6 +286,11 @@ impl Engine {
                         }
                     }
                     None => {
+                        if task.cleanup != OperationCleanup::Confirmed
+                            || task.effects.values().any(|effect| effect.unsettled())
+                        {
+                            return Ok(None);
+                        }
                         if !view.stopped {
                             facts.push(Fact::StopRequested {
                                 diagnostic: diagnostic.into(),
@@ -295,6 +303,15 @@ impl Engine {
                 None if view.stopped => (Terminal::Cancelled, Some(diagnostic.into())),
                 None => (Terminal::Failed, Some(diagnostic.into())),
             };
+            let pending_cells = match terminal {
+                Terminal::Completed => view.cells.values().any(|cell| cell.pending()),
+                Terminal::Cancelled | Terminal::Failed => {
+                    view.cells.values().any(|cell| cell.has_unsettled_effects())
+                }
+            };
+            if pending_cells {
+                return Ok(None);
+            }
             facts.extend(
                 view.waits
                     .iter()

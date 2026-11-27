@@ -42,6 +42,8 @@ use tokio::sync::{Notify, watch};
 
 #[path = "desktop_new_session/rooms.rs"]
 mod rooms;
+#[path = "desktop_new_session/settings.rs"]
+mod settings;
 
 macro_rules! native {
     ($ty:path { $($field:ident: $value:expr),* $(,)? }) => {{
@@ -497,6 +499,20 @@ impl Desktop {
             (found.len() == 1).then(|| found[0])
         })
         .await
+    }
+
+    async fn wait_for_toc_landing(&self, marker: &str) {
+        // Cross-row jumps mount the row before its TextView aligns the heading.
+        self.until(
+            &format!("{marker} should land near the top of the viewport"),
+            || {
+                let [bounds] = self.controls(marker)[..] else {
+                    return None;
+                };
+                (bounds.origin.y < px(320.)).then_some(())
+            },
+        )
+        .await;
     }
 
     /// Opens the one folded step group and returns where `step` is in it.
@@ -3031,7 +3047,7 @@ async fn desktop_external_agent_satisfies_new_session_connection_prompt() {
     desktop.press("Confirm permissions and enable").await;
     desktop.control("Disable Antigravity").await;
 
-    desktop.press("Close settings").await;
+    desktop.press("Back to app").await;
     desktop.control("Focus message composer").await;
     desktop
         .until(
@@ -3050,7 +3066,7 @@ async fn desktop_external_agent_satisfies_new_session_connection_prompt() {
     desktop.press("Disable Antigravity").await;
     desktop.control("Enable Antigravity").await;
 
-    desktop.press("Close settings").await;
+    desktop.press("Back to app").await;
     desktop.control("Add a model connection").await;
 
     // Enabling an external agent from another client on the same Host updates
@@ -3189,20 +3205,12 @@ async fn desktop_markdown_toc_follows_active_turn_and_jumps_to_headings() {
 
     // Clicking the first heading scrolls the top section into the viewport.
     desktop.press("Jump to section: Turn One Overview").await;
-    let overview_marker = desktop.control("▸ Overview Marker").await;
-    assert!(
-        overview_marker.origin.y < px(320.),
-        "Overview Marker should land near the top of the viewport: {overview_marker:?}"
-    );
+    desktop.wait_for_toc_landing("▸ Overview Marker").await;
     desktop.artifact("toc-turn1-overview");
 
     // Clicking a distant virtualized heading across 28 paragraphs + wide JSON lands on Deep Dive.
     desktop.press("Jump to section: Deep Dive").await;
-    let deep_marker = desktop.control("▸ Deep Dive Marker").await;
-    assert!(
-        deep_marker.origin.y < px(320.),
-        "Deep Dive Marker should land near the top of the viewport: {deep_marker:?}"
-    );
+    desktop.wait_for_toc_landing("▸ Deep Dive Marker").await;
     desktop.artifact("toc-turn1-deep-dive");
 
     // Turn 2: short Markdown reply with a heading that fits inside the viewport -> TOC hides.
@@ -3266,8 +3274,7 @@ async fn desktop_markdown_toc_follows_active_turn_and_jumps_to_headings() {
 
     // Jump to top of Turn 3, then Return to latest restores bottom section visibility.
     desktop.press("Jump to section: Rollout Plan").await;
-    let rollout_marker = desktop.control("▸ Rollout Marker").await;
-    assert!(rollout_marker.origin.y < px(320.));
+    desktop.wait_for_toc_landing("▸ Rollout Marker").await;
     desktop.press("Return to latest").await;
     desktop.control("▸ Verify Marker").await;
 
@@ -3475,11 +3482,7 @@ async fn desktop_markdown_toc_tracks_multi_row_turns_and_long_outline() {
 
     // Clicking unmounted Chapter 01 jumps across outer rows to Start 01 and activates Chapter 01.
     desktop.press("Jump to section: Chapter 01").await;
-    let start01 = desktop.control("▸ Start 01").await;
-    assert!(
-        start01.origin.y < px(320.),
-        "Start 01 should land near top of viewport: {start01:?}"
-    );
+    desktop.wait_for_toc_landing("▸ Start 01").await;
     desktop
         .until(
             "Chapter 01 should become active after cross-row jump",
@@ -3498,11 +3501,7 @@ async fn desktop_markdown_toc_tracks_multi_row_turns_and_long_outline() {
 
     // Clicking now-unmounted Chapter 07 jumps back across outer rows to Start 07 and activates Chapter 07.
     desktop.press("Jump to section: Chapter 07").await;
-    let start07 = desktop.control("▸ Start 07").await;
-    assert!(
-        start07.origin.y < px(320.),
-        "Start 07 should land near top of viewport: {start07:?}"
-    );
+    desktop.wait_for_toc_landing("▸ Start 07").await;
     desktop
         .until("Chapter 07 should become active after return jump", || {
             let [ch1] = desktop.controls("Jump to section: Chapter 01")[..] else {
@@ -3571,7 +3570,6 @@ async fn desktop_markdown_toc_tracks_multi_row_turns_and_long_outline() {
             desktop.controls("Stop response").is_empty().then_some(())
         })
         .await;
-    desktop.control("▸ Section 48 End").await;
 
     // Without hovering the TOC, Section 48 is immediately scrolled into view and highlighted.
     let sec48 = desktop.control("Jump to section: Section 48").await;
@@ -3916,6 +3914,7 @@ async fn desktop_scrolling_up_past_tall_markdown_reply_does_not_jump_to_bottom()
 pub(crate) const CASES: &[&str] = &[
     "desktop_external_agent_satisfies_new_session_connection_prompt",
     "desktop_room_reply_wakes_an_agent_without_mixing_drafts",
+    "desktop_settings_page_shell_preserves_state_and_overlays",
     "desktop_remembers_folders_without_restoring_unsent_drafts",
     "desktop_remembers_home_model_across_reopen_and_unavailable_fallback",
     "desktop_composer_click_and_ime_follow_the_text_after_a_mention",
@@ -3951,6 +3950,9 @@ pub(crate) fn run(name: &str) {
         }
         "desktop_room_reply_wakes_an_agent_without_mixing_drafts" => {
             runtime.block_on(rooms::desktop_room_reply_wakes_an_agent_without_mixing_drafts())
+        }
+        "desktop_settings_page_shell_preserves_state_and_overlays" => {
+            runtime.block_on(settings::desktop_settings_page_shell_preserves_state_and_overlays())
         }
         "desktop_remembers_folders_without_restoring_unsent_drafts" => {
             runtime.block_on(desktop_remembers_folders_without_restoring_unsent_drafts())

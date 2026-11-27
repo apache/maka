@@ -367,7 +367,7 @@ export function StageLaunchpad(props: {
                   hoverStyle={{ backgroundColor: C.cardRaised }}
                   focusStyle={quietFocusStyle()}
                 >
-                  <Icon name="pullRequest" size={14} color={C.accent} />
+                  <Icon name="pullRequest" size={14} color={C.accentText} />
                   <Text style={{ ...captionTextStyle, color: C.text, flex: 1 }}>
                     {`PR #${parsedPrNumber()}`}
                   </Text>
@@ -400,7 +400,7 @@ export function StageLaunchpad(props: {
                     <Icon
                       name="pullRequest"
                       size={14}
-                      color={pr().state === 'closed' ? C.accent : C.success}
+                      color={pr().state === 'closed' ? C.accentText : C.success}
                     />
                     <Text
                       style={[
@@ -582,7 +582,7 @@ export function StageLaunchpad(props: {
                         name="pullRequest"
                         size={14}
                         color={
-                          pr().draft ? C.muted : pr().state === 'closed' ? C.accent : C.success
+                          pr().draft ? C.muted : pr().state === 'closed' ? C.accentText : C.success
                         }
                       />
                       <Text style={{ fontSize: 12, lineHeight: 16, color: C.muted }}>

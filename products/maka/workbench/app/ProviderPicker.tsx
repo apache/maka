@@ -66,10 +66,8 @@ export function ProviderPicker(props: { owner: ModelSettingsOwner }) {
   let list: ListRef | undefined;
   let input: InputRef | undefined;
   let removeKeys = () => {};
-  const releaseInlineError = owner.claimInlineError();
   cleanup(() => {
     removeKeys();
-    releaseInlineError();
   });
   const retryProviders = async () => {
     const failed = owner.failedProvider();
@@ -220,7 +218,7 @@ export function ProviderPicker(props: { owner: ModelSettingsOwner }) {
             style={{ ...controlStyle, width: 32, paddingHorizontal: 0 }}
             hoverStyle={controlHoverStyle()}
             focusStyle={controlFocusStyle()}
-            activeStyle={{ backgroundColor: C.line }}
+            activeStyle={{ backgroundColor: C.pressed }}
             disabledStyle={controlDisabledStyle}
           >
             <Icon name="close" color={C.secondary} />
@@ -355,7 +353,7 @@ function ProviderOption(props: {
       selectedStyle={{ backgroundColor: C.raised }}
       hoverStyle={controlHoverStyle()}
       focusStyle={controlFocusStyle()}
-      activeStyle={{ backgroundColor: C.line }}
+      activeStyle={{ backgroundColor: C.pressed }}
       disabledStyle={opening() ? { opacity: 1 } : controlDisabledStyle}
     >
       <Text

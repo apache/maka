@@ -25,10 +25,15 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { npmSpawnOptions } from '../npm-spawn.mjs';
 import {
+  artifactNames,
+  buildAndPackageNightly,
   packageNightly,
   packNightlyNpmLaunchers,
   packNightlyNpmPlatform,
+  publishNightlyNpm,
+  releaseBuildEnv,
   renderInnoSetupScript,
+  tarballIntegrity,
   windowsTarExecutable,
 } from './package-nightly.mjs';
 
@@ -178,4 +183,225 @@ test('windowsTarExecutable resolves built-in System32 bsdtar rather than PATH ta
   );
   assert.equal(windowsTarExecutable({ SYSTEMROOT: 'C:\\WINNT' }), 'C:\\WINNT\\System32\\tar.exe');
   assert.equal(windowsTarExecutable({}), 'C:\\Windows\\System32\\tar.exe');
+});
+
+test('release channel uses versioned archive names and rejects prerelease versions', async (t) => {
+  assert.deepEqual(artifactNames('darwin-arm64', 'release', '0.3.0'), {
+    archiveName: 'Maka-0.3.0-macos-arm64.tar.gz',
+    installerName: 'Maka-0.3.0-macos-arm64.dmg',
+  });
+  assert.throws(
+    () => artifactNames('linux-x64-gnu', 'release', '0.3.0-nightly.20261125.1'),
+    /stable X\.Y\.Z/,
+  );
+
+  const root = await mkdtemp(join(tmpdir(), 'maka-pkg-release-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const binDir = join(root, 'bin');
+  const outDir = join(root, 'out');
+  await mkdir(binDir, { recursive: true });
+  for (const name of ['maka', 'maka-desktop-shell', 'maka-python-worker']) {
+    await writeFile(join(binDir, name), '#!/bin/sh\necho ' + name + '\n');
+    await chmod(join(binDir, name), 0o755);
+  }
+  const notices = join(root, 'THIRD_PARTY_NOTICES.txt');
+  await writeFile(notices, 'Third-party notices');
+
+  const produced = await packageNightly({
+    target: 'linux-x64-gnu',
+    version: '0.3.0',
+    channel: 'release',
+    binary: join(binDir, 'maka'),
+    notices,
+    output: outDir,
+  });
+  assert.match(produced[0], /Maka-0\.3\.0-linux-x64\.tar\.gz$/);
+  const installScript = execFileSync('tar', ['-xOzf', produced[0], 'maka/install.sh'], {
+    encoding: 'utf8',
+  });
+  assert.doesNotMatch(installScript, /nightly/i);
+  assert.match(installScript, /Comment=Apache Maka \(incubating\)/);
+
+  const releaseIss = renderInnoSetupScript({
+    sourceDir: 'C:\\build\\Maka',
+    outputDir: 'C:\\out',
+    setupBaseName: 'Maka-0.3.0-windows-x64-setup',
+    version: '0.3.0',
+    iconPath: 'C:\\build\\maka.ico',
+    channel: 'release',
+  });
+  assert.doesNotMatch(releaseIss, /nightly/i);
+  assert.match(releaseIss, /AppVerName=Maka 0\.3\.0 \(incubating\)/);
+  assert.match(releaseIss, /UninstallDisplayName=Maka$/m);
+});
+
+test('buildAndPackageNightly validates channel at entry and releaseBuildEnv populates native version identity', async () => {
+  await assert.rejects(
+    () =>
+      buildAndPackageNightly({
+        target: 'linux-x64-gnu',
+        version: '0.3.0-nightly.20261125.1',
+        output: '/tmp/unused',
+        channel: 'release',
+      }),
+    /stable X\.Y\.Z/,
+  );
+  await assert.rejects(
+    () =>
+      buildAndPackageNightly({
+        target: 'linux-x64-gnu',
+        version: '0.3.0',
+        output: '/tmp/unused',
+        channel: 'bogus',
+      }),
+    /Unsupported distribution channel/,
+  );
+
+  const env = releaseBuildEnv({
+    baseEnv: { MAKA_UPDATE_PUBLIC_KEY: 'pub-key', MAKA_UPDATE_REPO: 'apache/maka' },
+    v8Env: { RUSTY_V8_ARCHIVE: '/tmp/v8.a' },
+    channel: 'release',
+    version: '0.3.0',
+  });
+  assert.equal(env.MAKA_UPDATE_CHANNEL, 'release');
+  assert.equal(env.MAKA_BUILD_VERSION, '0.3.0');
+  assert.equal(env.MAKA_NATIVE_PACKAGE_VERSION, '0.3.0');
+  assert.equal(env.MAKA_UPDATE_PUBLIC_KEY, 'pub-key');
+  assert.equal(env.MAKA_UPDATE_REPO, 'apache/maka');
+  assert.equal(env.RUSTY_V8_ARCHIVE, '/tmp/v8.a');
+});
+
+test('publishNightlyNpm verifies tarball integrity and dist-tag before skipping published packages', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'maka-publish-npm-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const version = '0.3.0';
+  const platformFile = 'maka-agent-cli-linux-x64-gnu-' + version + '.tgz';
+  const launcherFile = 'maka-agent-cli-' + version + '.tgz';
+  const aliasFile = 'maka-agent-' + version + '.tgz';
+  await writeFile(join(dir, platformFile), 'platform-bytes');
+  await writeFile(join(dir, launcherFile), 'launcher-bytes');
+  await writeFile(join(dir, aliasFile), 'alias-bytes');
+
+  const platformIntegrity = await tarballIntegrity(join(dir, platformFile));
+
+  const launcherIntegrity = await tarballIntegrity(join(dir, launcherFile));
+
+  // Matching integrity + dist-tag skips already-published packages under both
+  // npm 12 array-wrapped --json output and npm 11 scalar/object --json output,
+  // and publishes unpublished packages (empty array or E404) in order.
+  const publishedCalls = [];
+  await publishNightlyNpm({
+    directory: dir,
+    version,
+    tag: 'latest',
+    provenance: true,
+    runNpm(args) {
+      if (args[0] === 'view' && args[1] === '@maka-agent/cli-linux-x64-gnu@0.3.0') {
+        return JSON.stringify([platformIntegrity]);
+      }
+      if (args[0] === 'view' && args[1] === '@maka-agent/cli-linux-x64-gnu') {
+        return JSON.stringify([{ latest: '0.3.0', nightly: '0.3.0-nightly.20261125.1' }]);
+      }
+      if (args[0] === 'view' && args[1] === '@maka-agent/cli@0.3.0') {
+        return JSON.stringify(launcherIntegrity);
+      }
+      if (args[0] === 'view' && args[1] === '@maka-agent/cli') {
+        return JSON.stringify({ latest: '0.3.0' });
+      }
+      if (args[0] === 'view') {
+        const err = new Error('404');
+        err.stderr = 'npm error code E404';
+        throw err;
+      }
+      publishedCalls.push(args);
+      return '';
+    },
+  });
+  assert.equal(publishedCalls.length, 1);
+  assert.match(publishedCalls[0][1], /maka-agent-0\.3\.0\.tgz$/);
+  assert.ok(publishedCalls[0].includes('--provenance'));
+
+  // Empty array from npm 12 view --json means unpublished and proceeds to publish.
+  const emptyArrayPublishes = [];
+  await publishNightlyNpm({
+    directory: dir,
+    version,
+    tag: 'latest',
+    runNpm(args) {
+      if (args[0] === 'view') return '[]';
+      emptyArrayPublishes.push(args);
+      return '';
+    },
+  });
+  assert.equal(emptyArrayPublishes.length, 3);
+
+  // Mismatched integrity fails explicitly instead of silently skipping.
+  await assert.rejects(
+    () =>
+      publishNightlyNpm({
+        directory: dir,
+        version,
+        tag: 'latest',
+        runNpm(args) {
+          if (args[0] === 'view' && args[1] === '@maka-agent/cli-linux-x64-gnu@0.3.0') {
+            return JSON.stringify(['sha512-different']);
+          }
+          throw new Error('unexpected call: ' + args.join(' '));
+        },
+      }),
+    /refusing to skip mismatched artifact/,
+  );
+
+  // Multi-entry view response fails explicitly instead of silently picking an entry.
+  await assert.rejects(
+    () =>
+      publishNightlyNpm({
+        directory: dir,
+        version,
+        tag: 'latest',
+        runNpm(args) {
+          if (args[0] === 'view' && args[1] === '@maka-agent/cli-linux-x64-gnu@0.3.0') {
+            return JSON.stringify([platformIntegrity, platformIntegrity]);
+          }
+          throw new Error('unexpected call: ' + args.join(' '));
+        },
+      }),
+    /Unexpected multi-entry npm view response/,
+  );
+
+  // Matching integrity with wrong dist-tag fails explicitly.
+  await assert.rejects(
+    () =>
+      publishNightlyNpm({
+        directory: dir,
+        version,
+        tag: 'latest',
+        runNpm(args) {
+          if (args[0] === 'view' && args[1] === '@maka-agent/cli-linux-x64-gnu@0.3.0') {
+            return JSON.stringify([platformIntegrity]);
+          }
+          if (args[0] === 'view' && args[1] === '@maka-agent/cli-linux-x64-gnu') {
+            return JSON.stringify([{ nightly: '0.3.0', latest: '0.2.0' }]);
+          }
+          throw new Error('unexpected call: ' + args.join(' '));
+        },
+      }),
+    /dist-tag "latest" points to "0\.2\.0"/,
+  );
+
+  // Non-404 registry failures propagate instead of falling through to npm publish.
+  await assert.rejects(
+    () =>
+      publishNightlyNpm({
+        directory: dir,
+        version,
+        tag: 'latest',
+        runNpm() {
+          const err = new Error('registry unavailable');
+          err.stderr = 'npm error code E503';
+          throw err;
+        },
+      }),
+    /registry unavailable/,
+  );
 });

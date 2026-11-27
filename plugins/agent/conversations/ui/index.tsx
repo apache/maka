@@ -49,7 +49,7 @@ import {
   RoomTimeline,
 } from '../../../../products/maka/workbench/app/RoomWorkspace';
 import type { RoomComposerHandle } from '../../../../products/maka/workbench/app/RoomComposer';
-import { LoadingIndicator } from '../../../../products/maka/workbench/app/Loading';
+import { ConversationSkeleton } from '../../../../products/maka/workbench/app/Loading';
 import { RegionEmptyError } from '../../../../products/maka/workbench/app/Feedback';
 import { tr } from '../../../../products/maka/workbench/app/locale';
 import { Header } from '../../../../products/maka/workbench/app/ui';
@@ -174,7 +174,7 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
         else={
           <View style={{ flex: 1 }}>
             <SplitHeader title="" close={shell.closePane!} />
-            <If when={failure()} else={<LoadingIndicator />}>
+            <If when={failure()} else={<ConversationSkeleton />}>
               <RegionEmptyError
                 tone="danger"
                 title={failure()!}

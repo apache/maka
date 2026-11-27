@@ -29,8 +29,9 @@ on:
         description: Sign the IPA on protected main (ios-release approval)
         type: boolean
         default: false
-  pull_request:
-    paths: &ios-paths
+  push:
+    branches: [main]
+    paths:
       - "products/maka/ios-shell/**"
       - "platform/remote-*/**"
       - "third-party/nsh/**"
@@ -52,15 +53,12 @@ on:
       - "scripts/rust/package-ios.mjs"
       - "scripts/rust/package-ios.test.mjs"
       - ".github/workflows/ios-ipa.yml"
-  push:
-    branches: [main]
-    paths: *ios-paths
 
 permissions:
   contents: read
 
 concurrency:
-  group: ios-ipa-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.event.pull_request.number || github.ref }}
+  group: ios-ipa-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.ref }}
   cancel-in-progress: true
 
 jobs:

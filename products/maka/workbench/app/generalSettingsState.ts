@@ -80,7 +80,9 @@ type GlobalEditor = {
   id: number;
   document: { basis: GlobalInstructions; content: string; conflict: boolean } | null;
 };
-type Editor = PreferencesEditor | GlobalEditor;
+// The look is the window's own and saved as it changes: its page has no form.
+type ThemeEditor = { kind: 'theme'; id: number };
+type Editor = PreferencesEditor | GlobalEditor | ThemeEditor;
 export type GeneralSettingsSnapshot = {
   facts: SettingsAssistantPreferences | null;
   editor: Editor | null;
@@ -89,7 +91,7 @@ export type GeneralSettingsSnapshot = {
 type PreferencesAction = {
   view: number;
   policyRevision: number | null;
-  kind: 'root' | PreferencesEditor['kind'];
+  kind: 'root' | PreferencesEditor['kind'] | ThemeEditor['kind'];
 };
 export type GeneralAction =
   | PreferencesAction
@@ -131,6 +133,8 @@ export function createGeneralSettings(
           ? { source: form.document.basis.source, revision: form.document.basis.revision }
           : null,
       };
+    if (form?.kind === 'theme')
+      return { view: view(), policyRevision: facts()?.revision ?? null, kind: form.kind };
     return {
       view: view(),
       policyRevision: form?.basis.revision ?? facts()?.revision ?? null,
@@ -516,21 +520,28 @@ export function createGeneralSettings(
     },
     back,
     title: () =>
-      editor()?.kind === 'dictation'
-        ? tr('Dictation')
-        : editor()?.kind === 'personalization'
-          ? tr('Personalization')
-          : editor()?.kind === 'shell'
-            ? tr('Bash tool shell')
-            : editor()?.kind === 'globalInstructions'
-              ? tr('Global instructions')
-              : editor()?.kind === 'compaction'
-                ? tr('Compaction prompt')
-                : editor()?.kind === 'predictions'
-                  ? tr('Message predictions')
-                  : tr('General'),
+      editor()?.kind === 'theme'
+        ? tr('Theme')
+        : editor()?.kind === 'dictation'
+          ? tr('Dictation')
+          : editor()?.kind === 'personalization'
+            ? tr('Personalization')
+            : editor()?.kind === 'shell'
+              ? tr('Bash tool shell')
+              : editor()?.kind === 'globalInstructions'
+                ? tr('Global instructions')
+                : editor()?.kind === 'compaction'
+                  ? tr('Compaction prompt')
+                  : editor()?.kind === 'predictions'
+                    ? tr('Message predictions')
+                    : tr('General'),
     open: ({ request, kind }: { request: GeneralAction; kind: PreferencesEditor['kind'] }) =>
       open(request, kind),
+    openTheme(request: GeneralAction) {
+      if (request.kind !== 'root' || !current(request)) return;
+      cancelRead();
+      editor.set({ kind: 'theme', id: view() });
+    },
     openGlobal(request: GeneralAction) {
       if (request.kind !== 'root' || !current(request) || blocked()) return;
       batch(() => {
@@ -682,7 +693,8 @@ export function createGeneralSettings(
           await settleGlobal(result, form.id);
         });
       }
-      if (form.kind === 'globalInstructions' || form.kind === 'dictation') return;
+      if (form.kind === 'globalInstructions' || form.kind === 'dictation' || form.kind === 'theme')
+        return;
       if (form.kind === 'shell') {
         if (form.preference === 'git_bash' && !form.executable.trim()) {
           operations.report(new UiError('Select a Git Bash executable.'));

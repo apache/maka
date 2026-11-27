@@ -19,23 +19,21 @@
 
 import { Canvas, platform, Scroll, signal, Text, View, windowSize, type JSX } from 'nsh';
 import type { InputRef, ScrollRef } from 'nsh';
-import { Button, Input, Select } from 'nsh/base';
-import { ChoiceIndicator } from './ChoiceIndicator';
+import { Button, Input, Select, Switch } from 'nsh/base';
 import { Icon } from './Icon';
 import { tr } from './locale';
 import {
   C,
   captionTextStyle,
   controlDisabledStyle,
-  controlFocusStyle,
-  controlHoverStyle,
   controlStyle,
   inputBorderRadius,
   inputTextStyle,
+  isDark,
   floatingStyle,
   menuDetailTextStyle,
-  menuRowHoverStyle,
   menuRowStyle,
+  quietFocusStyle,
 } from './ui';
 
 const terminal = platform.idiom === 'terminal';
@@ -54,6 +52,10 @@ const rowStyle = {
 } as const;
 const labelStyle = { fontSize: 14, lineHeight: terminal ? 16 : 20 };
 const textGap = terminal ? 0 : 2;
+export const cardRaisedHoverStyle = () =>
+  !terminal && isDark() ? { opacity: 0.82 } : { backgroundColor: C.pressed };
+export const cardRaisedActiveStyle = () =>
+  !terminal && isDark() ? { opacity: 0.72 } : { backgroundColor: C.pressed };
 
 function SettingsFooter(props: { render: () => JSX.Element | undefined }) {
   const content = props.render();
@@ -129,7 +131,7 @@ export function SettingsLede(props: { children: string }) {
   );
 }
 
-/** A group of rows on `surface`, optionally named, with an optional note below. */
+/** A group of rows on `card`, optionally named, with an optional note below. */
 export function SettingsSection(props: {
   title?: string;
   trailing?: JSX.Element;
@@ -167,7 +169,7 @@ export function SettingsSection(props: {
       </If>
       <View
         style={{
-          backgroundColor: terminal ? undefined : C.surface,
+          backgroundColor: terminal ? undefined : C.card,
           borderRadius: terminal ? 0 : 12,
           overflow: 'hidden',
         }}
@@ -221,6 +223,8 @@ export type SettingsRowProps = {
   tone?: 'muted' | 'danger';
   /** A page below: draws the chevron. */
   opens?: boolean;
+  /** Draws the hairline above the row (default true). Pass false when an outer split row owns the line. */
+  line?: boolean;
   onPress?: () => void;
   accessibilityLabel?: string;
   disabled?: boolean;
@@ -228,10 +232,11 @@ export type SettingsRowProps = {
 };
 
 export function SettingsRow(props: SettingsRowProps) {
+  const passThrough = () => (props.onPress ? ({ pointerEvents: 'none' } as const) : undefined);
   const content = () => (
     <>
       {props.leading}
-      <View style={[{ flex: 1, minWidth: 0, gap: textGap }, { pointerEvents: 'none' }]}>
+      <View style={[{ flex: 1, minWidth: 0, gap: textGap }, passThrough()]}>
         <Text
           style={[
             {
@@ -249,7 +254,7 @@ export function SettingsRow(props: SettingsRowProps) {
         {props.detail}
       </View>
       <If when={props.status}>
-        <Text style={[{ ...captionTextStyle, color: C.warning }, { pointerEvents: 'none' }]}>
+        <Text style={[{ ...captionTextStyle, color: C.warning }, passThrough()]}>
           {props.status}
         </Text>
       </If>
@@ -266,23 +271,26 @@ export function SettingsRow(props: SettingsRowProps) {
       selected={props.selected}
       onPress={props.onPress}
       style={{ ...rowStyle, justifyContent: 'flex-start' }}
-      hoverStyle={{ backgroundColor: C.raised }}
-      activeStyle={{ backgroundColor: C.line }}
-      focusStyle={{ backgroundColor: C.raised }}
+      hoverStyle={{ backgroundColor: C.cardRaised }}
+      activeStyle={{ backgroundColor: C.pressed }}
+      focusStyle={quietFocusStyle()}
       disabledStyle={controlDisabledStyle}
     >
-      <RowLine />
+      <If when={props.line !== false}>
+        <RowLine />
+      </If>
       {content()}
     </Button>
   ) : (
     <View style={rowStyle}>
-      <RowLine />
+      <If when={props.line !== false}>
+        <RowLine />
+      </If>
       {content()}
     </View>
   );
 }
 
-/** An immediate on/off setting: the whole row toggles it. */
 export function SettingsMonogram(props: { name: string; muted: boolean }) {
   return (
     <If when={!terminal}>
@@ -292,7 +300,7 @@ export function SettingsMonogram(props: { name: string; muted: boolean }) {
             width: 28,
             height: 28,
             borderRadius: 8,
-            backgroundColor: C.raised,
+            backgroundColor: C.cardRaised,
             alignItems: 'center',
             justifyContent: 'center',
           },
@@ -314,6 +322,54 @@ export function SettingsMonogram(props: { name: string; muted: boolean }) {
   );
 }
 
+/** A standalone on/off switch control; only the switch itself is interactive. */
+export function SettingsSwitchControl(props: {
+  accessibilityLabel: string;
+  checked: boolean;
+  disabled?: boolean;
+  onChange(): void;
+}) {
+  return (
+    <Switch
+      accessibilityLabel={props.accessibilityLabel}
+      checked={props.checked}
+      disabled={props.disabled}
+      onChange={props.onChange}
+      hitSlop={terminal ? undefined : 6}
+      style={{
+        flexShrink: 0,
+        borderRadius: terminal ? 0 : 9999,
+        alignItems: 'center',
+        justifyContent: 'center',
+        cursor: props.disabled || terminal ? undefined : 'pointer',
+      }}
+      trackClass="w-[32px] h-[16px] p-[3px] rounded-full flex-row items-center checked:justify-end"
+      trackStyle={{
+        backgroundColor: props.checked && !props.disabled ? C.accent : C.line,
+      }}
+      thumbClass="size-[10px] rounded-full"
+      thumbStyle={{
+        backgroundColor:
+          props.checked && !props.disabled ? C.onAccent : isDark() ? C.secondary : C.background,
+      }}
+      hoverStyle={terminal || props.disabled ? undefined : { opacity: 0.85 }}
+      activeStyle={terminal || props.disabled ? undefined : { opacity: 0.72 }}
+      focusStyle={
+        terminal
+          ? { backgroundColor: C.raised }
+          : {
+              outlineStyle: 'solid' as const,
+              outlineWidth: 2,
+              outlineColor: C.accent,
+              outlineOffset: 2,
+            }
+      }
+      disabledStyle={controlDisabledStyle}
+    />
+  );
+}
+
+/** An immediate on/off setting: the label and detail stay static while the switch toggles it. */
 export function SettingsSwitch(props: {
   label: string;
   description?: string;
@@ -325,7 +381,7 @@ export function SettingsSwitch(props: {
   onPress(): void;
   trailing?: JSX.Element;
   status?: string;
-  /** Names the action instead of the state, such as "Enable Codex". */
+  /** Overrides the switch's accessible name when the row label alone is not specific enough. */
   accessibilityLabel?: string;
 }) {
   return (
@@ -336,20 +392,15 @@ export function SettingsSwitch(props: {
       leading={props.leading}
       tone={props.tone}
       status={props.status}
-      accessibilityLabel={
-        props.accessibilityLabel ??
-        tr('{label}: {state}', {
-          label: props.label,
-          state: props.checked ? tr('On') : tr('Off'),
-        })
-      }
-      selected={props.checked}
-      disabled={props.disabled}
-      onPress={props.onPress}
       trailing={
         <>
           {props.trailing}
-          <ChoiceIndicator kind="switch" checked={props.checked} disabled={props.disabled} />
+          <SettingsSwitchControl
+            accessibilityLabel={props.accessibilityLabel ?? props.label}
+            checked={props.checked}
+            disabled={props.disabled}
+            onChange={props.onPress}
+          />
         </>
       }
     />
@@ -427,14 +478,15 @@ export function SettingsSelect(props: {
               paddingLeft: terminal ? 0 : 10,
               paddingRight: terminal ? 0 : 6,
               borderRadius: 8,
-              backgroundColor: terminal ? undefined : C.raised,
+              backgroundColor: terminal ? undefined : C.cardRaised,
               flexDirection: 'row',
               alignItems: 'center',
               gap: 6,
               minWidth: 0,
             }}
-            hoverStyle={{ backgroundColor: C.line }}
-            focusStyle={controlFocusStyle()}
+            hoverStyle={cardRaisedHoverStyle()}
+            activeStyle={cardRaisedActiveStyle()}
+            focusStyle={quietFocusStyle()}
             disabledStyle={controlDisabledStyle}
           >
             {props.preview}
@@ -481,7 +533,7 @@ export function SettingsSelect(props: {
             </View>
             <View style={{ width: 16 }}>
               <If when={item.value === props.value}>
-                <Icon name="check" color={C.accent} />
+                <Icon name="check" color={C.accentText} />
               </If>
             </View>
           </View>
@@ -496,7 +548,7 @@ const fieldStyle = (disabled?: boolean, error?: boolean) => ({
   ...inputTextStyle,
   color: disabled ? C.muted : C.text,
   placeholderColor: C.muted,
-  backgroundColor: C.background,
+  backgroundColor: C.panel,
   borderWidth: 1,
   borderColor: error ? C.danger : C.line,
   borderRadius: inputBorderRadius,
@@ -598,7 +650,12 @@ export function SettingsSearch(props: {
       submitBehavior="submit"
       autoCapitalize="none"
       autoCorrect={false}
-      style={{ ...fieldStyle(), height: terminal ? 16 : 32, paddingHorizontal: inset }}
+      style={{
+        ...fieldStyle(),
+        backgroundColor: C.background,
+        height: terminal ? 16 : 32,
+        paddingHorizontal: inset,
+      }}
       focusStyle={{ borderColor: C.accent }}
     />
   );
@@ -611,6 +668,8 @@ export function SettingsInput(props: {
   stacked?: boolean;
   value: string;
   change(value: string): void;
+  /** The value typed is done: Return, or the focus left the field. */
+  commit?(): void;
   placeholder?: string;
   masked?: boolean;
   readonly?: boolean;
@@ -645,6 +704,8 @@ export function SettingsInput(props: {
           value={props.value}
           placeholder={props.placeholder}
           onChange={({ value }) => props.change(value)}
+          onSubmit={props.commit && (() => props.commit?.())}
+          onBlur={props.commit && (() => props.commit?.())}
           masked={props.masked}
           readonly={props.readonly || props.disabled}
           autoCapitalize="none"
@@ -741,8 +802,8 @@ export function SettingsTextArea(props: {
               ]}
               draw={(cx, size) => {
                 const fade = cx.createLinearGradient(0, 0, 0, size.height);
-                fade.addColorStop(0, `${C.background}00`);
-                fade.addColorStop(1, C.background);
+                fade.addColorStop(0, `${C.panel}00`);
+                fade.addColorStop(1, C.panel);
                 cx.fillStyle = fade;
                 cx.beginPath();
                 cx.roundRect(0, 0, size.width, size.height, [0, 0, 11, 11]);
@@ -794,17 +855,35 @@ export function SettingsButton(props: {
         alignItems: 'center',
         gap: 6,
         flexShrink: 0,
-        backgroundColor: primaryFill() ? C.accent : quiet() ? undefined : C.raised,
+        backgroundColor: primaryFill() ? C.accent : quiet() ? undefined : C.cardRaised,
       }}
-      hoverStyle={primary() ? { backgroundColor: C.accentHover } : controlHoverStyle()}
-      activeStyle={primary() ? { backgroundColor: C.accentHover } : { backgroundColor: C.line }}
-      focusStyle={primary() ? { backgroundColor: C.accentHover } : controlFocusStyle()}
+      hoverStyle={
+        primary()
+          ? { backgroundColor: C.accentHover }
+          : quiet()
+            ? { backgroundColor: C.cardRaised }
+            : cardRaisedHoverStyle()
+      }
+      activeStyle={
+        primary()
+          ? { backgroundColor: C.accentHover }
+          : quiet()
+            ? { backgroundColor: C.pressed }
+            : cardRaisedActiveStyle()
+      }
+      focusStyle={
+        primary()
+          ? { backgroundColor: C.accentHover }
+          : terminal && !quiet()
+            ? { backgroundColor: C.pressed }
+            : quietFocusStyle()
+      }
       disabledStyle={controlDisabledStyle}
     >
       <If when={props.icon}>
         <Icon
           name={props.icon!}
-          color={primaryFill() ? C.background : terminalDisabled() ? C.muted : C.secondary}
+          color={primaryFill() ? C.onAccent : terminalDisabled() ? C.muted : C.secondary}
           size={14}
         />
       </If>
@@ -815,7 +894,7 @@ export function SettingsButton(props: {
             lineHeight: terminal ? 16 : 20,
             fontWeight: primary() ? '500' : undefined,
             color: primaryFill()
-              ? C.background
+              ? C.onAccent
               : terminalDisabled()
                 ? C.muted
                 : props.tone === 'danger'

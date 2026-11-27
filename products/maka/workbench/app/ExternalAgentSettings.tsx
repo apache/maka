@@ -20,7 +20,7 @@
 import { inputAction } from 'nsh';
 import type { AgentExternalRuntime } from '../../../../packages/plugin-sdk/src/generated/runtime';
 import type { ExternalAgentSettingsOwner } from './externalAgentSettingsState';
-import { LoadingIndicator } from './Loading';
+import { InlineSkeletonLine, SettingsSkeleton } from './Loading';
 import { tr } from './locale';
 import { UsageLimits } from './UsageLimits';
 import {
@@ -100,7 +100,19 @@ export function ExternalAgentSection(props: { owner: ExternalAgentSettingsOwner;
   return (
     <>
       <If when={filtered().length > 0}>
-        <SettingsSection title={tr('External agents')}>
+        <SettingsSection
+          title={tr('External agents')}
+          trailing={
+            <If when={owner.runtimes().some((runtime) => runtime.enabled)}>
+              <SettingsButton
+                label={tr('Refresh')}
+                tone="quiet"
+                disabled={owner.disabled() || owner.checking()}
+                onPress={inputAction(owner.reload, owner.action())}
+              />
+            </If>
+          }
+        >
           <Each of={filtered()} key={(runtime) => runtime.id}>
             {(runtime) => (
               <SettingsSwitch
@@ -114,13 +126,15 @@ export function ExternalAgentSection(props: { owner: ExternalAgentSettingsOwner;
                     : undefined
                 }
                 detail={
-                  <If when={runtime().enabled && runtime().usageLimits}>
-                    <UsageLimits target={() => ({ kind: 'external', runtime: runtime().id })} />
-                  </If>
+                  <>
+                    <If when={runtime().enabled && owner.checking() && !owner.status(runtime().id)}>
+                      <InlineSkeletonLine width={148} label={tr('Checking external agents…')} />
+                    </If>
+                    <If when={runtime().enabled && runtime().usageLimits}>
+                      <UsageLimits target={() => ({ kind: 'external', runtime: runtime().id })} />
+                    </If>
+                  </>
                 }
-                accessibilityLabel={tr(runtime().enabled ? 'Disable {name}' : 'Enable {name}', {
-                  name: runtime().name,
-                })}
                 checked={runtime().enabled}
                 disabled={owner.disabled()}
                 onPress={
@@ -137,13 +151,16 @@ export function ExternalAgentSection(props: { owner: ExternalAgentSettingsOwner;
         </SettingsSection>
       </If>
       <If when={owner.loading() && !owner.basis()}>
-        <LoadingIndicator label={tr('Checking external agents…')} />
+        <SettingsSkeleton padded={false} rows={2} label={tr('Checking external agents…')} />
       </If>
       <If when={unavailable()}>
         <SettingsProblem
           message={unavailable()!}
           retry={inputAction(owner.reload, owner.action())}
         />
+      </If>
+      <If when={!owner.loading() && !owner.basis() && !unavailable()}>
+        <SettingsProblem retry={inputAction(owner.reloadConflict, owner.action())} />
       </If>
     </>
   );

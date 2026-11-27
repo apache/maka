@@ -1119,6 +1119,10 @@ async fn run_case(crash: bool) {
                 confirmed_task(&a_facts,&a_bound["task"]); confirmed_task(&b_facts,&b_bound["task"]);
                 confirmed_effect(&a_facts,&a_bound["task"],&effect,&title,&session);
                 assert!(!b_facts.iter().any(|f| f["kind"] == "external_effect"));
+                // Reopen with the v53 migration outcome for A and an unaffected journal for B.
+                rusqlite::Connection::open(rig.sandbox.root.join("runtime-rust.sqlite"))
+                    .and_then(|db| db.execute("INSERT INTO agent_memory_external_epochs(session) VALUES(?)", [&session]))
+                    .map_err(|e| e.to_string())?;
                 let (mut reopened, continuation) = phase("reopen Host before the next native turn",rig.start()).await?;
                 assert_ne!(anchor.epoch(),reopened.epoch());
                 let resumed_run = phase("send a new turn on the same Maka session",
@@ -1144,7 +1148,18 @@ async fn run_case(crash: bool) {
                     assert!(chunks.iter().any(|chunk| chunk["timing"]["executorUsage"]["totalTokens"] == expected),
                         "missing per-turn usage {expected}: {history}");
                 }
-                rig.controller.assert_submissions(3,1);
+                let rotated_run = send_native(&continuation, &session, "E", &title, false).await?;
+                let rotated = rig.controller.event("E", "ready").await?;
+                assert_ne!(rotated["thread"], ready["thread"]);
+                let pid = rotated["pid"].as_u64().unwrap();
+                rig.controller.send(pid, json!({"action":"complete"}))?;
+                terminal_state(&continuation, &session, &rotated_run, "completed").await?;
+                let wire = rig.transcript(pid).await?;
+                assert!(wire.input.iter().any(|row| row["method"] == "thread/start"));
+                assert!(!wire.input.iter().any(|row| row["method"] == "thread/resume"));
+                let turn = wire.input.iter().find(|row| row["method"] == "turn/start").unwrap();
+                assert!(turn["params"]["input"][0]["text"].as_str().unwrap().contains("Read the prior conversation context from this file"));
+                rig.controller.assert_submissions(4,1);
                 phase("close resumed SDK reader",continuation.close()).await?;
                 rig.clients.pop();
                 phase("reopened Host quit/wait",rig.hosts[1].quit(&mut reopened)).await?;
@@ -1624,6 +1639,46 @@ async fn installed_program_runs_with_private_inputs_and_publishes_its_snapshot()
     #[cfg(windows)]
     sandbox_guard.teardown().await?;
     outcome
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pinned_memory_rejects_external_send_before_original_provider_submission() {
+    let mut rig = Rig::new().await.expect("owned external job fixture");
+    let outcome = AssertUnwindSafe(async {
+        let (mut anchor, bootstrap) = phase("start Host", rig.start()).await?;
+        rig.configure(&mut anchor, &bootstrap, "codex").await?;
+        bootstrap.close().await?;
+        rig.clients.pop();
+        let sdk = connect_sdk(&mut rig, &anchor).await?;
+        let prefs = query(&sdk, "settings", "assistantPreferences", json!({})).await?;
+        mutate(&sdk, "settings", "updateAssistantPreferences", json!({
+            "expectedRevision": prefs["revision"], "mutation": {"kind":"memory","value":{"enabled":true,"agentReadEnabled":true}}
+        })).await?;
+        let scope = json!({"kind":"personal"});
+        let entry = mutate(&sdk,"agent","changeMemory",json!({"scope":scope,"edit":{"kind":"create","body":"External boundary fixture"}})).await?;
+        let pin = mutate(&sdk,"agent","changeMemory",json!({"scope":scope,"edit":{"kind":"set_always","id":entry["id"],"expectedRevision":entry["revision"],"always":true}})).await?;
+        assert_eq!(pin["kind"], "saved", "{pin}");
+        let session = mutate(&sdk,"agent","create",json!({
+            "title":"External memory boundary","automaticTitle":false,"labels":[],
+            "workspace":{"kind":"directory","path":rig.sandbox.workspace},
+            "backend":{"kind":"executor","selection":{"executor":"external","settings":{"runtime":"codex","model":"gpt-fixture"}}}
+        })).await?;
+        assert_eq!(session["kind"],"created","{session}");
+        let error = mutate(&sdk,"agent","send",json!({"sessionId":session["session"]["id"],"message":"Run with pinned memory"})).await.unwrap_err();
+        assert!(error.contains("agent_memory_executor_unavailable"),"{error}");
+        let events = rig.controller.events();
+        assert!(events.is_empty(), "external process contacted the controller: {events:?}");
+        sdk.close().await?;
+        rig.clients.pop();
+        rig.hosts[0].quit(&mut anchor).await?;
+        Ok::<_, String>(())
+    }).catch_unwind().await;
+    let cleanup = rig.cleanup().await;
+    match outcome {
+        Err(panic) => std::panic::resume_unwind(panic),
+        Ok(Err(error)) => panic!("{error}; cleanup={cleanup:?}"),
+        Ok(Ok(())) => assert!(cleanup.is_empty(), "{cleanup:?}"),
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2688,12 +2743,13 @@ async fn antigravity_resumes_from_a_room_mention_and_replies_in_the_room() {
         })).await?;
             assert_eq!(room["kind"], "created", "{room}");
             let room = &room["session"]["id"];
+            let post = format!("{}The patch is ready.", "details ".repeat(1200));
             let first = mutate(
                 &sdk,
                 "agent",
                 "send",
                 json!({
-                    "sessionId":room,"message":"The patch is ready."
+                    "sessionId":room,"message":post
                 }),
             )
             .await?;

@@ -1654,6 +1654,30 @@ pub struct HistoryRequestsRead {
     pub after: Option<u64>,
 }
 
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentHistoryImagesRead")]
+pub struct HistoryImagesRead {
+    #[schemars(length(min = 1))]
+    pub session_id: String,
+    #[schemars(range(min = 1, max = 9_007_199_254_740_991u64))]
+    pub through: u64,
+    /// Any original row in the Run whose images are listed.
+    pub position: RowPosition,
+    #[serde(default)]
+    #[schemars(range(max = 9_007_199_254_740_991u64))]
+    pub after: Option<u64>,
+}
+
+/// The Run's tool results that produced images, oldest first, each with its call.
+#[derive(Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[schemars(rename = "AgentHistoryImages")]
+pub struct HistoryImages {
+    pub tools: Vec<maka_agent_ports::session::history::Tool>,
+    pub next: Option<u64>,
+}
+
 #[derive(Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[schemars(rename = "AgentHistoryRequests")]
@@ -1778,6 +1802,8 @@ pub enum HistoryPage {
         after: Option<Cursor>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tail_thought: Option<Box<maka_agent_ports::session::history::WorkThought>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        resolved_anchor: Option<maka_agent_facts::history::HistoryRowAddress>,
     },
 }
 
@@ -2017,12 +2043,14 @@ impl From<maka_agent_ports::session::history::Page> for HistoryPage {
             before,
             after,
             tail_thought,
+            resolved_anchor,
         } = value;
         HistoryPage::Ready {
             through,
             before,
             after,
             tail_thought,
+            resolved_anchor,
             chunks: chunks
                 .into_iter()
                 .map(|chunk| HistoryChunk {
@@ -2282,6 +2310,7 @@ pub fn contract() -> Contract {
             methods: BTreeMap::from([
                 ("presets".into(), method::<PresetsRead, Vec<PresetSummary>>(MethodMode::Query)),
                 ("preset".into(), method::<PresetRead, Option<PresetDetail>>(MethodMode::Query)),
+                ("loadedMemories".into(), method::<LoadedMemoriesRead, Vec<LoadedMemory>>(MethodMode::Query)),
                 ("memorySource".into(), method::<MemorySourceSelection, MemoryEvidenceReference>(MethodMode::Query)),
                 ("memoryEvidence".into(), method::<MemoryEvidenceRead, MemoryEvidencePage>(MethodMode::Query)),
                 ("memoryHistory".into(), method::<MemoryHistoryRead, MemoryHistoryPage>(MethodMode::Query)),
@@ -2471,6 +2500,10 @@ pub fn contract() -> Contract {
                 (
                     "historyRequests".into(),
                     method::<HistoryRequestsRead, HistoryRequests>(MethodMode::Query),
+                ),
+                (
+                    "historyImages".into(),
+                    method::<HistoryImagesRead, HistoryImages>(MethodMode::Query),
                 ),
                 (
                     "search".into(),

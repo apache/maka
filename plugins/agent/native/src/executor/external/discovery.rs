@@ -20,100 +20,86 @@
 use super::*;
 use runtime::Pipe;
 
-pub(super) async fn query(
+pub(super) async fn usage_limits(
     commands: &BTreeMap<NativeRuntime, NativeCommand>,
     cwd: &str,
-    kind: &str,
-    selected: Option<NativeRuntime>,
+    runtime: NativeRuntime,
     cancellation: CancellationToken,
 ) -> Result<Value, Error> {
-    if kind == "usage_limits" {
-        let config = runtime::resolve(&commands[&NativeRuntime::Antigravity], cwd)
-            .await
-            .require()?;
-        return agy::usage_limits(&config, cwd, cancellation).await;
+    if cancellation.is_cancelled() {
+        return Err(Error::Cancelled);
     }
-    let mut result = Vec::new();
-    for (&runtime, config) in commands
-        .iter()
-        .filter(|(id, _)| selected.is_none_or(|selected| selected == **id))
-    {
-        if cancellation.is_cancelled() {
-            return Err(Error::Cancelled);
+    let command = commands
+        .get(&runtime)
+        .ok_or_else(|| Error::Invalid("Native runtime unavailable".into()))?;
+    let config = runtime::resolve(command, cwd).await.require()?;
+    match runtime {
+        NativeRuntime::Antigravity => agy::usage_limits(&config, cwd, cancellation).await,
+        _ => Err(Error::Invalid(
+            "Usage limits require a supported runtime".into(),
+        )),
+    }
+}
+
+pub(super) async fn discover_runtime(
+    commands: &BTreeMap<NativeRuntime, NativeCommand>,
+    cwd: &str,
+    runtime: NativeRuntime,
+    cancellation: CancellationToken,
+) -> Result<Value, Error> {
+    if cancellation.is_cancelled() {
+        return Err(Error::Cancelled);
+    }
+    let config = commands
+        .get(&runtime)
+        .ok_or_else(|| Error::Invalid("Native runtime unavailable".into()))?;
+    let discovered = match runtime::resolve(config, cwd).await {
+        runtime::Resolution::Missing => {
+            serde_json::json!({"installation":{"kind":"not_found"},"authentication":{"kind":"unknown"},"models":{"kind":"unavailable"}})
         }
-        let discovered = match runtime::resolve(config, cwd).await {
-            runtime::Resolution::Missing => {
-                serde_json::json!({"installation":{"kind":"not_found"},"authentication":{"kind":"unknown"},"models":{"kind":"unavailable"}})
-            }
-            runtime::Resolution::UnsupportedBatch => {
-                serde_json::json!({"installation":{"kind":"unsupported","detail":runtime::BATCH_SHIM_UNSUPPORTED},"authentication":{"kind":"unknown"},"models":{"kind":"unavailable"}})
-            }
-            runtime::Resolution::Native(_) if runtime == NativeRuntime::Claude => {
-                serde_json::json!({"installation":{"kind":"available"},"authentication":{"kind":"unsupported"},"models":{"kind":"unsupported","detail":"Claude interactive CLI does not expose model discovery"}})
-            }
-            runtime::Resolution::Native(config) => {
-                let discovery = if runtime == NativeRuntime::Antigravity {
-                    agy::models(&config, cwd, cancellation.clone()).await
-                } else {
-                    async {
-                        let command =
-                            codex::proxy_resolved(&config, cwd, cancellation.clone()).await?;
-                        runtime::pipe(
-                            command,
-                            runtime::Transport::WebSocket,
-                            None,
-                            cancellation.clone(),
-                            Probe,
-                        )
-                        .await
-                    }
+        runtime::Resolution::UnsupportedBatch => {
+            serde_json::json!({"installation":{"kind":"unsupported","detail":runtime::BATCH_SHIM_UNSUPPORTED},"authentication":{"kind":"unknown"},"models":{"kind":"unavailable"}})
+        }
+        runtime::Resolution::Native(_) if runtime == NativeRuntime::Claude => {
+            serde_json::json!({"installation":{"kind":"available"},"authentication":{"kind":"unsupported"},"models":{"kind":"unsupported","detail":"Claude interactive CLI does not expose model discovery"}})
+        }
+        runtime::Resolution::Native(config) => {
+            let discovery = if runtime == NativeRuntime::Antigravity {
+                agy::models(&config, cwd, cancellation.clone()).await
+            } else {
+                async {
+                    let command = codex::proxy_resolved(&config, cwd, cancellation.clone()).await?;
+                    runtime::pipe(
+                        command,
+                        runtime::Transport::WebSocket,
+                        None,
+                        cancellation.clone(),
+                        Probe,
+                    )
                     .await
-                };
-                match discovery {
-                    Ok(value) => value,
-                    Err(
-                        error @ (Error::Cancelled
-                        | Error::Unknown
-                        | Error::CleanupUnconfirmed
-                        | Error::Persistence(_)),
-                    ) => return Err(error),
-                    Err(_) => {
-                        serde_json::json!({"installation":{"kind":"available"},"authentication":{"kind":"unknown","detail":"Native discovery did not confirm authentication"},"models":{"kind":"error","detail":"Native protocol model discovery failed"}})
-                    }
+                }
+                .await
+            };
+            match discovery {
+                Ok(value) => value,
+                Err(
+                    error @ (Error::Cancelled
+                    | Error::Unknown
+                    | Error::CleanupUnconfirmed
+                    | Error::Persistence(_)),
+                ) => return Err(error),
+                Err(_) => {
+                    serde_json::json!({"installation":{"kind":"available"},"authentication":{"kind":"unknown","detail":"Native discovery did not confirm authentication"},"models":{"kind":"error","detail":"Native protocol model discovery failed"}})
                 }
             }
-        };
-        if kind == "status" {
-            let models = if runtime == NativeRuntime::Claude
-                && discovered
-                    .pointer("/installation/kind")
-                    .and_then(Value::as_str)
-                    == Some("available")
-            {
-                serde_json::json!({"kind":"unsupported","detail":"Claude interactive CLI does not expose model discovery; native default is available"})
-            } else if let Some(models) = discovered
-                .pointer("/models/models")
-                .and_then(Value::as_array)
-            {
-                serde_json::json!({"kind":"ready","count":models.len()})
-            } else {
-                discovered["models"].clone()
-            };
-            result.push(serde_json::json!({"id":runtime.as_str(),"name":runtime.name(),"installation":discovered["installation"],"authentication":discovered["authentication"],"models":models}));
-        } else if kind == "models" {
-            result.push(discovered["models"].clone());
-        } else {
-            result.push(serde_json::json!({"runtime":runtime.as_str(),"installation":discovered["installation"],"authentication":discovered["authentication"],"models":discovered["models"]}));
         }
-    }
-    if selected.is_some() && kind != "status" {
-        result
-            .into_iter()
-            .next()
-            .ok_or_else(|| Error::Invalid("Native runtime unavailable".into()))
-    } else {
-        Ok(Value::Array(result))
-    }
+    };
+    Ok(serde_json::json!({
+        "runtime": runtime.as_str(),
+        "installation": discovered["installation"],
+        "authentication": discovered["authentication"],
+        "models": discovered["models"]
+    }))
 }
 struct Probe;
 impl runtime::PipeProtocol for Probe {

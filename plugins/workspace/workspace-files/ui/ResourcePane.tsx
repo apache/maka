@@ -331,7 +331,7 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
                         alignItems: 'center',
                         justifyContent: 'center',
                       }}
-                      hoverStyle={{ backgroundColor: C.line }}
+                      hoverStyle={{ backgroundColor: C.pressed }}
                       focusStyle={quietFocusStyle()}
                     >
                       <Icon name="close" size={12} color={C.muted} />
@@ -395,7 +395,7 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
                       <Icon
                         name={tabIcon(tab())}
                         size={13}
-                        color={tab().kind === 'pr' ? C.accent : selected() ? C.text : C.muted}
+                        color={tab().kind === 'pr' ? C.accentText : selected() ? C.text : C.muted}
                       />
                       <Text
                         style={[
@@ -429,7 +429,7 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
                         alignItems: 'center',
                         justifyContent: 'center',
                       }}
-                      hoverStyle={{ backgroundColor: C.line }}
+                      hoverStyle={{ backgroundColor: C.pressed }}
                       focusStyle={quietFocusStyle()}
                     >
                       <Icon name="close" size={12} color={C.muted} />
@@ -634,7 +634,7 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
                 })}
                 style={{
                   ...captionTextStyle,
-                  color: C.accent,
+                  color: C.accentText,
                   fontWeight: '600',
                 }}
               >

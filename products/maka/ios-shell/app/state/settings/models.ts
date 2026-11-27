@@ -35,8 +35,15 @@ export const connectionBasis = ({ connectionId, revision }: ConnectionCredential
 export async function readDefaultModel(rpc: SettingsRpc) {
   const page = await rpc.query('settings', 'connections', { kind: 'start' });
   if (page.kind !== 'ready') throw new Error(page.kind);
-  if (!page.defaultTarget) return null;
-  const model = await rpc.query('settings', 'resolveModel', page.defaultTarget);
+  return resolveDefaultModel(rpc, page.defaultTarget);
+}
+
+export async function resolveDefaultModel(
+  rpc: SettingsRpc,
+  target: Runtime.ConnectionTarget | null,
+) {
+  if (!target) return null;
+  const model = await rpc.query('settings', 'resolveModel', target);
   return model.kind === 'ready' ? model.choice : null;
 }
 
@@ -61,6 +68,72 @@ export async function connectionCatalog(rpc: SettingsRpc) {
     offset = page.next;
   }
   return { rows, revision: first.revision, defaultTarget: first.defaultTarget };
+}
+
+export type ConnectionCatalog = Awaited<ReturnType<typeof connectionCatalog>>;
+
+// Picker metadata is optional: a Host can grant model reads but not catalog reads.
+export async function loadModelCatalog(rpc: SettingsRpc): Promise<ConnectionCatalog | null> {
+  try {
+    return await connectionCatalog(rpc);
+  } catch (cause) {
+    console.warn('Model connection catalog unavailable', cause);
+    return null;
+  }
+}
+
+export function suggestConnection(provider: Runtime.SettingsProvider, catalog: ConnectionCatalog) {
+  const displayName = provider.descriptor.label.trim();
+  const slugBase =
+    provider.identity.name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '') || 'connection';
+  const names = new Set(catalog.rows.map((row) => row.name.trim()));
+  const slugs = new Set(catalog.rows.map((row) => row.slug));
+  let name = displayName;
+  let slug = slugBase;
+  for (let suffix = 2; names.has(name); suffix++) name = `${displayName} ${suffix}`;
+  for (let suffix = 2; slugs.has(slug); suffix++) slug = `${slugBase}-${suffix}`;
+  return { name, slug };
+}
+
+export function modelConnectionLabels(catalog: ConnectionCatalog | null | undefined) {
+  const providers = new Map<string, SettingsConnectionSummary[]>();
+  for (const row of catalog?.rows ?? []) {
+    const { packageId, entryId, scope, name } = row.provider;
+    const key = JSON.stringify([packageId, entryId, scope, name]);
+    const group = providers.get(key);
+    if (group) group.push(row);
+    else providers.set(key, [row]);
+  }
+  const labels = new Map<string, string>();
+  for (const group of providers.values()) {
+    if (group.length > 1) {
+      for (const row of group) labels.set(row.basis.connectionId, row.name);
+    }
+  }
+  return labels;
+}
+
+export function modelLabel(
+  label: string,
+  connectionId: string,
+  labels: ReadonlyMap<string, string>,
+) {
+  const name = labels.get(connectionId);
+  return name ? `${label} · ${name}` : label;
+}
+
+export function labelModelChoices(
+  choices: Runtime.AgentModelChoice[],
+  labels: ReadonlyMap<string, string>,
+) {
+  return choices.map((choice) =>
+    choice.selection.kind === 'model'
+      ? { ...choice, label: modelLabel(choice.label, choice.selection.connectionId, labels) }
+      : choice,
+  );
 }
 
 export async function providerCatalog(rpc: SettingsRpc) {

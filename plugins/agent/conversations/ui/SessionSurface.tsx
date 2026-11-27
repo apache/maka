@@ -18,6 +18,7 @@
  */
 
 import { createPendingRecovery } from '../../../../products/maka/workbench/app/pendingRecovery';
+import { appearance } from '../../../../products/maka/workbench/app/appearance';
 import {
   cleanup,
   untracked,
@@ -36,7 +37,8 @@ import {
   type Signal,
   type JSX,
 } from 'nsh';
-import { Button, Dialog, TextView } from 'nsh/base';
+import { Button, TextView } from 'nsh/base';
+import { WindowDialog } from '../../../../products/maka/workbench/app/ModalDialog';
 import { CompactComposer } from './CompactComposer';
 import { currentWindow, isAvailable as desktopAvailable } from 'nsh/desktop';
 import {
@@ -901,8 +903,15 @@ export function createConversationUi(
   const open = (request: OverlayTarget) => {
     const { sessionId } = request;
     if (!alive || selected() !== sessionId) return;
+    const target: OverlayTarget =
+      request.kind === 'models' && sessionId === null ? { kind: 'settings', sessionId } : request;
+    if (target.kind === 'settings') {
+      overlay.set(null);
+      shell()?.openSettings(target.model, target.page);
+      return;
+    }
     if (!(shell()?.visible() ?? false) && !shell()?.dismissRoute()) return;
-    if (request.kind === 'sessions') {
+    if (target.kind === 'sessions') {
       resources.hide();
       status.set('');
       if (overlay()?.kind === 'sessions') {
@@ -915,15 +924,6 @@ export function createConversationUi(
         browserFocus.set(true);
         return;
       }
-    }
-    const target =
-      request.kind === 'models' && sessionId === null
-        ? { kind: 'settings' as const, sessionId }
-        : request;
-    if (target.kind === 'settings') {
-      overlay.set(null);
-      shell()?.openSettings(target.model, target.page);
-      return;
     }
     status.set('');
     browserFocus.set(target.kind === 'sessions');
@@ -2166,6 +2166,7 @@ export function createConversationUi(
       sidebarShown,
       toggleSidebar: () => toggleSidebar({ sessionId: selected(), expanded: sidebarShown() }),
       textSize: changeTextSize,
+      resetTheme: appearance.resetLook,
     });
   // The conversation below (1) or above (-1) the open one in the session browser.
   // Kept here so the browser's collapsed workspaces outlive its unmounting
@@ -3178,7 +3179,7 @@ export function createConversationUi(
                 <SideReactions
                   followUp={(item) => {
                     const session = composerSession();
-                    if (session && !session.blockedReason()) session.submit({ text: item.message });
+                    if (session && !session.sendBlock()) session.submit({ text: item.message });
                   }}
                   attached={sideAttached}
                   attach={() => {
@@ -3378,7 +3379,7 @@ export function createConversationUi(
                   );
                 if (current.kind === 'sessions')
                   return (
-                    <Dialog
+                    <WindowDialog
                       animation="none"
                       onOpenChange={() => closeOverlay(current.instance)}
                       style={{
@@ -3417,7 +3418,7 @@ export function createConversationUi(
                           close={() => closeOverlay(current.instance)}
                         />
                       </View>
-                    </Dialog>
+                    </WindowDialog>
                   );
                 if (current.kind === 'workspaces' || current.kind === 'change-workspace')
                   return (
@@ -3482,7 +3483,7 @@ export function createConversationUi(
           owner.connected() &&
           owner.editable() &&
           owner.run() !== null &&
-          !owner.blockedReason() &&
+          !owner.sendBlock() &&
           hasComposerContent(owner.draft().trim(), owner.attachments.files(), owner.quotes()) &&
           !matchComposerCommand(
             commandCandidates().map((entry) => entry.metadata),
@@ -3644,7 +3645,7 @@ function projectComposerSession(
     previewImage: owner.previewImage,
     editable: owner.editable,
     loading: owner.loading,
-    blockedReason: owner.blockedReason,
+    sendBlock: owner.sendBlock,
     backend: owner.backend,
     modelDetails: owner.modelDetails,
     refreshModel: owner.refreshModel,

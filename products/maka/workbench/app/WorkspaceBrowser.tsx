@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { LoadingIndicator } from './Loading';
+import { LoadingIndicator, SidebarListSkeleton } from './Loading';
 import { SidebarTitleRow, textTooltip } from './ui';
 import { InlineCallout, RegionEmptyError } from './Feedback';
 import { message, renderText } from './text';
@@ -36,9 +36,10 @@ import {
   Image,
   List,
   platform,
+  reduceMotion,
 } from 'nsh';
 import type { JSX, ListRef, Signal, ViewRef } from 'nsh';
-import { Button, ContextMenu, Menu, Popover, Switch } from 'nsh/base';
+import { Button, ContextMenu, Menu, Popover, Switch, Tab, Tabs } from 'nsh/base';
 import logo from './assets/maka.png';
 import { keymap } from 'nsh';
 import {
@@ -50,6 +51,9 @@ import {
   controlFocusStyle,
   controlDisabledStyle,
   floatingStyle,
+  isDark,
+  menuDetailTextStyle,
+  quietFocusStyle,
 } from './ui';
 import { Icon } from './Icon';
 import type { Browsing, BrowserProject, BrowserScope, BrowserWorkspace } from './browsing';
@@ -67,7 +71,11 @@ import {
   unfoldedSessions,
   type ConversationGroup,
 } from './conversationGroups';
-import { sidebarPreferences, type SidebarFeature } from './sidebarPreferences';
+import {
+  sidebarPreferences,
+  type SidebarFeature,
+  type SidebarSortMode,
+} from './sidebarPreferences';
 import { workspaceSessions } from './sessionNesting';
 import type { AgentSession } from '../../../../packages/plugin-sdk/src/index.js';
 import {
@@ -167,6 +175,86 @@ function GuideLine(props: { last(): boolean; height(): number }) {
 }
 // At most this many of the Bot's running or waiting conversations show under it.
 const botWorkerCap = 5;
+
+function ConversationSortSwitch(props: {
+  value: SidebarSortMode;
+  onChange: (mode: SidebarSortMode) => void;
+}) {
+  const trackBg = () => (isDark() ? C.surface : C.raised);
+  const hoverBg = () => (isDark() ? C.raised : C.surface);
+  const selectedBg = () => (isDark() ? C.pressed : C.background);
+  const activeBg = () => (isDark() ? C.raised : C.pressed);
+  const options = (): readonly { value: SidebarSortMode; label: string }[] => [
+    { value: 'project', label: tr('Group conversations by project') },
+    { value: 'time', label: tr('Group conversations by time') },
+  ];
+  return (
+    <Tabs
+      orientation="horizontal"
+      accessibilityLabel={tr('Conversation grouping')}
+      style={{
+        flexDirection: 'row',
+        alignItems: 'center',
+        flexShrink: 0,
+        minHeight: 24,
+        padding: 2,
+        gap: 2,
+        borderRadius: 8,
+        backgroundColor: trackBg(),
+      }}
+      indicatorStyle={{
+        top: 2,
+        bottom: 2,
+        borderRadius: 6,
+        backgroundColor: selectedBg(),
+      }}
+    >
+      <Each of={options()} key={(option) => option.value}>
+        {(option) => {
+          const selected = () => props.value === option().value;
+          return (
+            <Tab
+              selected={selected()}
+              onPress={() => props.onChange(option().value)}
+              style={{
+                minHeight: 20,
+                // 2pt track inset + 6pt tab padding aligns the trailing label on the sidebar's 8pt spine.
+                paddingHorizontal: 6,
+                paddingVertical: 2,
+                borderRadius: 6,
+                flexShrink: 0,
+                justifyContent: 'center',
+                alignItems: 'center',
+                transitionProperty: 'background-color',
+                transitionDuration: reduceMotion() ? 0 : 120,
+                transitionTimingFunction: 'ease-out',
+              }}
+              hoverStyle={{ backgroundColor: selected() ? 'transparent' : hoverBg() }}
+              activeStyle={{
+                backgroundColor: selected() ? 'transparent' : activeBg(),
+                opacity: 0.72,
+              }}
+              focusVisibleStyle={quietFocusStyle()}
+            >
+              <Text
+                style={[
+                  {
+                    ...menuDetailTextStyle,
+                    fontWeight: '500',
+                    color: selected() ? C.text : C.secondary,
+                  },
+                  { numberOfLines: 1 },
+                ]}
+              >
+                {option().label}
+              </Text>
+            </Tab>
+          );
+        }}
+      </Each>
+    </Tabs>
+  );
+}
 
 /** What a branch is, for its row. Forks renamed or titled before the prefix still read as forks. */
 function branchCaption(session: AgentSession): string {
@@ -653,7 +741,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
             borderRadius: 8,
           }}
           hoverStyle={{ backgroundColor: C.raised }}
-          focusStyle={{ backgroundColor: C.line }}
+          focusStyle={{ backgroundColor: C.pressed }}
           disabledStyle={controlDisabledStyle}
         >
           <Icon name="plus" color={navIcon()} />
@@ -669,7 +757,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
             onPress={inputAction(toggleScopes, null)}
             style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 8 }}
             hoverStyle={{ backgroundColor: C.raised }}
-            focusStyle={{ backgroundColor: C.line }}
+            focusStyle={{ backgroundColor: C.pressed }}
           >
             <Icon name="folder" color={C.secondary} />
             <Text style={[{ color: C.secondary, flex: 1, fontSize: 13 }, { numberOfLines: 1 }]}>
@@ -696,7 +784,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
             platform.idiom === 'terminal' ? controlHoverStyle() : { backgroundColor: C.raised }
           }
           focusStyle={
-            platform.idiom === 'terminal' ? controlFocusStyle() : { backgroundColor: C.line }
+            platform.idiom === 'terminal' ? controlFocusStyle() : { backgroundColor: C.pressed }
           }
         >
           <Icon name="search" color={navIcon()} />
@@ -736,7 +824,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
               borderRadius: 8,
             }}
             hoverStyle={{ backgroundColor: C.raised }}
-            focusStyle={{ backgroundColor: C.line }}
+            focusStyle={{ backgroundColor: C.pressed }}
             disabledStyle={controlDisabledStyle}
           >
             <Icon name="bot" color={navIcon()} />
@@ -782,7 +870,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                   <Text
                     style={{
                       ...captionTextStyle,
-                      color: worker().activity === 'waiting' ? C.accent : C.muted,
+                      color: worker().activity === 'waiting' ? C.accentText : C.muted,
                     }}
                   >
                     {worker().activity === 'idle' ? '' : sessionStatusCaption[worker().activity]}
@@ -979,7 +1067,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                     thumbClass="size-[10px] rounded-full"
                     thumbStyle={{
                       backgroundColor: sidebarPreferences.isPinned(item().id)
-                        ? C.background
+                        ? C.onAccent
                         : C.secondary,
                     }}
                     hoverStyle={{ backgroundColor: C.floatingRaised }}
@@ -997,43 +1085,31 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
           style={{
             flexDirection: 'row',
             alignItems: 'center',
-            height: 32,
+            minHeight: 32,
             marginTop: 8,
+            gap: 4,
           }}
         >
           <Text
-            style={{
-              ...captionTextStyle,
-              fontWeight: '500',
-              color: C.secondary,
-              flex: 1,
-              paddingLeft: 8,
-            }}
+            role="header"
+            style={[
+              {
+                ...captionTextStyle,
+                fontWeight: '500',
+                color: C.secondary,
+                flex: 1,
+                minWidth: 0,
+                paddingLeft: 8,
+              },
+              { numberOfLines: 1, textOverflow: 'ellipsis' },
+            ]}
           >
             {tr('Conversations')}
           </Text>
-          <Button
-            accessibilityLabel={sortByTime() ? tr('Group by project') : tr('Sort by time')}
-            tooltip={textTooltip(() =>
-              sortByTime() ? tr('Group by project') : tr('Sort by time'),
-            )}
-            onPress={() => sidebarPreferences.toggleSortMode()}
-            style={{
-              height: 32,
-              flexDirection: 'row',
-              alignItems: 'center',
-              gap: 4,
-              paddingHorizontal: 8,
-              borderRadius: 8,
-            }}
-            hoverStyle={controlHoverStyle()}
-            focusStyle={controlFocusStyle()}
-          >
-            <Text style={{ ...captionTextStyle, color: C.muted }}>
-              {tr(sortByTime() ? 'By time' : 'By project')}
-            </Text>
-            <Icon name="down" size={14} color={C.muted} />
-          </Button>
+          <ConversationSortSwitch
+            value={sidebarPreferences.sortMode()}
+            onChange={(mode) => sidebarPreferences.setSortMode(mode)}
+          />
         </View>
       </If>
       <If when={platform.idiom === 'terminal'}>
@@ -1116,12 +1192,16 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
         estimatedItemSize={rowHeight()}
         empty={() => (
           <View
-            style={{ height: viewportHeight(), alignItems: 'center', justifyContent: 'center' }}
+            style={{
+              height: viewportHeight(),
+              alignItems: browser.loading() ? 'stretch' : 'center',
+              justifyContent: browser.loading() ? 'flex-start' : 'center',
+            }}
           >
             <If
               when={!props.connectionLost() && Boolean(browser.error() || browser.projectError())}
               else={
-                <If when={!browser.loading()}>
+                <If when={!browser.loading()} else={<SidebarListSkeleton />}>
                   <Text style={{ color: C.muted }}>
                     {browser.filter() === 'archived'
                       ? tr('No archived conversations.')
@@ -1221,7 +1301,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                             : undefined
                         }
                       >
-                        <Text style={{ color: C.accent }}> + </Text>
+                        <Text style={{ color: C.accentText }}> + </Text>
                       </Button>
                     </If>
                   </View>
@@ -1327,7 +1407,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                       <Icon name={open() ? 'down' : 'right'} color={C.muted} />
                       <Text
                         style={[
-                          { ...captionTextStyle, color: C.accent, flex: 1, minWidth: 0 },
+                          { ...captionTextStyle, color: C.accentText, flex: 1, minWidth: 0 },
                           { numberOfLines: 1 },
                         ]}
                       >
@@ -1627,7 +1707,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                                   platform.idiom === 'terminal'
                                     ? {
                                         color:
-                                          current() || session()?.hasUnread ? C.accent : C.text,
+                                          current() || session()?.hasUnread ? C.accentText : C.text,
                                         flex: 1,
                                       }
                                     : {
@@ -1654,7 +1734,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                                 <Icon name="bot" color={C.muted} />
                               </If>
                               <If when={platform.idiom === 'terminal' && session()?.hasUnread}>
-                                <Icon name="unread" color={C.accent} />
+                                <Icon name="unread" color={C.accentText} />
                               </If>
                             </View>
                             <If when={platform.idiom === 'terminal'}>
@@ -1761,7 +1841,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
           </Each>
         )}
       </List>
-      <If when={browser.loading()}>
+      <If when={browser.loading() && rowIds().length > 0}>
         <LoadingIndicator />
       </If>
 
@@ -1793,7 +1873,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
             paddingHorizontal: 8,
           }}
           hoverStyle={{ backgroundColor: C.raised }}
-          focusStyle={{ backgroundColor: C.line }}
+          focusStyle={{ backgroundColor: C.pressed }}
         >
           <Icon name="settings" color={navIcon()} />
           <Text style={{ color: C.secondary }}>{tr('Settings')}</Text>
@@ -1814,7 +1894,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
             style={{ ...controlStyle, width: 32, alignItems: 'center', justifyContent: 'center' }}
             selectedStyle={{ backgroundColor: C.raised }}
             hoverStyle={{ backgroundColor: C.raised }}
-            focusStyle={{ backgroundColor: C.line }}
+            focusStyle={{ backgroundColor: C.pressed }}
           >
             <Icon name="archive" color={navIcon()} />
           </Button>

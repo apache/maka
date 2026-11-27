@@ -36,6 +36,7 @@ import { CodeBlockAction, codeBlockActions, codeBlockStyles } from '../codeBlock
 import { tr } from '../locale';
 import { MarkdownImageView } from '../MarkdownImage';
 import { DialogFooter, DialogHeader, ModalDialog } from '../ModalDialog';
+import { SettingsSwitchControl } from '../SettingsPage';
 import {
   bodyTextStyle,
   C,
@@ -403,7 +404,7 @@ function renderText(ctx: SpecElementRenderContext): JSX.Element {
       case 'muted':
         return C.muted;
       case 'accent':
-        return C.accent;
+        return C.accentText;
       case 'success':
         return C.success;
       case 'warning':
@@ -481,7 +482,7 @@ function renderMarkdown(ctx: SpecElementRenderContext): JSX.Element {
       styles={{
         root: { ...secondaryTextStyle, color: C.text },
         paragraph: secondaryTextStyle,
-        link: { color: C.accent },
+        link: { color: C.accentText },
         code: { color: C.text, backgroundColor: C.cardRaised, borderRadius: 4 },
       }}
     />
@@ -528,13 +529,13 @@ function renderBadge(ctx: SpecElementRenderContext): JSX.Element {
       case 'destructive':
         return { fg: C.danger, bg: C.removed, border: C.danger };
       case 'info':
-        return { fg: C.accent, bg: C.cardRaised, border: C.accent };
+        return { fg: C.accentText, bg: C.cardRaised, border: C.accent };
       case 'outline':
         return { fg: C.secondary, bg: 'transparent', border: C.line };
       case 'secondary':
         return { fg: C.secondary, bg: C.cardRaised, border: C.line };
       default:
-        return { fg: C.accent, bg: C.cardRaised, border: C.line };
+        return { fg: C.accentText, bg: C.cardRaised, border: C.line };
     }
   };
 
@@ -570,7 +571,7 @@ function renderStatusLine(ctx: SpecElementRenderContext): JSX.Element {
       case 'pending':
         return { icon: 'statusPending' as const, color: C.muted };
       default:
-        return { icon: 'statusRecorded' as const, color: C.accent };
+        return { icon: 'statusRecorded' as const, color: C.accentText };
     }
   };
 
@@ -899,7 +900,7 @@ function renderTable(ctx: SpecElementRenderContext): JSX.Element {
                       {col().header}
                     </Text>
                     <If when={sortCol() === idx()}>
-                      <Text style={{ ...captionTextStyle, color: C.accent }}>
+                      <Text style={{ ...captionTextStyle, color: C.accentText }}>
                         {sortAsc() ? '↑' : '↓'}
                       </Text>
                     </If>
@@ -991,7 +992,7 @@ function renderListItem(ctx: SpecElementRenderContext): JSX.Element {
   const body = () => (
     <>
       <If when={typeof p().leading === 'string' && p().leading}>
-        <Text style={{ ...captionTextStyle, color: C.accent, flexShrink: 0 }}>
+        <Text style={{ ...captionTextStyle, color: C.accentText, flexShrink: 0 }}>
           {String(p().leading)}
         </Text>
       </If>
@@ -1711,7 +1712,7 @@ function renderAvatar(ctx: SpecElementRenderContext): JSX.Element {
         flexShrink: 0,
       }}
     >
-      <Text style={{ ...captionTextStyle, fontWeight: '600', color: C.accent }}>
+      <Text style={{ ...captionTextStyle, fontWeight: '600', color: C.accentText }}>
         {initials() || '?'}
       </Text>
     </View>
@@ -1747,7 +1748,7 @@ function renderSpinner(ctx: SpecElementRenderContext): JSX.Element {
       : tr('Loading…');
   return (
     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-      <Icon name="loader" color={C.accent} />
+      <Icon name="loader" color={C.accentText} />
       <Text style={{ ...captionTextStyle, color: C.muted }}>{label()}</Text>
     </View>
   );
@@ -2094,7 +2095,7 @@ function renderSelect(ctx: SpecElementRenderContext): JSX.Element {
               </View>
               <View style={{ width: 16 }}>
                 <If when={item.value === currentVal()}>
-                  <Icon name="check" color={C.accent} />
+                  <Icon name="check" color={C.accentText} />
                 </If>
               </View>
             </View>
@@ -2295,16 +2296,7 @@ function renderSwitch(ctx: SpecElementRenderContext): JSX.Element {
   const disabled = () => Boolean(p().disabled);
 
   return (
-    <Button
-      accessibilityLabel={String(p().label ?? '')}
-      selected={checked()}
-      disabled={disabled()}
-      onPress={() => {
-        const next = !checked();
-        own.set(next);
-        bound.write(next);
-        ctx.emit('change');
-      }}
+    <View
       style={{
         width: '100%',
         flexDirection: 'row',
@@ -2313,9 +2305,6 @@ function renderSwitch(ctx: SpecElementRenderContext): JSX.Element {
         gap: 12,
         paddingVertical: 6,
       }}
-      hoverStyle={quietHoverStyle()}
-      focusStyle={quietFocusStyle()}
-      disabledStyle={controlDisabledStyle}
     >
       <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
         <Text style={{ ...secondaryTextStyle, color: C.text }}>{String(p().label ?? '')}</Text>
@@ -2323,8 +2312,18 @@ function renderSwitch(ctx: SpecElementRenderContext): JSX.Element {
           <Text style={{ ...captionTextStyle, color: C.muted }}>{String(p().description)}</Text>
         </If>
       </View>
-      <ChoiceIndicator kind="switch" checked={checked()} disabled={disabled()} />
-    </Button>
+      <SettingsSwitchControl
+        accessibilityLabel={String(p().label ?? '')}
+        checked={checked()}
+        disabled={disabled()}
+        onChange={() => {
+          const next = !checked();
+          own.set(next);
+          bound.write(next);
+          ctx.emit('change');
+        }}
+      />
+    </View>
   );
 }
 
@@ -2396,7 +2395,7 @@ function renderButton(ctx: SpecElementRenderContext): JSX.Element {
       case 'ghost':
         return { bg: 'transparent', fg: C.secondary, border: 'transparent' };
       default:
-        return { bg: C.accent, fg: C.background, border: C.accent };
+        return { bg: C.accent, fg: C.onAccent, border: C.accent };
     }
   };
   const small = () => p().size === 'sm';
@@ -2483,7 +2482,7 @@ function renderButtonGroup(ctx: SpecElementRenderContext): JSX.Element {
               <Text
                 style={{
                   ...captionTextStyle,
-                  color: isCurrent() ? C.background : C.text,
+                  color: isCurrent() ? C.onAccent : C.text,
                   fontWeight: isCurrent() ? '600' : undefined,
                 }}
               >
@@ -2532,7 +2531,7 @@ function renderToggle(ctx: SpecElementRenderContext): JSX.Element {
       <Text
         style={{
           ...captionTextStyle,
-          color: pressed() ? C.accent : C.secondary,
+          color: pressed() ? C.accentText : C.secondary,
           fontWeight: pressed() ? '600' : undefined,
         }}
       >
@@ -2597,7 +2596,7 @@ function renderToggleGroup(ctx: SpecElementRenderContext): JSX.Element {
               <Text
                 style={{
                   ...captionTextStyle,
-                  color: active() ? C.accent : C.secondary,
+                  color: active() ? C.accentText : C.secondary,
                   fontWeight: active() ? '600' : undefined,
                 }}
               >
@@ -2794,7 +2793,7 @@ function renderConfirmInput(ctx: SpecElementRenderContext): JSX.Element {
           hoverStyle={{ opacity: 0.9 }}
           focusStyle={controlFocusStyle()}
         >
-          <Text style={{ ...captionTextStyle, color: C.background, fontWeight: '600' }}>
+          <Text style={{ ...captionTextStyle, color: C.onAccent, fontWeight: '600' }}>
             {confirmLabel()}
           </Text>
         </Button>
@@ -2837,7 +2836,7 @@ function renderLink(ctx: SpecElementRenderContext): JSX.Element {
       <Text
         style={{
           ...secondaryTextStyle,
-          color: C.accent,
+          color: C.accentText,
           textDecorationLine: 'underline',
         }}
       >

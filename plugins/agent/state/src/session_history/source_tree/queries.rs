@@ -31,6 +31,12 @@ impl Query for Latest {
         Ok(Some(source))
     }
 }
+/// SQL predicate restricting `h.kind = 'cell'` rows to transcript-visible Cell child events.
+pub(crate) const TRANSCRIPT_CELL_SQL: &str = " AND (h.kind <> 'cell' OR (h.tool_use_id IS NOT NULL AND
+            (h.tool_start OR (SELECT json_extract(b.payload,'$.fact.event.kind') FROM agent_facts f
+            JOIN contents b ON b.id=f.body_content_id WHERE f.sequence=h.sequence)
+            IN ('child_rejected','child_result_recorded','local_child_returned','child_observed'))))";
+
 pub(super) struct LivePositions(
     pub(super) HistoryNamespace,
     pub(super) HistoryCut,
@@ -59,10 +65,7 @@ impl Query for LivePositions {
         let visible = if self.4 { "" } else { " AND d.internal=0" };
         // Internal Cell bookkeeping is addressable by Recall but has no transcript row.
         let cell_steps = if matches!(self.7, PositionFilter::Transcript(_)) {
-            " AND (h.kind <> 'cell' OR (h.tool_use_id IS NOT NULL AND
-            (h.tool_start OR (SELECT json_extract(b.payload,'$.fact.event.kind') FROM agent_facts f
-            JOIN contents b ON b.id=f.body_content_id WHERE f.sequence=h.sequence)
-            IN ('child_rejected','child_result_recorded','local_child_returned','child_observed'))))"
+            TRANSCRIPT_CELL_SQL
         } else {
             ""
         };
@@ -273,6 +276,17 @@ impl Query for FinalAttemptAt {
     }
 }
 
+// Drive this join from one Run, not the whole session in sequence order.
+// Cell completion can bind an image without being a transcript tool result.
+const TOOL_IMAGE_BINDINGS: &str = "
+    FROM agent_artifact_run_bindings b INDEXED BY agent_artifact_bindings_fact
+    CROSS JOIN agent_session_history h INDEXED BY agent_session_history_result
+      ON h.owner=?1 AND h.session=b.session AND h.fact_id=b.fact
+    CROSS JOIN agent_artifacts a ON a.session=b.session AND a.artifact=b.artifact
+    WHERE b.session=?2 AND b.run=?3 AND h.sequence<=?4 AND h.result_source=1
+      AND b.origin IN ('tool','cell')
+      AND json_extract(a.record_json,'$.artifact.mimeType') LIKE 'image/%'";
+
 /// Read a settled turn's summary from its indexed history coordinates, without
 /// decoding the tool results, receipts, or the Run's accumulated execution state.
 pub(super) struct CompletedWorkAt {
@@ -319,27 +333,17 @@ impl Query for CompletedWorkAt {
         if earlier_output + thoughts + tools + messages == 0 {
             return Ok(None);
         }
+        let bindings = params![owner, self.namespace.session, run, through];
         let image_count = c.query_row(
-            "SELECT count(DISTINCT b.artifact)
-             FROM agent_artifact_run_bindings b
-             JOIN agent_artifacts a ON a.session=b.session AND a.artifact=b.artifact
-             JOIN agent_session_history h ON h.fact_id=b.fact
-             WHERE b.run=?1 AND b.session=?2 AND h.sequence<=?3 AND b.origin IN ('tool','cell')
-               AND json_extract(a.record_json,'$.artifact.mimeType') LIKE 'image/%'",
-            params![run, self.namespace.session, through],
+            &format!("SELECT count(DISTINCT b.artifact) {TOOL_IMAGE_BINDINGS}"),
+            bindings,
             |row| sql::read_u64(row, 0),
         )?;
-        let mut images = c.prepare_cached(
-            "SELECT DISTINCT h.sequence,h.fact_id
-             FROM agent_artifact_run_bindings b
-             JOIN agent_artifacts a ON a.session=b.session AND a.artifact=b.artifact
-             JOIN agent_session_history h ON h.fact_id=b.fact
-             WHERE b.run=?1 AND b.session=?2 AND h.sequence<=?3 AND b.origin IN ('tool','cell')
-               AND json_extract(a.record_json,'$.artifact.mimeType') LIKE 'image/%'
-             ORDER BY h.sequence DESC LIMIT 4",
-        )?;
+        let mut images = c.prepare_cached(&format!(
+            "SELECT DISTINCT h.sequence,h.fact_id {TOOL_IMAGE_BINDINGS} ORDER BY h.sequence DESC LIMIT 4"
+        ))?;
         let image_sources = images
-            .query_map(params![run, self.namespace.session, through], |row| {
+            .query_map(bindings, |row| {
                 Ok((sql::read_u64(row, 0)?, row.get::<_, String>(1)?))
             })?
             .collect::<Result<Vec<_>, _>>()?
@@ -361,6 +365,47 @@ impl Query for CompletedWorkAt {
             image_sources,
             image_count,
         }))
+    }
+}
+
+/// The tool results of one Run that produced images, oldest first, after a sequence.
+pub(super) struct ImageSourcesAt {
+    pub(super) namespace: HistoryNamespace,
+    pub(super) cut: HistoryCut,
+    pub(super) run: RunId,
+    pub(super) after: u64,
+    pub(super) limit: u32,
+}
+
+impl Query for ImageSourcesAt {
+    type Output = Vec<HistoryRowAddress>;
+
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        sql::validate_cut(c, &self.namespace.owner, &self.namespace.session, &self.cut)?;
+        c.prepare_cached(&format!(
+            "SELECT DISTINCT h.sequence,h.fact_id {TOOL_IMAGE_BINDINGS}
+             AND h.sequence>?5 ORDER BY h.sequence LIMIT ?6"
+        ))?
+        .query_map(
+            params![
+                serde_json::to_string(&self.namespace.owner)?,
+                self.namespace.session,
+                self.run.to_string(),
+                sql::bind_u64(self.cut.through_sequence)?,
+                sql::bind_u64(self.after)?,
+                self.limit
+            ],
+            |row| Ok((sql::read_u64(row, 0)?, row.get::<_, String>(1)?)),
+        )?
+        .map(|row| {
+            let (sequence, fact) = row?;
+            Ok(HistoryRowAddress::Live {
+                sequence,
+                fact: sql::identity(fact)?,
+                item_index: 0,
+            })
+        })
+        .collect()
     }
 }
 

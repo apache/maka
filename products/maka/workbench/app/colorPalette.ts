@@ -17,7 +17,7 @@
  * under the License.
  */
 
-// The desktop window's palettes (Settings › General): a recipe of a base hue,
+// The palettes Settings offered before looks (`look.ts` reads a saved one): a recipe of a base hue,
 // how much of it the grays carry, and an accent, from which both appearances'
 // surfaces, text and accent are made in OKLCH, so every palette keeps the
 // default's lightness steps and contrast. Status colors stay the default's.
@@ -32,10 +32,11 @@ export type PaletteRecipe = {
   accent: string;
 };
 
-export type PaletteId = 'default' | 'mist' | 'sage' | 'sand' | 'burgundy' | 'graphite' | 'custom';
-
 /** The presets after the default, in the order Settings lists them. */
-export const presetRecipes: Record<Exclude<PaletteId, 'default' | 'custom'>, PaletteRecipe> = {
+export const presetRecipes: Record<
+  'mist' | 'sage' | 'sand' | 'burgundy' | 'graphite',
+  PaletteRecipe
+> = {
   mist: { hue: 250, tint: 0.7, accent: '#4a6890' },
   sage: { hue: 165, tint: 0.6, accent: '#4f7a72' },
   sand: { hue: 70, tint: 0.6, accent: '#9a6a45' },
@@ -43,20 +44,8 @@ export const presetRecipes: Record<Exclude<PaletteId, 'default' | 'custom'>, Pal
   graphite: { hue: 250, tint: 0.15, accent: '#5b6573' },
 };
 
-/** Accents the custom palette offers before a typed one. */
-export const accentSwatches = [
-  '#4a6890',
-  '#4f7a72',
-  '#66805a',
-  '#9a6a45',
-  '#8a3446',
-  '#a0646e',
-  '#6d6496',
-  '#5b6573',
-];
-
 /** The tokens a palette sets; the rest keep the default's. */
-export type PaletteTokens = {
+type PaletteTokens = {
   background: string;
   surface: string;
   raised: string;

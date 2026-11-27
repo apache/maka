@@ -426,10 +426,10 @@ impl ApplicationHost {
         execute(owner, quick_tools::installed_applications()).await
     }
 
-    pub async fn application_icon(this: Instance<Self>, path: String) -> Result<String, String> {
+    pub async fn application_icon(this: Instance<Self>, id: String) -> Result<String, String> {
         let owner = this.with(|host| host.owner.clone());
         drop(this);
-        execute(owner, quick_tools::application_icon(path)).await
+        execute(owner, quick_tools::application_icon(id)).await
     }
 
     pub async fn start_menu_applications(

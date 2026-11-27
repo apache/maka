@@ -71,10 +71,12 @@ pub(super) fn applications() -> std::result::Result<Vec<StartMenuApplication>, S
             let mut next = [None];
             unsafe { items.Next(&mut next, None)? };
             let [Some(item)] = next else { break };
-            found.push(StartMenuApplication {
-                id: display_name(&item, SIGDN_PARENTRELATIVEPARSING)?,
-                name: display_name(&item, SIGDN_NORMALDISPLAY)?,
-            });
+            if let (Ok(id), Ok(name)) = (
+                display_name(&item, SIGDN_PARENTRELATIVEPARSING),
+                display_name(&item, SIGDN_NORMALDISPLAY),
+            ) {
+                found.push(StartMenuApplication { id, name });
+            }
         }
         Ok(found)
     })
@@ -101,7 +103,7 @@ pub(super) fn icon_png(id: &str) -> std::result::Result<Vec<u8>, String> {
     use windows::Win32::Graphics::Gdi::{DeleteObject, HPALETTE};
     use windows::Win32::Graphics::Imaging::{
         CLSID_WICImagingFactory, GUID_WICPixelFormat32bppRGBA, IWICImagingFactory,
-        WICBitmapUsePremultipliedAlpha, WICConvertBitmapSource,
+        WICBitmapInterpolationModeFant, WICBitmapUsePremultipliedAlpha, WICConvertBitmapSource,
     };
     use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance};
     use windows::Win32::UI::Shell::{IShellItemImageFactory, SIIGBF_ICONONLY};
@@ -124,9 +126,21 @@ pub(super) fn icon_png(id: &str) -> std::result::Result<Vec<u8>, String> {
             let source = WICConvertBitmapSource(&GUID_WICPixelFormat32bppRGBA, &bitmap?)?;
             let (mut width, mut height) = (0, 0);
             source.GetSize(&mut width, &mut height)?;
-            if !(1..=SIDE as u32).contains(&width) || !(1..=SIDE as u32).contains(&height) {
+            if width == 0 || height == 0 {
                 return Err(E_UNEXPECTED.into());
             }
+            let longest = width.max(height);
+            let source = if longest > SIDE as u32 {
+                let scale = |size: u32| {
+                    ((u64::from(size) * SIDE as u64 / u64::from(longest)) as u32).max(1)
+                };
+                (width, height) = (scale(width), scale(height));
+                let scaler = imaging.CreateBitmapScaler()?;
+                scaler.Initialize(&source, width, height, WICBitmapInterpolationModeFant)?;
+                scaler.cast()?
+            } else {
+                source
+            };
             let mut pixels = vec![0; (width * height * 4) as usize];
             source.CopyPixels(std::ptr::null(), width * 4, &mut pixels)?;
             Ok((width, height, pixels))
@@ -191,17 +205,20 @@ fn file_path(item: &IShellItem) -> Result<Option<String>> {
 
 fn targets(id: &str) -> std::result::Result<(Option<String>, Option<running::Instance>), String> {
     use windows::Win32::Storage::EnhancedStorage::PKEY_Link_Arguments;
-    let (path, standalone) = with_folder(|folder| {
+    use windows::Win32::Storage::EnhancedStorage::PKEY_Link_TargetParsingPath;
+    let (target, arguments) = with_folder(|folder| {
         let item = resolve(folder, id)?;
-        let path = file_path(&item)?;
-        let standalone = path.as_deref().is_some_and(|path| {
-            std::path::Path::new(path)
-                .extension()
-                .is_some_and(|ext| ext.eq_ignore_ascii_case("exe"))
-        }) && string_property(&item, &PKEY_Link_Arguments)?.is_none();
-        Ok((path, standalone))
+        Ok((
+            string_property(&item, &PKEY_Link_TargetParsingPath)?,
+            string_property(&item, &PKEY_Link_Arguments)?,
+        ))
     })?;
-    let instance = running::find(id, path.as_deref().filter(|_| standalone))?;
+    let identity = running::Identity::for_target(id, target.as_deref(), arguments.as_deref())?;
+    let instance = match identity {
+        Some(identity) => running::find(identity)?,
+        None => None,
+    };
+    let path = target.filter(|path| std::path::Path::new(path).is_absolute());
     Ok((path, instance))
 }
 
@@ -213,28 +230,37 @@ pub(super) fn actions(id: &str) -> std::result::Result<super::StartMenuActions, 
 
 pub(super) fn act(id: &str, action: &str, token: Option<&str>) -> std::result::Result<(), String> {
     use windows::Win32::UI::Shell::{SHCreateItemFromParsingName, SHOpenFolderAndSelectItems};
-    if action == "reveal" {
-        return with_folder(|folder| {
-            let item = resolve(folder, id)?;
-            let target = match file_path(&item)? {
-                Some(path) => unsafe { SHCreateItemFromParsingName(&HSTRING::from(path), None)? },
-                None => item,
-            };
-            // SAFETY: with zero children the shell selects the item identified by the absolute PIDL.
-            unsafe {
-                let pidl = SHGetIDListFromObject(&target)?;
-                let result = SHOpenFolderAndSelectItems(pidl, None, 0);
-                CoTaskMemFree(Some(pidl.cast()));
-                result
-            }
-        });
-    }
+    let action = match action {
+        "minimize" => running::Action::Minimize,
+        "restart" => running::Action::Restart,
+        "quit" => running::Action::Quit,
+        "forceQuit" => running::Action::ForceQuit,
+        "reveal" => {
+            return with_folder(|folder| {
+                let item = resolve(folder, id)?;
+                let target = match file_path(&item)? {
+                    Some(path) => unsafe {
+                        SHCreateItemFromParsingName(&HSTRING::from(path), None)?
+                    },
+                    None => item,
+                };
+                // SAFETY: with zero children the shell selects the item identified by the absolute PIDL.
+                unsafe {
+                    let pidl = SHGetIDListFromObject(&target)?;
+                    let result = SHOpenFolderAndSelectItems(pidl, None, 0);
+                    CoTaskMemFree(Some(pidl.cast()));
+                    result
+                }
+            });
+        }
+        _ => return Err("Unknown Windows application action".into()),
+    };
     let instance = targets(id)?
         .1
         .filter(|app| Some(app.token.as_str()) == token)
         .ok_or("The selected application instance is no longer available.")?;
     instance.act(action)?;
-    if action == "restart" {
+    if action == running::Action::Restart {
         open(id)?;
     }
     Ok(())
@@ -245,9 +271,41 @@ mod tests {
     use super::*;
 
     #[test]
+    fn only_standalone_executables_and_packaged_apps_have_process_actions() {
+        use running::Identity;
+        let executable = std::env::current_exe().unwrap();
+        let path = executable.to_str().unwrap();
+        let package = "Microsoft.WindowsCalculator_8wekyb3d8bbwe!App";
+        assert!(matches!(
+            Identity::for_target("Microsoft.AutoGenerated.{guid}", Some(path), None).unwrap(),
+            Some(Identity::Executable(_))
+        ));
+        assert!(matches!(
+            Identity::for_target(package, None, None).unwrap(),
+            Some(Identity::AppId(_))
+        ));
+        for (id, target, args) in [
+            (package, Some(path), Some("/7")),
+            (package, None, Some("/7")),
+            (package, Some(r"C:\\Windows\\eventvwr.msc"), None),
+            (package, Some("https://example.org"), None),
+            ("https://example.org", None, None),
+            ("Microsoft.AutoGenerated.{guid}", None, None),
+        ] {
+            assert!(Identity::for_target(id, target, args).unwrap().is_none());
+        }
+    }
+
+    #[test]
     fn start_menu_search_results_resolve_to_named_applications() {
         let apps = applications().unwrap();
         assert!(!apps.is_empty());
+        let icon = apps
+            .iter()
+            .find_map(|app| icon_png(&app.id).ok())
+            .expect("an installed application has an icon");
+        let decoded = image::load_from_memory_with_format(&icon, image::ImageFormat::Png).unwrap();
+        assert!((1..=40).contains(&decoded.width()) && (1..=40).contains(&decoded.height()));
         with_folder(|folder| {
             for app in &apps {
                 let item = resolve(folder, &app.id)?;

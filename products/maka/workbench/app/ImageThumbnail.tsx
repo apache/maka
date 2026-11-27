@@ -26,7 +26,6 @@ import { windowSize } from 'nsh';
 import type { ViewRef } from 'nsh';
 import { C, captionTextStyle, controlStyle, richTooltipStyle, tooltipTextStyle } from './ui';
 import { Icon } from './Icon';
-import { ImageViewer } from './ImageViewer';
 import { tr } from './locale';
 import type {
   AgentToolImageRead,
@@ -72,14 +71,8 @@ export function ImageThumbnail(props: {
   });
   const owns = (selected: typeof action) =>
     selected.sessionId === action.sessionId && selected.uri === action.uri;
-  // A mini thumbnail opens the image over the window, leaving the side panels as they are.
-  const viewing = signal(false);
   const preview = (selected: typeof action) => {
     const originalButton = button;
-    if (props.mini) {
-      if (alive && owns(selected) && size()) viewing.set(true);
-      return;
-    }
     if (alive && owns(selected) && size())
       props.preview({
         source,
@@ -181,7 +174,7 @@ export function ImageThumbnail(props: {
         focusStyle={small ? { borderColor: C.accent } : {}}
       >
         <If when={!small}>
-          <Text style={{ ...captionTextStyle, color: size() ? C.accent : C.muted }}>
+          <Text style={{ ...captionTextStyle, color: size() ? C.accentText : C.muted }}>
             {size()
               ? tr('Open image · {width} × {height}', {
                   width: String(size()!.width),
@@ -236,15 +229,6 @@ export function ImageThumbnail(props: {
           </View>
         </If>
       </Button>
-      <If when={viewing() && size()}>
-        <ImageViewer
-          image={{ uri, ...size()!, title: tr('Original image') }}
-          close={() => {
-            viewing.set(false);
-            if (alive) button?.focus();
-          }}
-        />
-      </If>
       <If when={!props.mini && error()}>
         <View
           style={{
@@ -264,9 +248,9 @@ export function ImageThumbnail(props: {
             onPress={inputAction(retry, action)}
             style={controlStyle}
             hoverStyle={{ backgroundColor: C.raised }}
-            focusStyle={{ backgroundColor: C.line }}
+            focusStyle={{ backgroundColor: C.pressed }}
           >
-            <Text style={{ color: C.accent }}>{tr('Retry image')}</Text>
+            <Text style={{ color: C.accentText }}>{tr('Retry image')}</Text>
           </Button>
         </View>
       </If>

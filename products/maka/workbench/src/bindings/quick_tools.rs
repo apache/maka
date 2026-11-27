@@ -212,12 +212,12 @@ fn thumbnail_png(icon: &objc2_app_kit::NSImage, max_side: isize) -> Result<Vec<u
 use start_menu::icon_png as application_icon_png;
 
 #[cfg(not(any(target_os = "macos", windows)))]
-fn application_icon_png(_path: &str) -> Result<Vec<u8>, String> {
-    Err("Application bundle icons require macOS".into())
+fn application_icon_png(_id: &str) -> Result<Vec<u8>, String> {
+    Err("Application icons require Windows or macOS".into())
 }
 
-pub async fn application_icon(path: String) -> Result<String, String> {
-    let png = blocking(move || application_icon_png(&path)).await??;
+pub async fn application_icon(id: String) -> Result<String, String> {
+    let png = blocking(move || application_icon_png(&id)).await??;
     Ok(format!("data:image/png;base64,{}", STANDARD.encode(png)))
 }
 

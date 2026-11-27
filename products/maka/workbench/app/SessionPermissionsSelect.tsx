@@ -226,8 +226,8 @@ function PermissionsMenu(props: { owner: MenuOwner }) {
                   gap: 4,
                 }
           }
-          hoverStyle={{ backgroundColor: C.line }}
-          focusStyle={{ backgroundColor: C.line }}
+          hoverStyle={{ backgroundColor: C.pressed }}
+          focusStyle={{ backgroundColor: C.pressed }}
           disabledStyle={controlDisabledStyle}
         >
           <If when={access()}>
@@ -289,7 +289,7 @@ function PermissionsMenu(props: { owner: MenuOwner }) {
                     </View>
                     <View style={{ width: 16 }}>
                       <If when={checked()}>
-                        <Icon name="check" color={C.accent} />
+                        <Icon name="check" color={C.accentText} />
                       </If>
                     </View>
                   </Button>

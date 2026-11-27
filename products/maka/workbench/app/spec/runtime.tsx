@@ -559,7 +559,16 @@ export function SpecRenderer(props: {
                 hoverStyle={{ opacity: 0.9 }}
                 focusStyle={controlFocusStyle()}
               >
-                <Text style={{ ...captionTextStyle, color: C.background, fontWeight: '600' }}>
+                <Text
+                  style={{
+                    ...captionTextStyle,
+                    color:
+                      pendingConfirm()!.resolved.confirm!.variant === 'danger'
+                        ? C.background
+                        : C.onAccent,
+                    fontWeight: '600',
+                  }}
+                >
                   {pendingConfirm()!.resolved.confirm!.confirmLabel ?? tr('Confirm')}
                 </Text>
               </Button>

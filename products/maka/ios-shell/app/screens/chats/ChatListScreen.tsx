@@ -47,7 +47,9 @@ import {
   refreshAllSessions,
   renameSession,
   sessionSearchQuery,
-  sessionsLoading,
+  hasMoreSessions,
+  loadingMoreSessions,
+  loadMoreSessions,
   setSessionSearchQuery,
   setShowingArchivedSessions,
   showingArchivedSessions,
@@ -668,7 +670,9 @@ export function ChatListScreen(props: { onOpenSession: (item: ScopedSession) => 
                         icon="chat"
                         title={
                           sessionSearchQuery().trim()
-                            ? tr('No matching chats')
+                            ? hasMoreSessions()
+                              ? tr('No matches in loaded chats')
+                              : tr('No matching chats')
                             : tr('No conversations yet')
                         }
                         subtitle={
@@ -709,6 +713,16 @@ export function ChatListScreen(props: { onOpenSession: (item: ScopedSession) => 
                   onAction={() => void connectSavedHost(selectedOfflineHost()!.rootId)}
                 />
               </If>
+            </View>
+          </If>
+          <If when={hasMoreSessions() || loadingMoreSessions()}>
+            <View style={{ paddingHorizontal: spacing.pageX }}>
+              <ActionButton
+                variant="quiet"
+                title={loadingMoreSessions() ? tr('Loading…') : tr('Load more chats')}
+                disabled={loadingMoreSessions()}
+                onPress={() => void loadMoreSessions()}
+              />
             </View>
           </If>
         </Scroll>

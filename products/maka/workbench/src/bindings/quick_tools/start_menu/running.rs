@@ -20,19 +20,23 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use windows::Win32::Foundation::{
-    FILETIME, HANDLE, HWND, LPARAM, WAIT_OBJECT_0, WAIT_TIMEOUT, WPARAM,
+    ERROR_INVALID_WINDOW_HANDLE, FILETIME, HANDLE, HWND, LPARAM, WAIT_OBJECT_0, WAIT_TIMEOUT,
+    WPARAM,
 };
-use windows::Win32::Storage::Packaging::Appx::GetApplicationUserModelId;
+use windows::Win32::Storage::Packaging::Appx::{
+    GetApplicationUserModelId, VerifyApplicationUserModelId,
+};
 use windows::Win32::System::Threading::{
     GetProcessTimes, OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
     PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, QueryFullProcessImageNameW, TerminateProcess,
     WaitForSingleObject,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetShellWindow, GetWindowThreadProcessId, IsWindowVisible, PostMessageW,
-    SW_MINIMIZE, ShowWindowAsync, WM_CLOSE,
+    EnumWindows, GW_OWNER, GWL_EXSTYLE, GWL_STYLE, GetShellWindow, GetWindow, GetWindowLongW,
+    GetWindowThreadProcessId, IsWindowVisible, PostMessageW, SW_MINIMIZE, ShowWindowAsync,
+    WM_CLOSE, WS_EX_TOOLWINDOW, WS_MINIMIZEBOX,
 };
-use windows::core::{BOOL, Error, Owned, PWSTR};
+use windows::core::{BOOL, Error, HSTRING, Owned, PWSTR};
 
 pub(super) struct Instance {
     pub(super) token: String,
@@ -48,7 +52,11 @@ fn owner(window: HWND) -> u32 {
 }
 
 unsafe extern "system" fn collect(window: HWND, param: LPARAM) -> BOOL {
-    if unsafe { IsWindowVisible(window) }.as_bool() {
+    if unsafe {
+        IsWindowVisible(window).as_bool()
+            && GetWindow(window, GW_OWNER).is_err()
+            && GetWindowLongW(window, GWL_EXSTYLE) as u32 & WS_EX_TOOLWINDOW.0 == 0
+    } {
         // SAFETY: EnumWindows synchronously borrows the map passed by find.
         let windows = unsafe { &mut *(param.0 as *mut BTreeMap<u32, Vec<HWND>>) };
         windows.entry(owner(window)).or_default().push(window);
@@ -56,12 +64,40 @@ unsafe extern "system" fn collect(window: HWND, param: LPARAM) -> BOOL {
     true.into()
 }
 
-enum Identity<'a> {
+pub(super) enum Identity<'a> {
     Executable(PathBuf),
     AppId(&'a str),
 }
 
-impl Identity<'_> {
+impl<'a> Identity<'a> {
+    pub(super) fn for_target(
+        id: &'a str,
+        target: Option<&str>,
+        arguments: Option<&str>,
+    ) -> Result<Option<Self>, String> {
+        if arguments.is_some() {
+            return Ok(None);
+        }
+        if let Some(target) = target {
+            let path = Path::new(target);
+            if !path.is_absolute()
+                || !path
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("exe"))
+            {
+                return Ok(None);
+            }
+            return match path.canonicalize() {
+                Ok(path) => Ok(Some(Self::Executable(path))),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                Err(error) => Err(error.to_string()),
+            };
+        }
+        Ok(
+            (unsafe { VerifyApplicationUserModelId(&HSTRING::from(id)) }.is_ok())
+                .then_some(Self::AppId(id)),
+        )
+    }
     fn matches(&self, process: HANDLE) -> bool {
         match self {
             Self::Executable(expected) => {
@@ -91,26 +127,14 @@ impl Identity<'_> {
                 }
                 .is_ok()
                     && size > 0
-                    && expected
-                        .encode_utf16()
-                        .eq(name[..size as usize - 1].iter().copied())
+                    && String::from_utf16(&name[..size as usize - 1])
+                        .is_ok_and(|actual| actual.eq_ignore_ascii_case(expected))
             }
         }
     }
 }
 
-pub(super) fn find(id: &str, executable: Option<&str>) -> Result<Option<Instance>, String> {
-    let identity = if let Some(path) = executable {
-        match Path::new(path).canonicalize() {
-            Ok(path) => Identity::Executable(path),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(error.to_string()),
-        }
-    } else if Path::new(id).is_absolute() {
-        return Ok(None);
-    } else {
-        Identity::AppId(id)
-    };
+pub(super) fn find(identity: Identity<'_>) -> Result<Option<Instance>, String> {
     let mut windows = BTreeMap::<u32, Vec<HWND>>::new();
     unsafe { EnumWindows(Some(collect), LPARAM((&mut windows as *mut _) as isize)) }
         .map_err(|e| e.to_string())?;
@@ -151,34 +175,54 @@ pub(super) fn find(id: &str, executable: Option<&str>) -> Result<Option<Instance
     Ok(found)
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Action {
+    Minimize,
+    Restart,
+    Quit,
+    ForceQuit,
+}
+
 impl Instance {
-    pub(super) fn act(self, action: &str) -> Result<(), String> {
+    pub(super) fn act(self, action: Action) -> Result<(), String> {
         match action {
-            "forceQuit" => {
+            Action::ForceQuit => {
                 // The retained query handle pins this PID while acquiring terminate access.
                 let handle = unsafe { OpenProcess(PROCESS_TERMINATE, false, self.pid) }
                     .map_err(|e| e.to_string())?;
                 let terminate = unsafe { Owned::new(handle) };
                 unsafe { TerminateProcess(*terminate, 1) }.map_err(|e| e.to_string())?
             }
-            "minimize" | "quit" | "restart" => {
+            Action::Minimize => {
+                let mut minimized = false;
+                for window in self.windows {
+                    if owner(window) == self.pid
+                        && unsafe {
+                            GetWindowLongW(window, GWL_STYLE) as u32 & WS_MINIMIZEBOX.0 != 0
+                        }
+                    {
+                        minimized |= unsafe { ShowWindowAsync(window, SW_MINIMIZE) }.as_bool();
+                    }
+                }
+                return if minimized {
+                    Ok(())
+                } else {
+                    Err("No application window could be minimized.".into())
+                };
+            }
+            Action::Quit | Action::Restart => {
                 for window in self.windows {
                     if owner(window) != self.pid {
                         continue;
                     }
-                    if action == "minimize" {
-                        unsafe { ShowWindowAsync(window, SW_MINIMIZE).ok() }
-                            .map_err(|e| e.to_string())?;
-                    } else {
+                    if let Err(error) =
                         unsafe { PostMessageW(Some(window), WM_CLOSE, WPARAM(0), LPARAM(0)) }
-                            .map_err(|e| e.to_string())?;
+                        && error.code() != ERROR_INVALID_WINDOW_HANDLE.to_hresult()
+                    {
+                        return Err(error.to_string());
                     }
                 }
-                if action == "minimize" {
-                    return Ok(());
-                }
             }
-            _ => return Err("Unknown Windows application action".into()),
         }
         match unsafe { WaitForSingleObject(*self.process, 15_000) } {
             WAIT_OBJECT_0 => Ok(()),

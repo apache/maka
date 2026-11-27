@@ -539,9 +539,40 @@ impl Query for ReadySummary {
         } else {
             sql::request(c, run, attempt.step)?
         };
-        Ok((request.accounting.purpose == ModelPurpose::Summary
-            && valid_summary(c, run, &request, &attempt)?)
-        .then_some(marker))
+        if request.accounting.purpose != ModelPurpose::Summary
+            || !valid_summary(c, run, &request, &attempt)?
+        {
+            return Ok(None);
+        }
+        // A Summary prepared before an already-adopted checkpoint in this Run is
+        // either already adopted or superseded by a newer checkpoint; never re-adopt
+        // it at Run termination via a retained compaction_recovery lineage marker.
+        let (owner, session): (String, String) = c.query_row(
+            "SELECT owner, session FROM agent_run_specs WHERE run=?",
+            [run.to_string()],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        let prepared_seq: Option<i64> = c
+            .query_row(
+                "SELECT sequence FROM agent_session_history INDEXED BY agent_session_history_run
+                 WHERE owner=?1 AND session=?2 AND run=?3 AND step=?4
+                   AND kind IN ('step_prepared','proactive_summary_prepared')
+                 ORDER BY sequence LIMIT 1",
+                params![owner, session, run.to_string(), attempt.step.to_string()],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let Some(prepared_seq) = prepared_seq else {
+            return Ok(None);
+        };
+        let superseded: bool = c.query_row(
+            "SELECT EXISTS(SELECT 1 FROM agent_session_history INDEXED BY agent_session_history_run
+             WHERE owner=?1 AND session=?2 AND run=?3 AND step IS NULL
+               AND kind='context_compacted' AND sequence>?4)",
+            params![owner, session, run.to_string(), prepared_seq],
+            |r| r.get(0),
+        )?;
+        Ok((!superseded).then_some(marker))
     }
 }
 

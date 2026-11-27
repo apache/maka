@@ -123,6 +123,7 @@ export function GroupRow(props: {
   disabled?: boolean;
   divider?: boolean;
   dividerInset?: number;
+  accessible?: boolean;
   accessibilityLabel?: string;
   testID?: string;
   onPress?: () => void;
@@ -209,7 +210,13 @@ export function GroupRow(props: {
       <If
         when={props.onPress && !props.disabled}
         else={
-          <View testID={props.testID} accessibilityLabel={props.accessibilityLabel ?? props.title}>
+          <View
+            testID={props.testID}
+            accessible={props.accessible}
+            accessibilityLabel={
+              props.accessible === false ? undefined : (props.accessibilityLabel ?? props.title)
+            }
+          >
             {rowContent}
           </View>
         }

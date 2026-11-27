@@ -120,8 +120,8 @@ function ComposerUsagePopover(props: {
             gap: 4,
             flexShrink: 0,
           }}
-          hoverStyle={{ backgroundColor: C.line }}
-          focusStyle={{ backgroundColor: C.line }}
+          hoverStyle={{ backgroundColor: C.pressed }}
+          focusStyle={{ backgroundColor: C.pressed }}
           activeStyle={{ backgroundColor: C.surface }}
         >
           <If when={balanceSummary() !== null}>
@@ -163,7 +163,7 @@ function ComposerUsagePopover(props: {
                 width: 24,
                 height: 4,
                 borderRadius: 2,
-                backgroundColor: C.line,
+                backgroundColor: C.pressed,
                 overflow: 'hidden',
               }}
             >

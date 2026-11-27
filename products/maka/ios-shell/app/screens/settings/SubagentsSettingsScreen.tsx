@@ -20,7 +20,13 @@
 import { effect, signal, untracked } from 'nsh';
 import type { ServiceMethods } from '../../../../../../packages/plugin-sdk/src/generated/methods';
 import { tr } from '../../locale';
-import { modelChoices } from '../../state/settings/models';
+import { activeHostInfo } from '../../state/hostPool';
+import {
+  loadModelCatalog,
+  modelChoices,
+  modelConnectionLabels,
+  modelLabel,
+} from '../../state/settings/models';
 import { settingsRpc, settingsWork } from '../../state/settings/rpc';
 import {
   deletePreset,
@@ -44,10 +50,54 @@ export function SubagentsSettingsScreen(
 ) {
   const work = settingsWork(props.rootId, props.active);
   const rpc = settingsRpc(props.rootId, work.writeGeneration);
-  const rows = signal<ServiceMethods['agent']['presets']['output'] | null>(null);
-  const reload = () => void work.run(async () => rows.set(await rpc.query('agent', 'presets', {})));
+  const snapshot = signal<{
+    generation: number;
+    presets: ServiceMethods['agent']['presets']['output'];
+  } | null>(null);
+  const generation = () => activeHostInfo(props.rootId)?.generation;
+  const ready = () => snapshot() !== null && snapshot()?.generation === generation();
+  const labels = signal<ReadonlyMap<string, string>>(new Map());
+  const modelNames = signal<ReadonlyMap<string, string>>(new Map());
+  const reload = () =>
+    void work.run(async () => {
+      const started = generation();
+      if (started === undefined) return;
+      const current = work.fence();
+      const catalog = loadModelCatalog(rpc);
+      const choices = modelChoices(rpc).catch((cause) => {
+        console.warn('Subagent model names unavailable', cause);
+        return [];
+      });
+      const presets = await rpc.query('agent', 'presets', {});
+      if (!current()) return;
+      if (snapshot()?.generation !== started) {
+        labels.set(new Map());
+        modelNames.set(new Map());
+      }
+      snapshot.set({ generation: started, presets });
+      const [metadata, models] = await Promise.all([catalog, choices]);
+      if (!current()) return;
+      labels.set(modelConnectionLabels(metadata));
+      modelNames.set(
+        new Map(models.map(({ selection, label }) => [modelDisplayKey(selection), label])),
+      );
+    });
+  const presetModelLabel = (model: PresetDraft['model']) =>
+    modelLabel(
+      modelNames().get(modelDisplayKey(model)) ?? model.modelId,
+      model.connectionId,
+      labels(),
+    );
+  let requested: number | undefined;
   effect(() => {
-    if (props.active?.() ?? true) untracked(reload);
+    if (props.active?.() === false) {
+      requested = undefined;
+      return;
+    }
+    const connected = generation();
+    if (connected === undefined || work.busy() || requested === connected) return;
+    requested = connected;
+    untracked(reload);
   });
   return (
     <SettingsForm
@@ -57,17 +107,19 @@ export function SubagentsSettingsScreen(
       backLabel={props.backLabel}
       title={tr('Subagents')}
       work={work}
-      ready={rows() !== null}
+      ready={ready()}
       reload={reload}
     >
       <InsetGroup>
-        <Each of={rows() ?? []} key={(preset) => preset.id}>
+        <Each of={snapshot()?.presets ?? []} key={(preset) => preset.id}>
           {(preset) => (
             <GroupRow
               title={preset().name}
               subtitle={[
                 preset().description,
-                [preset().model.modelId, preset().thinkingLevel].filter(Boolean).join(' · '),
+                [presetModelLabel(preset().model), preset().thinkingLevel]
+                  .filter(Boolean)
+                  .join(' · '),
               ]
                 .filter(Boolean)
                 .join('\n')}
@@ -96,21 +148,26 @@ export function SubagentsSettingsScreen(
   );
 }
 
-const modelKey = (model: PresetDraft['model']) =>
-  JSON.stringify([model.connectionId, model.modelId, model.serviceTier ?? null]);
+const modelDisplayKey = (model: PresetDraft['model']) =>
+  JSON.stringify([model.connectionId, model.modelId]);
 
 export function SubagentEditor(props: SettingsPageProps & { presetId: string | null }) {
   const work = settingsWork(props.rootId, props.active);
   const rpc = settingsRpc(props.rootId, work.writeGeneration);
   const original = signal<Preset | null>(null);
   const draft = signal<PresetDraft | null>(null);
-  const models = signal<Awaited<ReturnType<typeof modelChoices>>>([]);
+  const inventory = signal<{
+    choices: Awaited<ReturnType<typeof modelChoices>>;
+    labels: ReadonlyMap<string, string>;
+  } | null>(null);
+  const models = () => inventory()?.choices ?? [];
   let baseline = '';
   const load = () =>
     void work.run(async () => {
-      const [detail, choices] = await Promise.all([
+      const [detail, choices, catalog] = await Promise.all([
         props.presetId ? rpc.query('agent', 'preset', { id: props.presetId }) : null,
         modelChoices(rpc),
+        loadModelCatalog(rpc),
       ]);
       if (props.presetId && !detail) throw new Error(tr('Unavailable'));
       const old = detail?.preset;
@@ -134,14 +191,18 @@ export function SubagentEditor(props: SettingsPageProps & { presetId: string | n
           };
       baseline = JSON.stringify(value);
       original.set(old ?? null);
-      models.set(choices);
+      inventory.set({ choices, labels: modelConnectionLabels(catalog) });
       draft.set(value);
     });
   load();
   const edit = (changes: Partial<PresetDraft>) =>
     draft.update((value) => ({ ...value!, ...changes }));
+  const choiceLabel = (label: string, connectionId: string) =>
+    modelLabel(label, connectionId, inventory()!.labels);
   const currentModel = () =>
-    models().find(({ selection }) => modelKey(selection) === modelKey(draft()!.model));
+    models().find(
+      ({ selection }) => modelDisplayKey(selection) === modelDisplayKey(draft()!.model),
+    );
   const dirty = () => !!draft() && JSON.stringify(draft()) !== baseline;
   const save = () =>
     void work.run(async () => {
@@ -210,17 +271,26 @@ export function SubagentEditor(props: SettingsPageProps & { presetId: string | n
       <InsetGroup>
         <SettingChoice
           title={tr('Model')}
-          value={modelKey(draft()!.model)}
+          value={modelDisplayKey(draft()!.model)}
           options={[
             ...(!currentModel() && draft()!.model.modelId
-              ? [{ id: modelKey(draft()!.model), label: draft()!.model.modelId }]
+              ? [
+                  {
+                    id: modelDisplayKey(draft()!.model),
+                    label: choiceLabel(draft()!.model.modelId, draft()!.model.connectionId),
+                  },
+                ]
               : []),
-            ...models().map(({ selection, label }) => ({ id: modelKey(selection), label })),
+            ...models().map(({ selection, label }) => ({
+              id: modelDisplayKey(selection),
+              label: choiceLabel(label, selection.connectionId),
+            })),
           ]}
           disabled={work.busy()}
           divider={!!currentModel()?.thinkingLevels.length}
           change={(id) => {
-            const model = models().find(({ selection }) => modelKey(selection) === id);
+            if (id === modelDisplayKey(draft()!.model)) return;
+            const model = models().find(({ selection }) => modelDisplayKey(selection) === id);
             if (model) edit({ model: model.selection, thinkingLevel: null });
           }}
         />

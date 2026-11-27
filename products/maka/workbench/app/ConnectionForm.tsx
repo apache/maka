@@ -18,13 +18,13 @@
  */
 
 import { cleanup, computed, effect, inputAction, signal, Text, View } from 'nsh';
-import { Switch } from 'nsh/base';
 import type { CredentialStatus } from '../../../../packages/plugin-sdk/src/generated/runtime';
 import type { ModelSettingsOwner } from './settings';
 import { ConnectionLogin } from './ConnectionLogin';
 import { useHost } from './host';
 import { tr } from './locale';
 import {
+  RowLine,
   SettingsBody,
   SettingsButton,
   SettingsInput,
@@ -32,7 +32,9 @@ import {
   SettingsSearch,
   SettingsSection,
   SettingsSwitch,
+  SettingsSwitchControl,
   SettingsTextArea,
+  settingsInset,
 } from './SettingsPage';
 import { C, captionTextStyle } from './ui';
 
@@ -167,6 +169,7 @@ export function ConnectionForm(props: { settings: ModelSettingsOwner }) {
           <Each of={owner.filteredModels()} key={(id) => id}>
             {(id) => (
               <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                <RowLine />
                 <View style={{ flex: 1, minWidth: 0 }}>
                   <SettingsRow
                     label={name(id())}
@@ -180,38 +183,30 @@ export function ConnectionForm(props: { settings: ModelSettingsOwner }) {
                       </If>
                     }
                     opens
+                    line={false}
                     disabled={disabled() || owner.dirty()}
                     onPress={inputAction(owner.editModel, { ...owner.action(), id: id() })}
                   />
                 </View>
-                <Switch
-                  accessibilityLabel={tr('{label}: {state}', {
-                    label: name(id()),
-                    state: owner.enabledModels().has(id()) ? tr('On') : tr('Off'),
-                  })}
-                  checked={owner.enabledModels().has(id())}
-                  disabled={disabled() || owner.dirty()}
-                  onChange={inputAction(owner.setModelEnabled, {
-                    ...owner.action(),
-                    id: id(),
-                    enabled: !owner.enabledModels().has(id()),
-                  })}
+                <View
                   style={{
-                    width: 52,
+                    paddingHorizontal: settingsInset,
                     alignSelf: 'stretch',
                     alignItems: 'center',
                     justifyContent: 'center',
                   }}
-                  trackClass="w-[32px] h-[16px] p-[3px] rounded-full flex-row items-center checked:justify-end"
-                  trackStyle={{
-                    backgroundColor: owner.enabledModels().has(id()) ? C.accent : C.line,
-                  }}
-                  thumbClass="size-[10px] rounded-full"
-                  thumbStyle={{
-                    backgroundColor: owner.enabledModels().has(id()) ? C.background : C.secondary,
-                  }}
-                  disabledStyle={{ opacity: 0.5 }}
-                />
+                >
+                  <SettingsSwitchControl
+                    accessibilityLabel={name(id())}
+                    checked={owner.enabledModels().has(id())}
+                    disabled={disabled() || owner.dirty()}
+                    onChange={inputAction(owner.setModelEnabled, {
+                      ...owner.action(),
+                      id: id(),
+                      enabled: !owner.enabledModels().has(id()),
+                    })}
+                  />
+                </View>
               </View>
             )}
           </Each>

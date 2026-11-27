@@ -292,9 +292,9 @@ export function MarkdownBody(props: {
                         heading5: { fontSize: props.compact ? secondaryTextStyle.fontSize : 14 },
                         heading6: { fontSize: props.compact ? secondaryTextStyle.fontSize : 14 },
                         blockquote: { borderLeftColor: C.line, color: C.secondary },
-                        link: { color: C.accent },
-                        mark: { textDecorationColor: C.accent },
-                        activeMark: { color: C.accent, textDecorationColor: C.accent },
+                        link: { color: C.accentText },
+                        mark: { textDecorationColor: C.accentText },
+                        activeMark: { color: C.accentText, textDecorationColor: C.accentText },
                         code: { color: color(), backgroundColor: C.card, borderRadius: 4 },
                         ...codeBlockStyles(color(), props.compact ? 8 : 12),
                         // On the desktop a table is framed as a code block is and ruled only

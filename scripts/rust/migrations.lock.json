@@ -221,6 +221,10 @@
       "plugins/agent/state/migrations/0056_message_submissions.sql": {
         "version": 56,
         "sha384": "9f59f9989f0a121ae89b078ccbdd24f79e44ad2c87b819df38a4b8e7060bcfbf7cfb98fee878cac6b8e8efdb6b67ed59"
+      },
+      "plugins/agent/state/migrations/0057_pinned_memory.sql": {
+        "version": 57,
+        "sha384": "49214f5fb500ad4ddd5a599e884fdf8cdc2975fda72857097b61cc1f5c0e3883da4341744ae4d9c876a8a5823ecb5f24"
       }
     },
     "checkpoint-repository": {
@@ -267,6 +271,10 @@
       "products/maka/cli/migrations/deployment/0001_deployment.sql": {
         "version": 1,
         "sha384": "e343252b6cfa048fbe3787b24a3194058743da5ab9c18b3368fc0112a01ec75d09249fd1e81f246b1a145f8c4d3cd713"
+      },
+      "products/maka/cli/migrations/deployment/0002_retire_rust_preview_policy.sql": {
+        "version": 2,
+        "sha384": "5164908f4ff688042c2b7c0735593d84704359e3c4010288d2a7b74e5bbee0a0466385ccce3e6122929290ef1b2003bb"
       }
     }
   }

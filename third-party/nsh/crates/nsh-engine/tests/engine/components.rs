@@ -2497,7 +2497,7 @@ fn token_reads_the_apps_theme_in_the_appearance_shown() {
         } else {
             "#00ff00ff"
         };
-        let wanted = format!("up {up} radius 8 font Inter primary true");
+        let wanted = format!("up {up} radius 8 font Inter, sans-serif primary true");
         let batches = until(&rx, |b| shows(b, &wanted));
         assert!(batches.iter().any(|b| shows(b, &wanted)), "{batches:?}");
     };

@@ -405,8 +405,8 @@ export function MessageEditor(props: EditProps & { state: Signal<InlineEdit | nu
               focusStyle={controlFocusStyle()}
               disabledStyle={controlDisabledStyle}
             >
-              <Icon name="send" color={C.accent} />
-              <Text style={{ ...captionTextStyle, color: C.accent }}>{tr('Send')}</Text>
+              <Icon name="send" color={C.accentText} />
+              <Text style={{ ...captionTextStyle, color: C.accentText }}>{tr('Send')}</Text>
             </Button>
           </View>
         </View>
@@ -505,8 +505,8 @@ export function TurnRetry(props: {
           focusStyle={controlFocusStyle()}
           disabledStyle={controlDisabledStyle}
         >
-          <Icon name="refresh" color={C.accent} />
-          <Text style={{ ...captionTextStyle, color: C.accent }}>{tr('Retry')}</Text>
+          <Icon name="refresh" color={C.accentText} />
+          <Text style={{ ...captionTextStyle, color: C.accentText }}>{tr('Retry')}</Text>
         </Button>
       </View>
     </If>

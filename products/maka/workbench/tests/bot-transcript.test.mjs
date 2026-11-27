@@ -21,12 +21,15 @@ import assert from 'node:assert/strict';
 import { registerHooks } from 'node:module';
 import test from 'node:test';
 import {
+  botChatHidesRow,
   botTurnEnding,
   createBotTranscriptCore,
   reportedWorker,
   activeWorkers,
   assembleChildren,
 } from '../app/botTranscriptCore.ts';
+import { projectProcessGroups } from '../app/processGroups.ts';
+import { projectTrajectory, trajectoryRecordKey } from '../app/trajectory.ts';
 
 const appRoot = new URL('../app/', import.meta.url);
 let currentCleanup = () => {};
@@ -646,4 +649,102 @@ test('worker catalog observation cancellation rebinds without clearing current w
   currentCleanup();
   await settle();
   assert.equal(streams[1].closed, true);
+});
+
+test('whenIdentified settles after the initial botOutbox identity check or on close', async () => {
+  let release;
+  const h = {
+    query: async () =>
+      await new Promise((resolve) => {
+        release = () => resolve({ sessionId: SESSION, isBot: false, through: 0, messages: [] });
+      }),
+    subscribe: async () => {
+      throw new Error('ordinary session must not subscribe');
+    },
+  };
+  const ordinary = createBotTranscriptCore(h, 'ordinary-session', () => {});
+  let done = false;
+  void ordinary.whenIdentified.then(() => {
+    done = true;
+  });
+  await settle();
+  assert.equal(done, false);
+  assert.equal(ordinary.identity(), 'unknown');
+  release();
+  await ordinary.whenIdentified;
+  assert.equal(ordinary.identity(), 'ordinary');
+  ordinary.close();
+
+  const closed = createBotTranscriptCore(
+    {
+      query: () => new Promise(() => {}),
+      subscribe: async () => {
+        throw new Error('unreachable');
+      },
+    },
+    'closed-session',
+    () => {},
+  );
+  closed.close();
+  await closed.whenIdentified;
+  assert.equal(closed.identity(), 'unknown');
+});
+
+test('Bot Chat hidden rows resolve to their Trajectory record once reading switches from chat to trajectory', () => {
+  const user = {
+    messageId: 'u1',
+    order: { path: [1], itemIndex: 0 },
+    field: 'body',
+    turnId: 't1',
+    role: 'user',
+    text: 'hello',
+  };
+  const workerNote = {
+    messageId: 'u2',
+    order: { path: [2], itemIndex: 0 },
+    field: 'body',
+    turnId: 't2',
+    role: 'user',
+    text: 'worker finished',
+    origin: { kind: 'bot_worker', sessionId: 'w1' },
+  };
+  const assistant = {
+    messageId: 'a1',
+    order: { path: [3], itemIndex: 0 },
+    field: 'body',
+    turnId: 't2',
+    role: 'assistant',
+    text: 'internal bot reasoning reply',
+  };
+  assert.equal(botChatHidesRow(user), false);
+  assert.equal(botChatHidesRow(workerNote), true);
+  assert.equal(botChatHidesRow(assistant), true);
+
+  const projection = projectProcessGroups({
+    rows: [user, workerNote, assistant],
+    toolActivity: [],
+    activeTurnId: null,
+  });
+  let reading = 'chat';
+  const trajectoryByKey = () =>
+    new Map(
+      (reading === 'trajectory' ? projectTrajectory(projection, []) : []).map((entry) => [
+        entry.key,
+        entry,
+      ]),
+    );
+  const assistantId = [...projection.rowsById.entries()].find(
+    ([, row]) => row.messageId === 'a1',
+  )?.[0];
+  assert.ok(assistantId);
+  const key = trajectoryRecordKey(assistantId);
+  assert.equal(
+    trajectoryByKey().has(key),
+    false,
+    'trajectory map is empty while reading is still chat',
+  );
+  reading = 'trajectory';
+  const target = trajectoryByKey().get(key);
+  assert.equal(target?.kind, 'trajectory-record');
+  assert.equal(target?.rowId, assistantId);
 });

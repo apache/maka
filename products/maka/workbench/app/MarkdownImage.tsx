@@ -156,7 +156,7 @@ export function MarkdownImageView(props: {
         </Text>
       </If>
       <If when={error() && !props.linked}>
-        <Text style={{ ...captionTextStyle, color: C.accent }}>{tr('Retry image')}</Text>
+        <Text style={{ ...captionTextStyle, color: C.accentText }}>{tr('Retry image')}</Text>
       </If>
     </View>
   );
@@ -185,7 +185,7 @@ export function MarkdownImageView(props: {
       </If>
       <If when={viewing() && source() && dimensions()}>
         <ImageViewer
-          image={{ uri: source()!.uri, ...dimensions()!, title: name() }}
+          images={[{ uri: source()!.uri, ...dimensions()!, title: name() }]}
           close={() => {
             viewing.set(false);
             if (owns()) button?.focus();

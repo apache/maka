@@ -325,12 +325,7 @@ export function RoomComposer(props: {
   };
 
   const send = async () => {
-    if (!ready() || busy() || pending() || (!text().trim() && !attachments.ids().length)) return;
-    const blocked = attachments.blocked();
-    if (blocked) {
-      error.set(blocked);
-      return;
-    }
+    if (!canSend()) return;
     busy.set(true);
     error.set('');
     try {
@@ -588,15 +583,22 @@ export function RoomComposer(props: {
     return counts;
   };
 
+  const attachmentBlock = () => attachments.blocked();
+  const attachmentWarning = () => {
+    const block = attachmentBlock();
+    return block?.kind === 'draft' ? block.message : '';
+  };
   const canSend = () =>
     ready() &&
     !busy() &&
     pending() === null &&
+    attachmentBlock() === null &&
     (Boolean(text().trim()) || attachments.ids().length > 0);
 
   const streamError = () => props.streamError?.() ?? '';
   const waiting = () => props.waitingMembers?.() ?? [];
   const hasFailure = () => Boolean(streamError() || error() || pending());
+  const hasAttachmentWarning = () => Boolean(attachmentWarning());
   const hasWaiting = () => waiting().length > 0;
   const failureMessage = () =>
     error() || (pending() ? tr('Could not send to the room.') : streamError());
@@ -826,7 +828,7 @@ export function RoomComposer(props: {
                               justifyContent: 'center',
                             }}
                           >
-                            <Icon name="rooms" size={12} color={C.background} />
+                            <Icon name="rooms" size={12} color={C.onAccent} />
                           </View>
                         </If>
                         <View style={{ flex: 1, minWidth: 0 }}>
@@ -879,14 +881,14 @@ export function RoomComposer(props: {
       </If>
 
       <View style={{ flexShrink: 0 }}>
-        <If when={hasFailure() || hasWaiting()}>
+        <If when={hasFailure() || hasAttachmentWarning() || hasWaiting()}>
           <ComposerShelf inset={20}>
             <If when={hasFailure()}>
               <ComposerShelfRow
                 tone="danger"
                 message={failureMessage()}
                 detail={pending() ? pendingPreview() : undefined}
-                divided={hasWaiting()}
+                divided={hasAttachmentWarning() || hasWaiting()}
                 action={{
                   label: tr('Retry'),
                   primary: true,
@@ -901,6 +903,13 @@ export function RoomComposer(props: {
                     : undefined
                 }
                 dismissLabel={tr('Dismiss message status')}
+              />
+            </If>
+            <If when={hasAttachmentWarning()}>
+              <ComposerShelfRow
+                tone="warning"
+                message={attachmentWarning()}
+                divided={hasWaiting()}
               />
             </If>
             <If when={hasWaiting()}>
@@ -1005,7 +1014,7 @@ export function RoomComposer(props: {
                         {roomAvatarInitial(props.name(id()))}
                       </Text>
                     </View>
-                    <Text style={{ ...captionTextStyle, color: C.accent }}>
+                    <Text style={{ ...captionTextStyle, color: C.accentText }}>
                       @{props.name(id())}
                     </Text>
                     <Icon name="close" size={12} color={C.muted} />
@@ -1065,7 +1074,7 @@ export function RoomComposer(props: {
               hoverStyle={{ backgroundColor: C.surface }}
               focusStyle={controlFocusStyle()}
             >
-              <Text style={{ ...bodyTextStyle, color: choosing() ? C.accent : C.secondary }}>
+              <Text style={{ ...bodyTextStyle, color: choosing() ? C.accentText : C.secondary }}>
                 @
               </Text>
             </Button>
@@ -1093,12 +1102,12 @@ export function RoomComposer(props: {
                 <Icon
                   name={delivery() === 'queue' ? 'queue' : 'activity'}
                   size={13}
-                  color={delivery() === 'queue' ? C.accent : C.secondary}
+                  color={delivery() === 'queue' ? C.accentText : C.secondary}
                 />
                 <Text
                   style={{
                     ...captionTextStyle,
-                    color: delivery() === 'queue' ? C.accent : C.secondary,
+                    color: delivery() === 'queue' ? C.accentText : C.secondary,
                   }}
                 >
                   {delivery() === 'queue' ? tr('Queue delivery') : tr('Steer delivery')}
@@ -1124,9 +1133,9 @@ export function RoomComposer(props: {
             >
               <If
                 when={busy()}
-                else={<Icon name="send" color={canSend() ? C.background : C.muted} />}
+                else={<Icon name="send" color={canSend() ? C.onAccent : C.muted} />}
               >
-                <LoadingIndicator color={C.background} />
+                <LoadingIndicator color={C.muted} />
               </If>
             </Button>
           </View>

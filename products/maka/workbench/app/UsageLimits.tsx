@@ -24,6 +24,7 @@ import { useHost } from './host';
 import { currentLocale, tr } from './locale';
 import { formatDecimal } from './numberFormat';
 import {
+  peekUsageLimits,
   usageTargetKey,
   watchUsageLimits,
   type UsageLimitsHost,
@@ -32,6 +33,7 @@ import {
   type UsageTarget,
 } from './usageLimitsReading';
 import { C, captionTextStyle } from './ui';
+import { UsageLimitsSkeleton } from './Loading';
 import { TokenCount } from './TokenCount';
 
 function usageWindow(seconds: number) {
@@ -112,7 +114,7 @@ export function useUsageLimits(target: () => UsageTarget | null) {
       if (key !== activeKey || revision !== activeRevision) {
         activeKey = key;
         activeRevision = revision;
-        observation.set(null);
+        observation.set(peekUsageLimits(host, current));
       }
       return;
     }
@@ -155,12 +157,14 @@ export function UsageLimits(props: { target: () => UsageTarget }) {
   };
   const terminal = platform.idiom === 'terminal';
   return (
-    <View style={{ gap: terminal ? 0 : 6, marginTop: terminal ? 0 : 4 }}>
-      <If when={message()}>
-        <Text style={{ ...captionTextStyle, color: C.muted }}>{message()}</Text>
-      </If>
-      <UsageLimitsList limits={limits} />
-    </View>
+    <If when={usage() !== null} else={<UsageLimitsSkeleton label={tr('Loading usage limits…')} />}>
+      <View style={{ gap: terminal ? 0 : 6, marginTop: terminal ? 0 : 4 }}>
+        <If when={message()}>
+          <Text style={{ ...captionTextStyle, color: C.muted }}>{message()}</Text>
+        </If>
+        <UsageLimitsList limits={limits} />
+      </View>
+    </If>
   );
 }
 
@@ -236,7 +240,7 @@ export function UsageLimitsList(props: { limits: () => UsageLimit[] }) {
                   style={{
                     height: 3,
                     borderRadius: 2,
-                    backgroundColor: C.line,
+                    backgroundColor: C.pressed,
                     overflow: 'hidden',
                   }}
                 >

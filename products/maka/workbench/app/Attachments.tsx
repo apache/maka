@@ -141,7 +141,7 @@ export function StagedAttachments(props: {
                     </Button>
                     <If when={viewing() && loaded()}>
                       <ImageViewer
-                        image={{ uri: original.imageUri!, ...loaded()!, title: original.name }}
+                        images={[{ uri: original.imageUri!, ...loaded()!, title: original.name }]}
                         close={() => {
                           viewing.set(false);
                           opener?.focus();
@@ -157,7 +157,7 @@ export function StagedAttachments(props: {
                       ...removeStyle(),
                       ...(thumbnail() ? { right: undefined, left: 36 } : {}),
                     }}
-                    hoverStyle={{ backgroundColor: C.line }}
+                    hoverStyle={{ backgroundColor: C.pressed }}
                     focusStyle={{ borderColor: C.accent }}
                   >
                     <Icon name="close" color={C.secondary} />
@@ -186,8 +186,8 @@ export function DraftAttachments(props: {
             accessibilityLabel={tr('Close attachment picker')}
             onPress={inputAction(owner.open, { owner: owner.sessionId, value: false })}
             style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 8 }}
-            hoverStyle={{ backgroundColor: C.line }}
-            focusStyle={{ backgroundColor: C.line }}
+            hoverStyle={{ backgroundColor: C.pressed }}
+            focusStyle={{ backgroundColor: C.pressed }}
           >
             <Icon name="close" color={C.secondary} />
             <Text style={{ color: C.secondary }}>{tr('Close picker')}</Text>
@@ -241,7 +241,7 @@ export function DraftAttachments(props: {
                         ...removeStyle(),
                         ...(image(original.mimeType) ? { right: undefined, left: 36 } : {}),
                       }}
-                      hoverStyle={{ backgroundColor: C.line }}
+                      hoverStyle={{ backgroundColor: C.pressed }}
                       focusStyle={{ borderColor: C.accent }}
                     >
                       <Icon name="close" color={C.secondary} />
@@ -287,8 +287,8 @@ export function DraftAttachments(props: {
                     id: row().id,
                   })}
                   style={controlStyle}
-                  hoverStyle={{ backgroundColor: C.line }}
-                  focusStyle={{ backgroundColor: C.line }}
+                  hoverStyle={{ backgroundColor: C.pressed }}
+                  focusStyle={{ backgroundColor: C.pressed }}
                 >
                   <Text style={{ color: C.muted }}>{tr('Remove')}</Text>
                 </Button>

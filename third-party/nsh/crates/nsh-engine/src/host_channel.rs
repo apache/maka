@@ -129,6 +129,39 @@ struct AttachedEngine {
     detached: watch::Sender<()>,
 }
 
+/// The attachment that made a host call, usable after the call is answered.
+#[derive(Clone)]
+pub struct HostCaller {
+    channel: HostChannel,
+    attachment: Option<(u64, watch::Receiver<()>)>,
+}
+
+impl HostCaller {
+    /// Sends only to this caller and returns false if it is no longer attached.
+    pub fn send(&self, name: &str, data: JsonValue) -> Result<bool, String> {
+        check_name(name)?;
+        let inner = self.channel.lock();
+        let Some(engine) = inner.engine.as_ref().filter(|engine| {
+            self.attachment
+                .as_ref()
+                .is_some_and(|(id, _)| *id == engine.id)
+        }) else {
+            return Ok(false);
+        };
+        Ok(engine
+            .tx
+            .send(Message::CallerHostEvent(name.into(), data))
+            .is_ok())
+    }
+
+    /// Waits until the caller detaches. Returns immediately if it already left.
+    pub async fn closed(&self) {
+        if let Some((_, detached)) = &self.attachment {
+            let _ = detached.clone().changed().await;
+        }
+    }
+}
+
 impl Inner {
     fn engine_for(&self, call: &HostCall) -> Option<&AttachedEngine> {
         let caller = call.reply.as_ref()?.tx.as_ref()?;
@@ -230,6 +263,19 @@ impl HostChannel {
         Ok(())
     }
 
+    /// Captures the calling attachment before the reply is consumed.
+    /// Posts or calls from an already detached app have no live caller.
+    pub fn caller(&self, call: &HostCall) -> HostCaller {
+        let attachment = self
+            .lock()
+            .engine_for(call)
+            .map(|engine| (engine.id, engine.detached.subscribe()));
+        HostCaller {
+            channel: self.clone(),
+            attachment,
+        }
+    }
+
     /// Sends an event only to the app that made `call`, returning false if
     /// it is no longer attached. Unlike [Self::send], this never targets a
     /// replacement app or buffers a new event while detached.
@@ -252,13 +298,7 @@ impl HostChannel {
     /// Waits until the app that made `call` detaches from the channel.
     /// Resolves at once if the caller is already gone or the request is a post.
     pub async fn caller_detached(&self, call: &HostCall) {
-        let detached = self
-            .lock()
-            .engine_for(call)
-            .map(|engine| engine.detached.subscribe());
-        if let Some(mut detached) = detached {
-            let _ = detached.changed().await;
-        }
+        self.caller(call).closed().await;
     }
 
     /// Handles the app's calls (`host.call(name, data)`) and posts
@@ -1008,6 +1048,56 @@ mod tests {
             Message::HostEvent(name, data) if name == "general" && data == json!(2)
         ));
         assert!(rx.is_empty());
+    }
+
+    #[tokio::test]
+    async fn owned_caller_closes_on_detach_or_replacement_after_reply() {
+        for replace in [false, true] {
+            let channel = HostChannel::new();
+            let (tx, rx) = crossbeam_channel::unbounded();
+            let old = channel.attach(tx.clone(), rx.clone());
+            let mut reply = HostReply::default();
+            reply.tx = Some(tx);
+            let call = HostCall {
+                reply: Some(reply),
+                ..Default::default()
+            };
+            let caller = channel.caller(&call);
+            call.resolve(json!(null));
+            assert!(caller.send("subscription", json!(1)).unwrap());
+            assert!(matches!(rx.try_recv().unwrap(), Message::HostReply(..)));
+            assert!(matches!(
+                rx.try_recv().unwrap(),
+                Message::CallerHostEvent(name, data) if name == "subscription" && data == json!(1)
+            ));
+
+            let closed = caller.closed();
+            tokio::pin!(closed);
+            tokio::select! {
+                biased;
+                _ = &mut closed => panic!("the caller closed while still attached"),
+                _ = std::future::ready(()) => {}
+            }
+            let (new_tx, new_rx) = crossbeam_channel::unbounded();
+            let replacement = if replace {
+                let new = channel.attach(new_tx, new_rx.clone());
+                tokio::time::timeout(Duration::from_secs(1), &mut closed)
+                    .await
+                    .unwrap();
+                drop(old);
+                new
+            } else {
+                drop(old);
+                assert!(!caller.send("subscription", json!(2)).unwrap());
+                tokio::time::timeout(Duration::from_secs(1), &mut closed)
+                    .await
+                    .unwrap();
+                channel.attach(new_tx, new_rx.clone())
+            };
+            assert!(!caller.send("subscription", json!(3)).unwrap());
+            assert!(new_rx.is_empty());
+            drop(replacement);
+        }
     }
 
     #[test]

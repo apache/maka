@@ -29,7 +29,7 @@ import { pluginDescription, pluginTitle, settingCaption } from './pluginSettings
 import type { PluginSettingsOwner, PluginAction } from './pluginSettingsState.ts';
 import { PluginIcon } from './PluginIcon';
 import { ChoiceIndicator } from './ChoiceIndicator';
-import { LoadingIndicator } from './Loading';
+import { SettingsSkeleton } from './Loading';
 import { RootUiSettings } from './RootUiSettings';
 import {
   SettingsBody,
@@ -69,14 +69,14 @@ export function PluginSettings(props: { owner: PluginSettingsOwner; quickTool: Q
           <SettingsBody>
             <If
               when={owner.loading()}
-              else={
-                <SettingsProblem
-                  message={tr('Plugin settings are unavailable on this connection.')}
-                  retry={inputAction(owner.reload, owner.action())}
-                />
-              }
+              else={<SettingsProblem retry={inputAction(owner.reload, owner.action())} />}
             >
-              <LoadingIndicator label={tr('Reading plugins…')} />
+              <SettingsSkeleton
+                padded={false}
+                sections={2}
+                rows={3}
+                label={tr('Reading plugins…')}
+              />
             </If>
           </SettingsBody>
         }
@@ -202,9 +202,6 @@ function PluginDetail(props: { owner: PluginSettingsOwner; request: PluginAction
       >
         <SettingsSwitch
           label={tr('Enabled')}
-          accessibilityLabel={
-            plugin().disabled ? tr('Enable Host plugin') : tr('Disable Host plugin')
-          }
           status={
             plugin().parentDisabled
               ? tr('Enable the parent plugin before enabling this child.')

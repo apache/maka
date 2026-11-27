@@ -203,7 +203,7 @@ async fn perform(
         .await?;
         return Ok(());
     }
-    let version = distribution::preview_version().await?;
+    let version = distribution::nightly_version().await?;
     let artifact = distribution::fetch(version).await?;
     execute(
         &artifact.executable,
@@ -242,7 +242,7 @@ pub(in crate::deployment) async fn execute(
 pub(crate) struct Upgrade {
     #[command(flatten)]
     expected: deployment::Expected,
-    /// Exact native package version. Omit to resolve rust-preview once.
+    /// Exact native package version. Omit to resolve nightly once.
     #[arg(long)]
     version: Option<Version>,
 }
@@ -252,7 +252,7 @@ impl Upgrade {
         crate::operation::check()?;
         let version = match self.version {
             Some(version) => version,
-            None => distribution::preview_version().await?,
+            None => distribution::nightly_version().await?,
         };
         let artifact = distribution::fetch(version).await?;
         // The selected distribution writes its own configuration and stages the

@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { cleanup, safeAreaInsets, Scroll, signal, Text, View, token } from 'nsh';
+import { cleanup, effect, untracked, safeAreaInsets, Scroll, signal, Text, View, token } from 'nsh';
 import { Input, NavPage } from 'nsh/base';
 import {
   approvalControls,
@@ -28,10 +28,7 @@ import {
 } from '../../approval';
 import {
   hostQuery,
-  onSubscriptionItem,
-  subscribe,
-  unsubscribe,
-  type SubscriptionHandle,
+  watchHost,
   type AgentDeliveryPage,
   type AgentInteractionRecord,
 } from '../../bridge';
@@ -39,6 +36,7 @@ import { ApprovalActions, ApprovalOutcome } from '../../ui/ApprovalCard';
 import { QuestionForm } from '../../ui/QuestionForm';
 import { tr } from '../../locale';
 import { isInboxItemBusy, respondInboxItem, type InboxItem } from '../../state/inbox';
+import { activeHostInfo } from '../../state/hostPool';
 import { hapticSelection } from '../../state/preferences';
 import { spacing, type } from '../../theme/tokens';
 import { ActionButton, GroupRow, Icon, InsetGroup, ScreenHeader, StatusDot } from '../../ui';
@@ -70,11 +68,10 @@ export function ReviewDetailScreen(props: {
   const liveRecord = signal<AgentInteractionRecord | null>(props.item.record);
   let disposed = false;
   let read = 0;
-  let watch: SubscriptionHandle | undefined;
-  const watchId = 'review:' + String(++reviewSequence);
 
   const refreshAuthoritativeRecord = async () => {
     const request = ++read;
+    const generation = activeHostInfo(props.item.rootId)?.generation;
     try {
       const latest = await hostQuery<AgentInteractionRecord | null>(
         'agent',
@@ -83,7 +80,12 @@ export function ReviewDetailScreen(props: {
         undefined,
         props.item.rootId,
       );
-      if (!disposed && request === read && latest) {
+      if (
+        !disposed &&
+        request === read &&
+        latest &&
+        activeHostInfo(props.item.rootId)?.generation === generation
+      ) {
         liveRecord.set(latest);
       }
     } catch {
@@ -91,32 +93,28 @@ export function ReviewDetailScreen(props: {
     }
   };
 
-  void refreshAuthoritativeRecord();
-
-  const offSub = onSubscriptionItem((payload) => {
-    if (disposed) return;
-    if (payload.rootId !== props.item.rootId || payload.subscriptionId !== watchId) return;
-    const page = payload.item as AgentDeliveryPage | undefined;
-    if (page?.kind === 'interactions' && !liveRecord()?.outcome) void refreshAuthoritativeRecord();
+  effect(() => {
+    const { rootId, sessionId } = props.item;
+    const connection = activeHostInfo(rootId);
+    if (!connection) return;
+    untracked(() => void refreshAuthoritativeRecord());
+    cleanup(
+      watchHost<AgentDeliveryPage>(
+        rootId,
+        connection.generation,
+        'review:' + ++reviewSequence,
+        'watch',
+        { sessionId, after: 0 },
+        (page) => {
+          if (page.kind === 'interactions' && !liveRecord()?.outcome)
+            void refreshAuthoritativeRecord();
+        },
+        (cause) => console.warn('Could not watch review', cause),
+      ),
+    );
   });
-
-  void subscribe(
-    watchId,
-    'agent',
-    'watch',
-    { sessionId: props.item.sessionId, after: 0 },
-    props.item.rootId,
-  )
-    .then((handle) => {
-      if (disposed) return unsubscribe(handle);
-      watch = handle;
-    })
-    .catch((cause) => console.warn('Could not watch review', cause));
   cleanup(() => {
-    if (watch)
-      void unsubscribe(watch).catch((cause) => console.warn('Could not stop review watch', cause));
     disposed = true;
-    offSub();
   });
 
   const record = () => liveRecord() ?? props.item.record;

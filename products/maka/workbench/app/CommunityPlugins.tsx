@@ -44,7 +44,7 @@ type Repo = {
   title: string;
 };
 function SearchPlaceholder() {
-  const bar = { height: 9, borderRadius: 5, backgroundColor: C.line };
+  const bar = { height: 9, borderRadius: 5, backgroundColor: C.pressed };
   return (
     <View role="progressbar" accessibilityLabel={tr('Reading plugins…')}>
       <If
@@ -69,7 +69,9 @@ function SearchPlaceholder() {
               <View style={{ ...bar, width: '32%', maxWidth: 140 }} />
               <View style={{ ...bar, width: '72%', maxWidth: 320 }} />
             </View>
-            <View style={{ width: 52, height: 24, borderRadius: 8, backgroundColor: C.raised }} />
+            <View
+              style={{ width: 52, height: 24, borderRadius: 8, backgroundColor: C.cardRaised }}
+            />
           </View>
         }
       >

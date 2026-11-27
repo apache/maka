@@ -92,3 +92,10 @@ pub struct ReconcileMemories {
     pub writes: Vec<MemoryWrite>,
     pub resolution: Option<MemoryResolution>,
 }
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LoadedMemoriesRead {
+    pub session_id: String,
+    pub run_id: maka_agent_facts::durable::RunId,
+}

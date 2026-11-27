@@ -242,7 +242,7 @@ export function RoomHeaderControls(props: {
               hoverStyle={{ backgroundColor: C.surface }}
               focusStyle={controlFocusStyle()}
             >
-              <Icon name="pin" size={13} color={pinnedOpen() ? C.accent : C.muted} />
+              <Icon name="pin" size={13} color={pinnedOpen() ? C.accentText : C.muted} />
               <View
                 accessibilityElementsHidden
                 style={{
@@ -259,7 +259,7 @@ export function RoomHeaderControls(props: {
           }
         >
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-            <Icon name="pin" size={12} color={C.accent} />
+            <Icon name="pin" size={12} color={C.accentText} />
             <Text style={{ ...captionTextStyle, fontWeight: '600', color: C.text, flex: 1 }}>
               {tr('Pinned messages')}
             </Text>
@@ -338,7 +338,7 @@ export function RoomHeaderControls(props: {
             hoverStyle={{ backgroundColor: C.surface }}
             focusStyle={controlFocusStyle()}
           >
-            <Icon name="search" size={13} color={searchOpen() ? C.accent : C.muted} />
+            <Icon name="search" size={13} color={searchOpen() ? C.accentText : C.muted} />
           </Button>
         }
       >
@@ -925,7 +925,7 @@ export function RoomMembersModal(props: {
                 }}
                 hoverStyle={{ backgroundColor: C.surface }}
               >
-                <Icon name="plus" size={13} color={C.accent} />
+                <Icon name="plus" size={13} color={C.accentText} />
                 <Text style={[{ ...bodyTextStyle, color: C.text, flex: 1 }, { numberOfLines: 1 }]}>
                   {session().title}
                 </Text>
@@ -955,11 +955,11 @@ export function RoomMembersModal(props: {
                   borderColor: useWorktree() ? C.accent : C.line,
                 }}
               >
-                <Icon name="gitBranch" size={12} color={useWorktree() ? C.accent : C.muted} />
+                <Icon name="gitBranch" size={12} color={useWorktree() ? C.accentText : C.muted} />
                 <Text
                   style={{
                     ...captionTextStyle,
-                    color: useWorktree() ? C.accent : C.muted,
+                    color: useWorktree() ? C.accentText : C.muted,
                   }}
                 >
                   {tr('Use isolated worktree')}
@@ -984,7 +984,7 @@ export function RoomMembersModal(props: {
                     }}
                     hoverStyle={{ backgroundColor: C.surface }}
                   >
-                    <Icon name="plus" size={12} color={C.accent} />
+                    <Icon name="plus" size={12} color={C.accentText} />
                     <Text style={{ ...captionTextStyle, color: C.text }}>{preset().name}</Text>
                   </Button>
                 )}

@@ -2082,7 +2082,9 @@ impl ListState {
             }
         };
         let natural = self.natural_offset() - self.descendant_anchor(cell);
-        Some(self.inverted || (start < natural && start + size <= natural))
+        // An explicit end pin already follows the resized content. Forwarding a
+        // descendant's reading-anchor delta would move its destination again.
+        Some(self.follows_end() || self.inverted || (start < natural && start + size <= natural))
     }
 
     fn descendant_anchor(&self, cell: u32) -> f32 {

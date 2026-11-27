@@ -30,10 +30,12 @@ import { tr } from '../../locale';
 import { GroupRow, InsetGroup } from '../../ui';
 import {
   connectionBasis,
+  type ConnectionCatalog,
   deleteCredential,
   readConnection,
   readCredential,
   saveCredential,
+  suggestConnection,
 } from '../../state/settings/models';
 import { credentialBasis, settingsRpc, settingsWork } from '../../state/settings/rpc';
 import { type } from '../../theme/tokens';
@@ -47,7 +49,7 @@ import {
 
 export type ConnectionTarget =
   | { connectionId: string }
-  | { provider: Identity; catalogRevision: number };
+  | { provider: Identity; catalog: ConnectionCatalog };
 
 export function ConnectionFormScreen(
   props: SettingsPageProps & {
@@ -99,6 +101,7 @@ export function ConnectionFormScreen(
       ? JSON.stringify(detail()!.editing.requestBodyOverlay, null, 2)
       : '';
   const load = async () => {
+    if (!connectionId && provider()) return;
     const facts = connectionId ? await readConnection(rpc, connectionId) : null;
     const identity = facts?.target.provider ?? ('provider' in target ? target.provider : undefined);
     if (!identity) throw new Error(tr('Connection is unavailable'));
@@ -112,8 +115,14 @@ export function ConnectionFormScreen(
     detail.set(facts);
     credential.set(stored);
     usage.set(storedUsage);
-    name.set(facts?.name ?? descriptor.descriptor.label);
-    slug.set(facts?.target.slug ?? identity.name);
+    const initial = facts
+      ? { name: facts.name, slug: facts.target.slug }
+      : suggestConnection(
+          descriptor,
+          (target as Extract<ConnectionTarget, { provider: Identity }>).catalog,
+        );
+    name.set(initial.name);
+    slug.set(initial.slug);
     baseUrl.set(String(configuration().baseUrl ?? ''));
     enabled.set(facts?.enabled ?? true);
     compaction.set(configuration().serverSideCompaction === true);
@@ -153,7 +162,7 @@ export function ConnectionFormScreen(
           })
         : await rpc.mutate('settings', 'create', {
             expectedCatalogRevision: (target as Extract<ConnectionTarget, { provider: Identity }>)
-              .catalogRevision,
+              .catalog.revision,
             connection: {
               slug: slug().trim(),
               name: name().trim(),

@@ -79,17 +79,6 @@ export function createSettingsOperations(host: Host) {
   const notice = createTransientText();
   const pending = signal<ClientOperation[]>([]);
   const pendingKnown = signal(false);
-  const inlineErrorClaims = signal(0);
-  const claimInlineError = () => {
-    inlineErrorClaims.set(inlineErrorClaims() + 1);
-    let released = false;
-    return () => {
-      if (released) return;
-      released = true;
-      inlineErrorClaims.set(Math.max(0, inlineErrorClaims() - 1));
-    };
-  };
-  const hasInlineError = () => inlineErrorClaims() > 0;
   let alive = true;
   cleanup(() => {
     alive = false;
@@ -253,8 +242,6 @@ export function createSettingsOperations(host: Host) {
     notice,
     pending,
     pendingKnown,
-    claimInlineError,
-    hasInlineError,
     report,
     mutate,
     run,

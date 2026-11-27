@@ -359,7 +359,7 @@ export function PullRequestTab(props: {
   };
 
   const statusBadge = (d: GitHubPullDetail) => {
-    if (d.merged) return { label: tr('Merged'), color: C.accent };
+    if (d.merged) return { label: tr('Merged'), color: C.accentText };
     if (d.state === 'closed') return { label: tr('Closed'), color: C.danger };
     if (d.draft) return { label: tr('Draft'), color: C.muted };
     return { label: tr('Open'), color: C.success };
@@ -498,7 +498,7 @@ export function PullRequestTab(props: {
                   <Text
                     style={{
                       ...captionTextStyle,
-                      color: pendingDrafts().length > 0 ? C.chrome : C.text,
+                      color: pendingDrafts().length > 0 ? C.onAccent : C.text,
                       fontWeight: '500',
                     }}
                   >
@@ -509,7 +509,7 @@ export function PullRequestTab(props: {
                   <Icon
                     name="down"
                     size={12}
-                    color={pendingDrafts().length > 0 ? C.chrome : C.muted}
+                    color={pendingDrafts().length > 0 ? C.onAccent : C.muted}
                   />
                 </Button>
               }
@@ -560,7 +560,7 @@ export function PullRequestTab(props: {
                         <Icon
                           name={reviewEvent() === ev().id ? 'statusRecorded' : 'statusPending'}
                           size={14}
-                          color={reviewEvent() === ev().id ? C.accent : C.muted}
+                          color={reviewEvent() === ev().id ? C.accentText : C.muted}
                         />
                         <Text style={{ ...captionTextStyle, color: C.text, flex: 1 }}>
                           {ev().label}
@@ -594,7 +594,7 @@ export function PullRequestTab(props: {
                   focusStyle={quietFocusStyle()}
                   disabledStyle={controlDisabledStyle}
                 >
-                  <Text style={{ ...captionTextStyle, color: C.chrome, fontWeight: '500' }}>
+                  <Text style={{ ...captionTextStyle, color: C.onAccent, fontWeight: '500' }}>
                     {reviewSubmitting() ? tr('Submitting…') : tr('Submit review')}
                   </Text>
                 </Button>
@@ -704,7 +704,7 @@ export function PullRequestTab(props: {
                     focusStyle={quietFocusStyle()}
                     disabledStyle={controlDisabledStyle}
                   >
-                    <Text style={{ ...captionTextStyle, color: C.chrome, fontWeight: '500' }}>
+                    <Text style={{ ...captionTextStyle, color: C.onAccent, fontWeight: '500' }}>
                       {tr('Save token')}
                     </Text>
                   </Button>
@@ -976,7 +976,7 @@ export function PullRequestTab(props: {
                             focusStyle={quietFocusStyle()}
                           >
                             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                              <Icon name="conversation" size={13} color={C.accent} />
+                              <Icon name="conversation" size={13} color={C.accentText} />
                               <Text
                                 style={{
                                   fontSize: 12,
@@ -1063,7 +1063,9 @@ export function PullRequestTab(props: {
                           focusStyle={quietFocusStyle()}
                           disabledStyle={controlDisabledStyle}
                         >
-                          <Text style={{ ...captionTextStyle, color: C.chrome, fontWeight: '500' }}>
+                          <Text
+                            style={{ ...captionTextStyle, color: C.onAccent, fontWeight: '500' }}
+                          >
                             {commentSubmitting() ? tr('Submitting…') : tr('Comment')}
                           </Text>
                         </Button>

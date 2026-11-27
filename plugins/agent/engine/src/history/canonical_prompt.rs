@@ -32,6 +32,8 @@ mod project;
 pub(super) use project::IdentifierBuilder;
 use project::*;
 
+const MESSAGE_FLAGS: usize = 10;
+const PINNED_MEMORY: u64 = 1 << 2;
 const WORDS: usize = 20;
 const RECORD_BYTES: usize = WORDS * 8;
 type Record = [u64; WORDS];
@@ -224,7 +226,7 @@ impl Builder {
     pub fn resident_bytes() -> usize {
         std::mem::size_of::<Self>() + std::mem::size_of::<Directory>() + 4096
     }
-    pub async fn append(&mut self, message: Message) -> io::Result<()> {
+    pub async fn append(&mut self, message: Message, is_pinned_memory: bool) -> io::Result<()> {
         self.check()?;
         let budget = self.acquire_budget().await?;
         let buffer = budget.allocate(4096).await?;
@@ -244,7 +246,7 @@ impl Builder {
             })
             .await?;
         drop(budget);
-        self.capture(range, None).await
+        self.capture(range, None, is_pinned_memory).await
     }
     pub async fn append_recipe(&mut self, message: &MessageRecipe) -> io::Result<()> {
         self.check()?;
@@ -266,7 +268,8 @@ impl Builder {
         let end = emit.position();
         emit.finish().await?;
         drop(budget);
-        self.capture(start..end, Some(message)).await
+        self.capture(start..end, Some(message), message.is_pinned_memory())
+            .await
     }
     async fn acquire_budget(&self) -> io::Result<Arc<dyn SourceBudget>> {
         tokio::select! {
@@ -286,6 +289,7 @@ impl Builder {
         &mut self,
         range: Range<u64>,
         original: Option<&MessageRecipe>,
+        is_pinned_memory: bool,
     ) -> io::Result<()> {
         let budget = self.acquire_budget().await?;
         let store = self.store.clone();
@@ -329,7 +333,8 @@ impl Builder {
                         && (description.last_is_tool_result || description.is_native_checkpoint)),
             );
         }
-        record[10] = u64::from(description.last_is_tool_result)
+        record[MESSAGE_FLAGS] = (u64::from(is_pinned_memory) * PINNED_MEMORY)
+            | u64::from(description.last_is_tool_result)
             | (u64::from(description.is_native_checkpoint) << 1);
         put_digest(&mut record[11..15], description.commitment);
         self.prefix.update(description.commitment);
@@ -502,10 +507,11 @@ impl RecipeCursor<MessageMetadata> for MetadataCursor {
             };
             let result = MessageMetadata {
                 message_index: self.index,
+                is_pinned_memory: record[MESSAGE_FLAGS] & PINNED_MEMORY != 0,
                 logical_identity: hex::encode(digest(&record[11..15])).into(),
                 role: role(record[2])?,
-                last_is_tool_result: (record[10] & 1) != 0,
-                is_native_checkpoint: (record[10] & 2) != 0,
+                last_is_tool_result: (record[MESSAGE_FLAGS] & 1) != 0,
+                is_native_checkpoint: (record[MESSAGE_FLAGS] & 2) != 0,
                 local_tool_names: self.store.list(List {
                     offset: record[6],
                     len: record[7] as usize,
