@@ -1718,7 +1718,7 @@ async fn desktop_quotes_a_message_into_the_current_session() {
     )
     .await;
     desktop.new_draft().await;
-    desktop.type_text("USER_PROMPT_TO_QUOTE").await;
+    desktop.type_text("PREFIX_WORD SELECTED_SPAN").await;
     desktop.submit().await;
     let indented_reply = "    indented_first_line();\nCACHE_INVALIDATION_RULE";
     let mut reply = desktop.request(&mut fixture).await;
@@ -1728,26 +1728,27 @@ async fn desktop_quotes_a_message_into_the_current_session() {
         .await;
     let listed = desktop.sessions().await.len();
 
-    // Select the user message text and right-click on the selection itself to verify the
-    // app context menu (not the OS fallback text menu) offers Quote selection.
+    // Select only the second word of a multi-word user message and right-click on the
+    // selection itself: the app context menu must open with Quote selection and quote only
+    // that selected word (not fall back to the full message on menu-item mouse-down).
     let copy_user = desktop.control("Copy user message").await;
-    let user_body = point(copy_user.center().x - px(16.), copy_user.top() - px(24.));
+    let selected_word = point(copy_user.right() + px(24.), copy_user.top() - px(32.));
     for click_count in [1, 2] {
         for input in [
             PlatformInput::MouseMove(native!(MouseMoveEvent {
-                position: user_body,
+                position: selected_word,
                 pressed_button: None,
                 modifiers: Modifiers::default(),
             })),
             PlatformInput::MouseDown(native!(MouseDownEvent {
                 button: MouseButton::Left,
-                position: user_body,
+                position: selected_word,
                 modifiers: Modifiers::default(),
                 click_count: click_count,
             })),
             PlatformInput::MouseUp(native!(MouseUpEvent {
                 button: MouseButton::Left,
-                position: user_body,
+                position: selected_word,
                 modifiers: Modifiers::default(),
                 click_count: click_count,
             })),
@@ -1757,7 +1758,7 @@ async fn desktop_quotes_a_message_into_the_current_session() {
         }
     }
     desktop.control("Quote selection").await;
-    desktop.click_at(user_body, MouseButton::Right);
+    desktop.click_at(selected_word, MouseButton::Right);
     let menu_quote = desktop
         .until(
             "right-clicking selected user text did not open Quote selection in the menu",
@@ -1771,28 +1772,35 @@ async fn desktop_quotes_a_message_into_the_current_session() {
     desktop.press_at(menu_quote.center());
     desktop.control("Remove quote").await;
 
-    // Quote the full assistant reply (which has leading indentation) into the same draft.
+    // Quote the full assistant reply (which has leading indentation) into the same draft,
+    // then also quote the full user message and remove that third quote to verify removal.
     desktop.press("Quote message").await;
     desktop
         .until("the second quote did not appear in the draft", || {
             (desktop.controls("Remove quote").len() == 2).then_some(())
         })
         .await;
+    desktop.press("Quote user message").await;
+    desktop
+        .until("the third quote did not appear in the draft", || {
+            (desktop.controls("Remove quote").len() == 3).then_some(())
+        })
+        .await;
     // Quoting into the current session stays here without creating a side question.
     assert_eq!(desktop.sessions().await.len(), listed);
 
-    // Removing the first quote leaves only the indented reply quote in the draft.
-    let first_remove = desktop.controls("Remove quote")[0];
-    desktop.press_at(first_remove.center());
+    // Removing the third quote leaves the right-clicked user selection and indented reply.
+    let third_remove = desktop.controls("Remove quote")[2];
+    desktop.press_at(third_remove.center());
     desktop
-        .until("removing the first quote did not leave one quote", || {
-            (desktop.controls("Remove quote").len() == 1).then_some(())
+        .until("removing the third quote did not leave two quotes", || {
+            (desktop.controls("Remove quote").len() == 2).then_some(())
         })
         .await;
     desktop.artifact("quote-current-session-draft");
 
-    // The composer is focused and sends only the remaining quoted excerpt in the same session,
-    // preserving the reply's leading indentation verbatim.
+    // Send and verify decoded message content holds ONLY the right-clicked word and the
+    // indented reply verbatim, without the unselected prefix or the removed full quote.
     desktop.type_text("Can you give a concrete example?").await;
     desktop.submit().await;
     let mut follow_up = desktop.request(&mut fixture).await;
@@ -1805,14 +1813,19 @@ async fn desktop_quotes_a_message_into_the_current_session() {
     let content = last_user["content"]
         .as_str()
         .expect("last user message content should be a decoded string");
-    let expected_excerpt = format!("<quoted_excerpt>\n{indented_reply}\n</quoted_excerpt>");
+    let expected_reply_excerpt = format!("<quoted_excerpt>\n{indented_reply}\n</quoted_excerpt>");
     assert!(
-        content.contains(&expected_excerpt) && content.contains("Can you give a concrete example?"),
+        content.contains("<quoted_excerpt>\nSELECTED_SPAN\n</quoted_excerpt>"),
+        "right-clicking Quote selection must quote only the selected word: {content:?}"
+    );
+    assert!(
+        content.contains(&expected_reply_excerpt)
+            && content.contains("Can you give a concrete example?"),
         "expected exact indented quoted excerpt and follow-up in last user message: {content:?}"
     );
     assert!(
-        !content.contains("USER_PROMPT_TO_QUOTE"),
-        "the removed user selection quote should not appear in last user message: {content:?}"
+        !content.contains("PREFIX_WORD"),
+        "unselected prefix and removed full-message quote must not appear: {content:?}"
     );
     desktop
         .until("quotes did not clear after sending", || {
@@ -1851,38 +1864,63 @@ async fn desktop_quotes_a_message_into_the_current_session() {
             (controls.len() >= 3).then(|| *controls.last().unwrap())
         })
         .await;
+    let _ = copy_token_user;
     // Double-click TARGET_TOKEN_WORD on the right half of the token bubble (vertical center
     // of the text line is 4pt gap + 16pt bubble padding + 12pt half line = 32pt above actions).
-    let token_word = point(
-        copy_token_user.right() + px(24.),
-        copy_token_user.top() - px(32.),
-    );
-    for click_count in [1, 2] {
-        for input in [
-            PlatformInput::MouseMove(native!(MouseMoveEvent {
-                position: token_word,
-                pressed_button: None,
-                modifiers: Modifiers::default(),
-            })),
-            PlatformInput::MouseDown(native!(MouseDownEvent {
-                button: MouseButton::Left,
-                position: token_word,
-                modifiers: Modifiers::default(),
-                click_count: click_count,
-            })),
-            PlatformInput::MouseUp(native!(MouseUpEvent {
-                button: MouseButton::Left,
-                position: token_word,
-                modifiers: Modifiers::default(),
-                click_count: click_count,
-            })),
-        ] {
-            desktop.platform.dispatch_input(input).unwrap();
-            desktop.pump();
+    // Re-sample the action row each time because adding a draft quote shifts the transcript.
+    let select_token_word = || {
+        let copy = *desktop.controls("Copy user message").last().unwrap();
+        let token_word = point(copy.right() + px(24.), copy.top() - px(32.));
+        for click_count in [1, 2] {
+            for input in [
+                PlatformInput::MouseMove(native!(MouseMoveEvent {
+                    position: token_word,
+                    pressed_button: None,
+                    modifiers: Modifiers::default(),
+                })),
+                PlatformInput::MouseDown(native!(MouseDownEvent {
+                    button: MouseButton::Left,
+                    position: token_word,
+                    modifiers: Modifiers::default(),
+                    click_count: click_count,
+                })),
+                PlatformInput::MouseUp(native!(MouseUpEvent {
+                    button: MouseButton::Left,
+                    position: token_word,
+                    modifiers: Modifiers::default(),
+                    click_count: click_count,
+                })),
+            ] {
+                desktop.platform.dispatch_input(input).unwrap();
+                desktop.pump();
+            }
         }
-    }
-    desktop.press("Quote selection").await;
+    };
+    // First select TARGET_TOKEN_WORD and then blur the read-only SkillInput by focusing
+    // the composer: the stale selection must clear so quoting captures the full token line.
+    select_token_word();
+    desktop.control("Quote selection").await;
+    desktop.press("Focus message composer").await;
+    desktop
+        .until(
+            "blurring the token message did not clear Quote selection",
+            || desktop.controls("Quote selection").is_empty().then_some(()),
+        )
+        .await;
+    let quote_token_full = *desktop.controls("Quote user message").last().unwrap();
+    desktop.press_at(quote_token_full.center());
     desktop.control("Remove quote").await;
+
+    // Now select TARGET_TOKEN_WORD again and immediately click Quote selection: this second
+    // quote must contain only the selected word rather than falling back to the full line.
+    select_token_word();
+    desktop.press("Quote selection").await;
+    desktop
+        .until(
+            "the token selection quote did not appear in the draft",
+            || (desktop.controls("Remove quote").len() == 2).then_some(()),
+        )
+        .await;
     desktop.type_text("Focus on this word.").await;
     desktop.submit().await;
     let mut token_quote_req = desktop.request(&mut fixture).await;
@@ -1895,13 +1933,14 @@ async fn desktop_quotes_a_message_into_the_current_session() {
     let token_content = last_token_user["content"]
         .as_str()
         .expect("token follow-up content should be a decoded string");
+    let expected_full_token = format!("<quoted_excerpt>\n{token_msg}\n</quoted_excerpt>");
+    assert!(
+        token_content.contains(&expected_full_token),
+        "after blurring the token message, quoting must capture the full line: {token_content:?}"
+    );
     assert!(
         token_content.contains("<quoted_excerpt>\nTARGET_TOKEN_WORD\n</quoted_excerpt>"),
         "expected only the selected word from the token message in quoted_excerpt: {token_content:?}"
-    );
-    assert!(
-        !token_content.contains("[@Ref](maka://session/s_ref_1)"),
-        "quoting a selection from a token message must not fall back to the full line: {token_content:?}"
     );
     token_quote_req.delta("Focused.").await;
     desktop

@@ -92,6 +92,7 @@ export function SkillMessage(props: {
                       const to = Math.max(start, end);
                       props.selection?.set(group().text.slice(from, to), `token:${group().offset}`);
                     }}
+                    onBlur={() => props.selection?.set('', `token:${group().offset}`)}
                     onOpenSessionReference={
                       props.openSession
                         ? ({ sessionId }) => props.openSession?.(sessionId)

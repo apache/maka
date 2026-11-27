@@ -571,7 +571,13 @@ export function MessageRow({
         // The side questions whose passage TextView underlined in the reply.
         const marked = signal<ReadonlySet<string>>(new Set());
         const withMenu = (trigger: JSX.Element) => (
-          <ContextMenu offset={4} margin={8} popupStyle={floatingStyle()} trigger={trigger}>
+          <ContextMenu
+            offset={4}
+            margin={8}
+            popupStyle={floatingStyle()}
+            onOpenChange={({ open }) => selection.holdForMenu(open)}
+            trigger={trigger}
+          >
             <If when={copySelection() !== null}>
               <Item label={tr('Copy selection')} select={() => copySelection()?.()} />
             </If>

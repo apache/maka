@@ -33,6 +33,8 @@ export type MessageSelection = {
   set(text: string, source: string): void;
   /** Capture the live passage, or one cleared by the same mouse-down turn. */
   captureForPress(): string | null;
+  /** Keep the open-time selection steady while a context menu is open. */
+  holdForMenu(open: boolean): void;
   /** Discard any active or pending selection once a command consumes it. */
   clear(): void;
   /** Bind a button so mouse-down captures the passage before mouse-up fires `onPress`. */
@@ -43,6 +45,8 @@ export function createMessageSelection(
   registerCleanup: (fn: () => void) => void = cleanup,
 ): MessageSelection {
   const live = signal<{ source: string; text: string } | null>(null);
+  const menuPassage = signal<string | null>(null);
+  let menuOpenCount = 0;
   // A button mouse-down clears text selection immediately before firing
   // `onPressDown` in the same event turn. Hold that just-cleared text only
   // until the end of the turn so a real click-away clears immediately.
@@ -55,16 +59,19 @@ export function createMessageSelection(
       clearTimer = null;
     }
   };
-  registerCleanup(dropJustCleared);
+  registerCleanup(() => {
+    dropJustCleared();
+    menuOpenCount = 0;
+  });
 
   const captureForPress = () => {
-    const value = live()?.text ?? justCleared;
+    const value = menuPassage() ?? live()?.text ?? justCleared;
     dropJustCleared();
     return value;
   };
 
   return {
-    current: () => live()?.text ?? null,
+    current: () => menuPassage() ?? live()?.text ?? null,
     set(text: string, source: string) {
       if (text.trim()) {
         dropJustCleared();
@@ -83,8 +90,19 @@ export function createMessageSelection(
       }
     },
     captureForPress,
+    holdForMenu(open: boolean) {
+      if (open) {
+        menuOpenCount += 1;
+        menuPassage.set(live()?.text ?? justCleared);
+        dropJustCleared();
+        return;
+      }
+      menuOpenCount = Math.max(0, menuOpenCount - 1);
+      if (menuOpenCount === 0) menuPassage.set(null);
+    },
     clear() {
       dropJustCleared();
+      menuPassage.set(null);
       live.set(null);
     },
     bindPress(run) {
