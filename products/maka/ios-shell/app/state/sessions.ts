@@ -60,11 +60,20 @@ interface SessionSnapshot {
   items: ScopedSession[];
 }
 
+type SessionRetry =
+  | { kind: 'failed'; limit: number; error: string }
+  | { kind: 'interrupted'; limit: number };
+
+interface SessionReadPlan {
+  limit: number;
+  retry?: SessionRetry;
+}
+
 type SessionWindow =
   | { kind: 'ready'; snapshot: SessionSnapshot }
-  | { kind: 'reading'; snapshot?: SessionSnapshot; revision: string; limit: number }
-  | { kind: 'loadingHead' | 'interrupted'; snapshot?: SessionSnapshot; limit: number }
-  | { kind: 'failed'; snapshot?: SessionSnapshot; limit: number; error: string };
+  | ({ kind: 'reading'; snapshot?: SessionSnapshot; revision?: string } & SessionReadPlan)
+  | ({ kind: 'loadingHead'; snapshot?: SessionSnapshot } & SessionReadPlan)
+  | (SessionRetry & { snapshot?: SessionSnapshot });
 
 const sessionsByHost = signal<Record<string, SessionWindow>>({});
 type BotOutbox = ServiceMethods['agent']['botOutbox']['output'];
@@ -202,11 +211,32 @@ function setWindow(rootId: string, window: SessionWindow) {
   sessionsByHost.update((prev) => ({ ...prev, [rootId]: window }));
 }
 
+function refreshPlan(previous?: SessionWindow): SessionReadPlan {
+  if (previous?.kind === 'reading' || previous?.kind === 'loadingHead') {
+    return { limit: previous.limit, retry: previous.retry };
+  }
+  if (!previous) return { limit: 1 };
+  const { snapshot, ...state } = previous;
+  return {
+    limit: snapshot?.catalog.pages ?? 1,
+    retry: state.kind === 'ready' ? undefined : state,
+  };
+}
+
+function publishCatalog(rootId: string, snapshot: SessionSnapshot, retry?: SessionRetry) {
+  setWindow(
+    rootId,
+    retry && retry.limit > snapshot.catalog.pages && snapshot.catalog.after !== null
+      ? { ...retry, snapshot }
+      : { kind: 'ready', snapshot },
+  );
+}
+
 async function readSessionWindow(
   rootId: string,
   hostName: string,
-  limit: number,
-  start: { kind: 'head'; page: AgentSessionPage } | Extract<CatalogStart, { kind: 'extend' }>,
+  start: CatalogStart,
+  plan: SessionReadPlan,
 ) {
   const sub = activeSubscriptions.get(rootId);
   if (!sub || activeHostInfo(rootId)?.generation !== sub.connectionGeneration) return;
@@ -214,15 +244,15 @@ async function readSessionWindow(
   const window: SessionWindow = {
     kind: 'reading',
     snapshot,
-    revision: start.kind === 'head' ? start.page.revision : start.window.revision,
-    limit,
+    revision: start.kind === 'head' ? start.page?.revision : start.window.revision,
+    ...plan,
   };
   setWindow(rootId, window);
   const current = () =>
     sessionsByHost()[rootId] === window &&
     activeHostInfo(rootId)?.generation === sub.connectionGeneration;
   try {
-    const catalog = await readCatalog(rootId, sessionFilter(), current, limit, start);
+    const catalog = await readCatalog(rootId, sessionFilter(), current, plan.limit, start);
     if (!catalog || !current()) return;
     if (catalog.revision !== window.revision) sub.headRequest = undefined;
     const items = catalog.sessions.map((session) => ({
@@ -231,10 +261,15 @@ async function readSessionWindow(
       hostName,
       session,
     }));
-    setWindow(rootId, { kind: 'ready', snapshot: { catalog, items } });
+    publishCatalog(rootId, { catalog, items }, plan.retry);
   } catch (cause) {
     if (!current()) return;
-    setWindow(rootId, { kind: 'failed', snapshot, limit, error: errorMessage(cause) });
+    setWindow(rootId, {
+      kind: 'failed',
+      snapshot,
+      limit: plan.retry?.limit ?? plan.limit,
+      error: errorMessage(cause),
+    });
   }
 }
 
@@ -308,14 +343,18 @@ function applySessionPage(rootId: string, hostName: string, page: AgentSessionPa
   const previous = sessionsByHost()[rootId];
   if (previous?.kind === 'reading' && previous.revision === page.revision) return;
   const snapshot = previous?.snapshot;
-  // Rebuild only the range already requested, and swap it in as one revision.
-  const limit =
-    previous && previous.kind !== 'ready' ? previous.limit : (snapshot?.catalog.pages ?? 1);
-  if (snapshot && snapshot.catalog.revision === page.revision && snapshot.catalog.pages >= limit) {
-    if (previous?.kind !== 'ready') setWindow(rootId, { kind: 'ready', snapshot });
+  // A background head refresh may update the committed range, but cannot
+  // authorize the extra page of a failed or interrupted extension.
+  const plan = refreshPlan(previous);
+  if (
+    snapshot &&
+    snapshot.catalog.revision === page.revision &&
+    snapshot.catalog.pages >= plan.limit
+  ) {
+    if (previous?.kind !== 'ready') publishCatalog(rootId, snapshot, plan.retry);
     return;
   }
-  return readSessionWindow(rootId, hostName, limit, { kind: 'head', page });
+  return readSessionWindow(rootId, hostName, { kind: 'head', page }, plan);
 }
 
 export const scopedSessionLoad = computed(() => {
@@ -352,24 +391,29 @@ function scopedWindows() {
 }
 
 export const hasMoreSessions = () =>
-  scopedWindows().some(
-    ({ window }) =>
-      window.kind === 'interrupted' ||
-      (window.kind === 'ready' && window.snapshot.catalog.after != null),
-  );
+  scopedWindows().some(({ window }) => window.snapshot?.catalog.after != null);
+const extendableCatalog = (window: SessionWindow) =>
+  window.kind === 'ready' && window.snapshot.catalog.after !== null
+    ? window.snapshot.catalog
+    : undefined;
+export const canLoadMoreSessions = () =>
+  scopedWindows().some(({ window }) => extendableCatalog(window) !== undefined);
 export const loadingMoreSessions = () =>
-  scopedWindows().some(({ window }) => window.kind === 'reading');
+  scopedWindows().some(({ window }) => window.kind === 'reading' || window.kind === 'loadingHead');
+export const sessionPaginationFailed = () =>
+  scopedWindows().some(({ window }) => window.kind === 'failed' || window.kind === 'interrupted');
 
 export async function loadMoreSessions() {
-  if (loadingMoreSessions()) return;
   await Promise.all(
     scopedWindows().map(({ host: { rootId, hostName }, window }) => {
-      if (window.kind === 'interrupted') return refreshHostSessions(rootId, hostName);
-      if (window.kind === 'ready' && window.snapshot.catalog.after)
-        return readSessionWindow(rootId, hostName, window.snapshot.catalog.pages + 1, {
-          kind: 'extend',
-          window: window.snapshot.catalog,
-        });
+      const catalog = extendableCatalog(window);
+      if (catalog)
+        return readSessionWindow(
+          rootId,
+          hostName,
+          { kind: 'extend', window: catalog },
+          { limit: catalog.pages + 1 },
+        );
     }),
   );
 }
@@ -380,7 +424,8 @@ export function retryFailedSessions() {
     window,
   } of scopedWindows()) {
     const sub = activeSubscriptions.get(rootId);
-    if (window.kind === 'failed') void refreshHostSessions(rootId, hostName);
+    if (window.kind === 'failed' || window.kind === 'interrupted')
+      void refreshHostSessions(rootId, hostName, true);
     else if (sub && sub.catalogWatchError() !== null) watchSessionCatalog(rootId, hostName, sub);
   }
 }
@@ -406,7 +451,7 @@ function watchSessionCatalog(rootId: string, hostName: string, sub: SessionSubsc
   );
 }
 
-export async function refreshHostSessions(rootId: string, hostName: string) {
+export async function refreshHostSessions(rootId: string, hostName: string, retry = false) {
   const sub = activeSubscriptions.get(rootId);
   if (!sub) return;
   watchSessionCatalog(rootId, hostName, sub);
@@ -418,10 +463,12 @@ export async function refreshHostSessions(rootId: string, hostName: string) {
     activeHostInfo(rootId)?.generation === sub.connectionGeneration;
   const previous = sessionsByHost()[rootId];
   if (previous?.kind !== 'reading') {
-    const snapshot = previous?.snapshot;
-    const limit =
-      previous && previous.kind !== 'ready' ? previous.limit : (snapshot?.catalog.pages ?? 1);
-    setWindow(rootId, { kind: 'loadingHead', snapshot, limit });
+    const plan = refreshPlan(previous);
+    setWindow(rootId, {
+      kind: 'loadingHead',
+      snapshot: previous?.snapshot,
+      ...(retry && plan.retry ? { limit: plan.retry.limit } : plan),
+    });
   }
   const filter = sessionFilter();
   await Promise.all([
@@ -437,7 +484,7 @@ export async function refreshHostSessions(rootId: string, hostName: string) {
           setWindow(rootId, {
             kind: 'failed',
             snapshot: window.snapshot,
-            limit: window.limit,
+            limit: window.retry?.limit ?? window.limit,
             error: errorMessage(cause),
           });
         } else {
@@ -707,9 +754,8 @@ export function startSessionsStore() {
       const window = untracked(() => sessionsByHost()[rootId]);
       if (window?.kind === 'reading' || window?.kind === 'loadingHead') {
         setWindow(rootId, {
-          kind: 'interrupted',
+          ...(window.retry ?? { kind: 'interrupted', limit: window.limit }),
           snapshot: window.snapshot,
-          limit: window.limit,
         });
       }
     }

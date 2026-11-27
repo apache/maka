@@ -49,9 +49,11 @@ import {
   retryFailedSessions,
   renameSession,
   sessionSearchQuery,
+  canLoadMoreSessions,
   hasMoreSessions,
   loadingMoreSessions,
   loadMoreSessions,
+  sessionPaginationFailed,
   setSessionSearchQuery,
   setShowingArchivedSessions,
   showingArchivedSessions,
@@ -82,6 +84,8 @@ import {
 import { ConnectionProgress } from '../../ui/ConnectionProgress';
 import { ListSkeleton } from '../../ui/Skeleton';
 import { NewChatSheet } from './NewChatSheet';
+
+const catalogEdge = 160;
 
 function formatRelativeTime(timestampMs: number): string {
   if (!timestampMs) return '';
@@ -308,6 +312,20 @@ export function ChatListScreen(props: { onOpenSession: (item: ScopedSession) => 
   const renamingBusy = signal(false);
 
   const category = signal(0);
+  const pagingScope = computed(() =>
+    JSON.stringify([
+      selectedScopeRootId(),
+      showingArchivedSessions(),
+      sessionSearchQuery(),
+      category(),
+      connectedHosts().map(({ host, connection }) => [host.rootId, connection.generation]),
+    ]),
+  );
+  let pagingDrag: string | undefined;
+  let lastCatalogScroll: { scope: string; height: number; viewport: number; y: number } | undefined;
+  const viewportHeight = signal(0);
+  const catalogEnd = signal(0);
+  const bottomPadding = () => insets().bottom + spacing.tabBarClearance;
   const hasRooms = () => filteredSessions().some((item) => item.session.kind === 'room');
   const inCategory = (items: ScopedSession[]) =>
     !hasRooms() || category() === 0
@@ -352,9 +370,10 @@ export function ChatListScreen(props: { onOpenSession: (item: ScopedSession) => 
     const state = connection();
     return state.kind === 'offline' ? state.host : null;
   };
+  const syncFailed = () => scopedSessionLoad().error !== null || sessionPaginationFailed();
   const initialLoading = () => {
     const load = scopedSessionLoad();
-    return load.error === null && !load.hasItems && (load.loading || connectionProgress());
+    return !syncFailed() && !load.hasItems && (load.loading || connectionProgress());
   };
   const refreshingEmptyList = () =>
     !scopedSessionLoad().hasItems && scopedSessionLoad().refreshing && !initialLoading();
@@ -471,11 +490,45 @@ export function ChatListScreen(props: { onOpenSession: (item: ScopedSession) => 
     >
       <View style={{ flex: 1, backgroundColor: token('grouped-bg') }}>
         <Scroll
+          testID="chat-catalog"
           style={{ flex: 1 }}
+          onLayout={({ bounds }) => viewportHeight.set(bounds.size.height)}
+          onScrollDragStart={() => {
+            pagingDrag = canLoadMoreSessions() ? pagingScope() : undefined;
+          }}
+          onScroll={({ offset, delta, size, contentSize }) => {
+            const scope = pagingScope();
+            const height = contentSize.height;
+            const distance = height - size.height - offset.y;
+            const previous = lastCatalogScroll;
+            lastCatalogScroll = { scope, height, viewport: size.height, y: offset.y };
+            const sameLayout =
+              previous?.scope === scope &&
+              previous.height === height &&
+              previous.viewport === size.height;
+            const crossedEdge = sameLayout && height - size.height - previous.y > catalogEdge;
+            // A resize invalidates the old distance, not the user's offset movement.
+            const reachedBottom =
+              (!previous || (previous.scope === scope && offset.y > previous.y)) &&
+              height - size.height > 1 &&
+              distance <= 1 &&
+              distance + delta.y > 1;
+            if (
+              delta.y > 0 &&
+              distance <= catalogEdge &&
+              (pagingDrag === scope || (pagingDrag === undefined && (crossedEdge || reachedBottom)))
+            ) {
+              pagingDrag = undefined;
+              void loadMoreSessions();
+            }
+          }}
+          onScrollEnd={() => {
+            pagingDrag = undefined;
+          }}
           contentStyle={{
             flexGrow: 1,
             paddingTop: 8,
-            paddingBottom: insets().bottom + spacing.tabBarClearance,
+            paddingBottom: bottomPadding(),
           }}
         >
           <SearchField
@@ -657,7 +710,7 @@ export function ChatListScreen(props: { onOpenSession: (item: ScopedSession) => 
             )}
           </If>
 
-          <If when={scopedSessionLoad().error !== null}>
+          <If when={syncFailed()}>
             <BannerNotice
               tone="warning"
               title={tr('Could not sync chats')}
@@ -711,7 +764,7 @@ export function ChatListScreen(props: { onOpenSession: (item: ScopedSession) => 
               !hasAnySessions() &&
               !initialLoading() &&
               !refreshingEmptyList() &&
-              scopedSessionLoad().error === null
+              (!syncFailed() || scopedSessionLoad().hasItems)
             }
           >
             <View style={{ flex: 1, justifyContent: 'center', paddingBottom: 40 }}>
@@ -770,12 +823,25 @@ export function ChatListScreen(props: { onOpenSession: (item: ScopedSession) => 
               </If>
             </View>
           </If>
-          <If when={!initialLoading() && (hasMoreSessions() || loadingMoreSessions())}>
-            <View style={{ paddingHorizontal: spacing.pageX }}>
+          <View onLayout={({ bounds }) => catalogEnd.set(bounds.origin.y)} />
+          <If when={loadingMoreSessions() && !initialLoading() && !refreshingEmptyList()}>
+            <Text
+              style={{ ...type.footnote, color: token('muted-foreground'), textAlign: 'center' }}
+            >
+              {tr('Loading…')}
+            </Text>
+          </If>
+          <If
+            when={
+              canLoadMoreSessions() &&
+              (!hasAnySessions() ||
+                (viewportHeight() > 0 && catalogEnd() + bottomPadding() <= viewportHeight() + 1))
+            }
+          >
+            <View style={{ alignItems: 'center', paddingHorizontal: spacing.pageX }}>
               <ActionButton
                 variant="quiet"
-                title={loadingMoreSessions() ? tr('Loading…') : tr('Load more chats')}
-                disabled={loadingMoreSessions()}
+                title={tr('Load more chats')}
                 onPress={() => void loadMoreSessions()}
               />
             </View>

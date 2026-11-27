@@ -45,6 +45,9 @@ pub struct TextViewProps {
     pub markdown: Prop<Option<SharedString>>,
     /// Stable identity of the original UTF-8 source for reading anchors.
     pub source_id: Prop<Option<SharedString>>,
+    /// UTF-8 byte offset of this Markdown excerpt in that source.
+    #[prop(default)]
+    pub source_offset: Prop<u64>,
     /// Accessible labels and feedback supplied by the app.
     #[prop(default)]
     pub labels: Prop<TextViewLabels>,
@@ -799,13 +802,15 @@ pub fn TextView(props: TextViewProps, cx: Scope<TextViewEvent>) -> impl IntoElem
                 // may claim the current source's complete byte coverage.
                 let source = props.markdown.get()?;
                 let id = props.source_id.get()?;
+                let offset = props.source_offset.get();
                 let indices = visible.get();
                 document.with(|projection| {
                     let mut rows = ListSourceRows::default();
                     rows.id = Arc::from(id.as_str());
-                    rows.source_len = source.len() as u64;
-                    rows.projection_len = projection.raw_len;
-                    rows.provisional = parsed.pending.get() || projection.raw_len < rows.source_len;
+                    rows.source_len = offset.saturating_add(source.len() as u64);
+                    rows.projection_len = offset.saturating_add(projection.raw_len);
+                    rows.provisional =
+                        parsed.pending.get() || rows.projection_len < rows.source_len;
                     if indices.len() == projection.blocks.len() {
                         rows.rows = projection.rows.clone();
                     } else {
@@ -819,6 +824,14 @@ pub fn TextView(props: TextViewProps, cx: Scope<TextViewEvent>) -> impl IntoElem
                             mapped.push(projection.rows.last().cloned().unwrap_or_default());
                         }
                         rows.rows = mapped.into();
+                    }
+                    if offset != 0 {
+                        for ranges in Arc::make_mut(&mut rows.rows) {
+                            for range in ranges {
+                                range.start = range.start.saturating_add(offset);
+                                range.end = range.end.saturating_add(offset);
+                            }
+                        }
                     }
                     Some(Arc::new(rows))
                 })
@@ -1312,11 +1325,18 @@ impl Cx {
 
     fn source(&self, el: Text, segments: Vec<nsh_core::TextSourceSegment>) -> Text {
         let source_id = self.props.source_id;
+        let source_offset = self.props.source_offset;
         el.text_source(move || {
             source_id.get().map(|id| {
+                let offset = source_offset.get();
+                let mut segments = segments.clone();
+                for segment in &mut segments {
+                    segment.source_start = segment.source_start.saturating_add(offset);
+                    segment.source_end = segment.source_end.saturating_add(offset);
+                }
                 std::sync::Arc::new(nsh_core::TextSource::Mapped {
                     id: id.to_string().into(),
-                    segments: segments.clone(),
+                    segments,
                 })
             })
         })
@@ -4103,6 +4123,60 @@ mod tests {
                 .commands()
                 .iter()
                 .any(|(id, command)| *id == node && matches!(command, nsh_core::Command::Focus))
+        );
+    }
+
+    #[component]
+    fn OffsetExcerpt() -> impl IntoElement {
+        let reader = element_ref();
+        let source = signal(SharedString::from(format!(
+            "{}Excerpt tail",
+            "Earlier paragraph\n\n".repeat(24)
+        )));
+        view()
+            .flex_col()
+            .child(
+                view()
+                    .test_id("end")
+                    .h(px(25.0))
+                    .on_press(move || reader.scroll_to_end(false)),
+            )
+            .child(view().test_id("extend").h(px(25.0)).on_press(move || {
+                source.set(format!("{}\n\nNew paragraph", source.get_untracked()).into());
+            }))
+            .child(
+                virtual_list(1, move |_| {
+                    text_view()
+                        .markdown(move || Some(source.get()))
+                        .source_id("excerpt")
+                        .source_offset(4096)
+                })
+                .h(px(180.0))
+                .element_ref(&reader),
+            )
+    }
+
+    #[test]
+    fn nonzero_markdown_source_offset_does_not_keep_a_settled_scroll_pinned() {
+        use nsh_core::{Size, element::Root};
+        use nsh_testing::Headless;
+        let mut app = Headless::start(nsh_engine::EngineConfig {
+            viewport: Size::new(px(400.0), px(400.0)),
+            ..nsh_engine::EngineConfig::new(Root::of::<OffsetExcerpt>())
+        })
+        .unwrap();
+        app.wait_for("text:Earlier paragraph").unwrap();
+        app.press("id:end").unwrap();
+        let tail = "text:Excerpt tail";
+        app.wait_for(tail).unwrap();
+        assert!(app.settle());
+        let before = app.screen().layout(tail).unwrap().unwrap().bounds.origin.y;
+        app.press("id:extend").unwrap();
+        app.wait_for("text:New paragraph").unwrap();
+        assert!(app.settle());
+        assert_eq!(
+            app.screen().layout(tail).unwrap().unwrap().bounds.origin.y,
+            before
         );
     }
 

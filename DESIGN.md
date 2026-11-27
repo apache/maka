@@ -66,6 +66,8 @@ Sidebar navigation keeps core actions (`New conversation`, `Search conversations
 
 ## Conversation stream
 
+- On iOS, approaching a pagination edge shows a quiet loading label in place, with a retry action only on failure. Prepending history keeps the reading position without animation; live updates follow the end only while the reader is there.
+
 - Assistant prose renders directly on the reading column without avatars.
 - Inter-agent messages render inside tool activity rows rather than user speech bubbles, collapsed by default with expandable source links and payloads.
 - Each turn renders a single summary header from start to finish: `Working for 22s` while running, updating in place to `Worked for 37s · 2 thoughts · 3 tools` and auto-collapsing to the final answer on clean completion (unless the user manually toggled it). Turns that fail, stop, or pause for user input lead with their terminal status (`Stopped after 12s`) and stay expanded.

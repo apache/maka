@@ -887,6 +887,8 @@ impl Abbreviations {
 | Prop | Rust | Type | Default | Description |
 |---|---|---|---|---|
 | `markdown` | `.markdown(..)` | `string` | | The document as Markdown. |
+| `sourceId` | `.source_id(..)` | `string` | | Stable identity of the original Markdown for reading anchors. |
+| `sourceOffset` | `.source_offset(..)` | `number` | `0` | With a stable `sourceId`, the UTF-8 start byte of an excerpt in its original Markdown. Keeps a reading anchor on the same text when earlier bytes are prepended. |
 | `html` | `.html(..)` | `string` | | The document as HTML, when `markdown` is not given. |
 | `document` | `.document(..)` | `TextViewDocument` | | The document as blocks, when neither `markdown` nor `html` is given. |
 | `options` | `.options(..)` | `MarkdownOptions` | all defaults | The Markdown syntax read ([Options](#options)). |
