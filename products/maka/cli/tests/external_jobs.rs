@@ -527,12 +527,14 @@ impl Rig {
                     let db = rusqlite::Connection::open_with_flags(
                         path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
                     )?;
+                    maka_event_log::content::register_sql_functions(&db)
+                        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
                     db.query_row(
-                        "SELECT json_extract(CAST(c.payload AS TEXT), '$.payload.privateResource.resourceRef')
+                        "SELECT json_extract(maka_content_text(c.payload, c.encoding), '$.payload.privateResource.resourceRef')
                            FROM agent_runs r JOIN contents c
                              ON c.content_sha256 = json_extract(r.external, '$.binding.digest')
-                          WHERE json_extract(CAST(c.payload AS TEXT), '$.payload.recovery.binding.task.session') = ?1
-                            AND instr(json_extract(CAST(c.payload AS TEXT), '$.payload.request.content.text'), ?2) > 0
+                          WHERE json_extract(maka_content_text(c.payload, c.encoding), '$.payload.recovery.binding.task.session') = ?1
+                            AND instr(json_extract(maka_content_text(c.payload, c.encoding), '$.payload.request.content.text'), ?2) > 0
                           ORDER BY r.rowid DESC LIMIT 1",
                         rusqlite::params![thread, label],
                         |row| row.get::<_, String>(0),

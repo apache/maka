@@ -52,7 +52,7 @@ pub(super) fn authorize(c: &Connection, snapshot: &Snapshot) -> Result<(), Store
         }
     }
     if snapshot.id != snapshot.authority_id {
-        let member:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM agent_history_snapshots s JOIN agent_history_snapshot_pins p ON p.content_id=s.manifest_content_id JOIN contents b ON b.id=p.content_id WHERE s.snapshot=?1 AND p.snapshot=?2 AND b.content_sha256=?3 AND length(b.payload)=?4)",params![snapshot.id.to_string(),snapshot.authority_id.to_string(),snapshot.manifest.digest,bind_u64(snapshot.manifest.bytes)?],|r|r.get(0))?;
+        let member:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM agent_history_snapshots s JOIN agent_history_snapshot_pins p ON p.content_id=s.manifest_content_id JOIN contents b ON b.id=p.content_id WHERE s.snapshot=?1 AND p.snapshot=?2 AND b.content_sha256=?3 AND COALESCE(b.logical_bytes,length(b.payload))=?4)",params![snapshot.id.to_string(),snapshot.authority_id.to_string(),snapshot.manifest.digest,bind_u64(snapshot.manifest.bytes)?],|r|r.get(0))?;
         if !member {
             return Err(invalid(
                 "nested snapshot is outside its actual parent inventory",
@@ -141,7 +141,7 @@ impl Query for Open {
                 ));
             }
         };
-        let raw:String=c.prepare_cached("SELECT a.snapshot FROM agent_history_snapshot_adoptions a JOIN agent_history_snapshots s ON s.snapshot=a.snapshot JOIN contents b ON b.id=s.manifest_content_id JOIN agent_history_snapshot_pins p ON p.snapshot=s.snapshot AND p.content_id=b.id WHERE a.run=? AND b.content_sha256=? AND length(b.payload)=?")?.query_row(params![self.2.to_string(),reference.digest,bind_u64(reference.bytes)?],|r|r.get(0))?;
+        let raw:String=c.prepare_cached("SELECT a.snapshot FROM agent_history_snapshot_adoptions a JOIN agent_history_snapshots s ON s.snapshot=a.snapshot JOIN contents b ON b.id=s.manifest_content_id JOIN agent_history_snapshot_pins p ON p.snapshot=s.snapshot AND p.content_id=b.id WHERE a.run=? AND b.content_sha256=? AND COALESCE(b.logical_bytes,length(b.payload))=?")?.query_row(params![self.2.to_string(),reference.digest,bind_u64(reference.bytes)?],|r|r.get(0))?;
         let id = super::super::sql::identity(raw)?;
         Ok((id, reference))
     }
@@ -827,7 +827,7 @@ pub(super) fn nested_registered(
     };
     let manifest: Manifest = decode_registered(c, snapshot, &reference, Some(wanted))?;
     manifest.validate().map_err(invalid)?;
-    let registered:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM agent_history_snapshots s JOIN contents b ON b.id=s.manifest_content_id WHERE s.snapshot=? AND b.content_sha256=? AND length(b.payload)=?)",params![manifest.id.to_string(),reference.digest,bind_u64(reference.bytes)?],|r|r.get(0))?;
+    let registered:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM agent_history_snapshots s JOIN contents b ON b.id=s.manifest_content_id WHERE s.snapshot=? AND b.content_sha256=? AND COALESCE(b.logical_bytes,length(b.payload))=?)",params![manifest.id.to_string(),reference.digest,bind_u64(reference.bytes)?],|r|r.get(0))?;
     if !registered {
         return Err(invalid(
             "nested snapshot index missing; explicit snapshot rebuild required",

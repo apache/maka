@@ -35,7 +35,7 @@ impl maka_event_log::connection::Query for MissingReturns {
              FROM agent_external_effects e INDEXED BY agent_external_missing_returns
              CROSS JOIN agent_run_specs r ON r.run=e.run JOIN contents s ON s.id=r.spec_content_id
              WHERE e.pending=1 AND json_extract(e.body,'$.missingReturn') IS NOT NULL
-             AND r.owner=? AND r.session=? AND json_extract(s.payload,'$.permissionBasis.binding.id')=?
+             AND r.owner=? AND r.session=? AND json_extract(maka_content_text(s.payload,s.encoding),'$.permissionBasis.binding.id')=?
              ORDER BY e.run,e.operation")?;
         let mut rows = statement.query(params![
             serde_json::to_string(&self.owner)?,
@@ -205,7 +205,7 @@ pub(crate) fn persist(
             for resource in &original.resources {
                 if let ResourceRecovery::Reference { descriptor } = resource {
                     let content: i64 = c.query_row(
-                        "SELECT id FROM contents WHERE content_sha256=? AND length(payload)=?",
+                        "SELECT id FROM contents WHERE content_sha256=? AND COALESCE(logical_bytes,length(payload))=?",
                         params![descriptor.digest, signed(descriptor.bytes)?],
                         |r| r.get(0),
                     )?;
@@ -320,7 +320,7 @@ pub(crate) fn native_source_pending(
     reference: &RecoveryRef,
 ) -> Result<bool, StoreError> {
     let (version,bytes,task,stopped,terminal):(u32,Vec<u8>,Option<String>,bool,Option<String>)=c.query_row(
-        "SELECT s.schema_version,c.payload,r.external,r.stopped,r.terminal FROM agent_run_specs s JOIN contents c ON c.id=s.spec_content_id JOIN agent_runs r ON r.run=s.run WHERE s.run=?",
+        "SELECT s.schema_version,maka_content_bytes(c.payload,c.encoding),r.external,r.stopped,r.terminal FROM agent_run_specs s JOIN contents c ON c.id=s.spec_content_id JOIN agent_runs r ON r.run=s.run WHERE s.run=?",
         [execution.run_id.to_string()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))
     )?;
     let spec: RunSpec = serde_json::from_slice(&bytes)?;
@@ -381,7 +381,7 @@ fn read_task_source(
     key: &ExternalEffectKey,
 ) -> Result<maka_agent_facts::executor::Binding, StoreError> {
     let (task,spec_bytes):(Option<String>,Vec<u8>)=c.query_row(
-        "SELECT r.external,c.payload FROM agent_runs r JOIN agent_run_specs s ON s.run=r.run JOIN contents c ON c.id=s.spec_content_id WHERE r.run=?",
+        "SELECT r.external,maka_content_bytes(c.payload,c.encoding) FROM agent_runs r JOIN agent_run_specs s ON s.run=r.run JOIN contents c ON c.id=s.spec_content_id WHERE r.run=?",
         [run.to_string()],|r|Ok((r.get(0)?,r.get(1)?))
     )?;
     let task: crate::fold::ExternalTask = serde_json::from_str(

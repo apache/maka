@@ -489,12 +489,33 @@ struct Record {
 }
 fn read(connection: &Connection, reference: &RecoveryRef) -> Result<Option<Record>, StoreError> {
     let namespace = serde_json::to_string(&reference.namespace)?;
-    let row = connection.query_row(
+    let sql = if crate::content::has_encoding_column(connection)? {
+        "SELECT source_revision, contract_digest, request_json, outcome_json, cleanup_json,maka_content_bytes(c.payload, c.encoding) AS outcome_value
+        FROM application_operations o LEFT JOIN contents c ON c.id=o.outcome_content_id WHERE deployment=? AND namespace=? AND operation=?"
+    } else {
         "SELECT source_revision, contract_digest, request_json, outcome_json, cleanup_json,c.payload AS outcome_value
-        FROM application_operations o LEFT JOIN contents c ON c.id=o.outcome_content_id WHERE deployment=? AND namespace=? AND operation=?",
-        params![reference.source.deployment.to_string(), namespace, reference.operation.to_string()],
-        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?, row.get::<_, String>(4)?, row.get::<_, Option<Vec<u8>>>(5)?)),
-    ).optional()?;
+        FROM application_operations o LEFT JOIN contents c ON c.id=o.outcome_content_id WHERE deployment=? AND namespace=? AND operation=?"
+    };
+    let row = connection
+        .query_row(
+            sql,
+            params![
+                reference.source.deployment.to_string(),
+                namespace,
+                reference.operation.to_string()
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, Option<Vec<u8>>>(5)?,
+                ))
+            },
+        )
+        .optional()?;
     let Some((
         source_revision,
         contract_digest,

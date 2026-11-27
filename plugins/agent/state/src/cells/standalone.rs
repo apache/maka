@@ -193,7 +193,7 @@ impl Statement for AppendStandalone {
             if !seen.insert(event.id) {
                 return Err(StoreError::EventConflict);
             }
-            let original:Option<(String,Vec<u8>)>=c.query_row("SELECT e.session,c.payload FROM agent_standalone_cell_events e JOIN contents c ON c.id=e.body_content_id WHERE e.id=?",[event.id.to_string()],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
+            let original:Option<(String,Vec<u8>)>=c.query_row("SELECT e.session,maka_content_bytes(c.payload,c.encoding) FROM agent_standalone_cell_events e JOIN contents c ON c.id=e.body_content_id WHERE e.id=?",[event.id.to_string()],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
             if let Some((session, bytes)) = original {
                 if session != self.batch.session
                     || serde_json::from_slice::<StandaloneEvent>(&bytes)? != *event

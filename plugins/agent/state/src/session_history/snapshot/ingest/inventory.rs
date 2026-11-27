@@ -198,7 +198,7 @@ fn inventory_page(
     limit: u32,
 ) -> Result<EntryPage, StoreError> {
     let mut statement = c.prepare_cached(
-        "SELECT p.first_ordinal,b.payload FROM agent_history_snapshot_inventory_pages p
+        "SELECT p.first_ordinal,maka_content_bytes(b.payload,b.encoding) FROM agent_history_snapshot_inventory_pages p
          JOIN contents b ON b.id=p.content_id
          WHERE p.snapshot=?1 AND p.first_ordinal>=coalesce((
              SELECT max(first_ordinal) FROM agent_history_snapshot_inventory_pages WHERE snapshot=?1 AND first_ordinal<=?2

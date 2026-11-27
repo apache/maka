@@ -183,7 +183,7 @@ fn prepared(c: &Connection, scope: &Scope, step: StepId) -> Result<PreparedStep,
             "compaction fallback original Step identity differs",
         ));
     }
-    let registered:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM agent_request_specs r JOIN contents b ON b.id=r.content_id WHERE r.run=? AND r.step=? AND b.content_sha256=? AND length(b.payload)=?)",params![scope.run.to_string(),step.to_string(),reference.digest,i64::try_from(reference.bytes).map_err(|_|invalid("invalid frozen request length"))?],|r|r.get(0))?;
+    let registered:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM agent_request_specs r JOIN contents b ON b.id=r.content_id WHERE r.run=? AND r.step=? AND b.content_sha256=? AND COALESCE(b.logical_bytes,length(b.payload))=?)",params![scope.run.to_string(),step.to_string(),reference.digest,i64::try_from(reference.bytes).map_err(|_|invalid("invalid frozen request length"))?],|r|r.get(0))?;
     if !registered {
         return Err(invalid(
             "compaction fallback immutable request projection differs",
@@ -1077,7 +1077,7 @@ fn message_progress(
     through: i64,
 ) -> Result<Option<FactId>, StoreError> {
     use crate::queue::{DeliveryTarget, Event, QueueEdit};
-    let mut statement=c.prepare_cached("SELECT h.sequence,h.fact_id,h.step,q.revision,b.content_sha256,b.payload FROM agent_session_history h INDEXED BY agent_session_history_kind JOIN agent_queue_events q ON q.session=? AND q.id=h.fact_id JOIN contents b ON b.id=q.body_content_id WHERE h.namespace_id=? AND h.kind='step_prepared' AND h.run=? AND h.sequence>? AND (h.sequence<=? OR h.sequence=?) ORDER BY h.sequence")?;
+    let mut statement=c.prepare_cached("SELECT h.sequence,h.fact_id,h.step,q.revision,b.content_sha256,maka_content_bytes(b.payload,b.encoding) FROM agent_session_history h INDEXED BY agent_session_history_kind JOIN agent_queue_events q ON q.session=? AND q.id=h.fact_id JOIN contents b ON b.id=q.body_content_id WHERE h.namespace_id=? AND h.kind='step_prepared' AND h.run=? AND h.sequence>? AND (h.sequence<=? OR h.sequence=?) ORDER BY h.sequence")?;
     let mut rows = statement.query(params![
         scope.session,
         scope.namespace_id,
@@ -1128,7 +1128,7 @@ fn message_progress(
         }
         let mut semantic = false;
         for (position, id) in cut.requests.iter().enumerate() {
-            let (event_id,actual_id,hash,body):(String,String,String,Vec<u8>)=c.query_row("SELECT i.event_id,e.id,b.content_sha256,b.payload FROM agent_history_queue_requests i JOIN agent_queue_events e ON e.session=i.session AND e.revision=i.revision JOIN contents b ON b.id=e.body_content_id WHERE i.session=? AND i.request=? AND i.revision<? ORDER BY i.revision DESC LIMIT 1",params![scope.session,id.0,revision],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))?;
+            let (event_id,actual_id,hash,body):(String,String,String,Vec<u8>)=c.query_row("SELECT i.event_id,e.id,b.content_sha256,maka_content_bytes(b.payload,b.encoding) FROM agent_history_queue_requests i JOIN agent_queue_events e ON e.session=i.session AND e.revision=i.revision JOIN contents b ON b.id=e.body_content_id WHERE i.session=? AND i.request=? AND i.revision<? ORDER BY i.revision DESC LIMIT 1",params![scope.session,id.0,revision],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))?;
             if event_id != actual_id || content_digest(&body) != hash {
                 return Err(invalid(
                     "compaction message original queue request proof differs",
@@ -1165,7 +1165,7 @@ fn message_progress(
             }
             request.spec.input.validate().map_err(invalid)?;
             let input: Vec<u8> = c.query_row(
-                "SELECT b.payload FROM agent_queue_content_pins p JOIN contents b ON b.id=p.content_id WHERE p.session=? AND p.request=? AND b.content_sha256=? AND length(b.payload)=?",
+                "SELECT maka_content_bytes(b.payload,b.encoding) FROM agent_queue_content_pins p JOIN contents b ON b.id=p.content_id WHERE p.session=? AND p.request=? AND b.content_sha256=? AND COALESCE(b.logical_bytes,length(b.payload))=?",
                 params![scope.session, id.0, request.spec.input.digest, i64::try_from(request.spec.input.bytes).map_err(|_|invalid("compaction message input length exceeds SQLite range"))?],
                 |row| row.get(0),
             ).optional()?.ok_or_else(||invalid("compaction message input is not pinned by its original queue request"))?;

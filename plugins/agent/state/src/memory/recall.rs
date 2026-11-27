@@ -472,13 +472,13 @@ macro_rules! material_origins_sql {
     () => {
         "WITH RECURSIVE origins(session,artifact,needs_registration) AS (
                 SELECT ?2,?3,0 UNION
-                SELECT json_extract(CAST(b.payload AS TEXT),'$.origin.source.scope.session'),
-                       json_extract(CAST(b.payload AS TEXT),'$.origin.source.id'),
-                       json_extract(CAST(b.payload AS TEXT),'$.origin.source.kind')='session'
+                SELECT json_extract(maka_content_text(b.payload,b.encoding),'$.origin.source.scope.session'),
+                       json_extract(maka_content_text(b.payload,b.encoding),'$.origin.source.id'),
+                       json_extract(maka_content_text(b.payload,b.encoding),'$.origin.source.kind')='session'
                 FROM origins o JOIN agent_session_artifact_registrations r
                   ON r.session=o.session AND r.artifact=o.artifact AND r.owner=?1
                 JOIN contents b ON b.id=r.body_content_id
-                WHERE json_extract(CAST(b.payload AS TEXT),'$.origin.kind')='copy'
+                WHERE json_extract(maka_content_text(b.payload,b.encoding),'$.origin.kind')='copy'
             )"
     };
 }
@@ -711,7 +711,7 @@ mod tests {
         let path = dir.path().join("root.sqlite");
         let db = Connection::open(&path).unwrap();
         migrate(&db, 50);
-        db.execute_batch("INSERT INTO contents VALUES(1,'spec',x'7b7d'); INSERT INTO agent_run_specs VALUES('run',1,'owner','chat',1);").unwrap();
+        db.execute_batch("INSERT INTO contents(id,content_sha256,payload) VALUES(1,'spec',x'7b7d'); INSERT INTO agent_run_specs VALUES('run',1,'owner','chat',1);").unwrap();
 
         let record = |db: &Connection, n: i64, target: &str, legacy: bool| {
             let next = ReadInput {
@@ -737,7 +737,7 @@ mod tests {
             ] {
                 let fact = format!("fact-{seq}");
                 db.execute(
-                    "INSERT INTO contents VALUES(?1,?2,?3)",
+                    "INSERT INTO contents(id,content_sha256,payload) VALUES(?1,?2,?3)",
                     params![seq + 1, fact, serde_json::to_vec(&payload).unwrap()],
                 )
                 .unwrap();
@@ -807,7 +807,7 @@ mod tests {
         db.execute_batch("PRAGMA foreign_keys=ON").unwrap();
         migrate(&db, i64::MAX);
         db.execute_batch(
-            "INSERT INTO contents VALUES(1,'spec',x'7b7d');
+            "INSERT INTO contents(id,content_sha256,payload) VALUES(1,'spec',x'7b7d');
             INSERT INTO agent_run_specs(run,schema_version,owner,session,spec_content_id) VALUES('run',1,'owner','chat',1);
             INSERT INTO agent_namespaces(id,owner,session) VALUES(1,'owner','chat');",
         )
@@ -819,7 +819,7 @@ mod tests {
             }}}))
             .unwrap();
             db.execute(
-                "INSERT INTO contents VALUES(?1,?2,?3)",
+                "INSERT INTO contents(id,content_sha256,payload) VALUES(?1,?2,?3)",
                 params![n + 1, id, payload],
             )
             .unwrap();
@@ -836,7 +836,7 @@ mod tests {
             INSERT INTO agent_memory_evidence(namespace,scope,id,assertion,source,source_key) VALUES('owner','personal','entry',1,
             '{"kind":"conversation","reference":{"sessionId":"chat","sequence":1,"factId":"notice-1","itemIndex":0,"start":0,"end":4}}','source');"#).unwrap();
         db.execute_batch(r#"INSERT INTO agent_run_specs(run,schema_version,owner,session,spec_content_id) VALUES('reader-run',1,'owner','chat',1);
-            INSERT INTO contents VALUES(1000,'wait-result',CAST('{"body":{"isError":false,"output":{"format":"cell","value":{"cell":"one"}}}}' AS BLOB)),
+            INSERT INTO contents(id,content_sha256,payload) VALUES(1000,'wait-result',CAST('{"body":{"isError":false,"output":{"format":"cell","value":{"cell":"one"}}}}' AS BLOB)),
                                        (1001,'wait-fact',CAST('{"fact":{"result":{"digest":"wait-result"}}}' AS BLOB));
             INSERT INTO agent_facts VALUES(1000,'wait','reader-run',1,1,1,1001);
             INSERT INTO agent_session_history(namespace_id,sequence,run,admission_sequence,kind,prefix_digest,tool_start,opening_message,fact_id,result_source)

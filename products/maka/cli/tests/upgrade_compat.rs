@@ -649,6 +649,8 @@ fn verify_sqlite_integrity_and_migrations(root: &Path) -> BTreeMap<String, Vec<i
     for db_path in dbs {
         let conn = Connection::open(&db_path)
             .unwrap_or_else(|e| panic!("open SQLite {}: {e}", db_path.display()));
+        maka_event_log::content::register_sql_functions(&conn)
+            .unwrap_or_else(|e| panic!("register content UDFs {}: {e}", db_path.display()));
         let integrity: String = conn
             .query_row("PRAGMA integrity_check", [], |row| row.get(0))
             .unwrap_or_else(|e| panic!("integrity_check {}: {e}", db_path.display()));
@@ -686,14 +688,20 @@ fn verify_sqlite_integrity_and_migrations(root: &Path) -> BTreeMap<String, Vec<i
                     |row| row.get(0),
                 )
                 .unwrap();
+            let has_encoding = maka_event_log::content::has_encoding_column(&conn).unwrap();
             if has_runs > 0 && versions.contains(&17) {
                 use maka_agent_facts::external_publication::PublicationManifest;
                 use maka_fs_tools::publication::{PublicationChange, SourceIdentity};
-                let mut manifests = conn.prepare(
-                    "SELECT p.publication,c.payload FROM agent_external_publications p
+                let payload_expr = if has_encoding {
+                    "maka_content_bytes(c.payload, c.encoding)"
+                } else {
+                    "c.payload"
+                };
+                let mut manifests = conn.prepare(&format!(
+                    "SELECT p.publication,{payload_expr} FROM agent_external_publications p
                      LEFT JOIN contents c ON c.content_sha256=json_extract(p.body,'$.manifest.digest')
                      WHERE json_extract(p.body,'$.manifest') IS NOT NULL",
-                ).unwrap();
+                )).unwrap();
                 let mut rows = manifests.query([]).unwrap();
                 while let Some(row) = rows.next().unwrap() {
                     let id: String = row.get(0).unwrap();
@@ -746,25 +754,33 @@ fn verify_sqlite_integrity_and_migrations(root: &Path) -> BTreeMap<String, Vec<i
                 );
             }
             if has_runs > 0 && versions.contains(&57) {
+                let body_text = if has_encoding {
+                    "maka_content_text(b.payload, b.encoding)"
+                } else {
+                    "CAST(b.payload AS TEXT)"
+                };
                 let inconsistent: i64 = conn.query_row(
-                    "WITH pending AS (
-                       SELECT session,request,coalesce(entry_json->>'$.request.spec.memoryAdmission','unknown') AS admission
-                       FROM agent_queue_items WHERE state='pending'
-                     ), last_edit AS (
-                       SELECT p.session,p.request,max(e.revision) AS revision
-                       FROM (SELECT DISTINCT session FROM pending) affected
-                       CROSS JOIN agent_queue_events e ON e.session=affected.session
-                       CROSS JOIN contents b ON b.id=e.body_content_id
-                       CROSS JOIN pending p ON p.session=e.session AND p.request=b.payload->>'$.edit.request.id'
-                       WHERE b.payload->>'$.kind'='command' AND b.payload->>'$.edit.kind' IN ('enqueue','update')
-                       GROUP BY p.session,p.request
-                     )
-                     SELECT count(*) FROM pending p LEFT JOIN last_edit l USING(session,request)
-                     LEFT JOIN agent_queue_events e ON e.session=l.session AND e.revision=l.revision
-                     LEFT JOIN contents b ON b.id=e.body_content_id
-                     WHERE l.revision IS NULL OR p.admission IS NOT coalesce(
-                       e.memory_admission,b.payload->>'$.edit.request.spec.memoryAdmission','unknown')",
-                    [], |row| row.get(0),
+                    &format!(
+                        "WITH pending AS (
+                           SELECT session,request,coalesce(entry_json->>'$.request.spec.memoryAdmission','unknown') AS admission
+                           FROM agent_queue_items WHERE state='pending'
+                         ), last_edit AS (
+                           SELECT p.session,p.request,max(e.revision) AS revision
+                           FROM (SELECT DISTINCT session FROM pending) affected
+                           CROSS JOIN agent_queue_events e ON e.session=affected.session
+                           CROSS JOIN contents b ON b.id=e.body_content_id
+                           CROSS JOIN pending p ON p.session=e.session AND p.request={body_text}->>'$.edit.request.id'
+                           WHERE {body_text}->>'$.kind'='command' AND {body_text}->>'$.edit.kind' IN ('enqueue','update')
+                           GROUP BY p.session,p.request
+                         )
+                         SELECT count(*) FROM pending p LEFT JOIN last_edit l USING(session,request)
+                         LEFT JOIN agent_queue_events e ON e.session=l.session AND e.revision=l.revision
+                         LEFT JOIN contents b ON b.id=e.body_content_id
+                         WHERE l.revision IS NULL OR p.admission IS NOT coalesce(
+                           e.memory_admission,{body_text}->>'$.edit.request.spec.memoryAdmission','unknown')"
+                    ),
+                    [],
+                    |row| row.get(0),
                 ).unwrap();
                 assert_eq!(
                     inconsistent, 0,
@@ -788,6 +804,11 @@ fn verify_sqlite_integrity_and_migrations(root: &Path) -> BTreeMap<String, Vec<i
                 } else {
                     "m.owner=h.owner AND m.session=h.session"
                 };
+                let body_text = if has_encoding {
+                    "maka_content_text(b.payload, b.encoding)"
+                } else {
+                    "CAST(b.payload AS TEXT)"
+                };
                 let missing_ended_unknown: i64 = conn
                     .query_row(
                         &format!(
@@ -795,9 +816,9 @@ fn verify_sqlite_integrity_and_migrations(root: &Path) -> BTreeMap<String, Vec<i
                              JOIN agent_facts f ON f.sequence=h.sequence
                              JOIN contents b ON b.id=f.body_content_id
                              WHERE h.kind='external_effect' AND h.tool_start=0 AND h.result_source=0
-                               AND CAST(b.payload AS TEXT)->>'$.fact.event.kind'='observed'
-                               AND CAST(b.payload AS TEXT)->>'$.fact.event.observation.receipt.outcome.kind'='unknown'
-                               AND CAST(b.payload AS TEXT)->>'$.fact.event.observation.receipt.cleanup.kind'='confirmed'
+                               AND {body_text}->>'$.fact.event.kind'='observed'
+                               AND {body_text}->>'$.fact.event.observation.receipt.outcome.kind'='unknown'
+                               AND {body_text}->>'$.fact.event.observation.receipt.cleanup.kind'='confirmed'
                                AND NOT EXISTS (
                                  SELECT 1 FROM agent_recall_messages m
                                  WHERE {ns_join} AND m.sequence=h.sequence
@@ -861,6 +882,11 @@ fn verify_sqlite_integrity_and_migrations(root: &Path) -> BTreeMap<String, Vec<i
                 } else {
                     "h.owner = d.owner AND h.session = d.session"
                 };
+                let body_text = if has_encoding {
+                    "maka_content_text(c.payload, c.encoding)"
+                } else {
+                    "CAST(c.payload AS TEXT)"
+                };
                 let bookkeeping: i64 = conn
                     .query_row(
                         &format!(
@@ -870,7 +896,7 @@ fn verify_sqlite_integrity_and_migrations(root: &Path) -> BTreeMap<String, Vec<i
                              JOIN agent_facts f ON f.sequence = h.sequence
                              JOIN contents c ON c.id = f.body_content_id
                              WHERE h.kind = 'cell'
-                               AND json_extract(CAST(c.payload AS TEXT), '$.fact.event.kind') IN (
+                               AND json_extract({body_text}, '$.fact.event.kind') IN (
                                  'vm_bound', 'loaded_tools_published', 'child_admitted',
                                  'child_approval_consumed', 'child_bound',
                                  'result_accepted', 'final_notification_queued', 'notification_consumed'
@@ -940,6 +966,85 @@ fn verify_sqlite_integrity_and_migrations(root: &Path) -> BTreeMap<String, Vec<i
                     assert!(!present, "v62 must drop redundant index {dropped} on {rel}");
                 }
             }
+            if has_runs > 0 && versions.contains(&63) {
+                for col in ["encoding", "logical_bytes"] {
+                    let exists: bool = conn
+                        .query_row(
+                            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('contents') WHERE name=?)",
+                            [col],
+                            |row| row.get(0),
+                        )
+                        .unwrap();
+                    assert!(exists, "v63 must add contents.{col} on {rel}");
+                }
+                let invalid_rows: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM contents
+                         WHERE encoding NOT IN (0, 1, 2, 3)
+                            OR (encoding = 0 AND logical_bytes IS NOT NULL)
+                            OR (encoding IN (1, 2, 3) AND (logical_bytes IS NULL OR logical_bytes < 0))",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                let recomp_rows: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM content_recompression_state WHERE singleton = 1",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(
+                    recomp_rows, 1,
+                    "v63 must initialize content_recompression_state on {rel}"
+                );
+                assert_eq!(
+                    invalid_rows, 0,
+                    "v63 contents encoding/logical_bytes invariant violated on {rel}"
+                );
+                let dict_decoded_ok: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM contents
+                         WHERE encoding = 3
+                           AND length(maka_content_bytes(payload, encoding)) = logical_bytes",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                let dict_total: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM contents WHERE encoding = 3",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(
+                    dict_decoded_ok, dict_total,
+                    "v63 dictionary-compressed (encoding=3) rows must decode to logical_bytes on {rel}"
+                );
+            }
+            if has_runs > 0 && versions.contains(&64) {
+                for view in [
+                    "agent_history_tool_metadata_source",
+                    "agent_memory_cell_accept_source",
+                    "agent_memory_cell_code_source",
+                    "agent_memory_cell_event_source",
+                    "agent_memory_cell_publication_source",
+                    "agent_memory_cell_return_source",
+                    "agent_memory_failed_terminations",
+                    "agent_memory_imported_tool_source",
+                    "agent_memory_operation_field_source",
+                    "agent_memory_recall_call_source",
+                    "agent_memory_selected_readers",
+                    "agent_memory_termination_receipts",
+                ] {
+                    let _: i64 = conn
+                        .query_row(&format!("SELECT COUNT(*) FROM {view}"), [], |row| {
+                            row.get(0)
+                        })
+                        .unwrap_or_else(|e| panic!("v64 view {view} failed on {rel}: {e}"));
+                }
+            }
             ledgers.insert(rel, versions);
         }
     }
@@ -964,6 +1069,7 @@ fn capture_queued_before_upgrade(root: &Path, session: &str) -> QueuedBeforeUpgr
     let mut found = Vec::new();
     for db in dbs {
         let conn = Connection::open_with_flags(&db, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        maka_event_log::content::register_sql_functions(&conn).unwrap();
         let has_queue: bool = conn
             .query_row(
                 "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='agent_queue_events')",
@@ -974,17 +1080,24 @@ fn capture_queued_before_upgrade(root: &Path, session: &str) -> QueuedBeforeUpgr
         if !has_queue {
             continue;
         }
+        let body_text = if maka_event_log::content::has_encoding_column(&conn).unwrap() {
+            "maka_content_text(b.payload, b.encoding)"
+        } else {
+            "CAST(b.payload AS TEXT)"
+        };
         let row: Option<(String, i64)> = conn
             .query_row(
-                "SELECT q.request, e.at FROM agent_queue_events e
-                 JOIN contents b ON b.id=e.body_content_id
-                 JOIN agent_queue_items q ON q.session=e.session
-                   AND q.request=json_extract(CAST(b.payload AS TEXT), '$.edit.request.id')
-                 WHERE e.session=? AND q.state='delivered'
-                   AND json_extract(CAST(b.payload AS TEXT), '$.kind')='command'
-                   AND json_extract(CAST(b.payload AS TEXT), '$.edit.kind')='enqueue'
-                   AND json_extract(CAST(b.payload AS TEXT), '$.resume_after_interrupt') IS NULL
-                 ORDER BY e.revision LIMIT 1",
+                &format!(
+                    "SELECT q.request, e.at FROM agent_queue_events e
+                     JOIN contents b ON b.id=e.body_content_id
+                     JOIN agent_queue_items q ON q.session=e.session
+                       AND q.request=json_extract({body_text}, '$.edit.request.id')
+                     WHERE e.session=? AND q.state='delivered'
+                       AND json_extract({body_text}, '$.kind')='command'
+                       AND json_extract({body_text}, '$.edit.kind')='enqueue'
+                       AND json_extract({body_text}, '$.resume_after_interrupt') IS NULL
+                     ORDER BY e.revision LIMIT 1"
+                ),
                 [session],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )

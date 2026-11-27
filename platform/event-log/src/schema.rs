@@ -51,6 +51,13 @@ pub const ROOT_MIGRATIONS: &[crate::migration::Migration] = &[
         configure: None,
         data: None,
     },
+    crate::migration::Migration {
+        version: 63,
+        description: "compress contents",
+        sql: include_str!("../migrations/0063_compress_contents.sql"),
+        configure: Some(crate::content::register_sql_functions),
+        data: None,
+    },
 ];
 
 pub(crate) fn initialize_connection(

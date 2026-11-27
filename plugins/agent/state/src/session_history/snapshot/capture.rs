@@ -28,7 +28,7 @@ impl Statement for Capture {
     type Output = ContentRef;
     fn execute(self, c: &Connection) -> Result<Prepared<Self::Value>, StoreError> {
         let owner = serde_json::to_string(&self.0.owner)?;
-        let original:Option<(String,String,String,u64)>=c.query_row("SELECT s.request_json,s.owner,b.content_sha256,length(b.payload) FROM agent_history_snapshots s JOIN contents b ON b.id=s.manifest_content_id WHERE s.snapshot=?",[self.1.id.to_string()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,read_u64(r,3)?))).optional()?;
+        let original:Option<(String,String,String,u64)>=c.query_row("SELECT s.request_json,s.owner,b.content_sha256,COALESCE(b.logical_bytes,length(b.payload)) FROM agent_history_snapshots s JOIN contents b ON b.id=s.manifest_content_id WHERE s.snapshot=?",[self.1.id.to_string()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,read_u64(r,3)?))).optional()?;
         if let Some((request, original_owner, digest, bytes)) = original {
             if original_owner != owner
                 || serde_json::from_str::<CaptureRequest>(&request)? != self.1
@@ -195,7 +195,7 @@ impl Statement for Capture {
             )?;
             let mut runs = runs.query(params![owner, self.0.session])?;
             let mut members = c.prepare_cached(
-                "SELECT b.content_sha256,length(b.payload),r.first_sequence,
+                "SELECT b.content_sha256,COALESCE(b.logical_bytes,length(b.payload)),r.first_sequence,
                         r.inherited=1 OR EXISTS(SELECT 1 FROM agent_run_content p WHERE p.run=r.run AND p.content_id=r.content_id)
                  FROM agent_history_content r JOIN contents b ON b.id=r.content_id
                  WHERE r.owner=? AND r.session=? AND r.run=? AND r.first_sequence<=?
@@ -228,7 +228,7 @@ impl Statement for Capture {
             }
         }
         if let Some(namespace_id) = namespace_id {
-            let mut statement=c.prepare_cached("SELECT r.run,h.sequence,a.record_json,b.content_sha256,length(b.payload),EXISTS(SELECT 1 FROM agent_run_content p WHERE p.run=r.run AND p.content_id=a.content_id) FROM agent_artifact_run_bindings r JOIN agent_facts f ON f.id=r.fact JOIN agent_session_history h ON h.sequence=f.sequence JOIN agent_artifacts a ON a.session=r.session AND a.artifact=r.artifact JOIN contents b ON b.id=a.content_id WHERE h.namespace_id=? AND h.sequence<=? ORDER BY h.sequence,r.artifact")?;
+            let mut statement=c.prepare_cached("SELECT r.run,h.sequence,a.record_json,b.content_sha256,COALESCE(b.logical_bytes,length(b.payload)),EXISTS(SELECT 1 FROM agent_run_content p WHERE p.run=r.run AND p.content_id=a.content_id) FROM agent_artifact_run_bindings r JOIN agent_facts f ON f.id=r.fact JOIN agent_session_history h ON h.sequence=f.sequence JOIN agent_artifacts a ON a.session=r.session AND a.artifact=r.artifact JOIN contents b ON b.id=a.content_id WHERE h.namespace_id=? AND h.sequence<=? ORDER BY h.sequence,r.artifact")?;
             let mut rows = statement.query(params![
                 namespace_id,
                 bind_u64(self.1.cut.through_sequence)?
@@ -298,7 +298,7 @@ impl Statement for Capture {
 
 pub(super) fn reference(c: &Connection, row: i64) -> Result<ContentRef, StoreError> {
     c.query_row(
-        "SELECT content_sha256,length(payload) FROM contents WHERE id=?",
+        "SELECT content_sha256,COALESCE(logical_bytes,length(payload)) FROM contents WHERE id=?",
         [row],
         |r| {
             Ok(ContentRef {

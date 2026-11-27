@@ -418,7 +418,7 @@ impl Query for MaskTerminalDiagnostic {
                 "SELECT h.fact_id FROM agent_session_history h
              JOIN agent_facts f ON f.sequence=h.sequence JOIN contents b ON b.id=f.body_content_id
              WHERE h.run=?1 AND h.kind='run_terminated' AND h.namespace_id=?2
-               AND CAST(b.payload AS TEXT)->>'$.fact.diagnostic'=?3",
+               AND maka_content_text(b.payload,b.encoding)->>'$.fact.diagnostic'=?3",
                 params![run.to_string(), ns_id, diagnostic],
                 |row| row.get::<_, String>(0),
             )

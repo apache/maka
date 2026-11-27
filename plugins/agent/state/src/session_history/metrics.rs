@@ -204,7 +204,7 @@ fn related_diagnostics(
             WHERE o.kind='model_source_failure_captured'
          )
          SELECT r.fact_id FROM related r JOIN agent_facts f ON f.sequence=r.sequence
-         JOIN contents b ON b.id=f.body_content_id WHERE CAST(b.payload AS TEXT)->>'$.fact.diagnostic'=?2",
+         JOIN contents b ON b.id=f.body_content_id WHERE maka_content_text(b.payload,b.encoding)->>'$.fact.diagnostic'=?2",
     )?;
     let mut sources = vec![fact];
     for row in stmt.query_map(params![fact.to_string(), text], |r| r.get::<_, String>(0))? {
@@ -367,7 +367,7 @@ impl Query for ReadMainModelUsage {
         };
         let mut statement = c.prepare_cached(
             "SELECT r.input,r.cache_read,
-                json_extract(CAST(b.payload AS TEXT),'$.fact.protocol.cacheReadReported'), r.output
+                json_extract(maka_content_text(b.payload,b.encoding),'$.fact.protocol.cacheReadReported'), r.output
              FROM agent_session_history h INDEXED BY agent_session_history_run
              JOIN agent_usage_calls u ON u.request='model:'||h.run||':'||h.attempt
                   AND u.admission_sequence=h.sequence
@@ -1008,7 +1008,7 @@ fn live_closed(
         .query_row(
             "SELECT h.sequence, f.id, f.schema_version, f.at, f.run, r.completed_at, r.outcome,
                 r.input, r.output, r.cache_read, r.cache_write, r.reasoning,
-                json_extract(CAST(b.payload AS TEXT), '$.fact.protocol.modelTimeMs')
+                json_extract(maka_content_text(b.payload, b.encoding), '$.fact.protocol.modelTimeMs')
          FROM agent_session_history h INDEXED BY agent_session_history_run
          LEFT JOIN agent_facts f ON f.sequence=h.sequence AND f.id=h.fact_id
          LEFT JOIN contents b ON b.id=f.body_content_id
@@ -1187,7 +1187,7 @@ fn copied_fact(
             "metrics snapshot fact is outside its actual source cut",
         ));
     }
-    let pinned:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM agent_history_snapshot_entries e JOIN agent_history_snapshot_run_refs r ON r.snapshot=e.snapshot AND r.run=e.run JOIN agent_history_snapshot_pins p ON p.snapshot=r.snapshot AND p.content_id=r.content_id JOIN contents b ON b.id=p.content_id WHERE e.snapshot=? AND e.kind='fact' AND e.run=? AND e.sequence=? AND json_extract(e.entry_json,'$.id')=? AND b.content_sha256=? AND length(b.payload)=?)",params![snapshot.id().to_string(),run.to_string(),sql::bind_u64(sequence)?,id.to_string(),body.digest,sql::bind_u64(body.bytes)?],|r|r.get(0))?;
+    let pinned:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM agent_history_snapshot_entries e JOIN agent_history_snapshot_run_refs r ON r.snapshot=e.snapshot AND r.run=e.run JOIN agent_history_snapshot_pins p ON p.snapshot=r.snapshot AND p.content_id=r.content_id JOIN contents b ON b.id=p.content_id WHERE e.snapshot=? AND e.kind='fact' AND e.run=? AND e.sequence=? AND json_extract(e.entry_json,'$.id')=? AND b.content_sha256=? AND COALESCE(b.logical_bytes,length(b.payload))=?)",params![snapshot.id().to_string(),run.to_string(),sql::bind_u64(sequence)?,id.to_string(),body.digest,sql::bind_u64(body.bytes)?],|r|r.get(0))?;
     if !pinned {
         return Err(invalid(
             "metrics snapshot fact lost its original PK/pinned body proof",

@@ -65,7 +65,7 @@ fn evidence(
     run: RunId,
     attempt: ModelAttemptId,
 ) -> Result<(StepId, ModelEvidence), StoreError> {
-    let (step,body):(String,String)=c.query_row("SELECT a.step,json_extract(CAST(b.payload AS TEXT),'$.accounting') FROM agent_attempt_ids a JOIN agent_request_specs r ON r.step=a.step AND r.run=a.run JOIN contents b ON b.id=r.content_id WHERE a.run=? AND a.attempt=?",params![run.to_string(),attempt.to_string()],|r|Ok((r.get(0)?,r.get(1)?)))?;
+    let (step,body):(String,String)=c.query_row("SELECT a.step,json_extract(maka_content_text(b.payload,b.encoding),'$.accounting') FROM agent_attempt_ids a JOIN agent_request_specs r ON r.step=a.step AND r.run=a.run JOIN contents b ON b.id=r.content_id WHERE a.run=? AND a.attempt=?",params![run.to_string(),attempt.to_string()],|r|Ok((r.get(0)?,r.get(1)?)))?;
     Ok((
         StepId::try_from(Uuid::parse_str(&step).map_err(|e| invalid(e.to_string()))?)
             .map_err(invalid)?,
@@ -550,10 +550,10 @@ pub(crate) fn rebuild_run(c: &Connection, run: RunId) -> Result<(), StoreError> 
         "DELETE FROM agent_usage_calls WHERE run=? AND source='fact'",
         [run.to_string()],
     )?;
-    let spec:RunSpec=c.query_row("SELECT b.payload FROM agent_run_specs s JOIN contents b ON b.id=s.spec_content_id WHERE s.run=?",[run.to_string()],|r|r.get::<_,Vec<u8>>(0)).map(|bytes|serde_json::from_slice(&bytes))??;
+    let spec:RunSpec=c.query_row("SELECT maka_content_bytes(b.payload,b.encoding) FROM agent_run_specs s JOIN contents b ON b.id=s.spec_content_id WHERE s.run=?",[run.to_string()],|r|r.get::<_,Vec<u8>>(0)).map(|bytes|serde_json::from_slice(&bytes))??;
     let mut after = 0i64;
     loop {
-        let page:Vec<(i64,Vec<u8>)>=c.prepare_cached("SELECT f.sequence,b.payload FROM agent_facts f JOIN contents b ON b.id=f.body_content_id WHERE f.run=? AND f.sequence>? ORDER BY f.sequence LIMIT 128")?.query_map(params![run.to_string(),after],|r|Ok((r.get(0)?,r.get(1)?)))?.collect::<Result<_,_>>()?;
+        let page:Vec<(i64,Vec<u8>)>=c.prepare_cached("SELECT f.sequence,maka_content_bytes(b.payload,b.encoding) FROM agent_facts f JOIN contents b ON b.id=f.body_content_id WHERE f.run=? AND f.sequence>? ORDER BY f.sequence LIMIT 128")?.query_map(params![run.to_string(),after],|r|Ok((r.get(0)?,r.get(1)?)))?.collect::<Result<_,_>>()?;
         if page.is_empty() {
             break;
         }

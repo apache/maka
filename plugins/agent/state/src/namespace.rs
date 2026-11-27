@@ -611,7 +611,7 @@ mod tests {
 
         let owner = r#"{"namespace":"ns-1","deployment":"00000000-0000-0000-0000-000000000001"}"#;
         let spec_blob = ContentBlob::json(&serde_json::json!({"stub": true})).unwrap();
-        let spec_cid = spec_blob.store(&db).unwrap();
+        let spec_cid = spec_blob.store_legacy(&db).unwrap();
         let run_a = RunId::new().to_string();
         let run_b = RunId::new().to_string();
         let fact_a = FactId::new().to_string();
@@ -830,6 +830,7 @@ mod tests {
         let agent_store =
             crate::Store::new(data.clone(), crate::DriverDomain::new(data).unwrap()).unwrap();
         let db = Connection::open(&db_path).unwrap();
+        maka_event_log::content::register_sql_functions(&db).unwrap();
         crate::memory::recall::configure_writer(&db).unwrap();
 
         let owner_1_val: RunOwner = serde_json::from_str(
@@ -995,6 +996,7 @@ mod tests {
         use uuid::Uuid;
 
         let db = Connection::open_in_memory().unwrap();
+        maka_event_log::content::register_sql_functions(&db).unwrap();
         db.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
         let all = catalog();
         let through_54: Vec<_> = all.iter().filter(|m| m.version <= 54).copied().collect();
@@ -1004,7 +1006,7 @@ mod tests {
         spec.session_id = "sess-gap".into();
         let owner = serde_json::to_string(&spec.owner).unwrap();
         let spec_blob = ContentBlob::json(&spec).unwrap();
-        let spec_cid = spec_blob.store(&db).unwrap();
+        let spec_cid = spec_blob.store_legacy(&db).unwrap();
         let run = RunId::new();
         let task = ExternalTaskId::new();
         let op = Uuid::new_v4();
@@ -1052,7 +1054,7 @@ mod tests {
             },
         };
         let obs_blob = ContentBlob::json(&observed).unwrap();
-        let obs_cid = obs_blob.store(&db).unwrap();
+        let obs_cid = obs_blob.store_legacy(&db).unwrap();
         db.execute(
             "INSERT INTO agent_run_specs(run,schema_version,owner,session,spec_content_id) VALUES(?,?,?,?,?)",
             params![run.to_string(), SCHEMA_VERSION, owner, "sess-gap", spec_cid],
@@ -1113,6 +1115,7 @@ mod tests {
         };
 
         let db = Connection::open_in_memory().unwrap();
+        maka_event_log::content::register_sql_functions(&db).unwrap();
         db.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
         let all = catalog();
         let through_57: Vec<_> = all.iter().filter(|m| m.version <= 57).copied().collect();
@@ -1134,7 +1137,7 @@ mod tests {
         let run = RunId::new();
         let step = StepId::new();
         let spec_blob = ContentBlob::json(&admitted_spec).unwrap();
-        let spec_cid = spec_blob.store(&db).unwrap();
+        let spec_cid = spec_blob.store_legacy(&db).unwrap();
         let make_src = |id: &str, text: &str| {
             let content = MessageInput::from(text);
             ContentBlob::json(&RootSourceMessage {
@@ -1152,11 +1155,11 @@ mod tests {
             .unwrap()
         };
         let run_src_msg = make_src("m-run", "pinned-memory-queued-run-needle");
-        let run_src_cid = run_src_msg.store(&db).unwrap();
+        let run_src_cid = run_src_msg.store_legacy(&db).unwrap();
         let step_src_msg = make_src("m-step", "pre-7115-steering-needle");
-        let step_src_cid = step_src_msg.store(&db).unwrap();
+        let step_src_cid = step_src_msg.store_legacy(&db).unwrap();
         let empty_res = ContentBlob::json(&serde_json::json!([])).unwrap();
-        let _ = empty_res.store(&db).unwrap();
+        let _ = empty_res.store_legacy(&db).unwrap();
 
         // Pre-#7115 RequestSpec JSON carrying old `systemPrompt`/`tools` fields in `composition`.
         let legacy_req = ContentBlob::json(&serde_json::json!({
@@ -1166,7 +1169,7 @@ mod tests {
             "steering": [step_src_msg.reference()],
         }))
         .unwrap();
-        let legacy_req_cid = legacy_req.store(&db).unwrap();
+        let legacy_req_cid = legacy_req.store_legacy(&db).unwrap();
 
         let req_run = PreparedRequest {
             id: RequestId("req-run".into()),
@@ -1209,9 +1212,12 @@ mod tests {
         };
         let admitted_cid = ContentBlob::json(&admitted_fact)
             .unwrap()
-            .store(&db)
+            .store_legacy(&db)
             .unwrap();
-        let step_cid = ContentBlob::json(&step_fact).unwrap().store(&db).unwrap();
+        let step_cid = ContentBlob::json(&step_fact)
+            .unwrap()
+            .store_legacy(&db)
+            .unwrap();
 
         db.execute(
             "INSERT INTO agent_run_specs(run,schema_version,owner,session,spec_content_id) VALUES(?,?,?,?,?)",
@@ -1254,7 +1260,7 @@ mod tests {
             },
         })
         .unwrap()
-        .store(&db)
+        .store_legacy(&db)
         .unwrap();
         let q2 = ContentBlob::json(&Event::Consumed {
             cut: Consume {
@@ -1266,7 +1272,7 @@ mod tests {
             target: DeliveryTarget::Run,
         })
         .unwrap()
-        .store(&db)
+        .store_legacy(&db)
         .unwrap();
         let q3 = ContentBlob::json(&Event::Command {
             expected_revision: 2,
@@ -1277,7 +1283,7 @@ mod tests {
             },
         })
         .unwrap()
-        .store(&db)
+        .store_legacy(&db)
         .unwrap();
         let q4 = ContentBlob::json(&Event::Consumed {
             cut: Consume {
@@ -1289,7 +1295,7 @@ mod tests {
             target: DeliveryTarget::Step { step },
         })
         .unwrap()
-        .store(&db)
+        .store_legacy(&db)
         .unwrap();
         db.execute(
             "INSERT INTO agent_queue_events(session,revision,id,at,body_content_id)

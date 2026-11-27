@@ -61,7 +61,7 @@ fn original<T: DeserializeOwned>(
 ) -> Result<T, StoreError> {
     let row: Option<(String, Vec<u8>)> = c
         .query_row(
-            "SELECT content_sha256,payload FROM contents WHERE id=?",
+            "SELECT content_sha256,maka_content_bytes(payload,encoding) FROM contents WHERE id=?",
             [content],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
@@ -79,7 +79,7 @@ fn original<T: DeserializeOwned>(
 fn reference(c: &Connection, content: i64) -> Result<ContentRef, StoreError> {
     let row: Option<(String, i64)> = c
         .query_row(
-            "SELECT content_sha256,length(payload) FROM contents WHERE id=?",
+            "SELECT content_sha256,COALESCE(logical_bytes,length(payload)) FROM contents WHERE id=?",
             [content],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )

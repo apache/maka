@@ -55,7 +55,7 @@ pub(super) fn coverage(c: &Connection, scope: &Scope) -> Result<u64, StoreError>
 pub(super) fn head(c: &Connection, scope: Scope) -> Result<DiagnosticHead, StoreError> {
     let through = coverage(c, &scope)?;
     let owner = serde_json::to_string(&scope.owner)?;
-    let mut statement=c.prepare_cached("SELECT d.sequence,d.event_id,d.at,d.detail_json,d.run,f.id,f.run,f.at,f.schema_version,s.owner,s.session,s.schema_version,json_extract(CAST(b.payload AS TEXT),'$.turnId') FROM agent_diagnostics d LEFT JOIN agent_facts f ON f.sequence=d.sequence LEFT JOIN agent_run_specs s ON s.run=f.run LEFT JOIN contents b ON b.id=s.spec_content_id WHERE d.owner=?1 AND d.session=?2 AND d.sequence<=?3 ORDER BY d.sequence DESC LIMIT 1")?;
+    let mut statement=c.prepare_cached("SELECT d.sequence,d.event_id,d.at,d.detail_json,d.run,f.id,f.run,f.at,f.schema_version,s.owner,s.session,s.schema_version,json_extract(maka_content_text(b.payload,b.encoding),'$.turnId') FROM agent_diagnostics d LEFT JOIN agent_facts f ON f.sequence=d.sequence LEFT JOIN agent_run_specs s ON s.run=f.run LEFT JOIN contents b ON b.id=s.spec_content_id WHERE d.owner=?1 AND d.session=?2 AND d.sequence<=?3 ORDER BY d.sequence DESC LIMIT 1")?;
     let mut rows = statement.query(params![owner, scope.session, signed(through)?])?;
     let latest = rows
         .next()?
@@ -149,7 +149,7 @@ pub(super) fn page(c: &Connection, query: ReadPage) -> Result<DiagnosticPage, St
     if empty_bytes > query.max_bytes {
         return Err(invalid("diagnostic JSON budget is too small"));
     }
-    let mut statement=c.prepare_cached("SELECT d.sequence,d.event_id,d.at,d.detail_json,d.run,f.id,f.run,f.at,f.schema_version,s.owner,s.session,s.schema_version,json_extract(CAST(b.payload AS TEXT),'$.turnId') FROM agent_diagnostics d LEFT JOIN agent_facts f ON f.sequence=d.sequence LEFT JOIN agent_run_specs s ON s.run=f.run LEFT JOIN contents b ON b.id=s.spec_content_id WHERE d.owner=?1 AND d.session=?2 AND d.sequence<=?3 AND (?4 IS NULL OR d.sequence<?4) ORDER BY d.sequence DESC LIMIT ?5")?;
+    let mut statement=c.prepare_cached("SELECT d.sequence,d.event_id,d.at,d.detail_json,d.run,f.id,f.run,f.at,f.schema_version,s.owner,s.session,s.schema_version,json_extract(maka_content_text(b.payload,b.encoding),'$.turnId') FROM agent_diagnostics d LEFT JOIN agent_facts f ON f.sequence=d.sequence LEFT JOIN agent_run_specs s ON s.run=f.run LEFT JOIN contents b ON b.id=s.spec_content_id WHERE d.owner=?1 AND d.session=?2 AND d.sequence<=?3 AND (?4 IS NULL OR d.sequence<?4) ORDER BY d.sequence DESC LIMIT ?5")?;
     let owner = serde_json::to_string(&query.scope.owner)?;
     let mut rows = statement.query(params![
         owner,

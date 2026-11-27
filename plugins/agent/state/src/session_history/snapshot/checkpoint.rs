@@ -130,7 +130,7 @@ pub(crate) fn checkpoint_member(
             "SELECT f.run FROM agent_facts f JOIN agent_run_specs s ON s.run=f.run
         JOIN agent_facts a ON a.run=f.run AND a.revision=1 JOIN contents b ON b.id=f.body_content_id
         WHERE f.id=? AND s.owner=? AND s.session=? AND f.sequence<=? AND a.sequence>?
-        AND json_extract(CAST(b.payload AS TEXT),'$.fact.kind')='context_compacted'",
+        AND json_extract(maka_content_text(b.payload,b.encoding),'$.fact.kind')='context_compacted'",
             params![
                 id.to_string(),
                 serde_json::to_string(&namespace.owner)?,

@@ -9452,6 +9452,7 @@ dependencies = [
  "url",
  "uuid",
  "windows-sys 0.61.2",
+ "zstd 0.14.5",
 ]
 
 [[package]]

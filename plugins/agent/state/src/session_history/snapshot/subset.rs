@@ -780,7 +780,7 @@ fn copy(
 ) -> Result<ContentRef, StoreError> {
     let mut builder = capture::Builder::new(c, id);
     let mut statement = c.prepare_cached(
-        "SELECT b.payload FROM agent_history_snapshot_inventory_pages p JOIN contents b ON b.id=p.content_id WHERE p.snapshot=? ORDER BY p.first_ordinal",
+        "SELECT maka_content_bytes(b.payload,b.encoding) FROM agent_history_snapshot_inventory_pages p JOIN contents b ON b.id=p.content_id WHERE p.snapshot=? ORDER BY p.first_ordinal",
     )?;
     let mut rows = statement.query([parent.id.to_string()])?;
     while let Some(row) = rows.next()? {

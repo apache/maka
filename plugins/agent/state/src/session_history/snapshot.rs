@@ -662,7 +662,7 @@ fn read_u64(row: &rusqlite::Row<'_>, column: usize) -> rusqlite::Result<u64> {
 fn content_id(c: &Connection, reference: &ContentRef) -> Result<i64, StoreError> {
     reference.validate().map_err(invalid)?;
     c.query_row(
-        "SELECT id FROM contents WHERE content_sha256=? AND length(payload)=?",
+        "SELECT id FROM contents WHERE content_sha256=? AND COALESCE(logical_bytes,length(payload))=?",
         params![reference.digest, bind_u64(reference.bytes)?],
         |r| r.get(0),
     )

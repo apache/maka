@@ -81,7 +81,7 @@ fn spec(
     history: &HistoryNamespace,
     run: RunId,
 ) -> Result<(RunSpec, ContentRef), StoreError> {
-    let row:Option<(u32,String,Vec<u8>)>=c.query_row("SELECT s.schema_version,b.content_sha256,b.payload FROM agent_run_specs s JOIN contents b ON b.id=s.spec_content_id WHERE s.owner=? AND s.session=? AND s.run=?",params![scope_key(history)?,history.session,run.to_string()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
+    let row:Option<(u32,String,Vec<u8>)>=c.query_row("SELECT s.schema_version,b.content_sha256,maka_content_bytes(b.payload,b.encoding) FROM agent_run_specs s JOIN contents b ON b.id=s.spec_content_id WHERE s.owner=? AND s.session=? AND s.run=?",params![scope_key(history)?,history.session,run.to_string()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
     let (version, digest, bytes) =
         row.ok_or_else(|| invalid("Run is not owned by this session namespace"))?;
     let value: RunSpec = serde_json::from_slice(&bytes)?;
@@ -127,7 +127,7 @@ pub(super) fn run_source(
     run: RunId,
 ) -> Result<RunSource, StoreError> {
     let (spec, spec_ref) = spec(c, history, run)?;
-    let (sequence,version,bytes,digest,id):(u64,u32,Vec<u8>,String,String)=c.query_row("SELECT f.sequence,f.schema_version,b.payload,b.content_sha256,f.id FROM agent_facts f JOIN contents b ON b.id=f.body_content_id WHERE f.run=? AND f.revision=1",[run.to_string()],|r|Ok((read_u64(r,0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)))?;
+    let (sequence,version,bytes,digest,id):(u64,u32,Vec<u8>,String,String)=c.query_row("SELECT f.sequence,f.schema_version,maka_content_bytes(b.payload,b.encoding),b.content_sha256,f.id FROM agent_facts f JOIN contents b ON b.id=f.body_content_id WHERE f.run=? AND f.revision=1",[run.to_string()],|r|Ok((read_u64(r,0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)))?;
     check_bytes(&bytes, &digest)?;
     let admission = decode_record(version, &bytes)?;
     if admission.run != run
@@ -375,7 +375,7 @@ pub(super) fn window_items(
     let seed = seed(&history.owner, &history.session)?;
     let mut statement = c.prepare_cached(
         "
-        SELECT h.sequence,h.admission_sequence,h.step,h.attempt,f.schema_version,b.payload,
+        SELECT h.sequence,h.admission_sequence,h.step,h.attempt,f.schema_version,maka_content_bytes(b.payload,b.encoding),
                b.content_sha256,h.prefix_digest,h.run,h.fact_id,
                (SELECT p.prefix_digest FROM agent_session_history p
                 WHERE p.namespace_id=h.namespace_id AND p.sequence<h.sequence
@@ -417,7 +417,7 @@ pub(super) fn page(
             next: None,
         });
     };
-    let rows: Vec<HistoryRow> = c.prepare_cached("SELECT h.sequence,h.admission_sequence,h.step,h.attempt,f.schema_version,b.payload,b.content_sha256,h.prefix_digest,h.run,h.fact_id FROM agent_session_history h LEFT JOIN agent_facts f ON f.sequence=h.sequence LEFT JOIN contents b ON b.id=f.body_content_id WHERE h.namespace_id=? AND h.sequence>? AND h.sequence<=? ORDER BY h.sequence LIMIT ?")?.query_map(params![ns_id,bind_u64(after)?,bind_u64(cut.through_sequence)?,size+1], history_row)?.collect::<Result<_,_>>()?;
+    let rows: Vec<HistoryRow> = c.prepare_cached("SELECT h.sequence,h.admission_sequence,h.step,h.attempt,f.schema_version,maka_content_bytes(b.payload,b.encoding),b.content_sha256,h.prefix_digest,h.run,h.fact_id FROM agent_session_history h LEFT JOIN agent_facts f ON f.sequence=h.sequence LEFT JOIN contents b ON b.id=f.body_content_id WHERE h.namespace_id=? AND h.sequence>? AND h.sequence<=? ORDER BY h.sequence LIMIT ?")?.query_map(params![ns_id,bind_u64(after)?,bind_u64(cut.through_sequence)?,size+1], history_row)?.collect::<Result<_,_>>()?;
     let more = rows.len() > size as usize;
     let prior: Option<String> = c.query_row("SELECT prefix_digest FROM agent_session_history WHERE namespace_id=? AND sequence<=? ORDER BY sequence DESC LIMIT 1", params![ns_id,bind_u64(after)?], |r|r.get(0)).optional()?;
     let mut prefix = match prior {
@@ -515,7 +515,7 @@ pub(super) fn validate_source_record(
             "canonical history header scope differs from its original fact",
         ));
     }
-    let (owner,session,actual_owner,actual_session,kind,actual_kind,locator):(String,String,String,String,String,String,Option<String>)=c.prepare_cached("SELECT ns.owner,ns.session,s.owner,s.session,h.kind,json_extract(b.payload,'$.fact.kind'),h.tool_use_id FROM agent_facts f JOIN agent_session_history h ON h.sequence=f.sequence JOIN agent_namespaces ns ON ns.id=h.namespace_id JOIN agent_run_specs s ON s.run=f.run JOIN contents b ON b.id=f.body_content_id WHERE f.id=? AND f.run=?")?.query_row(params![record.id.to_string(),record.run.to_string()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?)))?;
+    let (owner,session,actual_owner,actual_session,kind,actual_kind,locator):(String,String,String,String,String,String,Option<String>)=c.prepare_cached("SELECT ns.owner,ns.session,s.owner,s.session,h.kind,json_extract(maka_content_text(b.payload,b.encoding),'$.fact.kind'),h.tool_use_id FROM agent_facts f JOIN agent_session_history h ON h.sequence=f.sequence JOIN agent_namespaces ns ON ns.id=h.namespace_id JOIN agent_run_specs s ON s.run=f.run JOIN contents b ON b.id=f.body_content_id WHERE f.id=? AND f.run=?")?.query_row(params![record.id.to_string(),record.run.to_string()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?)))?;
     if owner != actual_owner
         || session != actual_session
         || kind != actual_kind
@@ -640,7 +640,7 @@ fn fact_scope(c: &Connection, record: &RecordedFact) -> Result<HistoryScope, Sto
 /// the same transaction. Only index data is written; no new semantic fact.
 pub(crate) fn index(c: &Connection, record: &RecordedFact) -> Result<(), StoreError> {
     let (sequence, owner, session, digest, kind): (u64, String, String, String, String) = c
-        .prepare_cached("SELECT f.sequence,s.owner,s.session,b.content_sha256,json_extract(b.payload,'$.fact.kind') FROM agent_facts f JOIN agent_run_specs s ON s.run=f.run JOIN contents b ON b.id=f.body_content_id WHERE f.id=? AND f.run=?")?
+        .prepare_cached("SELECT f.sequence,s.owner,s.session,b.content_sha256,json_extract(maka_content_text(b.payload,b.encoding),'$.fact.kind') FROM agent_facts f JOIN agent_run_specs s ON s.run=f.run JOIN contents b ON b.id=f.body_content_id WHERE f.id=? AND f.run=?")?
         .query_row(params![record.id.to_string(), record.run.to_string()], |r| {
             Ok((read_u64(r, 0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
         })?;
@@ -771,19 +771,46 @@ pub(crate) fn index_legacy_owner_session(
     };
     let prefix = chain(&previous, sequence, &digest)?;
     let scope = fact_scope(c, record)?;
-    let locator = tool_locator(c, record)?;
-    let historical = if let Fact::RunAdmitted { spec: expected } = &record.fact {
-        let (value, reference) = spec(
-            c,
-            &HistoryNamespace {
-                owner: owner_value,
-                session: session.clone(),
-            },
-            record.run,
+    let locator = if let Fact::ExternalEffect { event } = &record.fact {
+        let key = event.key();
+        let original = match event {
+            maka_agent_facts::external_effects::ExternalEffectEvent::Prepared {
+                descriptor,
+                ..
+            } => descriptor.clone(),
+            _ => crate::external_effects::read_original(c, record.run, &key)?.descriptor,
+        };
+        let bytes: Vec<u8> = c.query_row(
+            "SELECT c.payload FROM agent_run_content p JOIN contents c ON c.id=p.content_id WHERE p.run=? AND c.content_sha256=? AND length(c.payload)=?",
+            params![record.run.to_string(), original.digest, bind_u64(original.bytes)?],
+            |r| r.get(0),
         )?;
+        let descriptor: maka_agent_facts::external_effects::ExternalEffectDescriptor =
+            serde_json::from_slice(&bytes)?;
+        Some((
+            maka_agent_facts::tool_call::tool_use_id(record.run, &descriptor.operation_id),
+            matches!(
+                event,
+                maka_agent_facts::external_effects::ExternalEffectEvent::Prepared { .. }
+            ),
+        ))
+    } else {
+        tool_locator(c, record)?
+    };
+    let historical = if let Fact::RunAdmitted { spec: expected } = &record.fact {
+        let (digest, bytes): (String, Vec<u8>) = c.query_row(
+            "SELECT b.content_sha256,b.payload FROM agent_run_specs s JOIN contents b ON b.id=s.spec_content_id WHERE s.owner=? AND s.session=? AND s.run=?",
+            params![&owner, &session, record.run.to_string()],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        let reference = ContentRef {
+            digest,
+            bytes: bytes.len() as u64,
+        };
         if &reference != expected {
             return Err(invalid("history admission names another Run specification"));
         }
+        let value: RunSpec = serde_json::from_slice(&bytes)?;
         historical_backend(&value)?
     } else {
         false
@@ -862,7 +889,7 @@ fn index_refs(
                         return Err(invalid("local Run has a historical adoption receipt"));
                     }
                 };
-                let reference:ContentRef=c.query_row("SELECT b.content_sha256,length(b.payload) FROM agent_history_snapshots s JOIN contents b ON b.id=s.manifest_content_id WHERE s.snapshot=?",[&snapshot],|row|Ok(ContentRef {digest:row.get(0)?,bytes:read_u64(row,1)?}))?;
+                let reference:ContentRef=c.query_row("SELECT b.content_sha256,COALESCE(b.logical_bytes,length(b.payload)) FROM agent_history_snapshots s JOIN contents b ON b.id=s.manifest_content_id WHERE s.snapshot=?",[&snapshot],|row|Ok(ContentRef {digest:row.get(0)?,bytes:read_u64(row,1)?}))?;
                 if fact != record.id.to_string()
                     || original != &reference
                     || !historical_backend(&spec)?
@@ -932,7 +959,7 @@ fn index_refs(
     let bound_sequence = bind_u64(sequence)?;
     if !references.is_empty() {
         let mut find_content = c.prepare_cached(
-            "SELECT b.id FROM agent_run_content p JOIN contents b ON b.id=p.content_id WHERE p.run=? AND b.content_sha256=? AND length(b.payload)=?",
+            "SELECT b.id FROM agent_run_content p JOIN contents b ON b.id=p.content_id WHERE p.run=? AND b.content_sha256=? AND COALESCE(b.logical_bytes,length(b.payload))=?",
         )?;
         let mut insert_ref = c.prepare_cached(
             "INSERT OR IGNORE INTO agent_history_content_refs(run,content_id,first_sequence) VALUES(?,?,?)",
@@ -955,7 +982,7 @@ fn index_refs(
     Ok(())
 }
 pub(crate) fn index_queue(c: &Connection, session: &str, revision: u64) -> Result<(), StoreError> {
-    let (id,bytes,digest):(String,Vec<u8>,String)=c.query_row("SELECT e.id,b.payload,b.content_sha256 FROM agent_queue_events e JOIN contents b ON b.id=e.body_content_id WHERE e.session=? AND e.revision=?",params![session,bind_u64(revision)?],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
+    let (id,bytes,digest):(String,Vec<u8>,String)=c.query_row("SELECT e.id,maka_content_bytes(b.payload,b.encoding),b.content_sha256 FROM agent_queue_events e JOIN contents b ON b.id=e.body_content_id WHERE e.session=? AND e.revision=?",params![session,bind_u64(revision)?],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
     check_bytes(&bytes, &digest)?;
     let event: Event = serde_json::from_slice(&bytes)?;
     if let Event::Consumed {
@@ -1002,7 +1029,7 @@ fn consumed(
         .ok_or_else(|| invalid("source fact outside session namespace"))?;
     let run = original.recorded.run;
     let fact = original.recorded.id;
-    let event:Option<(u64,Vec<u8>,String)>=c.query_row("SELECT e.revision,b.payload,b.content_sha256 FROM agent_queue_events e JOIN contents b ON b.id=e.body_content_id WHERE e.session=? AND e.id=?",params![history.session,fact.to_string()],|r|Ok((read_u64(r,0)?,r.get(1)?,r.get(2)?))).optional()?;
+    let event:Option<(u64,Vec<u8>,String)>=c.query_row("SELECT e.revision,maka_content_bytes(b.payload,b.encoding),b.content_sha256 FROM agent_queue_events e JOIN contents b ON b.id=e.body_content_id WHERE e.session=? AND e.id=?",params![history.session,fact.to_string()],|r|Ok((read_u64(r,0)?,r.get(1)?,r.get(2)?))).optional()?;
     let Some((revision, bytes, digest)) = event else {
         return Ok(None);
     };
@@ -1056,7 +1083,7 @@ pub(super) fn sources(
     let mut sources = Vec::with_capacity((end - start) as usize);
     for position in start..end {
         let id = &consumption.requests[position as usize];
-        let row:Option<(u64,Vec<u8>,String)>=c.query_row("SELECT q.revision,b.payload,b.content_sha256 FROM agent_history_queue_requests q JOIN agent_queue_events e ON e.session=q.session AND e.revision=q.revision JOIN contents b ON b.id=e.body_content_id WHERE q.session=? AND q.request=? AND q.revision<? ORDER BY q.revision DESC LIMIT 1",params![history.session,id.0,bind_u64(consumed_revision)?],|r|Ok((read_u64(r,0)?,r.get(1)?,r.get(2)?))).optional()?;
+        let row:Option<(u64,Vec<u8>,String)>=c.query_row("SELECT q.revision,maka_content_bytes(b.payload,b.encoding),b.content_sha256 FROM agent_history_queue_requests q JOIN agent_queue_events e ON e.session=q.session AND e.revision=q.revision JOIN contents b ON b.id=e.body_content_id WHERE q.session=? AND q.request=? AND q.revision<? ORDER BY q.revision DESC LIMIT 1",params![history.session,id.0,bind_u64(consumed_revision)?],|r|Ok((read_u64(r,0)?,r.get(1)?,r.get(2)?))).optional()?;
         let (revision, bytes, digest) = row.ok_or_else(|| {
             invalid("consumed queue snapshot index missing; explicit rebuild required")
         })?;
@@ -1174,7 +1201,7 @@ pub(super) fn with_source<T>(
         ));
     }
     let row: Option<i64> = c.query_row(
-        "SELECT b.id FROM agent_queue_content_pins p JOIN contents b ON b.id=p.content_id WHERE p.session=? AND p.request=? AND b.content_sha256=? AND length(b.payload)=?",
+        "SELECT b.id FROM agent_queue_content_pins p JOIN contents b ON b.id=p.content_id WHERE p.session=? AND p.request=? AND b.content_sha256=? AND COALESCE(b.logical_bytes,length(b.payload))=?",
         params![history.session, source.request.id.0, reference.digest, bind_u64(reference.bytes)?],
         |row| row.get(0),
     ).optional()?;
@@ -1210,7 +1237,7 @@ pub(super) fn rebuild(
     {
         // One ordered cursor over only this namespace; do not repeatedly scan
         // every Run for each repair page or retain the complete history in RAM.
-        let mut statement = c.prepare_cached("SELECT f.schema_version,b.payload,b.content_sha256 FROM agent_run_specs s JOIN agent_facts f ON f.run=s.run JOIN contents b ON b.id=f.body_content_id WHERE s.owner=? AND s.session=? ORDER BY f.sequence")?;
+        let mut statement = c.prepare_cached("SELECT f.schema_version,maka_content_bytes(b.payload,b.encoding),b.content_sha256 FROM agent_run_specs s JOIN agent_facts f ON f.run=s.run JOIN contents b ON b.id=f.body_content_id WHERE s.owner=? AND s.session=? ORDER BY f.sequence")?;
         let mut rows = statement.query(params![owner, history.session])?;
         while let Some(row) = rows.next()? {
             let bytes: Vec<u8> = row.get(1)?;
@@ -1248,14 +1275,14 @@ pub(super) fn with_content<T>(
 ) -> Result<T, StoreError> {
     let (owner, _) = check_cut(c, history, cut)?;
     reference.validate().map_err(invalid)?;
-    let row: Option<i64> = c.prepare_cached("SELECT b.id FROM contents b WHERE b.content_sha256=?5 AND length(b.payload)=?6 AND EXISTS(SELECT 1 FROM agent_history_content h WHERE h.owner=?1 AND h.session=?2 AND h.run=?3 AND h.content_id=b.id AND h.first_sequence<=?4 AND (h.inherited=1 OR EXISTS(SELECT 1 FROM agent_run_content p WHERE p.run=h.run AND p.content_id=b.id)))")?.query_row(params![owner,history.session,run.to_string(),bind_u64(cut.through_sequence)?,reference.digest,bind_u64(reference.bytes)?], |r|r.get(0)).optional()?;
+    let row: Option<i64> = c.prepare_cached("SELECT b.id FROM contents b WHERE b.content_sha256=?5 AND COALESCE(b.logical_bytes,length(b.payload))=?6 AND EXISTS(SELECT 1 FROM agent_history_content h WHERE h.owner=?1 AND h.session=?2 AND h.run=?3 AND h.content_id=b.id AND h.first_sequence<=?4 AND (h.inherited=1 OR EXISTS(SELECT 1 FROM agent_run_content p WHERE p.run=h.run AND p.content_id=b.id)))")?.query_row(params![owner,history.session,run.to_string(),bind_u64(cut.through_sequence)?,reference.digest,bind_u64(reference.bytes)?], |r|r.get(0)).optional()?;
     let row = row.ok_or_else(|| {
         invalid("content is not owned by this Run within the captured source cut")
     })?;
     read_blob(c, row, reference, consume)
 }
 pub(super) struct CheckedBlob<'a, 'c> {
-    blob: &'a mut rusqlite::blob::Blob<'c>,
+    blob: &'a mut maka_event_log::content::ContentReader<'c>,
     reference: &'a ContentRef,
     hash: Option<Sha256>,
     position: u64,
@@ -1315,10 +1342,8 @@ pub(super) fn read_blob<T>(
     reference: &ContentRef,
     consume: impl FnOnce(&mut CheckedBlob<'_, '_>) -> Result<T, StoreError>,
 ) -> Result<T, StoreError> {
-    let mut blob = c.blob_open("main", "contents", "payload", row, true)?;
-    let result = if u64::try_from(blob.len()).map_err(|_| invalid("Blob length overflow"))?
-        != reference.bytes
-    {
+    let mut blob = maka_event_log::content::open_by_id(c, row)?;
+    let result = if blob.len() != reference.bytes {
         Err(invalid("canonical source Blob length changed"))
     } else {
         let mut checked = CheckedBlob {
@@ -1685,7 +1710,7 @@ fn view_through(
         return Err(invalid("Run was not admitted within the captured cut"));
     }
     let mut view = crate::fold::RunView::admitted(run, source.spec)?;
-    let mut statement=c.prepare_cached("SELECT f.schema_version,b.payload,b.content_sha256,f.sequence FROM agent_facts f JOIN contents b ON b.id=f.body_content_id WHERE f.run=? AND f.sequence<=? ORDER BY f.revision")?;
+    let mut statement=c.prepare_cached("SELECT f.schema_version,maka_content_bytes(b.payload,b.encoding),b.content_sha256,f.sequence FROM agent_facts f JOIN contents b ON b.id=f.body_content_id WHERE f.run=? AND f.sequence<=? ORDER BY f.revision")?;
     let mut rows = statement.query(params![run.to_string(), bind_u64(through_sequence)?])?;
     while let Some(row) = rows.next()? {
         let bytes: Vec<u8> = row.get(1)?;
@@ -1820,7 +1845,7 @@ pub(super) fn tool_call(
         ));
     };
     let use_id = maka_agent_facts::tool_call::tool_use_id(run, &crate::fold::tool_key(key));
-    let mut rows: Vec<(u32, Vec<u8>, String, String)> = c.prepare_cached("SELECT f.schema_version,b.payload,b.content_sha256,f.id FROM agent_session_history h INDEXED BY agent_session_history_tool JOIN agent_facts f ON f.id=h.fact_id AND f.sequence=h.sequence AND f.run=h.run JOIN contents b ON b.id=f.body_content_id WHERE h.namespace_id=? AND h.tool_use_id=? AND h.run=? AND h.attempt=? AND h.tool_start=1 AND h.sequence<=? ORDER BY h.sequence LIMIT 2")?.query_map(params![ns_id,use_id,run.to_string(),key.attempt.to_string(),bind_u64(cut.through_sequence)?],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))?.collect::<Result<_,_>>()?;
+    let mut rows: Vec<(u32, Vec<u8>, String, String)> = c.prepare_cached("SELECT f.schema_version,maka_content_bytes(b.payload,b.encoding),b.content_sha256,f.id FROM agent_session_history h INDEXED BY agent_session_history_tool JOIN agent_facts f ON f.id=h.fact_id AND f.sequence=h.sequence AND f.run=h.run JOIN contents b ON b.id=f.body_content_id WHERE h.namespace_id=? AND h.tool_use_id=? AND h.run=? AND h.attempt=? AND h.tool_start=1 AND h.sequence<=? ORDER BY h.sequence LIMIT 2")?.query_map(params![ns_id,use_id,run.to_string(),key.attempt.to_string(),bind_u64(cut.through_sequence)?],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))?.collect::<Result<_,_>>()?;
     if rows.len() != 1 {
         return Err(invalid(
             "original model tool call missing or ambiguous in captured cut",
@@ -1927,7 +1952,7 @@ pub(super) fn chunk(
 }
 
 fn mark_message(c: &Connection, session: &str, run: RunId, fact: &str) -> Result<(), StoreError> {
-    let (version,bytes):(u32,Vec<u8>)=c.query_row("SELECT s.schema_version,b.payload FROM agent_run_specs s JOIN contents b ON b.id=s.spec_content_id WHERE s.run=? AND s.session=?",params![run.to_string(),session],|r|Ok((r.get(0)?,r.get(1)?)))?;
+    let (version,bytes):(u32,Vec<u8>)=c.query_row("SELECT s.schema_version,maka_content_bytes(b.payload,b.encoding) FROM agent_run_specs s JOIN contents b ON b.id=s.spec_content_id WHERE s.run=? AND s.session=?",params![run.to_string(),session],|r|Ok((r.get(0)?,r.get(1)?)))?;
     let spec: RunSpec = serde_json::from_slice(&bytes)?;
     if version != SCHEMA_VERSION || spec.schema_version != SCHEMA_VERSION {
         return Err(invalid("unsupported message Run schema"));
@@ -1935,7 +1960,7 @@ fn mark_message(c: &Connection, session: &str, run: RunId, fact: &str) -> Result
     if !matches!(spec.trigger, Trigger::Message { .. }) {
         return Ok(());
     }
-    let is_message:bool=c.query_row("SELECT json_extract(b.payload,'$.kind')='message' FROM agent_run_content p JOIN contents b ON b.id=p.content_id WHERE p.run=? AND b.content_sha256=? AND length(b.payload)=?",params![run.to_string(),spec.input.digest,bind_u64(spec.input.bytes)?],|r|r.get(0))?;
+    let is_message:bool=c.query_row("SELECT json_extract(maka_content_text(b.payload,b.encoding),'$.kind')='message' FROM agent_run_content p JOIN contents b ON b.id=p.content_id WHERE p.run=? AND b.content_sha256=? AND COALESCE(b.logical_bytes,length(b.payload))=?",params![run.to_string(),spec.input.digest,bind_u64(spec.input.bytes)?],|r|r.get(0))?;
     if is_message {
         let ns_id = crate::namespace::find_owner_id(c, &spec.owner, session)?
             .ok_or_else(|| invalid("opening consumption has no original indexed Run admission"))?;
@@ -1967,7 +1992,7 @@ fn owned_metadata<T: DeserializeOwned>(
     reference: &ContentRef,
 ) -> Result<T, StoreError> {
     reference.validate().map_err(invalid)?;
-    let row:i64=c.query_row("SELECT b.id FROM agent_run_content p JOIN contents b ON b.id=p.content_id WHERE p.run=? AND b.content_sha256=? AND length(b.payload)=?",params![run.to_string(),reference.digest,bind_u64(reference.bytes)?],|r|r.get(0))?;
+    let row:i64=c.query_row("SELECT b.id FROM agent_run_content p JOIN contents b ON b.id=p.content_id WHERE p.run=? AND b.content_sha256=? AND COALESCE(b.logical_bytes,length(b.payload))=?",params![run.to_string(),reference.digest,bind_u64(reference.bytes)?],|r|r.get(0))?;
     decode_original(c, row, reference)
 }
 pub(super) fn decode_original<T: DeserializeOwned>(

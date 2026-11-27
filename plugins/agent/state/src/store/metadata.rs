@@ -205,20 +205,25 @@ impl Query for ExternalSteeringAdmittedBatches {
     type Output = u64;
     fn execute(self, c: &Connection) -> Result<u64, StoreError> {
         let mut statement = c.prepare_cached(
-            "SELECT s.run,s.schema_version,s.owner,s.session,
-             json_object('schemaVersion',json_extract(b.payload,'$.schemaVersion'),
-                         'owner',json_extract(b.payload,'$.owner'),
-                         'sessionId',json_extract(b.payload,'$.sessionId'),
-                         'origin',json_extract(b.payload,'$.origin'),
-                         'trigger',json_extract(b.payload,'$.trigger'),
-                         'mcpRevision',json_extract(b.payload,'$.mcpRevision')),
-             json_extract(b.payload,'$.turnId'),r.schema_version,r.owner,r.session,r.local,
-             json_extract(r.external,'$.task'),json_extract(r.external,'$.admitted'),
-             (SELECT COUNT(*) FROM agent_external_steering e
-              WHERE e.run=s.run AND e.task=?2 AND e.admitted_fact IS NOT NULL),
-             json_extract(b.payload,'$.backend.kind')
-             FROM agent_run_specs s JOIN contents b ON b.id=s.spec_content_id
-             JOIN agent_runs r ON r.run=s.run WHERE s.run=?1",
+            "SELECT run,schema_version,owner,session,
+             json_object('schemaVersion',json_extract(spec_doc,'$.schemaVersion'),
+                         'owner',json_extract(spec_doc,'$.owner'),
+                         'sessionId',json_extract(spec_doc,'$.sessionId'),
+                         'origin',json_extract(spec_doc,'$.origin'),
+                         'trigger',json_extract(spec_doc,'$.trigger'),
+                         'mcpRevision',json_extract(spec_doc,'$.mcpRevision')),
+             json_extract(spec_doc,'$.turnId'),r_schema_version,r_owner,r_session,r_local,
+             ext_task,ext_admitted,steering_count,json_extract(spec_doc,'$.backend.kind')
+             FROM (
+               SELECT s.run,s.schema_version,s.owner,s.session,
+                 jsonb(maka_content_text(b.payload,b.encoding)) AS spec_doc,
+                 r.schema_version AS r_schema_version,r.owner AS r_owner,r.session AS r_session,r.local AS r_local,
+                 json_extract(r.external,'$.task') AS ext_task,json_extract(r.external,'$.admitted') AS ext_admitted,
+                 (SELECT COUNT(*) FROM agent_external_steering e
+                  WHERE e.run=s.run AND e.task=?2 AND e.admitted_fact IS NOT NULL) AS steering_count
+               FROM agent_run_specs s JOIN contents b ON b.id=s.spec_content_id
+               JOIN agent_runs r ON r.run=s.run WHERE s.run=?1
+             )",
         )?;
         let mut rows = statement.query(params![
             self.execution.run_id.to_string(),
@@ -254,7 +259,7 @@ struct LatestMessageBackend(RunOwner, String);
 impl Query for LatestMessageBackend {
     type Output = Option<(RunId, BackendSpec)>;
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
-        let mut statement=c.prepare_cached("SELECT k.run,s.schema_version,s.owner,s.session,json_object('schemaVersion',json_extract(b.payload,'$.schemaVersion'),'owner',json_extract(b.payload,'$.owner'),'sessionId',json_extract(b.payload,'$.sessionId'),'origin',json_extract(b.payload,'$.origin'),'trigger',json_extract(b.payload,'$.trigger'),'mcpRevision',json_extract(b.payload,'$.mcpRevision')),json_extract(b.payload,'$.backend') FROM agent_catalog_runs k INDEXED BY agent_catalog_latest_run LEFT JOIN agent_run_specs s ON s.run=k.run LEFT JOIN contents b ON b.id=s.spec_content_id WHERE k.owner=?1 AND k.session=?2 ORDER BY k.admission_sequence DESC")?;
+        let mut statement=c.prepare_cached("SELECT run,schema_version,owner,session,json_object('schemaVersion',json_extract(spec_doc,'$.schemaVersion'),'owner',json_extract(spec_doc,'$.owner'),'sessionId',json_extract(spec_doc,'$.sessionId'),'origin',json_extract(spec_doc,'$.origin'),'trigger',json_extract(spec_doc,'$.trigger'),'mcpRevision',json_extract(spec_doc,'$.mcpRevision')),json_extract(spec_doc,'$.backend') FROM (SELECT k.run,s.schema_version,s.owner,s.session,CASE WHEN b.id IS NOT NULL THEN jsonb(maka_content_text(b.payload,b.encoding)) END AS spec_doc FROM agent_catalog_runs k INDEXED BY agent_catalog_latest_run LEFT JOIN agent_run_specs s ON s.run=k.run LEFT JOIN contents b ON b.id=s.spec_content_id WHERE k.owner=?1 AND k.session=?2 ORDER BY k.admission_sequence DESC)")?;
         let mut rows = statement.query(params![serde_json::to_string(&self.0)?, self.1])?;
         while let Some(row) = rows.next()? {
             let spec = run_metadata(row, &self.0)?;
@@ -283,7 +288,7 @@ impl Query for ReferencedMcpRevisions {
         let mut retained = BTreeSet::new();
         // Filter with the existing owner/run/pending indexes before reading any
         // frontier bodies; completed history alone is not an execution reference.
-        let mut statement=c.prepare_cached("SELECT r.run,s.schema_version,s.owner,s.session,json_object('schemaVersion',json_extract(b.payload,'$.schemaVersion'),'owner',json_extract(b.payload,'$.owner'),'sessionId',json_extract(b.payload,'$.sessionId'),'origin',json_extract(b.payload,'$.origin'),'trigger',json_extract(b.payload,'$.trigger'),'mcpRevision',json_extract(b.payload,'$.mcpRevision')),r.terminal,r.external,r.schema_version,r.session,COALESCE(CAST(b.payload AS TEXT)->>'$.backend.kind'='executor' AND CAST(b.payload AS TEXT)->>'$.backend.selection.executor'='external',0) FROM agent_runs r LEFT JOIN agent_run_specs s ON s.run=r.run LEFT JOIN contents b ON b.id=s.spec_content_id WHERE r.owner=?1 AND r.local=1 AND (r.terminal IS NULL OR r.external IS NOT NULL OR EXISTS(SELECT 1 FROM agent_attempts a WHERE a.run=r.run AND a.pending=1) OR EXISTS(SELECT 1 FROM agent_tools t WHERE t.run=r.run AND t.pending=1) OR EXISTS(SELECT 1 FROM agent_cells c WHERE c.run=r.run AND c.pending=1) OR EXISTS(SELECT 1 FROM agent_external_effects e WHERE e.run=r.run AND e.pending=1) OR EXISTS(SELECT 1 FROM agent_external_publications p WHERE p.run=r.run))")?;
+        let mut statement=c.prepare_cached("SELECT run,schema_version,owner,session,json_object('schemaVersion',json_extract(spec_doc,'$.schemaVersion'),'owner',json_extract(spec_doc,'$.owner'),'sessionId',json_extract(spec_doc,'$.sessionId'),'origin',json_extract(spec_doc,'$.origin'),'trigger',json_extract(spec_doc,'$.trigger'),'mcpRevision',json_extract(spec_doc,'$.mcpRevision')),terminal,external,r_schema_version,r_session,COALESCE(spec_doc->>'$.backend.kind'='executor' AND spec_doc->>'$.backend.selection.executor'='external',0) FROM (SELECT r.run,s.schema_version,s.owner,s.session,CASE WHEN b.id IS NOT NULL THEN jsonb(maka_content_text(b.payload,b.encoding)) END AS spec_doc,r.terminal,r.external,r.schema_version AS r_schema_version,r.session AS r_session FROM agent_runs r LEFT JOIN agent_run_specs s ON s.run=r.run LEFT JOIN contents b ON b.id=s.spec_content_id WHERE r.owner=?1 AND r.local=1 AND (r.terminal IS NULL OR r.external IS NOT NULL OR EXISTS(SELECT 1 FROM agent_attempts a WHERE a.run=r.run AND a.pending=1) OR EXISTS(SELECT 1 FROM agent_tools t WHERE t.run=r.run AND t.pending=1) OR EXISTS(SELECT 1 FROM agent_cells c WHERE c.run=r.run AND c.pending=1) OR EXISTS(SELECT 1 FROM agent_external_effects e WHERE e.run=r.run AND e.pending=1) OR EXISTS(SELECT 1 FROM agent_external_publications p WHERE p.run=r.run)))")?;
         let mut rows = statement.query([&owner])?;
         while let Some(row) = rows.next()? {
             let spec = run_metadata(row, &self.0)?;
@@ -479,18 +484,24 @@ struct RunState {
     terminal: Option<Terminal>,
 }
 // Each requested Run is a PK lookup; both readers share the same canonical identity check.
-const RUN_STATES_SQL: &str = "SELECT wanted.value,s.schema_version,s.owner,s.session,
-        json_object('schemaVersion',json_extract(CAST(b.payload AS TEXT),'$.schemaVersion'),
-            'owner',json_extract(CAST(b.payload AS TEXT),'$.owner'),
-            'sessionId',json_extract(CAST(b.payload AS TEXT),'$.sessionId'),
-            'origin',json_extract(CAST(b.payload AS TEXT),'$.origin'),
-            'trigger',json_extract(CAST(b.payload AS TEXT),'$.trigger'),
-            'mcpRevision',json_extract(CAST(b.payload AS TEXT),'$.mcpRevision')),
-        r.run,r.schema_version,r.owner,r.session,r.local,r.terminal,r.stopped
-     FROM json_each(?1) wanted
-     LEFT JOIN agent_run_specs s ON s.run=wanted.value
-     LEFT JOIN contents b ON b.id=s.spec_content_id
-     LEFT JOIN agent_runs r ON r.run=wanted.value";
+const RUN_STATES_SQL: &str = "SELECT value,schema_version,owner,session,
+        json_object('schemaVersion',json_extract(spec_doc,'$.schemaVersion'),
+            'owner',json_extract(spec_doc,'$.owner'),
+            'sessionId',json_extract(spec_doc,'$.sessionId'),
+            'origin',json_extract(spec_doc,'$.origin'),
+            'trigger',json_extract(spec_doc,'$.trigger'),
+            'mcpRevision',json_extract(spec_doc,'$.mcpRevision')),
+        run,r_schema_version,r_owner,r_session,local,terminal,stopped
+     FROM (
+       SELECT wanted.value,s.schema_version,s.owner,s.session,
+         CASE WHEN b.id IS NOT NULL THEN jsonb(maka_content_text(b.payload,b.encoding)) END AS spec_doc,
+         r.run,r.schema_version AS r_schema_version,r.owner AS r_owner,r.session AS r_session,
+         r.local,r.terminal,r.stopped
+       FROM json_each(?1) wanted
+       LEFT JOIN agent_run_specs s ON s.run=wanted.value
+       LEFT JOIN contents b ON b.id=s.spec_content_id
+       LEFT JOIN agent_runs r ON r.run=wanted.value
+     )";
 
 fn run_state(row: &Row<'_>, owner: &RunOwner) -> Result<Option<RunState>, StoreError> {
     let original: String = row.get(0)?;

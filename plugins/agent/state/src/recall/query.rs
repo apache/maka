@@ -26,9 +26,9 @@ const ORIGINAL: &str = "CROSS JOIN agent_namespaces ns ON ns.id=d.namespace_id
 // contribute an anchor or adjacent text to a different model conversation.
 const SHARED_CONTEXT: &str = r#"CASE WHEN d.role='"compaction"' THEN EXISTS (
  SELECT 1 FROM contents b WHERE b.content_sha256=d.references_json->>'$[1].digest' AND
- (b.payload->>'memoryReplay'='shared' OR NOT EXISTS (
+ (maka_content_text(b.payload,b.encoding)->>'memoryReplay'='shared' OR NOT EXISTS (
   SELECT 1 FROM agent_memory_tool_inputs i
-  WHERE i.run=coalesce(b.payload->>'$.memoryReplay.run',b.payload->>'$.summaryOrigin.run',d.run)
+  WHERE i.run=coalesce(maka_content_text(b.payload,b.encoding)->>'$.memoryReplay.run',maka_content_text(b.payload,b.encoding)->>'$.summaryOrigin.run',d.run)
  ))) ELSE 1 END"#;
 const COLUMNS: &str = concat!(
     "d.message,d.sequence,d.ordinal,d.run,d.turn,d.at,d.role,d.body,d.attachments,d.references_json,d.fields_json,d.origin_json,
@@ -421,7 +421,7 @@ fn operation_receipt_settled(c: &Connection, sequence: u64) -> Result<bool, Stor
     use maka_agent_facts::cells::CellEvent;
     let bytes: Vec<u8> = c
         .prepare_cached(
-            "SELECT x.payload FROM agent_facts f JOIN contents x ON x.id=f.body_content_id WHERE f.sequence=?",
+            "SELECT maka_content_bytes(x.payload,x.encoding) FROM agent_facts f JOIN contents x ON x.id=f.body_content_id WHERE f.sequence=?",
         )?
         .query_row([number(sequence)?], |r| r.get(0))?;
     let recorded: RecordedFact = serde_json::from_slice(&bytes)?;
@@ -590,7 +590,7 @@ pub(super) fn search(
     }
     let (settlement_col, transcript_filter) = if query.transcript_only {
         (
-            ",CASE WHEN h.kind='operation_observed' THEN 1 WHEN h.kind='cell' AND NOT h.tool_start AND (SELECT json_extract(b.payload,'$.fact.event.kind') FROM agent_facts f JOIN contents b ON b.id=f.body_content_id WHERE f.sequence=h.sequence)='child_observed' THEN 1 ELSE 0 END",
+            ",CASE WHEN h.kind='operation_observed' THEN 1 WHEN h.kind='cell' AND NOT h.tool_start AND (SELECT json_extract(maka_content_text(b.payload,b.encoding),'$.fact.event.kind') FROM agent_facts f JOIN contents b ON b.id=f.body_content_id WHERE f.sequence=h.sequence)='child_observed' THEN 1 ELSE 0 END",
             format!(
                 " AND h.kind<>'model_interrupted'{}",
                 crate::session_history::source_tree::TRANSCRIPT_CELL_SQL
@@ -982,13 +982,13 @@ pub(super) fn exclusion(
     store: &RecallStore,
     run: RunId,
 ) -> Result<ExcludedTail, StoreError> {
-    let bytes:Vec<u8>=c.query_row("SELECT x.payload FROM agent_run_specs r JOIN contents x ON x.id=r.spec_content_id WHERE r.run=? AND r.owner=?",params![run.to_string(),store.key()?],|r|r.get(0))?;
+    let bytes:Vec<u8>=c.query_row("SELECT maka_content_bytes(x.payload,x.encoding) FROM agent_run_specs r JOIN contents x ON x.id=r.spec_content_id WHERE r.run=? AND r.owner=?",params![run.to_string(),store.key()?],|r|r.get(0))?;
     let spec: RunSpec = serde_json::from_slice(&bytes)?;
     store.session(&spec.session_id)?;
     let row: Option<(String, Vec<u8>)> = match crate::namespace::find_id(c, &store.key()?, &spec.session_id)? {
         Some(ns_id) => c
             .query_row(
-                "SELECT f.run,x.payload FROM agent_session_history h JOIN agent_facts f ON f.sequence=h.sequence JOIN contents x ON x.id=f.body_content_id WHERE h.namespace_id=? AND h.kind='context_compacted' ORDER BY h.sequence DESC LIMIT 1",
+                "SELECT f.run,maka_content_bytes(x.payload,x.encoding) FROM agent_session_history h JOIN agent_facts f ON f.sequence=h.sequence JOIN contents x ON x.id=f.body_content_id WHERE h.namespace_id=? AND h.kind='context_compacted' ORDER BY h.sequence DESC LIMIT 1",
                 params![ns_id],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )

@@ -616,6 +616,16 @@ async fn upgrade_and_rebuild_preserve_the_original_senders_of_pending_requests()
 
     let dir = tempfile::tempdir().unwrap();
     let (root, store) = open_through(dir.path(), true, 56).await;
+    // Seed canonical v56 rows with the current writer, then restore genuine v56 raw contents
+    // before reopening so migrations 57..=latest run end-to-end against a real v56 schema.
+    exec_sql(&store, |db| {
+        db.execute_batch(
+            "ALTER TABLE contents ADD COLUMN encoding INTEGER NOT NULL DEFAULT 0;
+             ALTER TABLE contents ADD COLUMN logical_bytes INTEGER;",
+        )?;
+        Ok(())
+    })
+    .await;
     let (mut spec, contents) = spec();
     spec.session_id = "chat".into();
     let owner = serde_json::to_value(&spec.owner).unwrap();
@@ -683,6 +693,17 @@ async fn upgrade_and_rebuild_preserve_the_original_senders_of_pending_requests()
         Ok(())
     }).await;
     let original_revision = store.queue().read("chat".into()).await.unwrap().revision;
+    exec_sql(&store, |db| {
+        db.execute_batch(
+            "DROP TRIGGER content_immutable;
+             UPDATE contents SET payload = maka_content_bytes(payload, encoding) WHERE encoding != 0;
+             ALTER TABLE contents DROP COLUMN logical_bytes;
+             ALTER TABLE contents DROP COLUMN encoding;
+             CREATE TRIGGER content_immutable BEFORE UPDATE ON contents BEGIN SELECT RAISE(ABORT,'content is immutable'); END;",
+        )?;
+        Ok(())
+    })
+    .await;
     drop(store);
     root.close().await.unwrap();
 
@@ -765,7 +786,7 @@ async fn upgrade_repairs_old_reorder_handoff_before_queue_is_used() {
     let sid_copy = sid.clone();
     exec_sql(&store, move |c| {
         let body: Vec<u8> = c.query_row(
-            "SELECT b.payload FROM agent_queue_events e JOIN contents b ON b.id=e.body_content_id WHERE e.session=? AND e.revision=4",
+            "SELECT maka_content_bytes(b.payload,b.encoding) FROM agent_queue_events e JOIN contents b ON b.id=e.body_content_id WHERE e.session=? AND e.revision=4",
             [&sid_copy], |row| row.get(0),
         )?;
         let mut event: serde_json::Value = serde_json::from_slice(&body)?;
