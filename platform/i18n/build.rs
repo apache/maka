@@ -128,12 +128,9 @@ fn main() {
     code.push_str("        }\n    }\n\n");
 
     code.push_str("    pub fn from_exact_tag(tag: &str) -> Option<Self> {\n");
-    code.push_str("        for locale in Self::ALL {\n");
-    code.push_str("            if locale.tag().eq_ignore_ascii_case(tag) {\n");
-    code.push_str("                return Some(locale);\n");
-    code.push_str("            }\n");
-    code.push_str("        }\n");
-    code.push_str("        None\n");
+    code.push_str(
+        "        Self::ALL.into_iter().find(|&locale| locale.tag().eq_ignore_ascii_case(tag))\n",
+    );
     code.push_str("    }\n");
     code.push_str("}\n");
 

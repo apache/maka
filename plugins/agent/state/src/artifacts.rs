@@ -37,7 +37,7 @@ mod input;
 mod read;
 mod session;
 mod tool;
-pub(crate) use input::{admit, pin_request};
+pub(crate) use input::{admit, pin_request_with_encoding};
 pub(crate) use tool::{ArtifactBatch, append, rebuild};
 
 pub const COPY_REJECTED: &str = "canonical_copy_rejected";

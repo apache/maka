@@ -107,9 +107,22 @@ fn head(c: &Connection, session: &str, revision: u64) -> Result<(), StoreError> 
     Ok(())
 }
 fn exact_content(c: &Connection, reference: &ContentRef) -> Result<Vec<u8>, StoreError> {
+    exact_content_with_encoding(c, reference, true)
+}
+fn exact_content_with_encoding(
+    c: &Connection,
+    reference: &ContentRef,
+    encoded: bool,
+) -> Result<Vec<u8>, StoreError> {
     reference.validate().map_err(invalid)?;
-    let bytes = content::read(c, &reference.digest)?
-        .ok_or_else(|| invalid("missing pinned queue content"))?;
+    let bytes = if encoded {
+        content::read(c, &reference.digest)?
+    } else {
+        c.prepare_cached("SELECT payload FROM contents WHERE content_sha256=?")?
+            .query_row([&reference.digest], |r| r.get(0))
+            .optional()?
+    }
+    .ok_or_else(|| invalid("missing pinned queue content"))?;
     if bytes.len() as u64 != reference.bytes || content_digest(&bytes) != reference.digest {
         return Err(invalid("corrupt queue content"));
     }
@@ -118,16 +131,22 @@ fn exact_content(c: &Connection, reference: &ContentRef) -> Result<Vec<u8>, Stor
 fn put(c: &Connection, blob: &ContentBlob) -> Result<i64, StoreError> {
     blob.store(c)
 }
-fn pin(
+fn pin_with_encoding(
     c: &Connection,
     session: &str,
     request: &RequestId,
     reference: &ContentRef,
+    encoded: bool,
 ) -> Result<(), StoreError> {
     reference.validate().map_err(invalid)?;
+    let sql = if encoded {
+        "SELECT id FROM contents WHERE content_sha256=? AND COALESCE(logical_bytes,length(payload))=?"
+    } else {
+        "SELECT id FROM contents WHERE content_sha256=? AND length(payload)=?"
+    };
     let content_id: i64 = c
         .query_row(
-            "SELECT id FROM contents WHERE content_sha256=? AND COALESCE(logical_bytes,length(payload))=?",
+            sql,
             params![reference.digest, to_sql_integer(reference.bytes)?],
             |r| r.get(0),
         )
@@ -145,17 +164,26 @@ fn references(request: &PreparedRequest) -> Vec<&ContentRef> {
     refs
 }
 fn source(c: &Connection, request: &PreparedRequest) -> Result<RootSourceMessage, StoreError> {
-    let source: RootSourceMessage = serde_json::from_slice(&exact_content(c, &request.source)?)?;
+    source_with_encoding(c, request, true)
+}
+fn source_with_encoding(
+    c: &Connection,
+    request: &PreparedRequest,
+    encoded: bool,
+) -> Result<RootSourceMessage, StoreError> {
+    let source: RootSourceMessage =
+        serde_json::from_slice(&exact_content_with_encoding(c, &request.source, encoded)?)?;
     source.validate().map_err(invalid)?;
     if source.message.message_id != request.message_id {
         return Err(invalid("queue message/source identity differs"));
     }
     Ok(source)
 }
-fn validate_request(
+fn validate_request_with_encoding(
     c: &Connection,
     session: &str,
     request: &PreparedRequest,
+    encoded: bool,
 ) -> Result<RootSourceMessage, StoreError> {
     id(session)?;
     id(&request.id.0)?;
@@ -169,7 +197,7 @@ fn validate_request(
             "queue request is not a local request for this session/schema",
         ));
     }
-    let source = source(c, request)?;
+    let source = source_with_encoding(c, request, encoded)?;
     let matches_source = match &request.spec.trigger {
         Trigger::Message { .. } => is_interactive(request, &source),
         Trigger::Goal { goal_id } => {
@@ -315,9 +343,30 @@ pub(crate) fn deliver_held(
     )
 }
 fn run_head(c: &Connection, run: RunId) -> Result<(RunSpec, Head, bool, bool), StoreError> {
-    let row: Option<(Vec<u8>,u32,i64,i64,bool,bool)> = c.query_row(
-        "SELECT maka_content_bytes(c.payload,c.encoding),r.schema_version,r.revision,r.control_version,r.stopped,r.terminal IS NOT NULL FROM agent_run_specs s JOIN contents c ON c.id=s.spec_content_id JOIN agent_runs r ON r.run=s.run WHERE s.run=?",
-        [run.to_string()], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).optional()?;
+    run_head_with_encoding(c, run, true)
+}
+fn run_head_with_encoding(
+    c: &Connection,
+    run: RunId,
+    encoded: bool,
+) -> Result<(RunSpec, Head, bool, bool), StoreError> {
+    let sql = if encoded {
+        "SELECT maka_content_bytes(c.payload,c.encoding),r.schema_version,r.revision,r.control_version,r.stopped,r.terminal IS NOT NULL FROM agent_run_specs s JOIN contents c ON c.id=s.spec_content_id JOIN agent_runs r ON r.run=s.run WHERE s.run=?"
+    } else {
+        "SELECT c.payload,r.schema_version,r.revision,r.control_version,r.stopped,r.terminal IS NOT NULL FROM agent_run_specs s JOIN contents c ON c.id=s.spec_content_id JOIN agent_runs r ON r.run=s.run WHERE s.run=?"
+    };
+    let row: Option<(Vec<u8>, u32, i64, i64, bool, bool)> = c
+        .query_row(sql, [run.to_string()], |r| {
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get(3)?,
+                r.get(4)?,
+                r.get(5)?,
+            ))
+        })
+        .optional()?;
     let (body, version, revision, control_version, stopped, terminal) =
         row.ok_or_else(|| invalid("steering Run not found"))?;
     let spec: RunSpec = serde_json::from_slice(&body)?;
@@ -768,6 +817,17 @@ fn project(
     at: UnixMillis,
     check: bool,
 ) -> Result<(), StoreError> {
+    project_with_encoding(c, session, next, event, at, check, true)
+}
+fn project_with_encoding(
+    c: &Connection,
+    session: &str,
+    next: u64,
+    event: &Event,
+    at: UnixMillis,
+    check: bool,
+    encoded: bool,
+) -> Result<(), StoreError> {
     match event {
         Event::Command {
             edit,
@@ -786,7 +846,7 @@ fn project(
             };
             match edit {
                 QueueEdit::Enqueue { request, placement } => {
-                    let source = validate_request(c, session, request)?;
+                    let source = validate_request_with_encoding(c, session, request, encoded)?;
                     if matches!(placement, Placement::Steering { .. })
                         && !is_interactive(request, &source)
                         && !matches!(&request.spec.trigger, Trigger::Schedule { .. })
@@ -796,7 +856,7 @@ fn project(
                     if matches!(placement, Placement::Held) && !held(request, &source) {
                         return Err(invalid("only messages others sent can wait after a Stop"));
                     }
-                    crate::artifacts::pin_request(c, request, &source)?;
+                    crate::artifacts::pin_request_with_encoding(c, request, &source, encoded)?;
                     let exists: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM agent_queue_items WHERE session=? AND (request=? OR message=?))",params![session,request.id.0,request.message_id],|r|r.get(0))?;
                     if exists {
                         return Err(StoreError::EventConflict);
@@ -805,7 +865,7 @@ fn project(
                         target(c, session, &request.spec.owner, *run, Some(*expected_head))?;
                     }
                     for reference in references(request) {
-                        pin(c, session, &request.id, reference)?;
+                        pin_with_encoding(c, session, &request.id, reference, encoded)?;
                     }
                     let entry = QueueEntry {
                         request: *request.clone(),
@@ -813,7 +873,8 @@ fn project(
                     };
                     let (lane, mut target) = placement_columns(placement);
                     if let Placement::Completion { caller } = placement {
-                        let (original, _, stopped, _) = run_head(c, *caller)?;
+                        let (original, _, stopped, _) =
+                            run_head_with_encoding(c, *caller, encoded)?;
                         use maka_agent_facts::message::MessageOrigin;
                         let valid_source = match &source.message.origin {
                             Some(MessageOrigin::SessionCompletion { .. }) => true,
@@ -847,19 +908,19 @@ fn project(
                 }
                 QueueEdit::Update { request } => {
                     let mut old = pending(c, session, &request.id)?;
-                    let before = source(c, &old.request)?;
+                    let before = source_with_encoding(c, &old.request, encoded)?;
                     if !is_interactive(&old.request, &before) {
                         return Err(invalid(
                             "only interactive queue messages can be steered or edited",
                         ));
                     }
-                    let after = validate_request(c, session, request)?;
+                    let after = validate_request_with_encoding(c, session, request, encoded)?;
                     if !is_interactive(request, &after) {
                         return Err(invalid(
                             "only interactive queue messages can be steered or edited",
                         ));
                     }
-                    crate::artifacts::pin_request(c, request, &after)?;
+                    crate::artifacts::pin_request_with_encoding(c, request, &after, encoded)?;
                     if old.request.message_id != request.message_id
                         || old.request.spec.owner != request.spec.owner
                         || old.request.spec.turn_id != request.spec.turn_id
@@ -878,7 +939,7 @@ fn project(
                         return Err(invalid("queue edit changed the completion workspace basis"));
                     }
                     for reference in references(request) {
-                        pin(c, session, &request.id, reference)?;
+                        pin_with_encoding(c, session, &request.id, reference, encoded)?;
                     }
                     old.request = *request.clone();
                     c.execute(
@@ -898,7 +959,7 @@ fn project(
                     target: steering,
                 } => {
                     let mut entry = pending(c, session, request)?;
-                    let source = source(c, &entry.request)?;
+                    let source = source_with_encoding(c, &entry.request, encoded)?;
                     if !is_interactive(&entry.request, &source) {
                         return Err(invalid(
                             "only interactive queue messages can be steered or edited",
@@ -1276,7 +1337,8 @@ pub(super) fn ready(
         .collect()
 }
 pub(crate) fn rebuild_queue_projections(c: &Connection) -> Result<(), StoreError> {
-    let body = if content::has_encoding_column(c)? {
+    let encoded = content::has_encoding_column(c)?;
+    let body = if encoded {
         "maka_content_bytes(b.payload,b.encoding)"
     } else {
         "b.payload"
@@ -1290,7 +1352,7 @@ pub(crate) fn rebuild_queue_projections(c: &Connection) -> Result<(), StoreError
             break;
         }
         for session in sessions {
-            replay_queue_events(c, &session, body)?;
+            replay_queue_events(c, &session, body, encoded)?;
             after = session;
         }
     }
@@ -1303,6 +1365,7 @@ pub(super) fn rebuild(c: &Connection, session: &str) -> Result<QueueCommit, Stor
         session,
         "CASE WHEN e.memory_admission IS NULL THEN maka_content_bytes(b.payload,b.encoding)
          ELSE CAST(json_set(maka_content_text(b.payload,b.encoding), '$.edit.request.spec.memoryAdmission', e.memory_admission) AS BLOB) END",
+        true,
     )
 }
 
@@ -1344,6 +1407,7 @@ fn replay_queue_events(
     c: &Connection,
     session: &str,
     body: &str,
+    encoded: bool,
 ) -> Result<QueueCommit, StoreError> {
     id(session)?;
     c.execute("DELETE FROM agent_queue_items WHERE session=?", [session])?;
@@ -1373,7 +1437,7 @@ fn replay_queue_events(
                 return Err(invalid("noncontiguous queue canonical stream"));
             }
             let event: Event = serde_json::from_slice(&body)?;
-            project(c, session, revision, &event, UnixMillis(at), false)?;
+            project_with_encoding(c, session, revision, &event, UnixMillis(at), false, encoded)?;
             head(c, session, revision)?;
             after = revision;
         }

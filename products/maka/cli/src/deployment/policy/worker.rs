@@ -43,7 +43,7 @@ pub(in crate::deployment) enum Dispatch {
     },
     Local {
         current: Deployment,
-        pending: Option<updates::Pending>,
+        pending: Option<Box<updates::Pending>>,
     },
 }
 
@@ -80,7 +80,10 @@ pub(in crate::deployment) async fn resolve_dispatch_with(
                     root_id: current.root_id,
                 });
             }
-            Ok(Dispatch::Local { current, pending })
+            Ok(Dispatch::Local {
+                current,
+                pending: pending.map(Box::new),
+            })
         }
         store::Handoff::Newer { active, pending } => {
             if active.root_id != root_id {
@@ -140,7 +143,7 @@ impl Reconcile {
                 )
                 .await;
             }
-            Dispatch::Local { current, pending } => (current, pending),
+            Dispatch::Local { current, pending } => (current, pending.map(|p| *p)),
         };
         let executor = current_exe;
         let lease = Arc::new(FileLease::acquire(&directory.join("executor.lock"))?);

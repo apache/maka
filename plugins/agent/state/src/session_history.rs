@@ -82,6 +82,8 @@ pub struct ExecutorTranscript {
     messages: std::collections::BTreeMap<(String, bool), ExecutorText>,
 }
 
+type ExecutorTextPiece = (FactId, FactId, u64, usize, usize);
+
 pub struct ExecutorText {
     pub sequence: u64,
     pub fact: FactId,
@@ -107,7 +109,7 @@ impl ExecutorTranscript {
         &mut self,
         sequence: u64,
         record: &RecordedFact,
-        pieces: &mut Option<Vec<(FactId, FactId, u64, usize, usize)>>,
+        pieces: &mut Option<Vec<ExecutorTextPiece>>,
     ) {
         use maka_agent_facts::executor::Output;
         let Fact::ExternalTaskObserved { output, .. } = &record.fact else {
@@ -141,7 +143,7 @@ impl ExecutorTranscript {
         c: &Connection,
         owner: &RunOwner,
         snapshot: Option<maka_agent_facts::history_snapshot::SnapshotId>,
-        pieces: Option<Vec<(FactId, FactId, u64, usize, usize)>>,
+        pieces: Option<Vec<ExecutorTextPiece>>,
     ) -> Result<(), StoreError> {
         let Some(pieces) = pieces else { return Ok(()) };
         let namespace = serde_json::to_string(owner)?;

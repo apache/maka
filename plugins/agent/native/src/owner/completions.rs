@@ -658,10 +658,8 @@ impl Owner {
         entries: Vec<Completion>,
         now: u64,
     ) -> Result<(), String> {
-        let mut groups: BTreeMap<
-            (String, String),
-            Vec<(Completion, CompletionRequest, MessageResolution)>,
-        > = BTreeMap::new();
+        type CompletionGroup = Vec<(Completion, CompletionRequest, MessageResolution)>;
+        let mut groups: BTreeMap<(String, String), CompletionGroup> = BTreeMap::new();
         let mut runs = BTreeSet::new();
         for entry in entries {
             let prepare = async {

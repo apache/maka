@@ -864,6 +864,222 @@ async fn upgrade_repairs_old_reorder_handoff_before_queue_is_used() {
 }
 
 #[tokio::test]
+async fn cold_v53_upgrade_rebuilds_queue_projections_before_contents_encoding() {
+    use maka_agent_facts::{
+        artifact::{Artifact, ArtifactKind, ArtifactSource, PublishedArtifact},
+        attachment::{AttachmentKind, AttachmentRef, StorageRef},
+    };
+
+    let dir = tempfile::tempdir().unwrap();
+    let (root, store) = open_through(dir.path(), true, 53).await;
+    drop(store);
+    root.close().await.unwrap();
+
+    let (mut basis, basis_blobs) = self::spec();
+    basis.session_id = "cold-v53-queue".into();
+    let caller = RunId::new();
+    let caller_spec_blob = ContentBlob::json(&basis).unwrap();
+
+    let art_bytes = b"pre-v63-session-artifact-payload".to_vec();
+    let art_blob = ContentBlob::new(art_bytes.clone());
+    let art_id = maka_agent_facts::artifact::upload_artifact_id(&basis.session_id, "doc-1");
+    let art_record = PublishedArtifact {
+        artifact: Artifact {
+            id: art_id.clone(),
+            session_id: basis.session_id.clone(),
+            turn_id: basis.turn_id.clone(),
+            created_at: 10,
+            name: "doc.txt".into(),
+            kind: ArtifactKind::File,
+            size_bytes: art_bytes.len() as u64,
+            mime_type: Some("text/plain".into()),
+            source: ArtifactSource::UserUpload,
+            summary: Some(art_blob.reference().digest.clone()),
+        },
+        payload: art_blob.reference().clone(),
+    };
+    let registration_blob = ContentBlob::json(&serde_json::json!({
+        "schemaVersion": SCHEMA_VERSION,
+        "owner": basis.owner,
+        "operation": "upload-doc-1",
+        "record": art_record,
+        "origin": { "kind": "upload", "logical_id": "doc-1" },
+    }))
+    .unwrap();
+
+    let attachment = AttachmentRef {
+        kind: AttachmentKind::Other,
+        name: "doc.txt".into(),
+        mime_type: "text/plain".into(),
+        bytes: art_bytes.len() as u64,
+        storage_ref: StorageRef::SessionFile {
+            session_id: basis.session_id.clone(),
+            relative_path: art_id.clone(),
+        },
+    };
+    let mut msg_with_att = MessageInput::from("with attachment");
+    msg_with_att.attachments = Some(vec![attachment]);
+    let src_att = ContentBlob::json(&RootSourceMessage {
+        message: DeliveredMessage {
+            message_id: "msg-att".into(),
+            submitted_content_digest: msg_with_att.content_digest().unwrap(),
+            content: msg_with_att.clone(),
+            origin: None,
+        },
+        unprepared_content: msg_with_att,
+        submitted_placement: maka_agent_facts::message::Placement::NextTurn,
+        disposition: MessageDisposition::Followup,
+        submitted_intent: None,
+    })
+    .unwrap();
+    let empty_resources = ContentBlob::json(&Vec::<serde_json::Value>::new()).unwrap();
+    let mut att_spec = basis.clone();
+    att_spec.turn_id = "turn-att".into();
+    att_spec.trigger = Trigger::Message {
+        message_id: "msg-att".into(),
+    };
+    let req_att = PreparedRequest {
+        id: RequestId("req-att".into()),
+        message_id: "msg-att".into(),
+        spec: att_spec,
+        source: src_att.reference().clone(),
+        resources: empty_resources.reference().clone(),
+        required_tools: Default::default(),
+    };
+    let ev1_blob = ContentBlob::json(&crate::queue::Event::Command {
+        expected_revision: 0,
+        edit: QueueEdit::Enqueue {
+            request: Box::new(req_att.clone()),
+            placement: Placement::Followup,
+        },
+        resume_after_interrupt: None,
+    })
+    .unwrap();
+
+    let (req_comp, comp_blobs) = prepare_message(
+        &basis,
+        "msg-comp",
+        Some(MessageOrigin::SessionCompletion {
+            session_id: basis.session_id.clone(),
+            message_id: "msg-comp".into(),
+        }),
+    );
+    let ev2_blob = ContentBlob::json(&crate::queue::Event::Command {
+        expected_revision: 1,
+        edit: QueueEdit::Enqueue {
+            request: Box::new(req_comp.clone()),
+            placement: Placement::Completion { caller },
+        },
+        resume_after_interrupt: None,
+    })
+    .unwrap();
+
+    let db_path = dir
+        .path()
+        .join("root")
+        .join(maka_event_log::root::ROOT_DATABASE);
+    let db = rusqlite::Connection::open(&db_path).unwrap();
+    assert!(
+        !maka_event_log::content::has_encoding_column(&db).unwrap(),
+        "v53 database must not have contents.encoding before cold upgrade"
+    );
+    for blob in basis_blobs
+        .iter()
+        .chain([
+            &caller_spec_blob,
+            &art_blob,
+            &registration_blob,
+            &src_att,
+            &empty_resources,
+            &ev1_blob,
+            &ev2_blob,
+        ])
+        .chain(comp_blobs.iter())
+    {
+        blob.store_legacy(&db).unwrap();
+    }
+    let owner_json = serde_json::to_string(&basis.owner).unwrap();
+    let caller_spec_id = caller_spec_blob.store_legacy(&db).unwrap();
+    db.execute(
+        "INSERT INTO agent_run_specs(run,schema_version,owner,session,spec_content_id) VALUES(?1,?2,?3,?4,?5)",
+        rusqlite::params![
+            caller.to_string(),
+            crate::sql::HEADER_SCHEMA_VERSION,
+            owner_json,
+            basis.session_id,
+            caller_spec_id
+        ],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO agent_runs(run,schema_version,owner,session,admission_sequence,local,revision,control_version,stopped,tokens,retries,retry_pending,cancelled_by_risk,replans,terminal)
+         VALUES(?1,?2,?3,?4,1,1,1,0,0,0,0,0,0,'[]','completed')",
+        rusqlite::params![
+            caller.to_string(),
+            crate::sql::HEADER_SCHEMA_VERSION,
+            owner_json,
+            basis.session_id
+        ],
+    )
+    .unwrap();
+    let art_cid = art_blob.store_legacy(&db).unwrap();
+    let reg_cid = registration_blob.store_legacy(&db).unwrap();
+    db.execute(
+        "INSERT INTO agent_session_artifact_registrations(session,artifact,owner,operation,body_content_id,content_id,provenance_content_id)
+         VALUES(?1,?2,?3,'upload-doc-1',?4,?5,NULL)",
+        rusqlite::params![basis.session_id, art_id, owner_json, reg_cid, art_cid],
+    )
+    .unwrap();
+    let ev1_cid = ev1_blob.store_legacy(&db).unwrap();
+    let ev2_cid = ev2_blob.store_legacy(&db).unwrap();
+    db.execute(
+        "INSERT INTO agent_queue_events(session,revision,id,at,body_content_id) VALUES(?1,1,?2,111,?3),(?1,2,?4,222,?5)",
+        rusqlite::params![
+            basis.session_id,
+            FactId::new().to_string(),
+            ev1_cid,
+            FactId::new().to_string(),
+            ev2_cid
+        ],
+    )
+    .unwrap();
+    drop(db);
+
+    // Cold upgrade from v53 -> latest: migration 54 must replay queue events, artifact pins,
+    // and completion caller run_head cleanly before migration 63 adds contents.encoding.
+    let (root, store) = open(dir.path(), false).await;
+    let q = store.queue();
+    assert_eq!(
+        q.entry_enqueued_at(basis.session_id.clone(), req_att.id.clone())
+            .await
+            .unwrap(),
+        Some(UnixMillis(111))
+    );
+    assert_eq!(
+        q.entry_enqueued_at(basis.session_id.clone(), req_comp.id.clone())
+            .await
+            .unwrap(),
+        Some(UnixMillis(222))
+    );
+    let read = q.read(basis.session_id.clone()).await.unwrap();
+    let ids: Vec<_> = read.entries.iter().map(|e| &e.request.id).collect();
+    assert_eq!(ids, vec![&req_att.id, &req_comp.id]);
+    exec_sql(&store, move |c| {
+        let pinned: bool = c.query_row(
+            "SELECT EXISTS(SELECT 1 FROM agent_queue_content_pins WHERE session=?1 AND request=?2 AND content_id=?3)",
+            rusqlite::params![basis.session_id, req_att.id.0, art_cid],
+            |r| r.get(0),
+        )?;
+        assert!(pinned, "v54 replay must retain session artifact content pin");
+        Ok(())
+    })
+    .await;
+    drop(q);
+    drop(store);
+    root.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn pausing_a_goal_preserves_pending_steering_as_an_independent_turn() {
     use crate::queue::{GOAL_CONTROL_STOP, SteeringTarget};
 
