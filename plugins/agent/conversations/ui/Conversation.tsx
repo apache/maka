@@ -362,6 +362,7 @@ export type ConversationHandle = Omit<
   reveal(anchor: RecallAnchor, current: () => boolean): Promise<void>;
   focusHistory(): void;
   focusActivity(turnId: string | null): void;
+  stepSibling?(step: -1 | 1): void;
   /** The title its header shows, or null until the session metadata has loaded. */
   title(): string | null;
   /** Latest user/assistant messages for the fullscreen floating mini-preview. */
@@ -1247,6 +1248,11 @@ export function Conversation(props: ConversationProps) {
   const openWorker = (id: string) => (props.openSessionBeside ?? props.openSessionHere)?.(id);
   const openFamilySession = (id: string) =>
     (props.openSessionHere ?? props.openSessionBeside)?.(id);
+  const stepSibling = (step: -1 | 1) => {
+    if (props.compact || !parentSessionId()) return;
+    const target = siblingTarget(familySiblings(), sessionId, step);
+    if (target) openFamilySession(target.id);
+  };
   const familyChildren = createScopedCatalog(host, () =>
     props.compact ? null : { kind: 'children', sessionId },
   );
@@ -1277,30 +1283,9 @@ export function Conversation(props: ConversationProps) {
       try {
         const obs = await host.query('agent', 'observe', { sessionId: pid });
         if (!alive || cancelled) return;
-        let rootId: string | null = obs.session.parentSessionId ? null : obs.session.id;
-        let cursor = obs.session.parentSessionId;
-        const seen = new Set<string>([sessionId, pid]);
-        let hops = 0;
-        while (cursor && !seen.has(cursor) && hops < 8) {
-          seen.add(cursor);
-          hops += 1;
-          const cached = props.knownSession?.(cursor);
-          if (cached) {
-            if (cached.parentSessionId === null) {
-              rootId = cached.id;
-              break;
-            }
-            cursor = cached.parentSessionId;
-            continue;
-          }
-          const anc = await host.query('agent', 'observe', { sessionId: cursor });
-          if (!alive || cancelled) return;
-          if (anc.session.parentSessionId === null) {
-            rootId = anc.session.id;
-            break;
-          }
-          cursor = anc.session.parentSessionId;
-        }
+        const ancestors = obs.session.ancestorIds ?? [];
+        const rootId =
+          ancestors.at(-1) ?? (obs.session.parentSessionId === null ? obs.session.id : null);
         familyParent.set({
           id: obs.session.id,
           title: obs.session.title,
@@ -3254,24 +3239,6 @@ export function Conversation(props: ConversationProps) {
       { within: node, when: 'notEditing' },
     );
   });
-  effect(() => {
-    const node = root();
-    if (!node || props.compact || !props.visible() || !parentSessionId()) return;
-    return keymap.bind(
-      {
-        'mod+[': () => {
-          const target = siblingTarget(familySiblings(), sessionId, -1);
-          if (target) openFamilySession(target.id);
-        },
-        'mod+]': () => {
-          const target = siblingTarget(familySiblings(), sessionId, 1);
-          if (target) openFamilySession(target.id);
-        },
-      },
-      { within: node, when: 'notEditing' },
-    );
-  });
-
   // A slow disk retains one in-flight snapshot and one replaceable latest
   // edit, rather than one complete draft and Promise closure per keystroke.
   const startSave = () => {
@@ -4693,6 +4660,7 @@ export function Conversation(props: ConversationProps) {
       cancelNavigation();
       list?.focus();
     },
+    stepSibling,
     focusActivity(turnId) {
       cancelNavigation();
       if (reading() === 'trajectory') {

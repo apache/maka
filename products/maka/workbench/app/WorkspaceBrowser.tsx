@@ -61,10 +61,8 @@ import { SessionActions } from './SessionActions';
 import { SessionMenuItems, type SessionMenuAction } from './SessionMenu';
 import { Automations } from './Automations';
 import {
-  attachBubbledChildren,
+  desktopSidebarGroups,
   groupWorkspace,
-  groupConversations,
-  groupConversationsByTime,
   projectSessionLimit,
   topLevelCount,
   withinLimit,
@@ -75,7 +73,7 @@ import {
   type SidebarFeature,
   type SidebarSortMode,
 } from './sidebarPreferences';
-import { descendsFrom, workspaceSessions } from './sessionNesting';
+import { workspaceSessions } from './sessionNesting';
 import type { AgentSession } from '../../../../packages/plugin-sdk/src/index.js';
 import {
   hasForkPrefix,
@@ -118,8 +116,10 @@ export type WorkspaceBrowserProps = {
   botSession?(): string | null | undefined;
   /** The conversations the Bot created; the running and waiting ones show under its entry. */
   botWorkers?(): readonly AgentSession[];
-  /** Waiting conversations across all depths so waiting children can bubble under their parent. */
-  waitingChildren?(): readonly AgentSession[];
+  /** Waiting (and currently viewed sticky) children eligible to bubble under their parent. */
+  bubbledChildren?(): readonly AgentSession[];
+  /** Pin a selected bubble row in place until the user navigates away. */
+  onSelectBubble?(bubble: AgentSession | null): void;
   /** Top-level root of the currently open child conversation, highlighted without inserting a row. */
   selectedRoot?(): string | null;
   settings(expectedSessionId: string | null): void;
@@ -368,38 +368,10 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
         scope: { kind: 'project', projectId: project.reference.id } as BrowserScope,
       })),
   ]);
-  // A waiting bubble the user clicked into stays pinned in place until they
-  // navigate away, so approving it does not yank the row out from under them.
-  const stickyBubble = signal<AgentSession | null>(null);
-  effect(() => {
-    const selected = props.selected();
-    const sticky = untracked(() => stickyBubble());
-    if (!sticky) return;
-    if (selected !== sticky.id) {
-      stickyBubble.set(null);
-      return;
-    }
-    const fresh = (props.waitingChildren?.() ?? []).find((s) => s.id === sticky.id);
-    if (fresh && fresh.revision !== sticky.revision) stickyBubble.set(fresh);
-  });
-  const bubbledChildren = computed(() => {
-    if (platform.idiom === 'terminal' || browser.filter() !== 'all') return [];
-    const bot = props.botSession?.() ?? null;
-    const raw = props.waitingChildren?.() ?? [];
-    const merged = new Map<string, AgentSession>();
-    for (const s of raw) if (s.parentSessionId !== null) merged.set(s.id, s);
-    const sticky = stickyBubble();
-    if (sticky && sticky.parentSessionId !== null && !merged.has(sticky.id)) {
-      merged.set(sticky.id, sticky);
-    }
-    const list = [...merged.values()];
-    if (bot === null) return list;
-    const parents = new Map<string, string | null>([
-      ...visibleSessions().map((s) => [s.id, s.parentSessionId] as const),
-      ...list.map((s) => [s.id, s.parentSessionId] as const),
-    ]);
-    return list.filter((s) => s.id !== bot && !descendsFrom(s.id, bot, parents));
-  });
+  const bubbledChildren = () =>
+    platform.idiom === 'terminal' || browser.filter() !== 'all'
+      ? []
+      : (props.bubbledChildren?.() ?? []);
   const sessionsById = computed(() => {
     const map = new Map(visibleSessions().map((session) => [session.id, session]));
     for (const child of bubbledChildren()) {
@@ -416,13 +388,11 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
     () => new Map(browser.projects().map((project) => [project.reference.id, project])),
   );
   const groups = computed(() => {
-    const base = sortByTime()
-      ? groupConversationsByTime<BrowserProject>(visibleSessions())
-      : groupConversations(visibleSessions(), browser.projects(), browser.filter() === 'all');
-    const raw =
-      browser.filter() === 'all' && platform.idiom !== 'terminal'
-        ? attachBubbledChildren(base, bubbledChildren())
-        : base;
+    const raw = desktopSidebarGroups(visibleSessions(), browser.projects(), bubbledChildren(), {
+      byTime: sortByTime(),
+      withEmpty: browser.filter() === 'all',
+      attachBubbles: browser.filter() === 'all' && platform.idiom !== 'terminal',
+    });
     return raw.map((group): WorkspaceGroup => {
       const name = group.pinned
         ? tr('Pinned')
@@ -449,14 +419,20 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
     return last;
   });
   const groupsById = computed(() => new Map(groups().map((group) => [group.key, group])));
-  // Highlight the open conversation when it has a row (root, pinned child, or
-  // active bubble); otherwise highlight its visible root without inserting a row.
+  const renderedSessionIds = computed(() =>
+    platform.idiom === 'terminal'
+      ? new Set(visibleSessions().map((session) => session.id))
+      : new Set(groups().flatMap((group) => group.sessions)),
+  );
+  // Highlight the open conversation only when it actually has a rendered row;
+  // otherwise highlight its visible root without inserting a row.
   const highlightedId = computed(() => {
     const id = props.selected();
     if (!id) return null;
-    if (sessionsById().has(id)) return id;
+    const rendered = renderedSessionIds();
+    if (rendered.has(id)) return id;
     const root = props.selectedRoot?.() ?? null;
-    return root && sessionsById().has(root) ? root : null;
+    return root && rendered.has(root) ? root : null;
   });
   const rowIds = computed(() =>
     platform.idiom === 'terminal'
@@ -488,7 +464,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
     if (!alive || props.selected() !== origin || props.switching()) return;
     const bubble = nestedRows().has(id) ? (sessionsById().get(id) ?? null) : null;
     const opened = await props.selectSession(id, origin);
-    if (alive && opened) stickyBubble.set(bubble);
+    if (alive && opened) props.onSelectBubble?.(bubble);
     // In Desktop docked mode the conversation stays visible and reports draft blocks directly.
     if (alive && !opened && id !== origin && props.selected() === origin && !props.docked()) {
       toast.show({
@@ -1487,11 +1463,17 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                   />
                 );
               };
-              // The conversation that created this one, when the list shows it
-              // elsewhere rather than just above (the row has no room to say).
-              const creator = () => {
-                const parent = session()?.parentSessionId;
-                return parent && !nestedRows().has(key()) ? sessionsById().get(parent) : undefined;
+              // Title of the conversation that created this one, including when the
+              // immediate parent is an unpinned intermediate session outside the current page.
+              const creatorTitle = () => {
+                const current = session();
+                if (!current?.parentSessionId || nestedRows().has(key())) return '';
+                const listed = sessionsById().get(current.parentSessionId);
+                if (listed) return listed.title || tr('Untitled conversation');
+                if (current.parentTitle !== undefined) {
+                  return current.parentTitle || tr('Untitled conversation');
+                }
+                return '';
               };
               // The Bot is not in this list, so its workers cannot nest under it; mark them
               // with the Bot's own icon (a text caption would shorten the title).
@@ -1509,12 +1491,8 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
               const desktopCaption = () => {
                 const current = session();
                 if (!current || isBubble()) return '';
-                const pinnedFrom =
-                  current.pinned && creator()
-                    ? tr('From {title}', {
-                        title: creator()!.title || tr('Untitled conversation'),
-                      })
-                    : '';
+                const parentLabel = current.pinned ? creatorTitle() : '';
+                const pinnedFrom = parentLabel ? tr('From {title}', { title: parentLabel }) : '';
                 return [
                   activityKnown() && current.activity === 'waiting'
                     ? sessionStatusCaption.waiting
@@ -1611,15 +1589,14 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                             tooltip={
                               platform.idiom === 'terminal'
                                 ? undefined
-                                : textTooltip(() =>
-                                    creator()
-                                      ? tr('From {title}', {
-                                          title: creator()!.title || tr('Untitled conversation'),
-                                        })
+                                : textTooltip(() => {
+                                    const parentLabel = creatorTitle();
+                                    return parentLabel
+                                      ? tr('From {title}', { title: parentLabel })
                                       : botWorker()
                                         ? tr('From {title}', { title: tr('Maka Bot') })
-                                        : undefined,
-                                  )
+                                        : undefined;
+                                  })
                             }
                             onPress={inputAction(select, { id: key(), origin: props.selected() })}
                             style={{

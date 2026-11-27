@@ -22,14 +22,18 @@ import test from 'node:test';
 import {
   attachBubbledChildren,
   browserOrder,
+  desktopSidebarGroups,
   groupConversations,
   groupConversationsByTime,
   groupWorkspace,
+  selectBubbledChildren,
 } from '../app/conversationGroups.ts';
 
 const session = (id, path, options = {}) => ({
   id,
   parentSessionId: options.parent ?? null,
+  ...(options.ancestors ? { ancestorIds: options.ancestors } : {}),
+  activity: options.activity ?? 'idle',
   pinned: options.pinned ?? false,
   archived: options.archived ?? false,
   workspace: { projectId: options.project ?? null, path },
@@ -88,20 +92,59 @@ test('waiting children bubble one level under their visible ancestor without dup
   );
 });
 
-test('bubbled children do not consume the six-conversation project preview limit', () => {
+test('waiting grandchildren bubble under their visible root even when an intermediate parent is idle and unlisted', () => {
+  const groups = desktopSidebarGroups(
+    [session('root', '/a', { project: 'p' }), session('other', '/a', { project: 'p' })],
+    [project('p')],
+    [
+      session('grandchild', '/a', {
+        parent: 'mid',
+        ancestors: ['mid', 'root'],
+        activity: 'waiting',
+      }),
+    ],
+    { byTime: false, withEmpty: false, attachBubbles: true },
+  );
+  assert.deepEqual(
+    groups.map((group) => [group.key, group.sessions, [...group.nested]]),
+    [['project:p', ['root', 'grandchild', 'other'], ['grandchild']]],
+  );
+  assert.deepEqual(browserOrder(groups, new Set(), 'root', new Set()), [
+    'root',
+    'grandchild',
+    'other',
+  ]);
+});
+
+test('selectBubbledChildren clears stale waiting activity on an approved sticky row and hides deep Bot descendants', () => {
+  const visible = [session('root', '/a')];
+  const sticky = session('child', '/a', { parent: 'root', activity: 'waiting' });
+  const botGrandchild = session('bot-sub', '/a', {
+    parent: 'bot-worker',
+    ancestors: ['bot-worker', 'bot'],
+    activity: 'waiting',
+  });
+  const bubbles = selectBubbledChildren([botGrandchild], visible, 'bot', sticky);
+  assert.deepEqual(
+    bubbles.map((s) => [s.id, s.activity]),
+    [['child', 'idle']],
+  );
+});
+
+test('bubbled children do not consume the six-conversation project preview limit and stepping visits them in sidebar order', () => {
   const tops = ['t1', 't2', 't3', 't4', 't5', 't6', 't7'];
-  const base = groupConversations(
+  const groups = desktopSidebarGroups(
     [
       session('t0', '/a', { project: 'x' }),
       ...tops.map((id) => session(id, '/a', { project: 'x' })),
     ],
     [project('x')],
-    false,
+    [
+      session('w1', '/a', { parent: 't0', activity: 'waiting' }),
+      session('w2', '/a', { parent: 't0', activity: 'waiting' }),
+    ],
+    { byTime: false, withEmpty: false, attachBubbles: true },
   );
-  const groups = attachBubbledChildren(base, [
-    session('w1', '/a', { parent: 't0' }),
-    session('w2', '/a', { parent: 't0' }),
-  ]);
   assert.deepEqual(browserOrder(groups, new Set(), null, new Set()), [
     't0',
     'w1',

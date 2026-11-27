@@ -17,12 +17,13 @@
  * under the License.
  */
 
-import { Scroll, signal, Text, View, type JSX } from 'nsh';
+import { keymap, Scroll, signal, Text, View, type JSX } from 'nsh';
 import { Button, Popover } from 'nsh/base';
 import type { AgentSession } from '../../../../packages/plugin-sdk/src/index.js';
 import { Icon } from './Icon';
 import { tr } from './locale';
 import { LoadingIndicator } from './Loading';
+import { sessionStatusCaption } from './sessionStatus';
 import { familySummary, sortFamilySessions, workspaceDifferenceLabel } from './sessionFamilyState';
 import {
   C,
@@ -32,7 +33,6 @@ import {
   quietFocusStyle,
   quietHoverStyle,
   radius,
-  shortcut,
   textTooltip,
 } from './ui';
 
@@ -48,6 +48,7 @@ function FamilyPopover(props: {
   open(): boolean;
   onOpenChange(open: boolean): void;
   align: 'start' | 'end';
+  shrink?: boolean;
   trigger: JSX.Element;
   parent?: () => FamilyParent | null;
   items(): readonly AgentSession[];
@@ -60,14 +61,9 @@ function FamilyPopover(props: {
     props.onOpenChange(false);
     props.openSession(id);
   };
-  const statusWord = (activity: AgentSession['activity']) =>
-    activity === 'waiting'
-      ? tr('Waiting')
-      : activity === 'working'
-        ? tr('Working')
-        : tr('Completed');
-  const prevKey = () => shortcut('', 'mod+[').trim();
-  const nextKey = () => shortcut('', 'mod+]').trim();
+  const statusWord = (activity: AgentSession['activity']) => sessionStatusCaption[activity];
+  const prevKey = () => keymap.label('mod+[');
+  const nextKey = () => keymap.label('mod+]');
 
   return (
     <Popover
@@ -77,6 +73,7 @@ function FamilyPopover(props: {
       align={props.align}
       offset={6}
       margin={8}
+      style={props.shrink ? { minWidth: 0, flexShrink: 1 } : undefined}
       popupStyle={{ ...floatingStyle(), width: 336, padding: 6 }}
       trigger={props.trigger}
     >
@@ -151,9 +148,18 @@ function FamilyPopover(props: {
                 const presetName = () => child().appliedPreset?.name ?? '';
                 const isWaiting = () => child().activity === 'waiting';
                 const isWorking = () => child().activity === 'working';
+                const rowAccessibilityLabel = () =>
+                  [
+                    child().title || tr('Untitled conversation'),
+                    statusWord(child().activity),
+                    presetName(),
+                    diffWorkspace(),
+                  ]
+                    .filter(Boolean)
+                    .join(', ');
                 return (
                   <Button
-                    accessibilityLabel={child().title || tr('Untitled conversation')}
+                    accessibilityLabel={rowAccessibilityLabel()}
                     selected={isCurrent()}
                     onPress={() => openTarget(child().id)}
                     style={{
@@ -183,7 +189,16 @@ function FamilyPopover(props: {
                         else={
                           <If
                             when={isWaiting()}
-                            else={<Icon name="statusSuccess" size={13} color={C.success} />}
+                            else={
+                              <View
+                                style={{
+                                  width: 6,
+                                  height: 6,
+                                  borderRadius: 3,
+                                  backgroundColor: C.muted,
+                                }}
+                              />
+                            }
                           >
                             <View
                               style={{
@@ -260,7 +275,7 @@ function FamilyPopover(props: {
             </Each>
           </View>
         </Scroll>
-        <If when={ordered().length > 1}>
+        <If when={Boolean(props.parent?.()) && ordered().length > 1}>
           <View
             style={{
               marginTop: 4,
@@ -298,6 +313,18 @@ export function SessionFamilyTrigger(props: {
 }) {
   const open = signal(false);
   const stats = () => familySummary(props.children());
+  const triggerAccessibilityLabel = () => {
+    const summary = stats();
+    return [
+      tr('{count} subagents', { count: summary.total }),
+      summary.waiting > 0 ? tr('{count} waiting', { count: summary.waiting }) : '',
+      summary.working > 0
+        ? `${summary.working}/${summary.total} ${sessionStatusCaption.working}`
+        : '',
+    ]
+      .filter(Boolean)
+      .join(', ');
+  };
 
   return (
     <If when={stats().total > 0}>
@@ -310,7 +337,7 @@ export function SessionFamilyTrigger(props: {
         openSession={props.openSession}
         trigger={
           <Button
-            accessibilityLabel={tr('Subagents')}
+            accessibilityLabel={triggerAccessibilityLabel()}
             style={{
               height: 28,
               minHeight: 28,
@@ -445,6 +472,7 @@ export function SessionFamilyBreadcrumb(props: {
         open={open}
         onOpenChange={(next) => open.set(next)}
         align="start"
+        shrink
         parent={props.parent}
         items={props.siblings}
         currentId={() => props.sessionId}

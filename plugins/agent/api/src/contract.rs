@@ -913,6 +913,12 @@ pub struct Session {
     /// Session that initiated creation, independent of fork ancestry and task ownership.
     #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<String>")]
     pub parent_session_id: Option<String>,
+    /// Ordered live ancestor session ids from immediate parent to top-level root.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ancestor_ids: Vec<String>,
+    /// Title of the immediate live parent session when this session is a child.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_title: Option<String>,
     #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<SessionBranch>")]
     pub branch: Option<SessionBranch>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

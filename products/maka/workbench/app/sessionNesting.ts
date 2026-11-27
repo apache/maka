@@ -17,17 +17,26 @@
  * under the License.
  */
 
-type Nestable = { id: string; parentSessionId: string | null };
+type Nestable = {
+  id: string;
+  parentSessionId: string | null;
+  ancestorIds?: readonly string[];
+};
 
 /**
- * Resolve the nearest ancestor of `id` that is present in `visible`, walking
- * parent links through `parents` while guarding against cycles.
+ * Resolve the nearest ancestor of `id` that is present in `visible`. Uses the
+ * backend's explicit `ancestorIds` chain when present (covering unpinned intermediate
+ * ancestors), falling back to walking `parents` for partial/local fixtures.
  */
 export function visibleAncestor(
   id: string,
   visible: ReadonlySet<string>,
   parents: ReadonlyMap<string, string | null>,
+  ancestorIds?: readonly string[],
 ): string | null {
+  if (ancestorIds?.length) {
+    return ancestorIds.find((ancestor) => visible.has(ancestor)) ?? null;
+  }
   const seen = new Set<string>([id]);
   let at = parents.get(id) ?? null;
   while (at !== null) {
@@ -39,13 +48,15 @@ export function visibleAncestor(
   return null;
 }
 
-/** Whether `id` descends from `ancestor` through `parents`, guarding against cycles. */
+/** Whether `id` descends from `ancestor`, preferring explicit `ancestorIds` when present. */
 export function descendsFrom(
   id: string,
   ancestor: string | null,
   parents: ReadonlyMap<string, string | null>,
+  ancestorIds?: readonly string[],
 ): boolean {
   if (ancestor === null) return false;
+  if (ancestorIds?.length) return ancestorIds.includes(ancestor);
   const seen = new Set<string>([id]);
   let at = parents.get(id) ?? null;
   while (at !== null) {
@@ -68,5 +79,7 @@ export function workspaceSessions<T extends Nestable>(
   sessions = sessions.filter((session) => session.id !== ancestor);
   if (!desktop || filter !== 'all') return [...sessions];
   const parents = new Map(sessions.map((session) => [session.id, session.parentSessionId]));
-  return sessions.filter((session) => !descendsFrom(session.id, ancestor, parents));
+  return sessions.filter(
+    (session) => !descendsFrom(session.id, ancestor, parents, session.ancestorIds),
+  );
 }

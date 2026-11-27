@@ -1199,6 +1199,19 @@ export const contracts: {
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
                     type: ['string', 'null'],
                   },
+                  ancestorIds: {
+                    description:
+                      'Ordered live ancestor session ids from immediate parent to top-level root.',
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  parentTitle: {
+                    description:
+                      'Title of the immediate live parent session when this session is a child.',
+                    type: ['string', 'null'],
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -2891,6 +2904,19 @@ export const contracts: {
                   parentSessionId: {
                     description:
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
+                    type: ['string', 'null'],
+                  },
+                  ancestorIds: {
+                    description:
+                      'Ordered live ancestor session ids from immediate parent to top-level root.',
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  parentTitle: {
+                    description:
+                      'Title of the immediate live parent session when this session is a child.',
                     type: ['string', 'null'],
                   },
                   branch: {
@@ -8083,6 +8109,19 @@ export const contracts: {
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
                     type: ['string', 'null'],
                   },
+                  ancestorIds: {
+                    description:
+                      'Ordered live ancestor session ids from immediate parent to top-level root.',
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  parentTitle: {
+                    description:
+                      'Title of the immediate live parent session when this session is a child.',
+                    type: ['string', 'null'],
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -12098,6 +12137,19 @@ export const contracts: {
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
                     type: ['string', 'null'],
                   },
+                  ancestorIds: {
+                    description:
+                      'Ordered live ancestor session ids from immediate parent to top-level root.',
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  parentTitle: {
+                    description:
+                      'Title of the immediate live parent session when this session is a child.',
+                    type: ['string', 'null'],
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -12900,6 +12952,19 @@ export const contracts: {
                   parentSessionId: {
                     description:
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
+                    type: ['string', 'null'],
+                  },
+                  ancestorIds: {
+                    description:
+                      'Ordered live ancestor session ids from immediate parent to top-level root.',
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  parentTitle: {
+                    description:
+                      'Title of the immediate live parent session when this session is a child.',
                     type: ['string', 'null'],
                   },
                   branch: {
@@ -20988,6 +21053,19 @@ export const contracts: {
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
                     type: ['string', 'null'],
                   },
+                  ancestorIds: {
+                    description:
+                      'Ordered live ancestor session ids from immediate parent to top-level root.',
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  parentTitle: {
+                    description:
+                      'Title of the immediate live parent session when this session is a child.',
+                    type: ['string', 'null'],
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -22207,6 +22285,19 @@ export const contracts: {
                   parentSessionId: {
                     description:
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
+                    type: ['string', 'null'],
+                  },
+                  ancestorIds: {
+                    description:
+                      'Ordered live ancestor session ids from immediate parent to top-level root.',
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  parentTitle: {
+                    description:
+                      'Title of the immediate live parent session when this session is a child.',
                     type: ['string', 'null'],
                   },
                   branch: {
@@ -24480,6 +24571,19 @@ export const contracts: {
                   parentSessionId: {
                     description:
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
+                    type: ['string', 'null'],
+                  },
+                  ancestorIds: {
+                    description:
+                      'Ordered live ancestor session ids from immediate parent to top-level root.',
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  parentTitle: {
+                    description:
+                      'Title of the immediate live parent session when this session is a child.',
                     type: ['string', 'null'],
                   },
                   branch: {
@@ -30009,6 +30113,19 @@ export const contracts: {
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
                     type: ['string', 'null'],
                   },
+                  ancestorIds: {
+                    description:
+                      'Ordered live ancestor session ids from immediate parent to top-level root.',
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  parentTitle: {
+                    description:
+                      'Title of the immediate live parent session when this session is a child.',
+                    type: ['string', 'null'],
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -31963,6 +32080,19 @@ export const contracts: {
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
                     type: ['string', 'null'],
                   },
+                  ancestorIds: {
+                    description:
+                      'Ordered live ancestor session ids from immediate parent to top-level root.',
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  parentTitle: {
+                    description:
+                      'Title of the immediate live parent session when this session is a child.',
+                    type: ['string', 'null'],
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -33315,6 +33445,19 @@ export const contracts: {
                   parentSessionId: {
                     description:
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
+                    type: ['string', 'null'],
+                  },
+                  ancestorIds: {
+                    description:
+                      'Ordered live ancestor session ids from immediate parent to top-level root.',
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  parentTitle: {
+                    description:
+                      'Title of the immediate live parent session when this session is a child.',
                     type: ['string', 'null'],
                   },
                   branch: {
@@ -37116,6 +37259,19 @@ export const contracts: {
                   parentSessionId: {
                     description:
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
+                    type: ['string', 'null'],
+                  },
+                  ancestorIds: {
+                    description:
+                      'Ordered live ancestor session ids from immediate parent to top-level root.',
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  parentTitle: {
+                    description:
+                      'Title of the immediate live parent session when this session is a child.',
                     type: ['string', 'null'],
                   },
                   branch: {
@@ -45046,6 +45202,19 @@ export const contracts: {
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
                     type: ['string', 'null'],
                   },
+                  ancestorIds: {
+                    description:
+                      'Ordered live ancestor session ids from immediate parent to top-level root.',
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  parentTitle: {
+                    description:
+                      'Title of the immediate live parent session when this session is a child.',
+                    type: ['string', 'null'],
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -47468,6 +47637,19 @@ export const contracts: {
                   parentSessionId: {
                     description:
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
+                    type: ['string', 'null'],
+                  },
+                  ancestorIds: {
+                    description:
+                      'Ordered live ancestor session ids from immediate parent to top-level root.',
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  parentTitle: {
+                    description:
+                      'Title of the immediate live parent session when this session is a child.',
                     type: ['string', 'null'],
                   },
                   branch: {
@@ -53803,6 +53985,19 @@ export const contracts: {
                   parentSessionId: {
                     description:
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
+                    type: ['string', 'null'],
+                  },
+                  ancestorIds: {
+                    description:
+                      'Ordered live ancestor session ids from immediate parent to top-level root.',
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  parentTitle: {
+                    description:
+                      'Title of the immediate live parent session when this session is a child.',
                     type: ['string', 'null'],
                   },
                   branch: {

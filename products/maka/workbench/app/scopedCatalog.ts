@@ -80,7 +80,14 @@ export function createScopedCatalog(
           try {
             while (!stopped) {
               const page = await opened.next();
-              if (stopped || page === null) return;
+              if (stopped) return;
+              if (page === null) {
+                if (shown !== '') {
+                  shown = '';
+                  children.set([]);
+                }
+                return;
+              }
               reconnects = 0;
               if (page.revision === lastRevision) continue;
               try {
@@ -131,7 +138,10 @@ export function createScopedCatalog(
         }
       }
     })().catch(() => {
-      // The stream ended; the last list stays until this is read again.
+      if (!stopped && shown !== '') {
+        shown = '';
+        children.set([]);
+      }
     });
     cleanup(() => {
       stopped = true;

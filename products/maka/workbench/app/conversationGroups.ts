@@ -21,7 +21,7 @@ import type {
   AgentProject,
   AgentWorkspaceSelection,
 } from '../../../../packages/plugin-sdk/src/index.js';
-import { visibleAncestor } from './sessionNesting.ts';
+import { descendsFrom, visibleAncestor } from './sessionNesting.ts';
 
 type Groupable = {
   id: string;
@@ -36,6 +36,7 @@ type Listable = { reference: { id: string }; archived: boolean };
 export type BubbledChild = {
   id: string;
   parentSessionId: string | null;
+  ancestorIds?: readonly string[];
   pinned: boolean;
   archived: boolean;
 };
@@ -124,7 +125,7 @@ export function attachBubbledChildren<Project>(
   for (const bubble of bubbles) {
     if (bubble.archived || bubble.pinned || visible.has(bubble.id) || added.has(bubble.id))
       continue;
-    const ancestor = visibleAncestor(bubble.id, visible, parents);
+    const ancestor = visibleAncestor(bubble.id, visible, parents, bubble.ancestorIds);
     if (ancestor === null) continue;
     added.add(bubble.id);
     const list = byParent.get(ancestor);
@@ -148,6 +149,55 @@ export function attachBubbledChildren<Project>(
     }
     return { ...group, sessions, nested };
   });
+}
+
+/**
+ * Derive the active desktop bubble list from live waiting sessions plus an optional
+ * currently-viewed sticky bubble. When a sticky bubble leaves `waiting`, its activity
+ * clears to `idle` so an approved row stays anchored without showing a stale Waiting badge.
+ */
+export function selectBubbledChildren<
+  T extends BubbledChild & { activity: 'idle' | 'working' | 'waiting' },
+>(
+  waiting: readonly T[],
+  visible: readonly { id: string; parentSessionId: string | null }[],
+  botSession: string | null,
+  sticky: T | null,
+): T[] {
+  const merged = new Map<string, T>();
+  for (const session of waiting) {
+    if (session.parentSessionId !== null) merged.set(session.id, session);
+  }
+  if (sticky && sticky.parentSessionId !== null && !merged.has(sticky.id)) {
+    merged.set(sticky.id, sticky.activity === 'waiting' ? { ...sticky, activity: 'idle' } : sticky);
+  }
+  const list = [...merged.values()];
+  if (botSession === null) return list;
+  const parents = new Map<string, string | null>([
+    ...visible.map((session) => [session.id, session.parentSessionId] as const),
+    ...list.map((session) => [session.id, session.parentSessionId] as const),
+  ]);
+  return list.filter(
+    (session) =>
+      session.id !== botSession &&
+      !descendsFrom(session.id, botSession, parents, session.ancestorIds),
+  );
+}
+
+/**
+ * Build the desktop sidebar groups shared by both rendering and keyboard stepping
+ * (`mod+shift+[` / `mod+shift+]`), including bubbled waiting child rows.
+ */
+export function desktopSidebarGroups<Project extends Listable>(
+  visible: readonly Groupable[],
+  projects: readonly Project[],
+  bubbles: readonly BubbledChild[],
+  options: { byTime: boolean; withEmpty: boolean; attachBubbles: boolean },
+): ConversationGroup<Project>[] {
+  const base = options.byTime
+    ? groupConversationsByTime<Project>(visible)
+    : groupConversations(visible, projects, options.withEmpty);
+  return options.attachBubbles ? attachBubbledChildren(base, bubbles) : base;
 }
 
 export function projectSessionLimit(group: ConversationGroup<unknown>): number {

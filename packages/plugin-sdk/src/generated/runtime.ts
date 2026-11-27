@@ -7858,6 +7858,14 @@ export interface AgentSession {
    * Session that initiated creation, independent of fork ancestry and task ownership.
    */
   parentSessionId: string | null;
+  /**
+   * Ordered live ancestor session ids from immediate parent to top-level root.
+   */
+  ancestorIds?: string[];
+  /**
+   * Title of the immediate live parent session when this session is a child.
+   */
+  parentTitle?: string | null;
   branch: AgentSessionBranch | null;
   backend?: AgentBackendPreference | null;
   tools?: string[] | null;

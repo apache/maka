@@ -26,14 +26,22 @@ import {
   workspaceDifferenceLabel,
 } from '../app/sessionFamilyState.ts';
 
-test('sortFamilySessions preserves stable creation order regardless of activity changes', () => {
+test('sortFamilySessions preserves creation order even when earlier sessions are updated more recently', () => {
   const members = [
-    { id: 'c', createdAt: 300, updatedAt: 900, activity: 'waiting' },
-    { id: 'a', createdAt: 100, updatedAt: 500, activity: 'idle' },
-    { id: 'b', createdAt: 200, updatedAt: 700, activity: 'working' },
+    { id: 'c', createdAt: 300, updatedAt: 400, activity: 'waiting' },
+    { id: 'a', createdAt: 100, updatedAt: 950, activity: 'idle' },
+    { id: 'b', createdAt: 200, updatedAt: 600, activity: 'working' },
   ];
   assert.deepEqual(
     sortFamilySessions(members).map((m) => m.id),
+    ['a', 'b', 'c'],
+  );
+  // Updating status/recency on an earlier member must not reorder the popover list.
+  const afterUpdate = members.map((m) =>
+    m.id === 'a' ? { ...m, updatedAt: 2000, activity: 'waiting' } : m,
+  );
+  assert.deepEqual(
+    sortFamilySessions(afterUpdate).map((m) => m.id),
     ['a', 'b', 'c'],
   );
 });

@@ -21,7 +21,11 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { descendsFrom, visibleAncestor, workspaceSessions } from '../app/sessionNesting.ts';
 
-const session = (id, parentSessionId = null) => ({ id, parentSessionId });
+const session = (id, parentSessionId = null, ancestorIds) => ({
+  id,
+  parentSessionId,
+  ...(ancestorIds ? { ancestorIds } : {}),
+});
 
 test('visibleAncestor walks parent links to the nearest visible row and guards against cycles', () => {
   const parents = new Map([
@@ -57,6 +61,7 @@ test("the Bot's workers and what they created leave the list; others stay", () =
       session('bot'),
       session('worker', 'bot'),
       session('helper', 'worker'),
+      session('pinned-deep-bot', 'unlisted-worker', ['unlisted-worker', 'bot']),
       session('mine'),
       session('child', 'mine'),
       session('orphan', 'gone'),
