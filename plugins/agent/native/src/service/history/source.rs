@@ -1295,7 +1295,7 @@ pub(crate) async fn source(
     scope: &Scope,
     input: ui::HistorySourceRead,
 ) -> Result<ui::HistorySourcePage, String> {
-    let history = open(owner, scope, &input.session_id).await?;
+    let (history, before) = open(owner, scope, &input.session_id).await?;
     let cut = cut(&history, Some(input.through)).await?;
     let tree = SourceTree::live(&history, &cut)
         .await
@@ -1415,7 +1415,7 @@ pub(crate) async fn source(
         }
         SourceItem::Imported { .. } => None,
     };
-    authorize(owner, scope, &input.session_id).await?;
+    authorize(owner, scope, &input.session_id, before).await?;
     Ok(ui::HistorySourcePage::Ready {
         through: cut.through_sequence,
         source: Box::new(source),
@@ -1501,7 +1501,7 @@ pub(crate) async fn prompt(
     scope: &Scope,
     input: ui::HistoryPromptRead,
 ) -> Result<Option<ui::HistoryPrompt>, String> {
-    let history = open(owner, scope, &input.session_id).await?;
+    let (history, before) = open(owner, scope, &input.session_id).await?;
     let cut = cut(&history, Some(input.through)).await?;
     let tree = SourceTree::live(&history, &cut)
         .await
@@ -1537,7 +1537,7 @@ pub(crate) async fn prompt(
     } else {
         None
     };
-    authorize(owner, scope, &input.session_id).await?;
+    authorize(owner, scope, &input.session_id, before).await?;
     Ok(result)
 }
 

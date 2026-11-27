@@ -757,6 +757,7 @@ pub(crate) async fn fit(
                 content.push(file.content.clone());
             }
             let recipe = MessageRecipe::User {
+                is_pinned_memory: false,
                 content: Arc::new(Items::new(content, owner.clone())),
                 provider_options: None,
             };

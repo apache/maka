@@ -357,6 +357,7 @@ async fn encode(
         MessageRecipe::User {
             content: parts,
             provider_options,
+            ..
         } => {
             let value = if parts.len() == 1 {
                 let mut cursor = parts.open(0);
@@ -1004,6 +1005,7 @@ impl Compiler {
             items.extend(
                 encode(
                     MessageRecipe::User {
+                        is_pinned_memory: false,
                         content: parts(std::mem::take(&mut self.media)),
                         provider_options: None,
                     },
@@ -1040,6 +1042,7 @@ impl Compiler {
     ) -> Result<Vec<SourceItem>, ModelError> {
         let mut items = Vec::new();
         let message = if let MessageRecipe::User {
+            is_pinned_memory,
             content,
             provider_options,
         } = message
@@ -1057,17 +1060,20 @@ impl Compiler {
                         .await?;
                 if was_media && matches!(adapted, ContentRecipe::Text { .. }) {
                     MessageRecipe::User {
+                        is_pinned_memory,
                         content: parts(vec![adapted]),
                         provider_options,
                     }
                 } else {
                     MessageRecipe::User {
+                        is_pinned_memory,
                         content,
                         provider_options,
                     }
                 }
             } else {
                 MessageRecipe::User {
+                    is_pinned_memory,
                     content,
                     provider_options,
                 }
@@ -1096,6 +1102,7 @@ impl Compiler {
                 items.extend(
                     encode(
                         MessageRecipe::User {
+                            is_pinned_memory: false,
                             content,
                             provider_options: None,
                         },

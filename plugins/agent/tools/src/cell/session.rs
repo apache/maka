@@ -203,6 +203,13 @@ impl CodeCells {
             admission: tokio::sync::Mutex::new(()),
         }))
     }
+    pub fn fixed_schema_tokens(language: maka_agent_facts::execution::CodeLanguage) -> u64 {
+        maka_agent_facts::context::measure::json_tokens(&[
+            super::definition(language),
+            super::wait_definition(),
+        ])
+    }
+
     pub fn cell_definitions(&self, availability: &Availability) -> Vec<ToolDefinition> {
         Self::cell_definitions_for(availability, self.0.executor.language())
     }

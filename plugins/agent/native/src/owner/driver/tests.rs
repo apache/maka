@@ -495,6 +495,7 @@ impl Rig {
             &[
                 "memories",
                 "memory",
+                "loadedMemories",
                 "memoryHistory",
                 "memoryEvidence",
                 "memorySource",
@@ -532,6 +533,9 @@ impl Rig {
                 "historyImages",
                 "tools",
                 "predictNextMessage",
+                "generateRecap",
+                "recap",
+                "changeSession",
                 "askQuickQuestion",
                 "import",
                 "compact",
@@ -937,6 +941,8 @@ impl Rig {
             allowed_tools: None,
             mcp_revision: None,
             compaction_prompt: None,
+            memory_admission: Default::default(),
+            memory_projection: None,
             system_prompt: system.reference().clone(),
             tool_selection: tools.reference().clone(),
             input: empty.reference().clone(),
@@ -963,6 +969,7 @@ impl Rig {
         )?;
         self.cells = Some(cells.clone());
         let model = DriverModel {
+            memory: None,
             state: state.clone(),
             history: state.session_history(view.spec.owner.clone(), view.spec.session_id.clone()),
             log: Arc::new(lease.store()),
@@ -1046,15 +1053,25 @@ impl Rig {
         facts: Vec<Fact>,
         contents: Vec<ContentBlob>,
     ) -> TestResult<maka_agent_state::Commit> {
+        self.append_for(
+            self.driver.as_ref().unwrap().access.claim(),
+            facts,
+            contents,
+        )
+        .await
+    }
+    async fn append_for(
+        &self,
+        claim: &maka_agent_state::DriverClaim,
+        facts: Vec<Fact>,
+        contents: Vec<ContentBlob>,
+    ) -> TestResult<maka_agent_state::Commit> {
         let driver = self.driver.as_ref().unwrap();
-        let view = driver
-            .state
-            .frontier(driver.access.execution().run_id)
-            .await?;
+        let view = driver.state.frontier(claim.run()).await?;
         Ok(driver
             .state
             .append(
-                driver.access.claim(),
+                claim,
                 (&view).into(),
                 facts
                     .into_iter()
@@ -1183,6 +1200,7 @@ impl Rig {
         })?;
         let step = StepId::new();
         let request = ContentBlob::json(&RequestSpec {
+            memory_replay: maka_agent_facts::memory::MemoryReplay::Shared,
             schema_version: SCHEMA_VERSION,
             step,
             composition: RequestComposition {
@@ -6907,6 +6925,59 @@ mod replay_origin_regressions {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn recapture_keeps_pinned_memory_distinct_from_identical_user_text() -> TestResult<()> {
+        let mut rig = Rig::new()?;
+        let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(90), async {
+            let session = rig.start().await?;
+            rig.assemble(&session).await?;
+            let model = model(&rig, "model", None).await?;
+            let mut source = builder(&rig).await?;
+            source.append(Message::user("same text")).await?;
+            source.append_pinned_memory("same text".into()).await?;
+            let source = source.finish().await?;
+            let recaptured =
+                recapture(&rig, &model, &source.model(), ModelOperation::Inference).await?;
+            let directory = recaptured.recipes().ok_or("missing recaptured directory")?;
+            let mut metadata = directory.open_metadata(0);
+            let mut recipes = directory.open(0);
+            let mut labels = Vec::new();
+            let mut identities = Vec::new();
+            while let Some(message) = metadata.next().await? {
+                labels.push((
+                    message.is_pinned_memory,
+                    recipes.next().await?.unwrap().is_pinned_memory(),
+                ));
+                identities.push(message.logical_identity);
+            }
+            assert_eq!(labels, [(false, false), (false, false), (true, true)]);
+            assert_eq!(identities[1], identities[2]);
+            drop((metadata, recipes, directory));
+            let mut unpinned = builder(&rig).await?;
+            unpinned.append(Message::user("replan boundary")).await?;
+            unpinned.append(Message::user("same text")).await?;
+            let unpinned = unpinned.finish().await?;
+            use crate::owner::driver_model::CoveredPrefix;
+            assert_eq!(
+                CoveredPrefix::capture(&recaptured).await?,
+                CoveredPrefix::capture(&unpinned).await?,
+            );
+            unpinned.close().await?;
+            recaptured.close().await?;
+            source.close().await?;
+            Ok::<_, Box<dyn Error + Send + Sync>>(())
+        }))
+        .catch_unwind()
+        .await;
+        let cleanup = tokio::time::timeout(Duration::from_secs(30), rig.finish()).await?;
+        match outcome {
+            Ok(result) => result??,
+            Err(panic) => std::panic::resume_unwind(panic),
+        }
+        assert!(cleanup.is_empty(), "{cleanup:?}");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn frozen_replan_does_not_fill_a_producers_missing_hash() {
         let mut rig = Rig::new().expect("owned fixture");
         let result =
@@ -7669,6 +7740,7 @@ async fn compacted_history_checks_the_producing_requests_original_cut() {
             (capture.current.digest.clone(), false),
         ] {
             let baseline = ContentBlob::json(&CompactedContext {
+                memory_replay: maka_agent_facts::memory::MemoryReplay::Shared,
                 summary_origin: None,
                 source_capture: summary.source_capture.clone(),
                 checkpoint: ContextCheckpoint {
@@ -8594,6 +8666,7 @@ async fn setup_superseded_compaction_run(rig: &mut Rig) -> TestResult<Superseded
             .await?,
     )?;
     let baseline_1 = ContentBlob::json(&CompactedContext {
+        memory_replay: s1_request.memory_replay,
         summary_origin: None,
         source_capture: s1_request.source_capture.clone(),
         checkpoint: ContextCheckpoint {
@@ -8719,6 +8792,7 @@ async fn setup_superseded_compaction_run(rig: &mut Rig) -> TestResult<Superseded
             .await?,
     )?;
     let baseline_2 = ContentBlob::json(&CompactedContext {
+        memory_replay: s2_prepared.request.memory_replay,
         summary_origin: None,
         source_capture: s2_prepared.request.source_capture.clone(),
         checkpoint: ContextCheckpoint {
@@ -9043,6 +9117,7 @@ async fn compaction_resumes_with_steering_indexed_at_its_original_delivery() {
                 .await?,
         )?;
         let baseline = ContentBlob::json(&CompactedContext {
+            memory_replay: maka_agent_facts::memory::MemoryReplay::Run(run),
             summary_origin: None,
             source_capture: summary.source_capture,
             checkpoint: ContextCheckpoint {
@@ -9064,6 +9139,57 @@ async fn compaction_resumes_with_steering_indexed_at_its_original_delivery() {
             vec![baseline],
         )
         .await?;
+
+        let source = owner
+            .durable
+            .session_history(owner.run_owner(), session.clone());
+        let cut = source.capture().await?;
+        let stop = CancellationToken::new();
+        let mut external_history = Vec::new();
+        crate::service::history::readable_context_into(
+            &source,
+            &cut,
+            None,
+            &mut external_history,
+            &stop,
+        )
+        .await?;
+        let external_history = String::from_utf8(external_history)?;
+        assert!(external_history.contains(steering_text));
+        assert!(!external_history.contains(summary_text));
+        let context = recall
+            .context(
+                session.clone(),
+                notification.message_id.clone(),
+                maka_agent_state::recall::ContextWindow {
+                    before: 0,
+                    after: 32,
+                },
+                Some(cut),
+                None,
+                stop,
+            )
+            .await?;
+        assert!(
+            context
+                .messages
+                .iter()
+                .all(|msg| msg.role != maka_agent_state::recall::Role::Compaction)
+        );
+        let original = model_recovery::call(rig.client.as_ref().unwrap(), "agent", "history", json!({
+            "sessionId":session, "position":{"kind":"tail"}, "view":"text", "includeThinking":false
+        })).await?;
+        assert!(
+            original["chunks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| row["role"] == "compaction"
+                    && row["text"]
+                        .as_str()
+                        .is_some_and(|text| text.contains(summary_text))),
+            "{original}"
+        );
 
         let engine = Engine::new(driver.state.clone());
         let mut changes = driver.state.subscribe()?;

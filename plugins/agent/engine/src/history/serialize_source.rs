@@ -420,6 +420,7 @@ impl Encoder<'_> {
             MessageRecipe::User {
                 content,
                 provider_options,
+                ..
             } => {
                 self.literal(b"{\"role\":\"user\",\"content\":").await?;
                 self.contents(content).await?;

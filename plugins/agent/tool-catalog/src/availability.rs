@@ -213,6 +213,10 @@ impl Availability {
             .filter(|d| !self.direct(&d.name) && !d.name.starts_with("mcp__"))
             .map(|d| d.name.as_str())
             .collect::<Vec<_>>();
+        Some(Self::search_definition(&names))
+    }
+
+    pub fn search_definition(names: &[&str]) -> ToolDefinition {
         let description = if names.is_empty() {
             "Find tools by name or description, including connected MCP server tools (mcp__*). Matches become callable on the next model step. Accepted loaded names persist in this Session across Host restarts; current permissions and availability apply.".to_owned()
         } else {
@@ -221,14 +225,14 @@ impl Availability {
                 names.join(", ")
             )
         };
-        Some(ToolDefinition {
+        ToolDefinition {
             freeform: None,
             output_schema: None,
             provider: None,
             name: SEARCH.into(),
             description,
             input_schema: crate::input::inline_refs(schemars::schema_for!(SearchInput).into()),
-        })
+        }
     }
     pub fn prepare_search(&self, input: &Value) -> Result<PreparedEffect, ToolRejection> {
         if !self.enabled() {
@@ -264,7 +268,7 @@ impl Availability {
         })
     }
     fn direct(&self, name: &str) -> bool {
-        self.catalog.always_visible(name) || direct(name)
+        self.catalog.visible_before_search(name)
     }
 
     async fn search(&self, input: &SearchInput) -> Result<SearchResult, ToolError> {
@@ -314,6 +318,12 @@ fn invalid() -> ToolRejection {
         message: "Search requires a nonempty query and an optional limit from 1 to 20".into(),
     }
 }
+impl ToolCatalog {
+    pub fn visible_before_search(&self, name: &str) -> bool {
+        self.always_visible(name) || direct(name)
+    }
+}
+
 fn direct(name: &str) -> bool {
     matches!(
         name,

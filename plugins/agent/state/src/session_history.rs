@@ -243,7 +243,7 @@ impl Query for FactBodyRestrictions {
             .1
             .into_iter()
             .enumerate()
-            .map(|(i, fact)| (i, fact, 0))
+            .map(|(i, fact)| (i, fact, 0, None))
             .collect::<Vec<_>>();
         crate::memory::recall::indexed_spans(c, &self.0, &keys, &[])
     }
@@ -303,7 +303,7 @@ impl Query for MaskTerminalDiagnostic {
             let spans = crate::memory::recall::indexed_spans(
                 c,
                 &namespace.owner,
-                &[(0, sql::identity(fact)?, 0)],
+                &[(0, sql::identity(fact)?, 0, None)],
                 &[],
             )?;
             if let Some(spans) = spans.get(&0) {
@@ -314,7 +314,42 @@ impl Query for MaskTerminalDiagnostic {
     }
 }
 
+/// Apply the authority frozen in the request or checkpoint. Only live history
+/// can attest to unmarked bytes, and only within its own namespace.
+pub async fn permits_memory_replay(
+    live: Option<&SessionHistory>,
+    recorded: maka_agent_facts::memory::MemoryReplay,
+    producer: RunId,
+    target: Option<RunId>,
+) -> Result<bool, StoreError> {
+    use maka_agent_facts::memory::MemoryReplay;
+    match recorded {
+        MemoryReplay::Shared => Ok(true),
+        MemoryReplay::Run(owner) => Ok(Some(owner) == target),
+        MemoryReplay::Unrecorded => {
+            let Some(history) = live else {
+                return Ok(false);
+            };
+            if Some(producer) == target {
+                return Ok(true);
+            }
+            history
+                .data
+                .query(crate::memory::reads::OriginalReplay {
+                    run: producer,
+                    owner: history.namespace.owner.clone(),
+                    session: history.namespace.session.clone(),
+                })
+                .await
+        }
+    }
+}
+
 impl SessionHistory {
+    pub async fn has_memory_reads(&self, run: RunId) -> Result<bool, StoreError> {
+        self.data.query(crate::memory::reads::HasReads(run)).await
+    }
+
     pub fn new(data: DataWriter, owner: RunOwner, session: String) -> Self {
         Self {
             data,
@@ -369,6 +404,17 @@ impl SessionHistory {
         std::collections::BTreeMap<FactId, crate::memory::recall::ArchiveRestriction>,
         StoreError,
     > {
+        self.archive_restrictions(facts, None).await
+    }
+
+    pub async fn archive_restrictions(
+        &self,
+        facts: Vec<FactId>,
+        snapshot: Option<&snapshot::Snapshot>,
+    ) -> Result<
+        std::collections::BTreeMap<FactId, crate::memory::recall::ArchiveRestriction>,
+        StoreError,
+    > {
         if facts.is_empty() {
             return Ok(Default::default());
         }
@@ -376,6 +422,7 @@ impl SessionHistory {
             .query(crate::memory::recall::RestrictedArchives {
                 owner: self.namespace.owner.clone(),
                 facts,
+                snapshot: snapshot.map(snapshot::Snapshot::id),
             })
             .await
     }

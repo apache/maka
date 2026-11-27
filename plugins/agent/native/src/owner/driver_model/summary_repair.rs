@@ -183,6 +183,9 @@ impl DriverModel {
                     {
                         continue;
                     }
+                    if recipe.is_pinned_memory() {
+                        continue;
+                    }
                     if let Some(recipe) = ReplayTarget::new(&model, operation).recipe(recipe).await? {
                         builder.append_recipe(&recipe).await?;
                     }

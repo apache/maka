@@ -212,6 +212,11 @@ pub struct ContextCheckpoint {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CompactedContext {
+    #[serde(
+        default,
+        skip_serializing_if = "crate::memory::MemoryReplay::is_unrecorded"
+    )]
+    pub memory_replay: crate::memory::MemoryReplay,
     pub source_capture: crate::durable::ContentRef,
     pub checkpoint: ContextCheckpoint,
     pub native: Option<NativeCheckpoint>,

@@ -524,6 +524,7 @@ impl Decode for MessageRecipe {
                     provider_options,
                 },
                 MessageRole::User => Self::User {
+                    is_pinned_memory: r[MESSAGE_FLAGS] & PINNED_MEMORY != 0,
                     content: store.list(list),
                     provider_options,
                 },

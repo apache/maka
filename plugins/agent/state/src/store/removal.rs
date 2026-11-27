@@ -124,6 +124,7 @@ const RUN_FULL_TAIL: &[Step] = &[
 // created them, and computer::rebuild / interactions::rebuild replay their
 // canonical backing facts, outcomes, subjects, pins, and run metadata.
 const RUN_PROFILE_COMPUTER_TAIL: &[Step] = &[
+    Step::Run("UPDATE agent_run_specs SET unmarked_replay_shared=0, original_user_run=NULL WHERE run=?1"),
     Step::Run(
         "DELETE FROM agent_computer_grants WHERE scope<>'profile'
          AND request IN(SELECT request FROM agent_interaction_requests WHERE run=?1)",
@@ -767,6 +768,7 @@ mod tests {
         //    keep the grant and never resurrect a pending request.
         let (mut profile_spec, profile_contents) = spec();
         profile_spec.session_id = "profile-removed".into();
+        profile_spec.memory_admission = maka_agent_facts::memory::MemoryAdmission::Disabled;
         store
             .data
             .write(SeedSession(
@@ -777,6 +779,15 @@ mod tests {
             .unwrap();
         let profile = Admission::new(profile_spec.clone(), UnixMillis(20), profile_contents);
         store.admit(profile.clone()).await.unwrap();
+        use crate::memory::reads::OriginalUserRun;
+        assert_eq!(
+            store
+                .data
+                .query(OriginalUserRun(profile.run()))
+                .await
+                .unwrap(),
+            Some(true)
+        );
         let profile_view = store.frontier(profile.run()).await.unwrap();
         let profile_claim = store.claim(profile.run()).await.unwrap();
         let profile_execution = ExecutionIdentity {
@@ -980,6 +991,15 @@ mod tests {
             vec![0]
         );
 
+        assert_eq!(
+            store
+                .data
+                .query(OriginalUserRun(profile.run()))
+                .await
+                .unwrap(),
+            None
+        );
+
         drop(store);
         root.close().await.unwrap();
     }
@@ -1087,6 +1107,13 @@ mod tests {
             "agent_memory_run_restrictions",
             "agent_memory_shared_fields",
             "agent_message_submissions",
+            "agent_memory_tool_inputs",
+            "agent_memory_history_reads",
+            "agent_memory_session_reads",
+            "agent_memory_external_sources",
+            "agent_memory_session_visibility",
+            "agent_memory_external_epochs",
+            "agent_memory_legacy_recap_history",
             "agent_model_items",
             "agent_operation_pins",
             "agent_queue_content_pins",
@@ -1131,6 +1158,8 @@ mod tests {
             "agent_history_snapshot_positions",
             "agent_history_snapshot_run_refs",
             "agent_history_snapshots",
+            "agent_memory_indexed_snapshots",
+            "agent_memory_snapshot_outputs",
             "agent_memories",
             "agent_memory_evidence",
             "agent_memory_history_boundary",
@@ -1145,6 +1174,7 @@ mod tests {
             "agent_memory_scopes",
             "agent_memory_search",
             "agent_memory_versions",
+            "agent_memory_visibility",
             "agent_room_members",
             "agent_room_messages",
             "agent_room_pins",
