@@ -36,6 +36,7 @@ import { CodeBlockAction, codeBlockActions, codeBlockStyles } from '../codeBlock
 import { tr } from '../locale';
 import { MarkdownImageView } from '../MarkdownImage';
 import { DialogFooter, DialogHeader, ModalDialog } from '../ModalDialog';
+import { SettingsSwitchControl } from '../SettingsPage';
 import {
   bodyTextStyle,
   C,
@@ -2295,16 +2296,7 @@ function renderSwitch(ctx: SpecElementRenderContext): JSX.Element {
   const disabled = () => Boolean(p().disabled);
 
   return (
-    <Button
-      accessibilityLabel={String(p().label ?? '')}
-      selected={checked()}
-      disabled={disabled()}
-      onPress={() => {
-        const next = !checked();
-        own.set(next);
-        bound.write(next);
-        ctx.emit('change');
-      }}
+    <View
       style={{
         width: '100%',
         flexDirection: 'row',
@@ -2313,9 +2305,6 @@ function renderSwitch(ctx: SpecElementRenderContext): JSX.Element {
         gap: 12,
         paddingVertical: 6,
       }}
-      hoverStyle={quietHoverStyle()}
-      focusStyle={quietFocusStyle()}
-      disabledStyle={controlDisabledStyle}
     >
       <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
         <Text style={{ ...secondaryTextStyle, color: C.text }}>{String(p().label ?? '')}</Text>
@@ -2323,8 +2312,18 @@ function renderSwitch(ctx: SpecElementRenderContext): JSX.Element {
           <Text style={{ ...captionTextStyle, color: C.muted }}>{String(p().description)}</Text>
         </If>
       </View>
-      <ChoiceIndicator kind="switch" checked={checked()} disabled={disabled()} />
-    </Button>
+      <SettingsSwitchControl
+        accessibilityLabel={String(p().label ?? '')}
+        checked={checked()}
+        disabled={disabled()}
+        onChange={() => {
+          const next = !checked();
+          own.set(next);
+          bound.write(next);
+          ctx.emit('change');
+        }}
+      />
+    </View>
   );
 }
 

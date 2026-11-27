@@ -202,9 +202,6 @@ function PluginDetail(props: { owner: PluginSettingsOwner; request: PluginAction
       >
         <SettingsSwitch
           label={tr('Enabled')}
-          accessibilityLabel={
-            plugin().disabled ? tr('Enable Host plugin') : tr('Disable Host plugin')
-          }
           status={
             plugin().parentDisabled
               ? tr('Enable the parent plugin before enabling this child.')
