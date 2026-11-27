@@ -859,8 +859,6 @@ async fn desktop_composer_click_and_ime_follow_the_text_after_a_mention() {
     let referenced = referenced["session"]["id"].as_str().unwrap();
     client.close().await.unwrap();
     let desktop = Desktop::open(&fixture, &fixture.address).await;
-    let composer = desktop.control("Focus message composer").await;
-    desktop.press_at(composer.center());
     desktop.paste("@删过度").await;
     desktop.press("删过度设计").await;
     let mention = format!("[@删过度设计](maka://session/{referenced}) ");
@@ -871,6 +869,7 @@ async fn desktop_composer_click_and_ime_follow_the_text_after_a_mention() {
     desktop.paste(before_ah).await;
     desktop.expect_text(&prefix).await;
     desktop.key("right", false);
+    let composer = desktop.control("Focus message composer").await;
     let insertion = desktop
         .until("the caret did not reach the end of the first part", || {
             desktop

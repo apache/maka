@@ -1302,6 +1302,9 @@ async fn composed_acp_setup_checks_a_provider_without_exposing_state_root()
             json!({"executor":"probe","action":{"kind":"check"}}),
         )
         .await?;
+        if checked != json!({"kind":"checked","info":{"title":null,"name":"isolated-probe","version":"1"},"methods":[]}) {
+            return Err(format!("ACP provider check: {checked}"));
+        }
         let created = mutate(&client, "agent", "create", json!({
             "title":"ACP child permission", "automaticTitle":false, "labels":[],
             "workspace":{"kind":"directory","path":sandbox.workspace},
@@ -1332,16 +1335,13 @@ async fn composed_acp_setup_checks_a_provider_without_exposing_state_root()
         terminal_state(&client, session, &run, "completed").await?;
         client.close().await?;
         host.quit(&mut anchor).await?;
-        Ok(checked)
+        Ok(())
     })
     .await;
     host.cleanup().await?;
     #[cfg(windows)]
     sandbox_guard.teardown().await?;
-    assert_eq!(
-        result?,
-        json!({"kind":"checked","info":{"title":null,"name":"isolated-probe","version":"1"},"methods":[]})
-    );
+    result?;
     Ok(())
 }
 
