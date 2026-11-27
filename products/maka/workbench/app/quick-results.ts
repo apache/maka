@@ -80,3 +80,8 @@ export function recommended<
 }
 
 export const isFrequent = (used: Used) => used.uses >= FREQUENT_USES;
+
+export function homeRows<Row>(recommendations: readonly Row[], tools: readonly Row[]) {
+  if (recommendations.length > 0) return { recommendations, tools };
+  return { recommendations: tools.slice(0, MAX_RECOMMENDED), tools: tools.slice(MAX_RECOMMENDED) };
+}
