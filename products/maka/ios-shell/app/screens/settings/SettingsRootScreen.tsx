@@ -19,7 +19,6 @@
 
 import { cleanup, computed, effect, safeAreaInsets, Scroll, signal, View, token } from 'nsh';
 import { MenuButton, NavPage, type MenuButtonItem } from 'nsh/base';
-import { Switch } from 'nsh/mobile';
 import { pathLabel } from '../../bridge';
 import { languagePreferenceBusy, languagePreferenceError, tr } from '../../locale';
 import {
@@ -46,6 +45,7 @@ import {
 } from '../../state/settings/models';
 import { settingsRpc } from '../../state/settings/rpc';
 import { spacing } from '../../theme/tokens';
+import { SettingSwitchControl } from './SettingsForm';
 import {
   BannerNotice,
   GroupRow,
@@ -264,11 +264,10 @@ export function SettingsRootScreen(props: {
               title={tr('Haptic Feedback')}
               accessible={false}
               trailing={
-                <Switch
+                <SettingSwitchControl
                   accessibilityLabel={tr('Haptic Feedback')}
                   checked={hapticsEnabled()}
-                  onChange={({ checked }) => void saveHapticsEnabled(checked)}
-                  style={{ accentColor: token('success') }}
+                  onChange={(checked) => void saveHapticsEnabled(checked)}
                 />
               }
             />
