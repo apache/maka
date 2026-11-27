@@ -23,7 +23,7 @@ import { MarkdownBody } from './MarkdownBody';
 import { SourceText } from './SourceText';
 import { hasComposerToken, skillTextGroups } from './skillTokenText';
 import { hasTextPrefix, type Row } from './history';
-import { bodyTextStyle, C } from './ui';
+import { C, readingTextStyle } from './ui';
 
 export function userMessagePresentation(row: Row) {
   const prefix = hasTextPrefix(row);
@@ -56,7 +56,7 @@ export function SkillMessage(props: {
         <If
           when={props.presentation().kind === 'tokens'}
           else={
-            <Text style={{ ...bodyTextStyle, color: C.text, userSelect: 'text' }}>
+            <Text style={{ ...readingTextStyle(), color: C.text, userSelect: 'text' }}>
               <SourceText row={props.row} sourceId={props.sourceId} />
             </Text>
           }

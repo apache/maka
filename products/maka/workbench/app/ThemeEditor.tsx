@@ -17,30 +17,39 @@
  * under the License.
  */
 
-// Settings › General › Theme: a preset to start from, then each color and the
-// font, seen on a sample of a conversation while a color is dragged, then on the whole window.
+// Settings › General › Theme: a preset to start from, then each color, the shape and the
+// font, seen on a sample of a conversation while a value is dragged, then on the whole window.
 import { batch, colorScheme, computed, signal, Text, View } from 'nsh';
-import { Button, ColorArea, ColorField, ColorPicker, ColorSlider, Popover } from 'nsh/base';
+import { Button, ColorArea, ColorField, ColorPicker, ColorSlider, Popover, Slider } from 'nsh/base';
 import { tr } from './locale';
 import { appearance, colorThemes } from './appearance';
 import {
   contrast,
+  darkBackground,
   derivedColors,
   fontChoice,
   fontChoices,
   fontFamilies,
   lookIds,
+  lookShadow,
   lookTokens,
   minimumContrast,
+  mix,
   pickedColors,
   presetLooks,
   readable,
   sameLook,
+  scaledRadius,
+  shadowPresets,
+  shapeLimits,
+  shapeValue,
   unchanged,
   type FontChoice,
   type Look,
   type LookColor,
   type LookId,
+  type LookShape,
+  type ShapeKey,
 } from './look';
 import {
   SettingsBody,
@@ -56,8 +65,10 @@ import {
   codeTextStyle,
   defaultColors,
   floatingStyle,
-  inputBorderRadius,
   lookColors,
+  lookShape,
+  lineWidth,
+  radius,
   secondaryTextStyle,
 } from './ui';
 
@@ -69,6 +80,8 @@ export const lookLabel = (id: LookId) =>
     morandi: tr('Morandi'),
     terminal: tr('Retro terminal'),
     blueprint: tr('Blueprint'),
+    bauhaus: tr('Bauhaus'),
+    brutalist: tr('Neo-brutalism'),
   })[id];
 
 const colorLabel = (key: LookColor) =>
@@ -105,13 +118,18 @@ function withColor(key: LookColor, value: string | undefined): Look {
   return { ...look, cssVars: { ...look.cssVars, [mode()]: colors } };
 }
 
-const withFont = (family: string | undefined): Look => {
+type ThemeValues = Look['cssVars']['theme'];
+/** The shown look with `values` set in its theme; one undefined goes back to the default's. */
+function withTheme(values: ThemeValues): Look {
   const look = appearance.shown();
-  return {
-    ...look,
-    cssVars: { ...look.cssVars, theme: family ? { 'font-sans': family } : {} },
-  };
-};
+  const theme: Record<string, unknown> = { ...look.cssVars.theme };
+  for (const [key, value] of Object.entries(values)) {
+    if (value === undefined) delete theme[key];
+    else theme[key] = value;
+  }
+  return { ...look, cssVars: { ...look.cssVars, theme: theme as ThemeValues } };
+}
+const withFont = (family: string | undefined) => withTheme({ 'font-sans': family });
 
 /** The color a key has in `look` for the appearance edited, picked or derived. */
 function effective(look: Look, key: LookColor): string {
@@ -170,8 +188,14 @@ export function ThemeEditor() {
           {(key) => <ColorRow color={key()} picking={picking} />}
         </Each>
       </SettingsSection>
+      <SettingsSection title={tr('Shape')}>
+        <ShapeRows picking={picking} />
+      </SettingsSection>
+      <SettingsSection title={tr('Shadow')}>
+        <ShadowRows picking={picking} />
+      </SettingsSection>
       <SettingsSection title={tr('Font')}>
-        <FontRows />
+        <FontRows picking={picking} />
       </SettingsSection>
     </SettingsBody>
   );
@@ -232,8 +256,10 @@ function ThemeStatus() {
 }
 
 function PresetCard(props: { id: LookId }) {
-  const colors = () => presetLooks[props.id].cssVars[mode()];
+  const preset = presetLooks[props.id];
+  const colors = () => preset.cssVars[mode()];
   const tokens = () => lookTokens(colors());
+  const corner = (n: number) => scaledRadius(n, shapeValue(preset, 'radius'));
   const selected = () => appearance.shown().base === props.id;
   return (
     <Button
@@ -247,7 +273,7 @@ function PresetCard(props: { id: LookId }) {
           width: 112,
           height: 72,
           flexDirection: 'row',
-          borderRadius: 8,
+          borderRadius: radius(8),
           overflow: 'hidden',
           borderWidth: 2,
           borderColor: selected() ? C.accent : C.line,
@@ -262,9 +288,29 @@ function PresetCard(props: { id: LookId }) {
           <View
             style={{ height: 5, width: '60%', borderRadius: 2, backgroundColor: tokens().muted }}
           />
-          <View
-            style={{ height: 12, width: 32, borderRadius: 4, backgroundColor: tokens().accent }}
-          />
+          <View style={{ flexDirection: 'row', gap: 4 }}>
+            <View
+              style={{
+                height: 12,
+                width: 32,
+                borderRadius: corner(4),
+                backgroundColor: tokens().accent,
+                ...(() => {
+                  const shadow = lookShadow(preset, mode() === 'dark', 0.5);
+                  return shadow ? { boxShadow: shadow } : {};
+                })(),
+              }}
+            />
+            <View
+              style={{
+                height: 12,
+                width: 20,
+                borderRadius: corner(4),
+                borderWidth: shapeValue(preset, 'border-width'),
+                borderColor: tokens().line,
+              }}
+            />
+          </View>
         </View>
       </View>
       <Text style={{ ...captionTextStyle, color: selected() ? C.text : C.secondary }}>
@@ -277,8 +323,11 @@ function PresetCard(props: { id: LookId }) {
 /** A piece of a conversation in the colors in effect: what the settings page has none of. */
 function Specimen(props: { look(): Look | null }) {
   const C = lookColors(props.look);
+  const { radius, lineWidth, letterSpacing, raisedShadow } = lookShape(props.look);
   const line = (text: string, color: string, extra: object = {}) => (
-    <Text style={{ ...secondaryTextStyle, color, ...extra }}>{text}</Text>
+    <Text style={{ ...secondaryTextStyle, color, letterSpacing: letterSpacing(), ...extra }}>
+      {text}
+    </Text>
   );
   return (
     <View style={{ padding: 12, gap: 10, backgroundColor: C.panel }}>
@@ -288,20 +337,21 @@ function Specimen(props: { look(): Look | null }) {
           maxWidth: '80%',
           paddingHorizontal: 12,
           paddingVertical: 8,
-          borderRadius: 12,
+          borderRadius: radius(12),
           backgroundColor: C.card,
+          ...raisedShadow(),
         }}
       >
         {line(tr('Can you check this function?'), C.text)}
       </View>
-      <Text style={{ ...secondaryTextStyle, color: C.text }}>
+      <Text style={{ ...secondaryTextStyle, color: C.text, letterSpacing: letterSpacing() }}>
         {tr('It returns early when the list is empty.')}{' '}
         <Text style={{ color: C.accentText, textDecorationLine: 'underline' }}>
           {tr('See the notes.')}
         </Text>
       </Text>
       {line(tr('Ran the tests · 12 passed'), C.muted)}
-      <View style={{ borderRadius: 6, padding: 8, backgroundColor: C.card, gap: 2 }}>
+      <View style={{ borderRadius: radius(6), padding: 8, backgroundColor: C.card, gap: 2 }}>
         <Text style={{ ...codeTextStyle, color: C.text, backgroundColor: C.removed }}>
           {'- if (items.length == 0) return;'}
         </Text>
@@ -315,10 +365,11 @@ function Specimen(props: { look(): Look | null }) {
           minHeight: 32,
           paddingHorizontal: 10,
           justifyContent: 'center',
-          borderRadius: inputBorderRadius,
-          borderWidth: 1,
+          borderRadius: radius(8),
+          borderWidth: lineWidth(),
           borderColor: C.line,
           backgroundColor: C.background,
+          ...raisedShadow(),
         }}
       >
         {line(tr('Write a reply…'), C.muted)}
@@ -328,8 +379,9 @@ function Specimen(props: { look(): Look | null }) {
           style={{
             paddingHorizontal: 12,
             paddingVertical: 6,
-            borderRadius: 8,
+            borderRadius: radius(8),
             backgroundColor: C.accent,
+            ...raisedShadow(),
           }}
         >
           {line(tr('Send'), C.onAccent, { fontWeight: '600' })}
@@ -338,8 +390,8 @@ function Specimen(props: { look(): Look | null }) {
           style={{
             paddingHorizontal: 12,
             paddingVertical: 6,
-            borderRadius: 8,
-            borderWidth: 1,
+            borderRadius: radius(8),
+            borderWidth: lineWidth(),
             borderColor: C.line,
           }}
         >
@@ -452,8 +504,8 @@ function ColorWell(props: {
               gap: 8,
               paddingHorizontal: 8,
               paddingVertical: 4,
-              borderRadius: 6,
-              borderWidth: 1,
+              borderRadius: radius(6),
+              borderWidth: lineWidth(),
               borderColor: C.line,
             }}
             hoverStyle={{ backgroundColor: C.cardRaised }}
@@ -465,8 +517,8 @@ function ColorWell(props: {
               style={{
                 width: 18,
                 height: 18,
-                borderRadius: 4,
-                borderWidth: 1,
+                borderRadius: radius(4),
+                borderWidth: lineWidth(),
                 borderColor: C.line,
                 backgroundColor: props.value,
               }}
@@ -477,7 +529,7 @@ function ColorWell(props: {
         <ColorArea
           accessibilityLabel={tr('{name} saturation and brightness', { name: props.name })}
           style={{ height: 140 }}
-          panelStyle={{ borderRadius: 6 }}
+          panelStyle={{ borderRadius: radius(6) }}
           thumbStyle={thumb}
           fillThumb
         />
@@ -497,8 +549,8 @@ function ColorWell(props: {
           style={{
             minHeight: 28,
             paddingHorizontal: 8,
-            borderRadius: 6,
-            borderWidth: 1,
+            borderRadius: radius(6),
+            borderWidth: lineWidth(),
             borderColor: C.line,
           }}
         />
@@ -507,7 +559,7 @@ function ColorWell(props: {
   );
 }
 
-function FontRows() {
+function FontRows(props: { picking: Picking }) {
   const family = () => appearance.shown().cssVars.theme['font-sans'];
   const choice = (): FontChoice | 'other' => fontChoice(family()) ?? 'other';
   // The look Other was chosen on with no name typed yet; any other look shows its own font.
@@ -558,6 +610,184 @@ function FontRows() {
               appearance.changeLook(withFont(pending.name || undefined), true);
             });
           }}
+        />
+      </If>
+      <ShapeSlider
+        label={tr('Letter spacing')}
+        shape="letter-spacing"
+        step={0.1}
+        picking={props.picking}
+      />
+    </>
+  );
+}
+
+const lineWidths = [1, 1.5, 2, 3];
+const points = (value: number) => tr('{value} pt', { value: String(value) });
+
+/** A shape value on a slider, shown as it changes and saved when let go. */
+function ShapeSlider(props: {
+  label: string;
+  shape: ShapeKey;
+  step: number;
+  percent?: boolean;
+  picking: Picking;
+}) {
+  const [min, max] = shapeLimits[props.shape];
+  const value = () => shapeValue(props.picking.look(), props.shape);
+  // Steps of a tenth are kept as tenths, not as their sums' binary fractions.
+  const change = (next: number, save: boolean) =>
+    props.picking.pick(withTheme({ [props.shape]: Math.round(next * 100) / 100 }), save);
+  const number = (raw: number | [number, number]) => (Array.isArray(raw) ? raw[0] : raw);
+  return (
+    <SettingsRow
+      label={props.label}
+      trailing={
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+          <Slider
+            accessibilityLabel={props.label}
+            value={value()}
+            min={min}
+            max={max}
+            step={props.step}
+            onChange={({ value: next }) => change(number(next), false)}
+            onChangeEnd={({ value: next }) => change(number(next), true)}
+            style={{ width: 160 }}
+            trackStyle={{ height: 22, justifyContent: 'center' }}
+            indicatorStyle={{ height: 6, borderRadius: 3, backgroundColor: C.cardRaised }}
+            rangeStyle={{ borderRadius: 3, backgroundColor: C.accentText }}
+            thumbStyle={{
+              width: 16,
+              height: 16,
+              borderRadius: 8,
+              backgroundColor: C.accentText,
+              borderWidth: 2,
+              borderColor: C.background,
+            }}
+          />
+          <Text
+            style={{
+              ...captionTextStyle,
+              width: 44,
+              textAlign: 'right',
+              color: C.secondary,
+              fontVariant: ['tabular-nums'],
+            }}
+          >
+            {props.percent ? `${Math.round(value() * 100)}%` : points(value())}
+          </Text>
+        </View>
+      }
+    />
+  );
+}
+
+function ShapeRows(props: { picking: Picking }) {
+  return (
+    <>
+      <ShapeSlider label={tr('Corners')} shape="radius" step={1} picking={props.picking} />
+      <SettingsSelect
+        label={tr('Line width')}
+        value={String(shapeValue(appearance.shown(), 'border-width'))}
+        choices={lineWidths.map((width) => ({ value: String(width), title: points(width) }))}
+        change={(value) =>
+          appearance.changeLook(withTheme({ 'border-width': Number(value) }), true)
+        }
+      />
+    </>
+  );
+}
+
+type ShadowChoice = 'none' | 'soft' | 'hard' | 'custom';
+const shadowKeys: ShapeKey[] = [
+  'shadow-x',
+  'shadow-y',
+  'shadow-blur',
+  'shadow-spread',
+  'shadow-opacity',
+];
+const shadowLabel = (choice: ShadowChoice) =>
+  ({ none: tr('None'), soft: tr('Soft'), hard: tr('Hard'), custom: tr('Custom') })[choice];
+/** The starting point a look's shadow is, or custom once changed from one. */
+function shadowChoice(look: Look): ShadowChoice {
+  if (shapeValue(look, 'shadow-opacity') <= 0) return 'none';
+  const matches = (start: LookShape) =>
+    shadowKeys.every((key) => shapeValue(look, key) === (start[key] ?? 0));
+  return matches(shadowPresets.soft) ? 'soft' : matches(shadowPresets.hard) ? 'hard' : 'custom';
+}
+/** The shown look with its shadow started over: none, a soft one, or a hard one in the text's
+ * color (a dark gray on a dark background). */
+function withShadow(choice: Exclude<ShadowChoice, 'custom'>): Look {
+  const cleared = Object.fromEntries(shadowKeys.map((key) => [key, undefined]));
+  const look = withTheme({ ...cleared, ...(choice === 'none' ? {} : shadowPresets[choice]) });
+  const color = (colors: Look['cssVars']['light']) => {
+    const { 'shadow-color': _, ...rest } = colors;
+    if (choice !== 'hard') return rest;
+    // A light shadow on a dark background reads as a glow, so there it is a dark gray.
+    const shadow = darkBackground(colors.background)
+      ? mix(colors.background, colors.foreground, 0.28)
+      : colors.foreground;
+    return { ...rest, 'shadow-color': shadow };
+  };
+  return {
+    ...look,
+    cssVars: { ...look.cssVars, light: color(look.cssVars.light), dark: color(look.cssVars.dark) },
+  };
+}
+function withShadowColor(value: string): Look {
+  const look = appearance.shown();
+  return {
+    ...look,
+    cssVars: { ...look.cssVars, [mode()]: { ...look.cssVars[mode()], 'shadow-color': value } },
+  };
+}
+
+function ShadowRows(props: { picking: Picking }) {
+  const choice = () => shadowChoice(appearance.shown());
+  const choices = (): ShadowChoice[] =>
+    choice() === 'custom' ? ['none', 'soft', 'hard', 'custom'] : ['none', 'soft', 'hard'];
+  return (
+    <>
+      <SettingsSelect
+        label={tr('Shadow')}
+        value={choice()}
+        choices={choices().map((value) => ({ value, title: shadowLabel(value) }))}
+        change={(value) => {
+          if (value !== 'custom')
+            appearance.changeLook(withShadow(value as Exclude<ShadowChoice, 'custom'>), true);
+        }}
+      />
+      <If when={choice() !== 'none'}>
+        <ShapeSlider
+          label={tr('Horizontal offset')}
+          shape="shadow-x"
+          step={1}
+          picking={props.picking}
+        />
+        <ShapeSlider
+          label={tr('Vertical offset')}
+          shape="shadow-y"
+          step={1}
+          picking={props.picking}
+        />
+        <ShapeSlider label={tr('Blur')} shape="shadow-blur" step={1} picking={props.picking} />
+        <ShapeSlider label={tr('Spread')} shape="shadow-spread" step={1} picking={props.picking} />
+        <ShapeSlider
+          label={tr('Opacity')}
+          shape="shadow-opacity"
+          step={0.01}
+          percent
+          picking={props.picking}
+        />
+        <SettingsRow
+          label={tr('Shadow color')}
+          trailing={
+            <ColorWell
+              name={tr('Shadow color')}
+              value={props.picking.look().cssVars[mode()]['shadow-color'] ?? '#000000'}
+              change={(color, save) => props.picking.pick(withShadowColor(color), save)}
+            />
+          }
         />
       </If>
     </>

@@ -19,7 +19,7 @@
 
 import { sameHistoryRow } from './history';
 import { createPendingRecovery } from './pendingRecovery';
-import { textTooltip } from './ui';
+import { lineWidth, radius, textTooltip } from './ui';
 import {
   createText,
   UiError,
@@ -106,7 +106,7 @@ export function InteractionAction(props: {
       onPress={props.onPress}
       tooltip={textTooltip(() => props.tooltip)}
       style={{
-        ...controlStyle,
+        ...controlStyle(),
         minWidth: 32,
         paddingHorizontal: props.iconOnly ? 8 : 12,
         flexDirection: 'row',
@@ -740,8 +740,8 @@ export function InteractionComposer({
           minHeight: 0,
           flexShrink: 1,
           backgroundColor: C.card,
-          borderRadius: 16,
-          borderWidth: 1,
+          borderRadius: radius(16),
+          borderWidth: lineWidth(),
           borderColor: C.line,
         }}
       >
@@ -826,7 +826,14 @@ export function InteractionComposer({
                       'Approve this original call only. This does not grant access to future calls.',
                     )}
                   </Text>
-                  <View style={{ gap: 8, padding: 12, backgroundColor: C.panel, borderRadius: 8 }}>
+                  <View
+                    style={{
+                      gap: 8,
+                      padding: 12,
+                      backgroundColor: C.panel,
+                      borderRadius: radius(8),
+                    }}
+                  >
                     <Text style={{ ...captionTextStyle, color: C.muted }}>
                       {tr('Original arguments')}
                     </Text>
@@ -866,7 +873,7 @@ export function InteractionComposer({
                         gap: 8,
                         padding: 12,
                         backgroundColor: C.panel,
-                        borderRadius: 8,
+                        borderRadius: radius(8),
                       }}
                     >
                       <Text style={[{ ...codeTextStyle, color: C.text }, { userSelect: 'text' }]}>
@@ -953,7 +960,7 @@ export function InteractionComposer({
                                 other: false,
                               })}
                               style={{
-                                ...controlStyle,
+                                ...controlStyle(),
                                 flexDirection: 'row',
                                 alignItems: 'flex-start',
                                 justifyContent: 'flex-start',
@@ -1049,8 +1056,8 @@ export function InteractionComposer({
                               paddingVertical: compact() ? 4 : 8,
                               color: C.text,
                               backgroundColor: C.panel,
-                              borderRadius: inputBorderRadius,
-                              borderWidth: 1,
+                              borderRadius: inputBorderRadius(),
+                              borderWidth: lineWidth(),
                               borderColor: C.line,
                             }}
                             focusStyle={{ borderColor: C.accent }}

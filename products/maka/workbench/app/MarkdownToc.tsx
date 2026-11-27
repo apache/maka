@@ -34,7 +34,7 @@ import {
 import { Button, Popover, Tooltip } from 'nsh/base';
 import { tr } from './locale';
 import type { TocHeadingItem, TocLayoutMode } from './markdownTocModel';
-import { C, captionTextStyle, floatingStyle, tooltipStyle, tooltipTextStyle } from './ui';
+import { C, captionTextStyle, floatingStyle, radius, tooltipStyle, tooltipTextStyle } from './ui';
 
 const ROW_HEIGHT = platform.idiom === 'terminal' ? 16 : 26;
 const FADE_HEIGHT = 24;
@@ -188,7 +188,7 @@ function TocHeadingList(props: {
               style={{
                 width: '100%',
                 height: ROW_HEIGHT,
-                borderRadius: platform.idiom === 'terminal' ? 0 : 6,
+                borderRadius: platform.idiom === 'terminal' ? 0 : radius(6),
                 paddingLeft: 8 + depth() * 10,
                 paddingRight: 8,
                 flexDirection: 'row',
@@ -326,7 +326,7 @@ function CompactTocRail(props: {
               width: RAIL_WIDTH,
               paddingVertical: 8,
               paddingHorizontal: 4,
-              borderRadius: 6,
+              borderRadius: radius(6),
               alignItems: 'flex-start',
               justifyContent: 'center',
               gap: 6,

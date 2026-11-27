@@ -31,7 +31,9 @@ import {
   compact,
   controlDisabledStyle,
   controlHoverStyle,
+  lineWidth,
   menuSeparatorStyle,
+  radius,
   secondaryTextStyle,
 } from './ui';
 import { ModalDialog } from './ModalDialog';
@@ -51,7 +53,7 @@ export function Palette(props: {
       flexDirection: 'row',
       alignItems: 'center',
       gap: 12,
-      borderRadius: 8,
+      borderRadius: radius(8),
     }) satisfies ViewStyle;
   let removeSearchKeys = () => {};
   cleanup(() => removeSearchKeys());
@@ -180,9 +182,9 @@ export function Palette(props: {
                           fontSize: 11,
                           paddingHorizontal: 6,
                           paddingVertical: 2,
-                          borderWidth: 1,
+                          borderWidth: lineWidth(),
                           borderColor: C.line,
-                          borderRadius: 4,
+                          borderRadius: radius(4),
                           backgroundColor: C.background,
                           flexShrink: 0,
                         },

@@ -22,7 +22,7 @@ import { Button } from 'nsh/base';
 import type { ComposerSession } from '../../../../packages/plugin-sdk/src/composer-view.js';
 import { Icon } from '../../../../products/maka/workbench/app/Icon';
 import { tr } from '../../../../products/maka/workbench/app/locale';
-import { C, captionTextStyle } from '../../../../products/maka/workbench/app/ui';
+import { C, captionTextStyle, radius } from '../../../../products/maka/workbench/app/ui';
 
 export function DraftQuotes(props: {
   owner: Pick<ComposerSession, 'quotes' | 'editable' | 'removeQuote'>;
@@ -40,7 +40,7 @@ export function DraftQuotes(props: {
                 borderLeftWidth: 2,
                 borderColor: C.line,
                 backgroundColor: C.card,
-                borderRadius: 6,
+                borderRadius: radius(6),
               }}
             >
               <View style={{ flex: 1, gap: 4 }}>

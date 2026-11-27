@@ -106,7 +106,7 @@ export function createComputerAppControls(access: ComposerComputerAccess, height
                     })}
                     disabled={entry().stopped}
                     onPress={inputAction(stop, entry().activity.operationId)}
-                    style={controlStyle}
+                    style={controlStyle()}
                     hoverStyle={controlHoverStyle()}
                     focusStyle={controlFocusStyle()}
                     disabledStyle={controlDisabledStyle}

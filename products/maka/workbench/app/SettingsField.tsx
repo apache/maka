@@ -20,7 +20,7 @@
 import { Text, View } from 'nsh';
 import { Input } from 'nsh/base';
 import { windowSize } from 'nsh';
-import { C, compact, inputBorderRadius, inputTextStyle } from './ui';
+import { C, compact, inputBorderRadius, inputTextStyle, lineWidth, raisedShadow } from './ui';
 
 type SettingsInputProps = {
   label: string;
@@ -33,14 +33,15 @@ type SettingsInputProps = {
 };
 
 const inputStyle = (disabled?: boolean) => ({
-  borderWidth: 1,
+  borderWidth: lineWidth(),
   borderColor: C.line,
-  borderRadius: inputBorderRadius,
+  borderRadius: inputBorderRadius(),
   backgroundColor: C.background,
   color: disabled ? C.muted : C.text,
   paddingHorizontal: 12,
   paddingVertical: 4,
   ...inputTextStyle,
+  ...raisedShadow(),
 });
 
 export function SettingsEditor(props: SettingsInputProps) {

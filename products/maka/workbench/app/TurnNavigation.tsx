@@ -18,7 +18,7 @@
  */
 
 import type { HistoryRowAddress, HistoryOrder } from '../../../../packages/plugin-sdk/src/index.js';
-import { textTooltip } from './ui';
+import { lineWidth, radius, textTooltip } from './ui';
 import {
   Canvas,
   computed,
@@ -135,7 +135,13 @@ function TurnMark(props: {
         }
       >
         <View
-          style={{ width: 6, height: 6, borderRadius: 3, borderWidth: 1, borderColor: C.text }}
+          style={{
+            width: 6,
+            height: 6,
+            borderRadius: 3,
+            borderWidth: 1,
+            borderColor: C.text,
+          }}
         />
       </If>
     </View>
@@ -248,7 +254,7 @@ function NavigationMark(props: {
         style={{
           height: markPitch(),
           width: railWidth(),
-          borderRadius: 4,
+          borderRadius: radius(4),
           alignItems: 'center',
           justifyContent: 'center',
         }}
@@ -413,7 +419,7 @@ export function TurnNavigation(props: {
               marginTop: platform.idiom === 'terminal' ? 0 : 8,
               width: railWidth(),
               height: platform.idiom === 'terminal' ? 32 : markPitch(),
-              borderRadius: 8,
+              borderRadius: radius(8),
               alignItems: 'center',
               justifyContent: 'center',
               backgroundColor: C.card,
@@ -452,7 +458,7 @@ export function ReturnToLatest(props: { visible: boolean; paused?: boolean; acti
           accessibilityLabel={props.paused ? tr('Resume following') : tr('Return to latest')}
           onPress={props.activate}
           style={{
-            ...controlStyle,
+            ...controlStyle(),
             flexDirection: 'row',
             alignItems: 'center',
             gap: 8,

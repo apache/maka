@@ -258,7 +258,7 @@ export function FinalActions(props: {
                 target()?.turnId === undefined
               }
               onPress={inputAction(showUsage, target())}
-              style={{ ...controlStyle, paddingHorizontal: 8 }}
+              style={{ ...controlStyle(), paddingHorizontal: 8 }}
               hoverStyle={quietHoverStyle()}
               activeStyle={quietActiveStyle()}
               focusStyle={quietFocusStyle()}

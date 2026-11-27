@@ -63,7 +63,7 @@ export function BotRestart(props: { restart(): Promise<void> }) {
         accessibilityLabel={tr('Start the Bot over')}
         tooltip={textTooltip(() => tr('Start the Bot over'))}
         onPress={inputAction(() => asking.set(true), null)}
-        style={{ ...toolbarControlStyle, flexDirection: 'row', alignItems: 'center', gap: 8 }}
+        style={{ ...toolbarControlStyle(), flexDirection: 'row', alignItems: 'center', gap: 8 }}
         hoverStyle={{ backgroundColor: C.card }}
         focusStyle={{ backgroundColor: C.raised }}
       >

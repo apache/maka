@@ -65,11 +65,11 @@ import {
   SettingsTextArea,
 } from './SettingsPage';
 import {
-  IconButton,
-  C,
   bodyTextStyle,
+  C,
   captionTextStyle,
   floatingStyle,
+  IconButton,
   menuRowHoverStyle,
   menuRowStyle,
   quietFocusStyle,

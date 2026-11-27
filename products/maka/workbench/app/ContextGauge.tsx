@@ -28,6 +28,7 @@ import {
   floatingStyle,
   quietFocusStyle,
   quietHoverStyle,
+  radius,
   textTooltip,
 } from './ui';
 import { formatCompactCount, formatDecimal } from './numberFormat';
@@ -83,7 +84,7 @@ export function ContextGauge(props: { usage: () => ComposerContextUsage }) {
               alignItems: 'center',
               justifyContent: 'center',
               flexShrink: 0,
-              borderRadius: 6,
+              borderRadius: radius(6),
               cursor: 'pointer',
             }}
           >

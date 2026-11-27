@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { textTooltip } from './ui';
+import { lineWidth, radius, textTooltip } from './ui';
 import { Tooltip } from 'nsh/base';
 import { createText } from './text';
 import { cleanup, inputAction, signal, Text, View, Image } from 'nsh';
@@ -157,9 +157,9 @@ export function ImageThumbnail(props: {
                 ...box,
                 flexShrink: 0,
                 backgroundColor: C.surface,
-                borderWidth: 1,
+                borderWidth: lineWidth(),
                 borderColor: C.line,
-                borderRadius: props.mini ? 4 : 8,
+                borderRadius: props.mini ? radius(4) : radius(8),
                 overflow: 'hidden',
               }
             : {
@@ -246,7 +246,7 @@ export function ImageThumbnail(props: {
           <Text style={[{ color: C.danger }, { userSelect: 'text' }]}>{error()}</Text>
           <Button
             onPress={inputAction(retry, action)}
-            style={controlStyle}
+            style={controlStyle()}
             hoverStyle={{ backgroundColor: C.raised }}
             focusStyle={{ backgroundColor: C.pressed }}
           >

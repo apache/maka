@@ -44,6 +44,8 @@ import {
   Disclosure,
   IconButton,
   inputTextStyle,
+  lineWidth,
+  radius,
   textTooltip,
 } from './ui';
 
@@ -134,7 +136,7 @@ export function TrajectoryToolbar(props: {
           color: C.text,
           placeholderColor: C.muted,
           backgroundColor: C.surface,
-          borderRadius: 6,
+          borderRadius: radius(6),
         }}
       />
       <IconButton
@@ -242,7 +244,7 @@ function TimelineLane(props: {
                       : point().end == null
                         ? C.muted
                         : C.accent,
-                borderRadius: 2,
+                borderRadius: radius(2),
               }}
               hoverStyle={{ opacity: 0.65 }}
               focusStyle={{ backgroundColor: C.text }}
@@ -423,8 +425,8 @@ export function TrajectoryOverview(props: {
                   bottom: 0,
                   backgroundColor: C.accent,
                   opacity: 0.27,
-                  borderRadius: 2,
-                  borderWidth: 1,
+                  borderRadius: radius(2),
+                  borderWidth: lineWidth(),
                   borderColor: C.text,
                 }}
               />
@@ -523,7 +525,7 @@ export function TrajectoryRequest(props: {
       selected={props.selected()}
       onPress={props.select}
       style={{
-        ...controlStyle,
+        ...controlStyle(),
         backgroundColor: props.selected() ? C.raised : C.surface,
         width: '100%',
         borderRadius: 0,
@@ -685,7 +687,7 @@ export function TrajectoryRecord(props: {
         selected={props.selected()}
         onPress={props.select}
         style={{
-          ...controlStyle,
+          ...controlStyle(),
           backgroundColor: props.selected() ? C.raised : C.background,
           flex: 1,
           minWidth: 0,

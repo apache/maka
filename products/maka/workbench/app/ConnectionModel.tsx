@@ -38,7 +38,7 @@ import {
   SettingsSwitch,
   settingsInset,
 } from './SettingsPage';
-import { C, captionTextStyle, controlDisabledStyle, quietFocusStyle } from './ui';
+import { C, captionTextStyle, controlDisabledStyle, quietFocusStyle, radius } from './ui';
 
 const tools = [
   { key: 'codeMode', label: 'Code Mode' },
@@ -201,7 +201,7 @@ export function ConnectionModel(props: { settings: ModelSettingsOwner }) {
                     gap: 6,
                     minHeight: platform.idiom === 'terminal' ? 16 : 28,
                     paddingHorizontal: platform.idiom === 'terminal' ? 0 : 8,
-                    borderRadius: 8,
+                    borderRadius: radius(8),
                   }}
                   hoverStyle={{ backgroundColor: C.cardRaised }}
                   focusStyle={quietFocusStyle()}

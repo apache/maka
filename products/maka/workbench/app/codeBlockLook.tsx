@@ -19,7 +19,7 @@
 
 import { platform, Text } from 'nsh';
 import { tr } from './locale';
-import { C, codeTextStyle, secondaryTextStyle } from './ui';
+import { C, codeTextStyle, lineWidth, radius, secondaryTextStyle } from './ui';
 
 /** One look for every code block: in a reply, and a diagram's source. */
 export const codeBlockActions = () => [
@@ -35,9 +35,15 @@ export function CodeBlockAction(props: { action: { id: string; label?: string | 
   );
 }
 
-export function codeBlockStyles(color: string, radius: number) {
+/** `corner` is the block's radius in the default look. */
+export function codeBlockStyles(color: string, corner: number) {
   return {
-    codeBlock: { backgroundColor: C.card, borderColor: C.line, borderRadius: radius },
+    codeBlock: {
+      backgroundColor: C.card,
+      borderColor: C.line,
+      borderRadius: radius(corner),
+      borderWidth: lineWidth(),
+    },
     codeBlockCode: { ...codeTextStyle, color },
     codeBlockHeader:
       platform.idiom === 'terminal'

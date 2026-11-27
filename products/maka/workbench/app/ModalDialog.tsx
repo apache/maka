@@ -31,7 +31,7 @@ import {
 } from 'nsh';
 import { Dialog } from 'nsh/base';
 import { dialogTop } from './chrome';
-import { C } from './ui';
+import { C, floatingShadow, lineWidth, radius } from './ui';
 
 const OPEN_MODAL_SURFACES_KEY = Symbol.for('maka.workbench.openModalSurfaces');
 type GlobalWithOpenModals = typeof globalThis & { [OPEN_MODAL_SURFACES_KEY]?: Signal<number> };
@@ -119,10 +119,12 @@ export function ModalDialog(props: {
 /** The card of a dialog that lays out its own scrim: `ModalDialog` uses it too. */
 export const dialogCardStyle = () => ({
   backgroundColor: C.surface,
-  borderWidth: 1,
+  borderWidth: lineWidth(),
   borderColor: C.line,
-  borderRadius: 12,
-  ...(platform.idiom === 'terminal' ? {} : { boxShadow: `0 16px 48px ${C.shadow}` }),
+  borderRadius: radius(12),
+  ...(platform.idiom === 'terminal'
+    ? {}
+    : { boxShadow: floatingShadow(`0 16px 48px ${C.shadow}`) }),
 });
 
 /** The decision and its object as the title; `detail` adds only what changes it. */

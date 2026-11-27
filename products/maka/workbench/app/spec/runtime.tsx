@@ -56,7 +56,14 @@ import {
 import { Button } from 'nsh/base';
 import { tr } from '../locale';
 import { DialogFooter, DialogHeader, ModalDialog } from '../ModalDialog';
-import { C, captionTextStyle, controlFocusStyle, controlHoverStyle, controlStyle } from '../ui';
+import {
+  C,
+  captionTextStyle,
+  controlFocusStyle,
+  controlHoverStyle,
+  controlStyle,
+  lineWidth,
+} from '../ui';
 import type { SpecSession } from './session.ts';
 
 export type SpecElementRenderContext = {
@@ -534,7 +541,7 @@ export function SpecRenderer(props: {
               <Button
                 accessibilityLabel={pendingConfirm()!.resolved.confirm!.cancelLabel ?? tr('Cancel')}
                 onPress={() => pendingConfirm.set(null)}
-                style={{ ...controlStyle, borderWidth: 1, borderColor: C.line }}
+                style={{ ...controlStyle(), borderWidth: lineWidth(), borderColor: C.line }}
                 hoverStyle={controlHoverStyle()}
                 focusStyle={controlFocusStyle()}
               >
@@ -552,7 +559,7 @@ export function SpecRenderer(props: {
                   if (current) void current.run();
                 }}
                 style={{
-                  ...controlStyle,
+                  ...controlStyle(),
                   backgroundColor:
                     pendingConfirm()!.resolved.confirm!.variant === 'danger' ? C.danger : C.accent,
                 }}

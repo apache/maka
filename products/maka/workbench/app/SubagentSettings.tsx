@@ -230,7 +230,7 @@ function PresetModelSelect(props: { owner: PresetSettingsOwner; disabled: boolea
         <Button
           accessibilityLabel={tr('Choose model')}
           disabled={props.disabled}
-          style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 8 }}
+          style={{ ...controlStyle(), flexDirection: 'row', alignItems: 'center', gap: 8 }}
           hoverStyle={{ backgroundColor: C.pressed }}
           focusStyle={{ backgroundColor: C.pressed }}
           disabledStyle={controlDisabledStyle}

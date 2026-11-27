@@ -58,8 +58,10 @@ import {
   captionTextStyle,
   controlFocusStyle,
   floatingStyle,
+  lineWidth,
   menuRowHoverStyle,
   menuRowStyle,
+  radius,
   textTooltip,
 } from './ui';
 
@@ -384,7 +386,7 @@ export function RoomEmojiPickerPopover(props: {
         style={{
           width: 316,
           height: 344,
-          borderRadius: 12,
+          borderRadius: radius(12),
           overflow: 'hidden',
           backgroundColor: C.floating,
         }}
@@ -414,7 +416,7 @@ export function RoomEmojiPickerPopover(props: {
           height: 30,
           paddingLeft: 9,
           paddingRight: 4,
-          borderRadius: 8,
+          borderRadius: radius(8),
           backgroundColor: C.surface,
         }}
         searchStyle={{ flex: 1, fontSize: 13, color: C.text }}
@@ -430,7 +432,7 @@ export function RoomEmojiPickerPopover(props: {
             style={{
               width: 24,
               height: 24,
-              borderRadius: 6,
+              borderRadius: radius(6),
               alignItems: 'center',
               justifyContent: 'center',
             }}
@@ -465,7 +467,7 @@ export function RoomEmojiPickerPopover(props: {
                   style={{
                     width: 28,
                     height: 26,
-                    borderRadius: 6,
+                    borderRadius: radius(6),
                     alignItems: 'center',
                     justifyContent: 'center',
                     backgroundColor: activeGroup() === g().id ? C.surface : 'transparent',
@@ -554,7 +556,7 @@ export function RoomQuickReactBar(props: {
         paddingVertical: 3,
         borderRadius: 999,
         backgroundColor: C.floating,
-        borderWidth: 1,
+        borderWidth: lineWidth(),
         borderColor: C.line,
       }}
     >
@@ -911,7 +913,7 @@ function RoomReactionPill(props: {
                   gap: 6,
                   paddingHorizontal: 4,
                   paddingVertical: 2,
-                  borderRadius: 6,
+                  borderRadius: radius(6),
                 }}
                 hoverStyle={{ backgroundColor: C.surface }}
               >

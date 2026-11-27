@@ -457,7 +457,7 @@ export function WorkspacePicker(props: {
                   tooltip={textTooltip(() => tr('Close · Esc'))}
                   onPress={inputAction(props.close, props.instance)}
                   style={{
-                    ...controlStyle,
+                    ...controlStyle(),
                     width: 32,
                     paddingHorizontal: 8,
                     alignItems: 'center',
@@ -477,7 +477,7 @@ export function WorkspacePicker(props: {
                   accessibilityLabel={tr('Parent workspace folder')}
                   tooltip={textTooltip(() => shortcut(tr('Parent folder'), 'alt+up'))}
                   onPress={inputAction(back, { location: read.id })}
-                  style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 8 }}
+                  style={{ ...controlStyle(), flexDirection: 'row', alignItems: 'center', gap: 8 }}
                   hoverStyle={controlHoverStyle()}
                   focusStyle={controlFocusStyle()}
                   disabledStyle={controlDisabledStyle}
@@ -489,7 +489,7 @@ export function WorkspacePicker(props: {
                   disabled={!read.trail.length}
                   accessibilityLabel={tr('Workspace locations')}
                   onPress={inputAction(back, { location: read.id, roots: true })}
-                  style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 8 }}
+                  style={{ ...controlStyle(), flexDirection: 'row', alignItems: 'center', gap: 8 }}
                   hoverStyle={controlHoverStyle()}
                   focusStyle={controlFocusStyle()}
                   disabledStyle={controlDisabledStyle}
@@ -504,7 +504,7 @@ export function WorkspacePicker(props: {
                     removeSearchKeys();
                     managing.set(true);
                   }, null)}
-                  style={controlStyle}
+                  style={controlStyle()}
                   hoverStyle={controlHoverStyle()}
                   focusStyle={controlFocusStyle()}
                   disabledStyle={controlDisabledStyle}
@@ -519,7 +519,12 @@ export function WorkspacePicker(props: {
                     disabled={picking()}
                     accessibilityLabel={tr('Choose a folder on this computer')}
                     onPress={inputAction(chooseFolder, null)}
-                    style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 8 }}
+                    style={{
+                      ...controlStyle(),
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      gap: 8,
+                    }}
                     hoverStyle={controlHoverStyle()}
                     focusStyle={controlFocusStyle()}
                     disabledStyle={controlDisabledStyle}
@@ -569,7 +574,7 @@ export function WorkspacePicker(props: {
                     color: C.text,
                     height: compact() ? 32 : 40,
                     backgroundColor: C.background,
-                    borderRadius: inputBorderRadius,
+                    borderRadius: inputBorderRadius(),
                     paddingHorizontal: 12,
                     fontSize: 14,
                   }}
@@ -677,7 +682,7 @@ export function WorkspacePicker(props: {
                         })
                       : undefined
                   }
-                  style={{ ...controlStyle, backgroundColor: C.accent }}
+                  style={{ ...controlStyle(), backgroundColor: C.accent }}
                   hoverStyle={{ backgroundColor: C.accentHover }}
                   focusStyle={{ backgroundColor: C.accentHover }}
                   disabledStyle={{ ...controlDisabledStyle, backgroundColor: C.pressed }}

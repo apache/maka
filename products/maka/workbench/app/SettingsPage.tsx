@@ -27,13 +27,16 @@ import {
   captionTextStyle,
   controlDisabledStyle,
   controlStyle,
+  floatingStyle,
   inputBorderRadius,
   inputTextStyle,
   isDark,
-  floatingStyle,
+  lineWidth,
   menuDetailTextStyle,
   menuRowStyle,
   quietFocusStyle,
+  radius,
+  raisedShadow,
 } from './ui';
 
 const terminal = platform.idiom === 'terminal';
@@ -170,8 +173,9 @@ export function SettingsSection(props: {
       <View
         style={{
           backgroundColor: terminal ? undefined : C.card,
-          borderRadius: terminal ? 0 : 12,
+          borderRadius: terminal ? 0 : radius(12),
           overflow: 'hidden',
+          ...raisedShadow(),
         }}
       >
         {/* Every row draws the line above it; the first row's line falls outside the clip. */}
@@ -299,7 +303,7 @@ export function SettingsMonogram(props: { name: string; muted: boolean }) {
           {
             width: 28,
             height: 28,
-            borderRadius: 8,
+            borderRadius: radius(8),
             backgroundColor: C.cardRaised,
             alignItems: 'center',
             justifyContent: 'center',
@@ -477,7 +481,7 @@ export function SettingsSelect(props: {
               minHeight: terminal ? 16 : 28,
               paddingLeft: terminal ? 0 : 10,
               paddingRight: terminal ? 0 : 6,
-              borderRadius: 8,
+              borderRadius: radius(8),
               backgroundColor: terminal ? undefined : C.cardRaised,
               flexDirection: 'row',
               alignItems: 'center',
@@ -549,11 +553,12 @@ const fieldStyle = (disabled?: boolean, error?: boolean) => ({
   color: disabled ? C.muted : C.text,
   placeholderColor: C.muted,
   backgroundColor: C.panel,
-  borderWidth: 1,
+  borderWidth: lineWidth(),
   borderColor: error ? C.danger : C.line,
-  borderRadius: inputBorderRadius,
+  borderRadius: inputBorderRadius(),
   paddingHorizontal: terminal ? 0 : 10,
   paddingVertical: terminal ? 0 : 4,
+  ...raisedShadow(),
 });
 
 /** Two or three short choices shown side by side; each is a button named by its title. */
@@ -769,7 +774,7 @@ export function SettingsTextArea(props: {
             ...text(),
             paddingVertical: padding,
             paddingHorizontal: terminal ? 0 : 12,
-            borderRadius: terminal ? 0 : 12,
+            borderRadius: terminal ? 0 : radius(12),
             flex: 1,
           }}
           focusStyle={{ borderColor: C.accent }}
@@ -847,15 +852,16 @@ export function SettingsButton(props: {
       selected={props.selected}
       onPress={props.onPress}
       style={{
-        ...controlStyle,
-        minHeight: terminal ? controlStyle.minHeight : 28,
-        paddingVertical: terminal ? controlStyle.paddingVertical : 4,
+        ...controlStyle(),
+        minHeight: terminal ? controlStyle().minHeight : 28,
+        paddingVertical: terminal ? controlStyle().paddingVertical : 4,
         paddingHorizontal: quiet() ? 8 : 12,
         flexDirection: 'row',
         alignItems: 'center',
         gap: 6,
         flexShrink: 0,
         backgroundColor: primaryFill() ? C.accent : quiet() ? undefined : C.cardRaised,
+        ...(primaryFill() ? raisedShadow() : {}),
       }}
       hoverStyle={
         primary()

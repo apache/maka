@@ -21,13 +21,15 @@ import { inputAction, Scroll, Text, View } from 'nsh';
 import { Button } from 'nsh/base';
 import { InlineCallout } from './Feedback';
 import {
-  C,
   bodyTextStyle,
+  C,
   captionTextStyle,
   controlDisabledStyle,
   controlFocusStyle,
   controlHoverStyle,
   controlStyle,
+  lineWidth,
+  radius,
 } from './ui';
 import { tr } from './locale';
 import type { ComposerProjectMcp as Owner } from '../../../../packages/plugin-sdk/src/composer-view.js';
@@ -47,9 +49,9 @@ export function ProjectMcp(props: { owner: Owner }) {
             gap: 8,
             marginBottom: 8,
             backgroundColor: C.card,
-            borderWidth: 1,
+            borderWidth: lineWidth(),
             borderColor: C.line,
-            borderRadius: 12,
+            borderRadius: radius(12),
           }}
         >
           <Text style={{ ...bodyTextStyle, color: C.text, fontWeight: '600' }}>
@@ -115,8 +117,8 @@ export function ProjectMcp(props: { owner: Owner }) {
               accessibilityLabel={tr('Trust configuration')}
               onPress={inputAction(owner.trust, proposal().revision)}
               style={{
-                ...controlStyle,
-                borderWidth: 1,
+                ...controlStyle(),
+                borderWidth: lineWidth(),
                 borderColor: C.line,
                 backgroundColor: C.raised,
               }}
@@ -132,7 +134,7 @@ export function ProjectMcp(props: { owner: Owner }) {
               disabled={owner.pending()}
               accessibilityLabel={tr("Don't load")}
               onPress={inputAction(owner.decline, proposal().revision)}
-              style={controlStyle}
+              style={controlStyle()}
               hoverStyle={controlHoverStyle()}
               focusStyle={controlFocusStyle()}
               disabledStyle={controlDisabledStyle}

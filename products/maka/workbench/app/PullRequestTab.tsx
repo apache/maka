@@ -46,11 +46,13 @@ import {
   controlDisabledStyle,
   controlStyle,
   floatingStyle,
+  lineWidth,
   menuRowHoverStyle,
   menuRowStyle,
   quietActiveStyle,
   quietFocusStyle,
   quietHoverStyle,
+  radius,
   textTooltip,
 } from './ui';
 import type { WorkspaceFileTarget } from './workspaceFileState';
@@ -406,7 +408,7 @@ export function PullRequestTab(props: {
             style={{
               height: 28,
               paddingHorizontal: 8,
-              borderRadius: 8,
+              borderRadius: radius(8),
               backgroundColor: subTab() === 'summary' ? C.card : 'transparent',
               justifyContent: 'center',
             }}
@@ -433,7 +435,7 @@ export function PullRequestTab(props: {
             style={{
               height: 28,
               paddingHorizontal: 8,
-              borderRadius: 8,
+              borderRadius: radius(8),
               backgroundColor: subTab() === 'changes' ? C.card : 'transparent',
               flexDirection: 'row',
               alignItems: 'center',
@@ -486,7 +488,7 @@ export function PullRequestTab(props: {
                   style={{
                     height: 28,
                     paddingHorizontal: 8,
-                    borderRadius: 8,
+                    borderRadius: radius(8),
                     backgroundColor: pendingDrafts().length > 0 ? C.accent : C.card,
                     flexDirection: 'row',
                     alignItems: 'center',
@@ -526,9 +528,9 @@ export function PullRequestTab(props: {
                     minHeight: 72,
                     maxHeight: 140,
                     padding: 8,
-                    borderRadius: 8,
+                    borderRadius: radius(8),
                     backgroundColor: C.background,
-                    borderWidth: 1,
+                    borderWidth: lineWidth(),
                     borderColor: C.line,
                     color: C.text,
                   }}
@@ -585,7 +587,7 @@ export function PullRequestTab(props: {
                   onPress={() => void submitReview()}
                   style={{
                     height: 32,
-                    borderRadius: 8,
+                    borderRadius: radius(8),
                     backgroundColor: C.accent,
                     alignItems: 'center',
                     justifyContent: 'center',
@@ -607,7 +609,7 @@ export function PullRequestTab(props: {
             style={{
               height: 28,
               paddingHorizontal: 2,
-              borderRadius: 8,
+              borderRadius: radius(8),
               backgroundColor: C.card,
               flexDirection: 'row',
               alignItems: 'center',
@@ -629,7 +631,7 @@ export function PullRequestTab(props: {
                   style={{
                     width: 24,
                     height: 24,
-                    borderRadius: 4,
+                    borderRadius: radius(4),
                     alignItems: 'center',
                     justifyContent: 'center',
                   }}
@@ -657,9 +659,9 @@ export function PullRequestTab(props: {
                     ...captionTextStyle,
                     height: 32,
                     paddingHorizontal: 8,
-                    borderRadius: 8,
+                    borderRadius: radius(8),
                     backgroundColor: C.background,
-                    borderWidth: 1,
+                    borderWidth: lineWidth(),
                     borderColor: C.line,
                     color: C.text,
                   }}
@@ -677,7 +679,7 @@ export function PullRequestTab(props: {
                       style={{
                         height: 28,
                         paddingHorizontal: 8,
-                        borderRadius: 8,
+                        borderRadius: radius(8),
                         backgroundColor: C.raised,
                         justifyContent: 'center',
                       }}
@@ -696,7 +698,7 @@ export function PullRequestTab(props: {
                     style={{
                       height: 28,
                       paddingHorizontal: 12,
-                      borderRadius: 8,
+                      borderRadius: radius(8),
                       backgroundColor: C.accent,
                       justifyContent: 'center',
                     }}
@@ -720,7 +722,7 @@ export function PullRequestTab(props: {
                 style={{
                   width: 24,
                   height: 24,
-                  borderRadius: 4,
+                  borderRadius: radius(4),
                   alignItems: 'center',
                   justifyContent: 'center',
                 }}
@@ -744,7 +746,7 @@ export function PullRequestTab(props: {
                 style={{
                   width: 24,
                   height: 24,
-                  borderRadius: 4,
+                  borderRadius: radius(4),
                   alignItems: 'center',
                   justifyContent: 'center',
                 }}
@@ -762,7 +764,7 @@ export function PullRequestTab(props: {
               style={{
                 width: 24,
                 height: 24,
-                borderRadius: 4,
+                borderRadius: radius(4),
                 alignItems: 'center',
                 justifyContent: 'center',
               }}
@@ -932,7 +934,7 @@ export function PullRequestTab(props: {
                             <View
                               style={{
                                 padding: 12,
-                                borderRadius: 12,
+                                borderRadius: radius(12),
                                 backgroundColor: C.card,
                                 gap: 8,
                               }}
@@ -967,7 +969,7 @@ export function PullRequestTab(props: {
                             }}
                             style={{
                               padding: 12,
-                              borderRadius: 12,
+                              borderRadius: radius(12),
                               backgroundColor: C.card,
                               alignItems: 'stretch',
                               gap: 8,
@@ -1020,7 +1022,7 @@ export function PullRequestTab(props: {
                     <View
                       style={{
                         padding: 12,
-                        borderRadius: 12,
+                        borderRadius: radius(12),
                         backgroundColor: C.card,
                         gap: 8,
                       }}
@@ -1052,7 +1054,7 @@ export function PullRequestTab(props: {
                           disabled={!commentDraft().trim() || commentSubmitting()}
                           onPress={() => void submitGeneralComment()}
                           style={{
-                            ...controlStyle,
+                            ...controlStyle(),
                             minHeight: 28,
                             height: 28,
                             paddingHorizontal: 12,
