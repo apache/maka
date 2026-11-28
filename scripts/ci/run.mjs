@@ -627,10 +627,10 @@ export function executor(
       await run(join(target, 'ci/maka-bridge'), ['--version']);
       await nextest(id);
     } else if (id === 'macos-nsh') {
-      await runSuites(['unit', 'menu', 'undo'], async (stage) => {
+      await runSuites(['unit', 'menu', 'shader-resize', 'undo'], async (stage) => {
         if (stage === 'unit')
           await nextest(id, false, filter, ['--no-tests=fail', '-j', '1', ...extra]);
-        else if (stage === 'menu')
+        else if (stage === 'menu' || stage === 'shader-resize')
           await cargo(
             [
               'test',
@@ -646,7 +646,14 @@ export function executor(
               '--',
               '--ignored',
             ],
-            { env: { ...suiteEnv(id), NSH_MENU_LABELS_CHECK_ONLY: '1' } },
+            {
+              env: {
+                ...suiteEnv(id),
+                ...(stage === 'menu'
+                  ? { NSH_MENU_LABELS_CHECK_ONLY: '1' }
+                  : { NSH_SHADER_CONTENT_CHECK_ONLY: 'resize' }),
+              },
+            },
           );
         else {
           const metadata = JSON.parse(

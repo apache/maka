@@ -95,6 +95,8 @@ terminal surfaces. Desktop window operations take explicit `WindowRef` values.
 - **Input ordering and scopes:** `inputAction`, `ScrollIntent`, scoped/fallback
   key bindings and focus-event fences preserve editor actions, IME, paste and
   reload ordering. Scoped lookups also enforce upstream window isolation.
+  `Keymap::gives_way` checks the current window, focus chain and dispatch phase
+  before allowing a key binding to take priority over focus navigation.
   On Windows, selecting output keeps an input focused only in the same window,
   and moving RichEdit's client rectangle shifts its cached caret so small
   layout shifts keep drawn and IME caret bounds aligned.
@@ -108,6 +110,9 @@ terminal surfaces. Desktop window operations take explicit `WindowRef` values.
   surface copies share the submission queue with surface and readback draws.
   Apple and Windows surface pools keep frames that finish during collection
   when they are newer than the selected frame.
+  A collapsed shader clears even a frame from an older surface pool and
+  stays idle until it has area again. AppKit and UIKit finish collapsed
+  view and screen transitions and release their child masks.
 
 ## Maintenance and verification
 

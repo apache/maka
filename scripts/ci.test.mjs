@@ -443,15 +443,58 @@ test('native pixel and desktop regressions run only on their native OS workers',
   assert.equal(plan.suites.gpui, undefined);
 });
 
+test('NSH shader, GPU and AppKit changes reach the macOS rendering suite', () => {
+  const packages = ['nsh-gpu', 'nsh-engine', 'nsh-platform-macos'].map((name) => ({
+    name,
+    id: name,
+    source: null,
+    manifest_path: join(root, 'third-party/nsh/crates', name, 'Cargo.toml'),
+  }));
+  const metadata = {
+    root: { packages: [], workspace_members: [], resolve: { nodes: [] } },
+    nsh: {
+      packages,
+      workspace_members: packages.map(({ id }) => id),
+      resolve: {
+        nodes: packages.map(({ id }, i) => ({
+          id,
+          deps: i === 0 ? [] : [{ pkg: packages[i - 1].id }],
+        })),
+      },
+    },
+  };
+  for (const [pkg, file] of [
+    ['nsh-gpu', 'src/lib.rs'],
+    ['nsh-engine', 'src/shader.rs'],
+    ['nsh-platform-macos', 'tests/native/shader_content.rs'],
+  ]) {
+    const plan = createPlan({
+      root,
+      changes: [`third-party/nsh/crates/${pkg}/${file}`],
+      metadata,
+      revision: 'head',
+      baseline: 'base',
+    });
+    assert.equal(plan.full, false);
+    const worker = plan.workers.find(({ id }) => id === 'macos-nsh');
+    assert.ok(worker?.suites.includes('macos-nsh'), pkg);
+    assert.match(worker.runner, /^macos-/);
+    assert.match(plan.suites['macos-nsh'].reason, /nsh-platform-macos/);
+  }
+});
+
 test('non-archived native regressions fail empty selections and GTK runs under Xvfb', async () => {
   const calls = [];
+  const appKitModes = [];
   const nativeTarget = join(root, 'native-nsh-target');
   const exec = executor(
     root,
     {},
     {
-      run: async (exe, args) => {
+      run: async (exe, args, { env }) => {
         calls.push({ exe, args });
+        if (args.includes('native') && args.includes('--ignored'))
+          appKitModes.push([env.NSH_MENU_LABELS_CHECK_ONLY, env.NSH_SHADER_CONTENT_CHECK_ONLY]);
         return args[0] === 'metadata' ? JSON.stringify({ target_directory: nativeTarget }) : '';
       },
     },
@@ -471,7 +514,18 @@ test('non-archived native regressions fail empty selections and GTK runs under X
   }
   assert(calls.some(({ args }) => args.includes('native-pixels')));
   assert(calls.some(({ args }) => args.includes('terminal_native') && !args.includes('--lib')));
-  assert(calls.some(({ args }) => args.includes('native') && args.includes('--ignored')));
+  assert.deepEqual(appKitModes, [
+    ['1', undefined],
+    [undefined, 'resize'],
+  ]);
+  const macUnits = calls.find(
+    ({ args }) => args.includes('nextest') && args.includes('nsh-platform-macos'),
+  );
+  assert.ok(macUnits.args.includes('nsh-engine'));
+  assert.ok(macUnits.args.includes('--lib'));
+  assert.ok(
+    macUnits.args[macUnits.args.indexOf('--features') + 1].split(',').includes('nsh-engine/shader'),
+  );
   assert(
     calls.some(({ args }) => args.includes('crates/nsh-platform-macos/tests/host/Undo.test.tsx')),
   );
@@ -529,7 +583,11 @@ test('non-archived native regressions fail empty selections and GTK runs under X
   const nativeCheck = macCalls.find(({ args }) => args[0] === 'check');
   assert.equal(nativeCheck.exe, 'cargo');
   assert(nativeCheck.args.includes('--all-targets'));
-  assert(nativeCheck.args.includes('nsh-platform-macos/terminal'));
+  assert.ok(
+    nativeCheck.args[nativeCheck.args.indexOf('--features') + 1]
+      .split(',')
+      .includes('nsh-platform-macos/terminal'),
+  );
   assert(!nativeCheck.args.includes('--lib'));
   const hostBuild = macCalls.find(({ args }) => args[0] === 'build');
   assert.equal(hostBuild.exe, 'cargo');

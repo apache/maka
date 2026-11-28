@@ -331,6 +331,10 @@ impl Shaders {
         let Some(s) = self.views.get_mut(&id) else {
             return;
         };
+        let bounds = s.host.bounds().size;
+        if bounds.width <= 0.0 || bounds.height <= 0.0 {
+            return;
+        }
         // The running transition's frame (copied on the GPU), or the
         // children.
         let from_frame = s.masked && s.view.set_input_from_frame(renderer, ShaderInput::From);
@@ -450,7 +454,13 @@ impl Shaders {
     /// box and a frame of the new size is rendered.
     pub(crate) fn layout(&mut self, id: NodeId, style: &ViewStyle, scale: CGFloat) {
         if let Some(state) = self.views.get_mut(&id) {
-            state.layout(style, scale);
+            let ended = state.layout(style, scale);
+            if ended
+                && state.update_masked(&self.renderer, Instant::now())
+                && let Some(children) = state.children.clone()
+            {
+                self.sync_mask(&children);
+            }
             self.wake();
         }
     }
@@ -686,8 +696,9 @@ impl ShaderState {
     }
 
     /// Frames the layer over the host's bounds, clips it to the rounded
-    /// box of `style`, and tells the shader its size at `scale`.
-    fn layout(&mut self, style: &ViewStyle, scale: CGFloat) {
+    /// box of `style`, and tells the shader its size at `scale`. Returns
+    /// whether collapse ended a transition and its mask needs updating.
+    fn layout(&mut self, style: &ViewStyle, scale: CGFloat) -> bool {
         let bounds = self.host.bounds().size;
         let (w, h) = (bounds.width as f32, bounds.height as f32);
         self.scale = scale;
@@ -701,16 +712,30 @@ impl ShaderState {
                 ));
                 self.layer.setContentsScale(scale);
             });
-            self.view.set_size(size(Points(w), Points(h)), scale as f32);
-            return;
+        } else {
+            crate::decor::clip_to_box(&self.layer, &mut self.mask, bounds, style, scale);
         }
-        crate::decor::clip_to_box(&self.layer, &mut self.mask, bounds, style, scale);
         self.view.set_size(size(Points(w), Points(h)), scale as f32);
+        let ended = (w <= 0.0 || h <= 0.0) && self.view.finish_transition();
+        if ended {
+            self.stale = false;
+            self.backdrop_stale = false;
+            // SAFETY: clear the main-thread-owned layer before revealing its children.
+            quiet(|| unsafe { self.layer.setContents(None) });
+        }
+        ended
     }
 
     /// Shows the last frame collected.
     fn show(&self) {
-        display_frame(&self.layer, &self.view);
+        if self.masked
+            || !matches!(
+                self.role,
+                ShaderRole::Transition | ShaderRole::ScreenTransition
+            )
+        {
+            display_frame(&self.layer, &self.view);
+        }
     }
 }
 

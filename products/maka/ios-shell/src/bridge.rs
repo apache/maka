@@ -19,8 +19,8 @@
 
 use maka_remote_client::{
     Attachments, DeviceIdentity, HostProfile, PairingNameError, PendingPairing, ReadResource,
-    RelayAuthorization, RemoteCallHandle, RemoteClientError, RemoteHostConnection, SavedHosts,
-    TlsTrust, validate_pairing_name,
+    RelayAuthorization, RemoteCallHandle, RemoteClientError, RemoteHostConnection,
+    RemoteSubscription, SavedHosts, TlsTrust, validate_pairing_name,
 };
 use nsh_engine::{HostCall, HostChannel, HostSender};
 use serde::{Deserialize, Serialize};
@@ -1473,16 +1473,31 @@ impl Bridge {
     async fn open_subscription(
         &self,
         data: Value,
-        caller: HostSender,
+        sender: HostSender,
     ) -> Result<(RootId, String, u64, oneshot::Sender<()>), String> {
         let rpc = read_only_rpc(data)?;
         let (root, active, calls) = self.calls(&rpc).await?;
         let id = rpc.subscription_id.ok_or("missing subscription ID")?;
-        let mut subscription = calls
+        let subscription = calls
             .subscribe(&rpc.endpoint, &rpc.method, rpc.input)
             .await
             .map_err(error)?;
+        self.register_subscription(root, active, id, sender, subscription)
+            .await
+    }
+
+    async fn register_subscription(
+        &self,
+        root: RootId,
+        active: u64,
+        id: String,
+        sender: HostSender,
+        mut subscription: RemoteSubscription,
+    ) -> Result<(RootId, String, u64, oneshot::Sender<()>), String> {
         let mut state = self.state.lock().await;
+        if sender.is_closed() {
+            return Err("app closed during subscription setup".into());
+        }
         if state.current(&root, active).is_none() {
             return Err("remote Host changed during subscription setup".into());
         }
@@ -1492,41 +1507,41 @@ impl Bridge {
         let key = id.clone();
         let host_root = root.clone();
         let task = self.runtime.spawn(async move {
-            let outcome = if wait.await.is_err() {
-                None
-            } else {
-                loop {
-                    let next = tokio::select! {
-                        biased;
-                        _ = caller.closed() => break None,
-                        next = subscription.next() => next,
-                    };
-                    match next {
-                        Ok(Some(item)) => {
-                            if !caller.send(
-                                "ios.subscriptionItem",
-                                json!({
-                                    "rootId": host_root, "subscriptionId": key, "generation": generation, "item": item,
-                                }),
-                            ).expect("valid subscription event name") {
-                                break None;
+            let outcome = tokio::select! {
+                biased;
+                _ = sender.closed() => None,
+                outcome = async {
+                    wait.await.ok()?;
+                    loop {
+                        match subscription.next().await {
+                            Ok(Some(item)) => {
+                                if !sender.send(
+                                    "ios.subscriptionItem",
+                                    json!({
+                                        "rootId": host_root, "subscriptionId": key, "generation": generation, "item": item,
+                                    }),
+                                ).expect("valid subscription event name") {
+                                    return None;
+                                }
                             }
+                            Ok(None) => return Some(Ok(())),
+                            Err(err) => return Some(Err(err)),
                         }
-                        Ok(None) => break Some(None),
-                        Err(err) => break Some(Some(err.to_string())),
                     }
-                }
+                } => outcome,
             };
+            drop(subscription);
             let mut state = bridge.state.lock().await;
             if let Some(host) = state.connections.get_mut(&host_root)
                 && host.subscriptions.get(&key).is_some_and(|(current, _)| *current == generation)
             {
                 host.subscriptions.remove(&key);
-                if let Some(error) = outcome {
-                    caller.send(
+                if let Some(outcome) = outcome {
+                    sender.send(
                         "ios.subscriptionEnded",
                         json!({
-                            "rootId": host_root, "subscriptionId": key, "generation": generation, "error": error,
+                            "rootId": host_root, "subscriptionId": key, "generation": generation,
+                            "error": outcome.err().map(error),
                         }),
                     ).expect("valid subscription event name");
                 }
@@ -2349,6 +2364,116 @@ mod tests {
         assert_eq!(read_frame(&mut ws).await, json!({}));
         send_frame(&mut ws, json!({"kind":"ready"})).await;
         (call["method"].as_str().unwrap().to_owned(), ws)
+    }
+
+    async fn accept_subscription(
+        listener: &TcpListener,
+        session: Uuid,
+    ) -> tokio_tungstenite::WebSocketStream<tokio::net::TcpStream> {
+        let (method, mut stream) = open_rpc(listener, session).await;
+        assert_eq!(method, "watch");
+        send_frame(&mut stream, json!({"kind":"subscribed"})).await;
+        stream
+    }
+
+    #[tokio::test]
+    async fn reloading_closes_live_subscriptions_and_rejects_late_registrations() {
+        let dir = tempfile::tempdir().unwrap();
+        let channel = HostChannel::new();
+        let host =
+            HostBridge::attach(channel.clone(), dir.path().into(), Handle::current()).unwrap();
+        let (events, mut received) = tokio::sync::mpsc::unbounded_channel();
+        channel.handle("test.event", move |mut call| {
+            events.send((call.sender(), call.take_data())).unwrap();
+        });
+        let bundle = nsh_engine::Bundle::source(
+            r#"
+            import { host } from 'nsh';
+            host.on('ios.subscriptionItem', event => host.post('test.event', {item: event.item}));
+            host.on('ios.subscriptionEnded', event => host.post('test.event', {ended: event}));
+            host.on('test.subscribe', async data => {
+                const handle = await host.call('ios.subscribe', data, {timeout: 0});
+                host.post('test.event', {handle});
+            });
+            host.on('test.unsubscribe', async handle => {
+                const reply = await host.call('ios.unsubscribe', handle);
+                host.post('test.event', reply);
+            });
+            host.post('test.event', 'ready');
+            "#
+            .to_owned(),
+        )
+        .with_capabilities_json(Some(r#"{"host":true}"#))
+        .unwrap();
+        let mut config = nsh_engine::EngineConfig::new(bundle);
+        config.host = channel.clone();
+        let bridge = &host.bridge;
+        let _original = nsh_testing::Headless::start(config.clone()).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let (active, session, _anchor) = progress_host(bridge, &listener, "root").await;
+            let (old_caller, ready) = received.recv().await.unwrap();
+            assert_eq!(ready, "ready");
+            let id = "stream";
+            let input = json!({
+                "rootId":"root", "generation":active, "endpoint":"agent",
+                "method":"watch", "subscriptionId":id, "input":{},
+            });
+            let accept = || accept_subscription(&listener, session);
+            channel.send("test.subscribe", input.clone()).unwrap();
+            let mut old_stream = accept().await;
+            let (_, reply) = received.recv().await.unwrap();
+            let old_handle = &reply["handle"];
+            assert_eq!(old_handle["subscriptionId"], id);
+            assert_eq!(read_frame(&mut old_stream).await["kind"], "pull");
+            send_frame(&mut old_stream, json!({"kind":"item","value":"old app"})).await;
+            assert_eq!(received.recv().await.unwrap().1, json!({"item":"old app"}));
+            assert_eq!(read_frame(&mut old_stream).await["kind"], "pull");
+
+            let (_, _, calls) = bridge
+                .calls(&read_only_rpc(input.clone()).unwrap())
+                .await
+                .unwrap();
+            // Park a second old call after its handshake, before registration.
+            let (late_subscription, mut late_stream) =
+                tokio::join!(calls.subscribe("agent", "watch", json!({})), accept());
+            let late_subscription = late_subscription.unwrap();
+
+            // Keep the original engine alive: taking over its channel must
+            // wake the idle stream without waiting for the next remote item.
+            let _replacement = nsh_testing::Headless::start(config).unwrap();
+            assert_eq!(received.recv().await.unwrap().1, "ready");
+            // On this single-thread runtime, the task closes the stream and
+            // unregisters it before the server can observe the disconnect.
+            assert!(matches!(old_stream.next().await, None | Some(Err(_))));
+            channel
+                .send("test.unsubscribe", old_handle.clone())
+                .unwrap();
+            assert_eq!(received.recv().await.unwrap().1, json!({"cancelled":false}));
+
+            channel.send("test.subscribe", input).unwrap();
+            let mut new_stream = accept().await;
+            assert_eq!(
+                received.recv().await.unwrap().1["handle"]["subscriptionId"],
+                id
+            );
+            assert_eq!(read_frame(&mut new_stream).await["kind"], "pull");
+            let late = bridge
+                .register_subscription(
+                    "root".into(),
+                    active,
+                    id.into(),
+                    old_caller,
+                    late_subscription,
+                )
+                .await;
+            assert_eq!(late.unwrap_err(), "app closed during subscription setup");
+            assert!(matches!(late_stream.next().await, None | Some(Err(_))));
+            send_frame(&mut new_stream, json!({"kind":"item","value":"new app"})).await;
+            assert_eq!(received.recv().await.unwrap().1, json!({"item":"new app"}));
+        })
+        .await
+        .expect("reloading must close the old stream without disturbing the replacement");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

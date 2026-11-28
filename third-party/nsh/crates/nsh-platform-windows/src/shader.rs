@@ -924,6 +924,9 @@ pub(crate) fn effect(state: &ViewState) -> bool {
 pub(crate) fn draw_effect(cx: &mut DrawCx<'_>, view: &NshView, world: Mat4) -> bool {
     let (input, reads, o, frame) = {
         let s = view.state();
+        if s.frame.size.width.0 <= 0.0 || s.frame.size.height.0 <= 0.0 {
+            return false;
+        }
         let Some(shader) = s.shader.as_ref() else {
             return false;
         };

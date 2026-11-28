@@ -809,8 +809,8 @@ pub struct ShaderView {
     layer: Option<Arc<ShaderLayer>>,
     /// The uniforms with the animated slots written in.
     words: Vec<u32>,
-    size: Size<Points>,
-    scale: f32,
+    /// None until the platform first supplies its geometry.
+    layout: Option<(Size<Points>, f32)>,
     clock: Clock,
     /// Something it reads changed since the last frame rendered.
     dirty: bool,
@@ -819,6 +819,9 @@ pub struct ShaderView {
     bindings: Option<Bindings>,
     /// Where its frames go, and the last one read back.
     frames: FrameTarget,
+    /// A frame was reported to the platform; a resize can replace its pool
+    /// before the platform receives a frame of the new size.
+    presented: bool,
     /// The pictures the platform gave, by [`ShaderInput::index`].
     pictures: [Option<Picture>; 4],
     /// The pictures changed since the bind group was made.
@@ -861,7 +864,8 @@ impl ShaderView {
             Some(l) => self.words = l.uniforms.to_vec(),
             None => {
                 self.words.clear();
-                self.frames.clear_frame();
+                // The platform clears or removes the layer when it unbinds it.
+                self.clear_frame();
                 self.compiling = false;
             }
         }
@@ -996,13 +1000,22 @@ impl ShaderView {
         match self.transition {
             Some((since, duration)) if now.saturating_duration_since(since) < duration => true,
             Some(_) => {
-                self.transition = None;
-                self.pictures[ShaderInput::From.index()] = None;
-                self.pictures_changed = true;
+                self.finish_transition();
                 false
             }
             None => false,
         }
+    }
+
+    /// Ends a transition and releases the picture it replaced. Returns
+    /// whether a transition was active.
+    pub fn finish_transition(&mut self) -> bool {
+        if self.transition.take().is_none() {
+            return false;
+        }
+        self.pictures[ShaderInput::From.index()] = None;
+        self.pictures_changed = true;
+        true
     }
 
     /// Whether the platform shows the frames instead of the children: an
@@ -1060,31 +1073,47 @@ impl ShaderView {
 
     /// The view's size in points and the pixels per point it shows at.
     pub fn set_size(&mut self, size: Size<Points>, scale: f32) {
-        if self.size != size || self.scale != scale {
-            self.size = size;
-            self.scale = scale;
+        let layout = Some((size, scale));
+        if self.layout != layout {
+            self.layout = layout;
             self.dirty = true;
         }
     }
 
+    /// Whether a frame was reported to the platform and not yet cleared.
+    /// It can still be on screen after a resize replaces its surface pool.
+    pub fn has_presented_frame(&self) -> bool {
+        self.presented
+    }
+
     /// Whether a call to [`Self::render`] has something to do: a frame to
-    /// render (something changed, or its time runs) or one to collect.
+    /// render (something changed, or its time runs), collect, or clear.
     pub fn wants_frame(&self) -> bool {
         self.due() || (self.layer.is_some() && self.pending())
     }
 
-    /// Whether [`Self::render`] renders a new frame: something changed, or
-    /// its time runs ([`Self::animates`]). One that is only
-    /// [`Self::pending`] waits for the GPU ([`Renderer::when_done`]); one
+    /// Whether [`Self::render`] draws a frame or clears a collapsed view.
+    /// Before the first layout the backend can still schedule its first pass.
+    /// One that is only [`Self::pending`] waits for the GPU
+    /// ([`Renderer::when_done`]); one
     /// whose pipeline compiles stays due ([`Self::compiling`]).
     pub fn due(&self) -> bool {
-        self.layer.is_some() && (self.dirty || self.animates())
+        self.layer.is_some()
+            && if self.collapsed() {
+                self.presented || self.pending()
+            } else {
+                self.dirty || self.time_runs()
+            }
     }
 
     /// Whether its frames change with time alone: it reads `nsh.time` and
     /// is not paused, or a transition runs. Such a view renders on every
     /// display frame; one that does not, only when something changed.
     pub fn animates(&self) -> bool {
+        self.time_runs() && !self.collapsed()
+    }
+
+    fn time_runs(&self) -> bool {
         let Some(layer) = &self.layer else {
             return false;
         };
@@ -1095,7 +1124,7 @@ impl ShaderView {
     /// worker compiles: it stays [`Self::due`], and renders nothing until
     /// the pipeline is ready ([`Renderer::on_pipeline_ready`]).
     pub fn compiling(&self) -> bool {
-        self.layer.is_some() && self.compiling
+        self.layer.is_some() && self.compiling && !self.collapsed()
     }
 
     /// Whether a frame is on its way back from the GPU.
@@ -1147,33 +1176,50 @@ impl ShaderView {
         self.frames.surface()
     }
 
-    /// Collects a frame that came back without rendering another; `true`
-    /// when [`Self::frame`] is new. A page's or a dialog's overlay whose
+    /// Collects a frame without rendering another; `true` when the frame
+    /// to display changed or was cleared. A page's or a dialog's overlay whose
     /// transition ended shows the frames still on their way this way.
     pub fn collect_frame(&mut self, renderer: &Renderer) -> bool {
+        if self.collapsed() {
+            return self.clear_frame();
+        }
+        self.collect(renderer)
+    }
+
+    fn collect(&mut self, renderer: &Renderer) -> bool {
         let _ = renderer.device.poll(wgpu::PollType::Poll);
-        self.frames.collect()
+        let fresh = self.frames.collect();
+        self.presented |= fresh;
+        fresh
+    }
+
+    fn clear_frame(&mut self) -> bool {
+        self.frames.clear_frame();
+        std::mem::take(&mut self.presented)
     }
 
     /// Renders a frame if one is due and collects one that came back;
-    /// `true` when [`Self::frame`] is new. `now` is the frame clock's time.
+    /// `true` when the frame to display changed or was cleared.
+    /// `now` is the frame clock's time.
     pub fn render(&mut self, renderer: &Renderer, now: Instant) -> bool {
-        let mut collected = self.collect_frame(renderer);
         let Some(layer) = self.layer.clone() else {
-            return collected;
+            return false;
+        };
+        let Some((size, scale)) = self.layout else {
+            return false;
         };
         let running = self.transitioning(now);
-        let due = self.dirty || (layer.shader.animated() && !layer.paused) || running;
-        let progress = self.progress_at(now);
-        if !due {
-            return collected;
-        }
-        let (width, height) = self.pixels();
+        let (width, height) = self.pixels(size, scale);
         if width == 0 || height == 0 {
-            collected |= self.frames.clear_frame();
             self.dirty = false;
+            self.compiling = false;
+            return self.clear_frame();
+        }
+        let collected = self.collect(renderer);
+        if !(self.dirty || (layer.shader.animated() && !layer.paused) || running) {
             return collected;
         }
+        let progress = self.progress_at(now);
         // On surfaces where asked and possible (else read back); none free:
         // the frame is skipped.
         let Some(format) =
@@ -1205,30 +1251,24 @@ impl ShaderView {
         else {
             return collected;
         };
-        let size = layer.shader.uniform_size();
+        let uniform_size = layer.shader.uniform_size();
         let layout = layout_index(&layer);
         if std::mem::take(&mut self.pictures_changed)
             || self
                 .bindings
                 .as_ref()
-                .is_none_or(|b| b.size != size || b.layout != layout)
+                .is_none_or(|b| b.size != uniform_size || b.layout != layout)
         {
-            self.bindings = Some(bindings(renderer, size, layout, &self.pictures));
+            self.bindings = Some(bindings(renderer, uniform_size, layout, &self.pictures));
         }
         let bindings = self.bindings.as_ref().expect("bindings");
         let overflow = layer.overflow;
-        let scale = width as f32 / (self.size.width.0 + 2.0 * overflow.0).max(f32::MIN_POSITIVE);
+        let scale = width as f32 / (size.width.0 + 2.0 * overflow.0).max(f32::MIN_POSITIVE);
         let time = self.clock.time(now);
         // Written with the frame, wherever it is submitted.
         let mut writes: Writes = vec![(
             bindings.builtins.clone(),
-            words_bytes(&builtins(
-                self.size,
-                time,
-                scale,
-                Percentage(progress),
-                overflow,
-            )),
+            words_bytes(&builtins(size, time, scale, Percentage(progress), overflow)),
         )];
         if let Some(buffer) = &bindings.uniforms {
             writes.push((buffer.clone(), words_bytes(&self.words)));
@@ -1266,18 +1306,24 @@ impl ShaderView {
             writes,
         );
         self.dirty = false;
-        let _ = renderer.device.poll(wgpu::PollType::Poll);
-        self.frames.collect() || collected
+        self.collect(renderer) || collected
+    }
+
+    fn collapsed(&self) -> bool {
+        self.layout.is_some_and(|(size, scale)| {
+            let (width, height) = self.pixels(size, scale);
+            width == 0 || height == 0
+        })
     }
 
     /// The frame's size in pixels: the box and the overflow around it.
-    fn pixels(&self) -> (u32, u32) {
-        if self.size.width.0 <= 0.0 || self.size.height.0 <= 0.0 {
+    fn pixels(&self, size: Size<Points>, scale: f32) -> (u32, u32) {
+        if size.width.0 <= 0.0 || size.height.0 <= 0.0 {
             return (0, 0);
         }
         let grow = 2.0 * self.overflow().0;
-        let (w, h) = (self.size.width.0 + grow, self.size.height.0 + grow);
-        let mut scale = self.scale.max(0.0);
+        let (w, h) = (size.width.0 + grow, size.height.0 + grow);
+        let mut scale = scale.max(0.0);
         let side = w.max(h) * scale;
         if side > MAX_SIDE as f32 {
             scale *= MAX_SIDE as f32 / side;
@@ -1502,6 +1548,36 @@ mod tests {
         assert_eq!(pixel(&rebound, 0, 0), [0, 255, 0, 255]);
         assert!(rebound.serial > first.serial);
         assert!(!view.wants_frame());
+    }
+
+    #[test]
+    fn an_animated_shader_idles_at_zero_area_and_resumes_after_layout() {
+        let Some(renderer) = Renderer::new(PixelFormat::Rgba) else {
+            eprintln!("no GPU: skipped");
+            return;
+        };
+        let mut view = ShaderView::default();
+        view.set_layer(Some(layer(
+            "fn shade(uv: vec2f) -> vec4f { return vec4f(fract(nsh.time), 0.0, 0.0, 1.0); }",
+            &[],
+        )));
+        view.set_size(size(px(4.0), px(2.0)), 1.0);
+        let first = frame(&mut view, &renderer);
+
+        view.set_size(size(px(0.0), px(2.0)), 1.0);
+        assert!(
+            view.wants_frame(),
+            "the platform still has a frame to clear"
+        );
+        assert!(view.render(&renderer, Instant::now()), "clear notification");
+        assert_eq!(view.frame().width, 0);
+        assert!(!view.wants_frame(), "a collapsed view must idle");
+
+        view.set_size(size(px(8.0), px(2.0)), 1.0);
+        assert!(view.wants_frame());
+        let resized = frame(&mut view, &renderer);
+        assert_eq!(resized.width, 8);
+        assert!(resized.serial > first.serial);
     }
 
     #[test]
