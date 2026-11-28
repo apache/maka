@@ -63,16 +63,17 @@ impl Registration {
         }
     }
     pub(super) fn retained_provenance(&self, c: &Connection) -> Result<(), StoreError> {
-        self.provenance(c).map(|_| ())
+        self.provenance_with_encoding(c, true).map(|_| ())
     }
-    pub(super) fn provenance(
+    pub(super) fn provenance_with_encoding(
         &self,
         c: &Connection,
+        encoded: bool,
     ) -> Result<Option<(ContentRef, i64)>, StoreError> {
         let Some(provenance) = self.provenance_ref() else {
             return Ok(None);
         };
-        let rowid = tool::content_id(c, provenance)?;
+        let rowid = tool::content_id_with_encoding(c, provenance, encoded)?;
         let retained: Option<i64> = c.query_row(
             "SELECT provenance_content_id FROM agent_session_artifact_registrations WHERE session=? AND artifact=? AND owner=?",
             params![self.record.artifact.session_id, self.record.artifact.id, serde_json::to_string(&self.owner)?],
@@ -336,7 +337,7 @@ fn register(
     bytes: Option<&[u8]>,
     provenance: Option<ContentBlob>,
 ) -> Result<(PublishedArtifact, bool), StoreError> {
-    let previous:Option<Vec<u8>>=c.query_row("SELECT b.payload FROM agent_session_artifact_registrations r JOIN contents b ON b.id=r.body_content_id WHERE r.session=? AND (r.artifact=? OR r.operation=?)",params![scope.session,registration.record.artifact.id,registration.operation],|r|r.get(0)).optional()?;
+    let previous:Option<Vec<u8>>=c.query_row("SELECT maka_content_bytes(b.payload,b.encoding) FROM agent_session_artifact_registrations r JOIN contents b ON b.id=r.body_content_id WHERE r.session=? AND (r.artifact=? OR r.operation=?)",params![scope.session,registration.record.artifact.id,registration.operation],|r|r.get(0)).optional()?;
     if let Some(body) = previous {
         let previous: Registration = serde_json::from_slice(&body)?;
         previous.validate(scope)?;
@@ -384,7 +385,7 @@ impl Statement for Rebuild {
         )?;
         let mut after = String::new();
         loop {
-            let rows=c.prepare_cached("SELECT r.artifact,b.payload FROM agent_session_artifact_registrations r JOIN contents b ON b.id=r.body_content_id WHERE r.session=? AND r.owner=? AND r.artifact>? ORDER BY r.artifact LIMIT 128")?.query_map(params![self.0.session,owner,after],|r|Ok((r.get::<_,String>(0)?,r.get::<_,Vec<u8>>(1)?)))?.collect::<Result<Vec<_>,_>>()?;
+            let rows=c.prepare_cached("SELECT r.artifact,maka_content_bytes(b.payload,b.encoding) FROM agent_session_artifact_registrations r JOIN contents b ON b.id=r.body_content_id WHERE r.session=? AND r.owner=? AND r.artifact>? ORDER BY r.artifact LIMIT 128")?.query_map(params![self.0.session,owner,after],|r|Ok((r.get::<_,String>(0)?,r.get::<_,Vec<u8>>(1)?)))?.collect::<Result<Vec<_>,_>>()?;
             if rows.is_empty() {
                 break;
             }

@@ -3079,6 +3079,64 @@ final class Mounter {
                 eventMap(1, Native.OPEN_URL, new String[] {"id", "opened"}, new Object[] {(double) request, opened});
                 break;
             }
+            case 67: {
+                // `encode.rs` `Command::ReadClipboardImage`: the request and
+                // whether only `has` is asked. Providers are read off the main
+                // thread; the answer comes back on it.
+                int request = b.getInt();
+                boolean hasOnly = b.getInt() != 0;
+                if (hasOnly) {
+                    eventMap(1, Native.CLIPBOARD, new String[] {"id", "has"},
+                            new Object[] {(double) request, ClipboardReads.hasImage(context)});
+                    break;
+                }
+                new Thread(() -> {
+                    Object[] image = ClipboardReads.readImage(context);
+                    String[] keys;
+                    Object[] values;
+                    if (image == null) {
+                        keys = new String[] {"id", "has"};
+                        values = new Object[] {(double) request, false};
+                    } else if (image[1] == null) {
+                        keys = new String[] {"id", "has", "tooLarge"};
+                        values = new Object[] {(double) request, true, (double) (Integer) image[2]};
+                    } else {
+                        String uri = "data:" + image[0] + ";base64,"
+                                + android.util.Base64.encodeToString((byte[]) image[1], android.util.Base64.NO_WRAP);
+                        keys = new String[] {"id", "has", "uri", "width", "height"};
+                        values = new Object[] {(double) request, true, uri,
+                                (double) (Integer) image[2], (double) (Integer) image[3]};
+                    }
+                    host.post(() -> eventMap(1, Native.CLIPBOARD, keys, values));
+                }, "nsh-clipboard").start();
+                break;
+            }
+            case 66: {
+                // `encode.rs` `Command::ReadClipboardFiles`: the request. The
+                // clip's content URIs are copied into the cache off the main
+                // thread; their `file:` URLs come back on it.
+                int request = b.getInt();
+                new Thread(() -> {
+                    java.util.List<String> paths = ClipboardReads.readFiles(context);
+                    StringBuilder files = new StringBuilder();
+                    for (String path : paths) {
+                        if (files.length() > 0) files.append('\n');
+                        files.append(android.net.Uri.fromFile(new java.io.File(path)));
+                    }
+                    String joined = files.toString();
+                    host.post(() -> eventMap(1, Native.CLIPBOARD, new String[] {"id", "has", "files"},
+                            new Object[] {(double) request, !paths.isEmpty(), joined}));
+                }, "nsh-clipboard").start();
+                break;
+            }
+            case 68: {
+                // `encode.rs` `Command::SetClipboardImage`: the `data:` URI.
+                String uri = (String) objects[b.getInt()];
+                if (!ClipboardReads.writeImage(context, uri)) {
+                    android.util.Log.w("nsh", "Clipboard.writeImage: not a base64 image data: URI; nothing written");
+                }
+                break;
+            }
             case 63: {
                 // `encode.rs` `Command::OpenAppSettings`: the request.
                 int request = b.getInt();
@@ -3116,6 +3174,12 @@ final class Mounter {
             case 17: {
                 String text = (String) objects[b.getInt()];
                 (v != null ? v : host).announceForAccessibility(text);
+                break;
+            }
+            case 65: {
+                // ref.insertText(text): in place of the input's selection.
+                String text = (String) objects[b.getInt()];
+                if (v instanceof InputBox) ((InputBox) v).insertText(text);
                 break;
             }
             case 64: {
@@ -3193,6 +3257,7 @@ final class Mounter {
             }
             case 4: {
                 String source = optString(b, objects);
+                String poster = optString(b, objects);
                 boolean paused = b.getInt() != 0, muted = b.getInt() != 0;
                 float volume = b.getFloat(), rate = b.getFloat();
                 boolean repeat = b.getInt() != 0;
@@ -3201,8 +3266,8 @@ final class Mounter {
                 float interval = b.getFloat();
                 int audioSession = b.getInt();
                 if (v instanceof VideoBox) {
-                    ((VideoBox) v).configure(source, paused, muted, volume, rate, repeat, mode, controls, interval,
-                            audioSession);
+                    ((VideoBox) v).configure(source, poster, paused, muted, volume, rate, repeat, mode, controls,
+                            interval, audioSession);
                 }
                 break;
             }
@@ -3868,8 +3933,9 @@ final class Mounter {
     }
 
     /** See {@link Native#touch}. */
-    void touches(int phase, int[] ids, int[] targets, int[] pathLengths, int[] paths, float[] coords, boolean[] changed, long time, int activated) {
-        Native.touch(handle(), phase, ids, targets, pathLengths, paths, coords, changed, time, activated);
+    void touches(int phase, int[] ids, int[] targets, int[] pathLengths, int[] paths, float[] coords, double[] samples,
+            boolean[] changed, long time, int activated) {
+        Native.touch(handle(), phase, ids, targets, pathLengths, paths, coords, samples, changed, time, activated);
     }
 
     /**

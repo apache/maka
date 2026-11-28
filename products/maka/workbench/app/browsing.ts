@@ -94,9 +94,9 @@ export function createBrowsing(host: Host, kind: AgentSessionKind = 'agent'): Br
   let continuation: SessionPage | null = null;
   let projectRead: object | null = null;
   const owns = (read: CatalogRead) => alive && current === read;
-  // The desktop lists child conversations under the ones that created them.
-  const rootsOnly = (read: CatalogRead) =>
-    read.filter !== 'needs_you' && platform.idiom === 'terminal';
+  // Only the ordinary Agent thread index is root-only (explicitly pinned and
+  // orphaned children are admitted by the backend); archived, needs_you, and rooms show all rows.
+  const rootsOnly = (read: CatalogRead) => kind === 'agent' && read.filter === 'all';
   const list = async (read: CatalogRead, position: AgentSessionPosition): Promise<SessionPage> =>
     host.query('agent', 'list', {
       kind,

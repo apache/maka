@@ -17,10 +17,11 @@
  * under the License.
  */
 
-import { mount, Text, View } from 'nsh';
+import { Canvas, mount, platform, reduceMotion, Text, View } from 'nsh';
 import { Button } from 'nsh/base';
 import { Window } from 'nsh/desktop';
 import { TITLE_BAR_HEIGHT, WINDOW_MIN_SIZE } from './chrome';
+import { delayed } from './delayed';
 import { createPlugins } from './plugins/registry';
 import { PluginInstances, renderContribution } from './plugins/RuntimeView';
 import { errorText, renderText } from './text';
@@ -29,9 +30,54 @@ import { installWorkbenchLocaleCatalog } from './localeCatalog';
 import { initializeAppearance } from './appearance';
 import { initializeComposerToolbar } from './composerToolbar';
 import { initializeSidebarPreferences } from './sidebarPreferences';
-import { C, controlFocusStyle, controlHoverStyle, controlStyle } from './ui';
-import { LoadingState } from './Loading';
+import { C, controlFocusStyle, controlHoverStyle, controlStyle, lineWidth } from './ui';
+import { LOADING_DELAY_MS, LoadingState } from './Loading';
 import { nativeDesktop } from './nativeDesktop';
+
+function BrandBootState() {
+  if (platform.idiom === 'terminal') return <LoadingState />;
+  const shown = delayed(() => true, LOADING_DELAY_MS);
+  const size = 40;
+  return (
+    <If when={shown()}>
+      <View
+        role="progressbar"
+        accessibilityLabel={tr('Loading…')}
+        style={{
+          alignItems: 'center',
+          justifyContent: 'center',
+          animationName: reduceMotion() ? 'none' : 'pulse',
+          animationDuration: 2000,
+          animationTimingFunction: 'ease-in-out',
+          animationIterationCount: 'infinite',
+          animationFrameRate: 24,
+        }}
+      >
+        <Canvas
+          accessibilityElementsHidden
+          style={[{ width: size, height: size }, { pointerEvents: 'none' }]}
+          draw={(cx) => {
+            cx.scale(size / 18, size / 18);
+            cx.strokeStyle = C.secondary;
+            cx.lineWidth = 1.75;
+            cx.lineCap = 'round';
+            cx.lineJoin = 'round';
+            cx.beginPath();
+            cx.moveTo(2.7, 15.6);
+            cx.lineTo(9, 6);
+            cx.lineTo(15.3, 15.6);
+            cx.moveTo(6.165, 10.32);
+            cx.lineTo(9, 14.765);
+            cx.lineTo(11.835, 10.32);
+            cx.moveTo(6.25, 2.4);
+            cx.lineTo(11.75, 2.4);
+            cx.stroke();
+          }}
+        />
+      </View>
+    </If>
+  );
+}
 
 function Bootstrap() {
   installWorkbenchLocaleCatalog();
@@ -61,7 +107,7 @@ function Bootstrap() {
           }}
         >
           <If when={plugins.runtime.updateError() === null && !plugins.runtime.ready()}>
-            <LoadingState />
+            <BrandBootState />
           </If>
           <If when={plugins.runtime.updateError() !== null || plugins.runtime.ready()}>
             <Text style={{ fontSize: 14, lineHeight: 20, color: C.secondary }}>
@@ -79,7 +125,7 @@ function Bootstrap() {
             <Button
               accessibilityLabel={tr('Retry')}
               onPress={plugins.runtime.retryUpdates}
-              style={{ ...controlStyle, borderWidth: 1, borderColor: C.line }}
+              style={{ ...controlStyle(), borderWidth: lineWidth(), borderColor: C.line }}
               hoverStyle={controlHoverStyle()}
               focusStyle={controlFocusStyle()}
             >

@@ -72,6 +72,8 @@ pub(super) enum RetainedSource {
 struct FrozenInput {
     accepted: Accepted,
     request: Request,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    instructions_ref: Option<ContentRef>,
     recovery: Option<RecoveryDescriptor>,
     private_resource: maka_process::isolated::Descriptor,
     publication: Option<ExternalPublicationId>,
@@ -82,6 +84,7 @@ struct PublicationSource {
     original_task_descriptor: ContentRef,
 }
 struct Publications {
+    progress: Option<std::sync::Weak<super::worker_progress::Run>>,
     send: mpsc::Sender<Result<FactId, RunError>>,
     witness: ExternalWitness,
     publication_source: Option<PendingExternalPublication>,
@@ -221,6 +224,13 @@ impl Publications {
         } else {
             publication.cursor
         };
+        let progress = match (&self.progress, &observation) {
+            (Some(run), ExternalObservation::Output { output, .. }) => {
+                super::worker_progress::ExecutorProgress::from_output(output)
+                    .map(|event| (run, event))
+            }
+            _ => None,
+        };
         let fact = self
             .witness
             .record(
@@ -231,6 +241,11 @@ impl Publications {
             .await
             .map_err(|error| Error::Persistence(error.to_string()))?;
         publication.cursor = next;
+        if let Some((run, event)) = progress
+            && let Some(run) = run.upgrade()
+        {
+            run.observe(event);
+        }
         if let Some(message) = message {
             observe_message(&mut publication.messages, message, fact);
         }
@@ -275,6 +290,19 @@ impl Publications {
     }
 }
 impl OutputSink for Publications {
+    fn commentary(&self, completed_text: &str) {
+        if let Some(run) = self.progress.as_ref().and_then(std::sync::Weak::upgrade) {
+            run.commentary(completed_text.chars());
+        }
+    }
+    fn current_plan_item(&self, item: Option<&str>) {
+        if let Some(run) = self.progress.as_ref().and_then(std::sync::Weak::upgrade) {
+            run.todo(
+                item.map(super::worker_progress::short)
+                    .filter(|s| !s.is_empty()),
+            );
+        }
+    }
     fn turn_usage(
         &self,
         usage: maka_agent_facts::executor::TurnUsage,
@@ -343,6 +371,9 @@ impl TaskBinding for Publications {
     fn bound(&self, recovery: RecoveryDescriptor) -> BoxFuture<'_, Result<(), Error>> {
         Box::pin(async move {
             let mut frozen = self.frozen.clone();
+            if frozen.payload.instructions_ref.is_some() {
+                frozen.payload.request.instructions = None;
+            }
             frozen.payload.recovery = Some(recovery);
             let descriptor = ContentBlob::json(&frozen)
                 .map_err(|error| Error::Persistence(error.to_string()))?;
@@ -636,7 +667,7 @@ impl DriverExecutor {
         reference: ContentRef,
     ) -> Result<TaskDescriptor<FrozenInput>, RunError> {
         let bytes = self.state.content(run, reference.clone()).await?;
-        let frozen: TaskDescriptor<FrozenInput> =
+        let mut frozen: TaskDescriptor<FrozenInput> =
             serde_json::from_slice(&bytes).map_err(|_| blocked(reference.clone()))?;
         if frozen.protocol != NATIVE_TASK_PROTOCOL {
             return Err(blocked(reference));
@@ -646,6 +677,14 @@ impl DriverExecutor {
             || frozen.payload.request.task_id != task
         {
             return Err(blocked(reference));
+        }
+        if frozen.payload.request.instructions.is_none()
+            && let Some(instr_ref) = &frozen.payload.instructions_ref
+        {
+            let instr_bytes = self.state.content(run, instr_ref.clone()).await?;
+            let instr_text =
+                String::from_utf8(instr_bytes).map_err(|_| blocked(reference.clone()))?;
+            frozen.payload.request.instructions = Some(instr_text);
         }
         Ok(frozen)
     }
@@ -834,6 +873,7 @@ impl DriverExecutor {
             }
         };
         let publications = Arc::new(Publications {
+            progress: self.access.progress.get().cloned(),
             owner_stop,
             publication_source,
             state: self.state.clone(),
@@ -1091,12 +1131,25 @@ impl ExternalPorts for DriverExecutor {
                     RunError::InvalidInput("original private candidate owner already exists".into())
                 })?;
             }
+            let mut request = request;
+            let mut contents = Vec::new();
+            let instructions_ref = match request.instructions.as_ref() {
+                Some(text) if !text.is_empty() => {
+                    let blob = ContentBlob::new(text.as_bytes().to_vec());
+                    let r = blob.reference().clone();
+                    contents.push(blob);
+                    request.instructions = None;
+                    Some(r)
+                }
+                _ => None,
+            };
             let frozen = TaskDescriptor {
                 protocol: NATIVE_TASK_PROTOCOL.into(),
                 source: self.backend.source_identity(),
                 payload: FrozenInput {
                     accepted: self.backend.accepted.clone(),
                     request,
+                    instructions_ref,
                     recovery: None,
                     private_resource,
                     publication: (!live_workspace).then(ExternalPublicationId::new),
@@ -1113,7 +1166,7 @@ impl ExternalPorts for DriverExecutor {
             Ok(PreparedExternal {
                 live_workspace,
                 descriptor,
-                contents: vec![],
+                contents,
             })
         })
     }

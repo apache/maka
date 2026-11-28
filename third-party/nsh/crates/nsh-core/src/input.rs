@@ -1267,6 +1267,63 @@ pub fn presses_focused_control(
         )
 }
 
+/// What a view on the way out from a secondary click is to its context
+/// menu ([`context_menu_target`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ContextMenuHop {
+    /// It listens to `onContextMenu`.
+    pub listens: bool,
+    /// A text field, which has its own edit menu.
+    pub field: bool,
+    /// Selectable text (`userSelect: "text"`).
+    pub selectable_text: bool,
+    /// A selectable view (`<View selectable>`, `ViewProps::selectable_view`).
+    pub selectable_view: bool,
+}
+
+/// Who answers a secondary click ([`context_menu_target`]), by its index
+/// in the views walked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ContextMenuTarget {
+    /// The view hears `onContextMenu`.
+    Listener(usize),
+    /// A text field shows its own menu.
+    Field(usize),
+    /// Selectable text or a selectable view shows the platform's edit menu.
+    EditMenu(usize),
+}
+
+/// Who answers a secondary click on the first of `hops` (innermost first:
+/// the view under the pointer, then the views around it), the same on
+/// every desktop: the nearest view that listens to `onContextMenu`, unless
+/// a text field or selectable text is nearer, which shows its edit menu.
+/// Where the selectable view around the text (the outermost one), or a
+/// view between them, listens, that listener hears it instead, so an app
+/// can draw the menu of its selectable text itself; a text field nearer
+/// still keeps its own menu.
+pub fn context_menu_target(hops: &[ContextMenuHop]) -> Option<ContextMenuTarget> {
+    let app_menu = hops
+        .iter()
+        .rposition(|h| h.selectable_view)
+        .is_some_and(|area| {
+            hops[..=area]
+                .iter()
+                .take_while(|h| !h.field)
+                .any(|h| h.listens)
+        });
+    hops.iter().enumerate().find_map(|(i, h)| {
+        if h.listens {
+            Some(ContextMenuTarget::Listener(i))
+        } else if h.field {
+            Some(ContextMenuTarget::Field(i))
+        } else if (h.selectable_text || h.selectable_view) && !app_menu {
+            Some(ContextMenuTarget::EditMenu(i))
+        } else {
+            None
+        }
+    })
+}
+
 /// Where a context menu asked for without a pointer (the keyboard, an
 /// assistive technology) opens in a view of `size`: its bottom-start
 /// corner, the bottom right one right to left (`rtl`: the surface's
@@ -1284,6 +1341,50 @@ mod tests {
 
     fn p(x: f32, y: f32) -> Point<Points> {
         point(Points(x), Points(y))
+    }
+
+    fn hop(spec: &str) -> ContextMenuHop {
+        ContextMenuHop {
+            listens: spec.contains('L'),
+            field: spec.contains('F'),
+            selectable_text: spec.contains('T'),
+            selectable_view: spec.contains('A'),
+        }
+    }
+
+    fn menu(chain: &[&str]) -> Option<ContextMenuTarget> {
+        let hops: Vec<_> = chain.iter().map(|s| hop(s)).collect();
+        context_menu_target(&hops)
+    }
+
+    #[test]
+    fn context_menu_goes_to_the_nearest_listener() {
+        use ContextMenuTarget::*;
+        assert_eq!(menu(&["", "L", "L"]), Some(Listener(1)));
+        assert_eq!(menu(&["", ""]), None);
+        // A field keeps its own menu, also inside a listening area.
+        assert_eq!(menu(&["F", "L"]), Some(Field(0)));
+        assert_eq!(menu(&["F", "AL"]), Some(Field(0)));
+    }
+
+    #[test]
+    fn selectable_text_menu_yields_to_a_listener_in_its_area() {
+        use ContextMenuTarget::*;
+        // Selectable text alone, or with a listener outside any selectable
+        // view: the edit menu.
+        assert_eq!(menu(&["T", "L"]), Some(EditMenu(0)));
+        // A selectable view's text with no listener up to the area, one
+        // around the area: the area's edit menu.
+        assert_eq!(menu(&["", "A", "L"]), Some(EditMenu(1)));
+        // The selectable view listens: it hears it, from its plain texts
+        // and from selectable texts in it.
+        assert_eq!(menu(&["", "AL"]), Some(Listener(1)));
+        assert_eq!(menu(&["T", "AL"]), Some(Listener(1)));
+        // A view between the text and the area listens.
+        assert_eq!(menu(&["T", "L", "A"]), Some(Listener(1)));
+        assert_eq!(menu(&["T", "", "A", "L"]), Some(EditMenu(0)));
+        // The outermost selectable view is the area.
+        assert_eq!(menu(&["T", "A", "AL"]), Some(Listener(2)));
     }
 
     #[test]

@@ -80,6 +80,7 @@ impl OwnedOverlay {
                 provider_options: None,
             },
             MessageRole::User => MessageRecipe::User {
+                is_pinned_memory: false,
                 content: Arc::new(PlainUser { text: source }),
                 provider_options: None,
             },
@@ -101,6 +102,7 @@ impl OwnedOverlay {
         bucket.estimated_tokens = 16 + (text.len() as u64).div_ceil(3);
         let empty: Arc<dyn RecipeSource<IdentifiedText>> = Arc::new(EmptyIds);
         let metadata = MessageMetadata {
+            is_pinned_memory: false,
             message_index: 0,
             logical_identity: identity,
             role,
@@ -142,6 +144,7 @@ impl OwnedOverlay {
                 provider_options: None,
             },
             MessageRole::User => MessageRecipe::User {
+                is_pinned_memory: self.0.metadata.is_pinned_memory,
                 content: Arc::new(PlainUser { text: source }),
                 provider_options: None,
             },

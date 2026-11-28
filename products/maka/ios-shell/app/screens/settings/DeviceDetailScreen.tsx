@@ -31,12 +31,15 @@ import {
   hostById,
   hostCheckMessage,
   hostConnectionState,
+  hostReconnectNotice,
   hostStatusKind,
   hostStatusText,
   isHostConnected,
   openAddComputerFlow,
   savedHosts,
   removeSavedHost,
+  retrySavedHostNow,
+  renameSavedHost,
   showToast,
 } from '../../state/hostPool';
 import { hapticSelection } from '../../state/preferences';
@@ -46,7 +49,6 @@ import {
   BannerNotice,
   GroupDivider,
   GroupRow,
-  Icon,
   InsetGroup,
   ScreenHeader,
   StatusDot,
@@ -63,10 +65,23 @@ export function DeviceDetailScreen(props: {
   const relayUrl = signal('');
   const showDiagnostics = signal(false);
   const busy = signal(false);
+  const editedName = signal<string | null>(null);
+  const savingName = signal(false);
 
   const host = () => hostById(props.rootId);
+  const relays = () => host()?.relays ?? [];
+  const computerName = () => editedName() ?? host()?.hostName ?? '';
+  const hasNameEdit = () => {
+    const draft = editedName();
+    return draft !== null && draft.trim() !== host()?.hostName.trim();
+  };
   const conn = () => activeHostInfo(props.rootId);
   const connState = () => hostConnectionState(props.rootId);
+  const reconnecting = () => hostReconnectNotice(props.rootId);
+  const connectionError = () => {
+    const state = connState();
+    return state.status === 'error' && !reconnecting() ? state.error : undefined;
+  };
 
   const subtitle = () => {
     const info = conn();
@@ -76,7 +91,7 @@ export function DeviceDetailScreen(props: {
 
   const connectionDetail = () => {
     const peer = host()?.peerId;
-    return [host()?.relayUrls?.[0], peer && peer.slice(0, 8) + '…' + peer.slice(-4)]
+    return [relays()[0]?.url, peer && peer.slice(0, 8) + '…' + peer.slice(-4)]
       .filter(Boolean)
       .join(' · ');
   };
@@ -90,7 +105,7 @@ export function DeviceDetailScreen(props: {
   const handleConnect = async (withRelayToken = false) => {
     busy.set(true);
     try {
-      const resolvedRelayUrl = relayUrl().trim() || host()?.relayUrls?.[0] || '';
+      const resolvedRelayUrl = relayUrl().trim() || relays()[0]?.url || '';
       const ok = await connectSavedHost(
         props.rootId,
         withRelayToken ? resolvedRelayUrl : undefined,
@@ -112,6 +127,16 @@ export function DeviceDetailScreen(props: {
       if ((await disconnectSavedHost(props.rootId)) && ephemeral) props.onBack();
     } finally {
       busy.set(false);
+    }
+  };
+
+  const handleRename = async () => {
+    if (savingName() || !hasNameEdit()) return;
+    savingName.set(true);
+    try {
+      if (await renameSavedHost(props.rootId, computerName())) editedName.set(null);
+    } finally {
+      savingName.set(false);
     }
   };
 
@@ -161,46 +186,18 @@ export function DeviceDetailScreen(props: {
           }}
         >
           <If when={host()}>
-            <If when={!props.settings}>
-              {/* Identity Header */}
-              <View
-                style={{
-                  alignItems: 'center',
-                  paddingHorizontal: 24,
-                  marginBottom: 24,
-                  gap: 8,
-                }}
-              >
-                <View
-                  style={{
-                    width: 58,
-                    height: 58,
-                    borderRadius: 16,
-                    borderCurve: 'continuous',
-                    backgroundColor: token('primary-tint'),
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    marginBottom: 2,
-                  }}
-                >
-                  <Icon name="laptop" color={token('primary')} size={28} />
-                </View>
-                <Text style={{ ...type.title2, color: token('foreground'), textAlign: 'center' }}>
-                  {host()!.hostName}
-                </Text>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                  <StatusDot kind={hostStatusKind(props.rootId)} size={8} />
-                  <Text style={{ ...type.subheadline, color: token('muted-foreground') }}>
-                    {subtitle()}
-                  </Text>
-                </View>
-              </View>
+            <If when={reconnecting()}>
+              <BannerNotice
+                tone="info"
+                title={tr('Reconnecting…')}
+                detail={reconnecting()?.error}
+              />
             </If>
-            <If when={connState().status === 'error'}>
+            <If when={connectionError() !== undefined}>
               <BannerNotice
                 tone="destructive"
                 title={tr('Connection error')}
-                detail={(connState() as { status: 'error'; error: string }).error}
+                detail={connectionError()}
               />
             </If>
 
@@ -208,28 +205,65 @@ export function DeviceDetailScreen(props: {
               <BannerNotice tone="info" title={hostCheckMessage(props.rootId)!} />
             </If>
 
+            <If when={!host()?.ephemeral}>
+              <InsetGroup header={tr('Computer name')} footer={host()?.platform ?? undefined}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16 }}>
+                  <Input
+                    accessibilityLabel={tr('Computer name')}
+                    value={computerName()}
+                    disabled={savingName()}
+                    returnKeyType="done"
+                    onChange={({ value }) => editedName.set(value)}
+                    onSubmit={() => void handleRename()}
+                    style={{
+                      flex: 1,
+                      minWidth: 0,
+                      minHeight: 46,
+                      ...type.body,
+                      color: token('foreground'),
+                      backgroundColor: 'transparent',
+                    }}
+                  />
+                  <If when={hasNameEdit()}>
+                    <ActionButton
+                      title={tr('Save')}
+                      compact
+                      variant="quiet"
+                      disabled={savingName()}
+                      onPress={() => void handleRename()}
+                    />
+                  </If>
+                </View>
+              </InsetGroup>
+            </If>
+
             {/* Connection Controls */}
             <InsetGroup header={tr('Connection')}>
-              <If when={props.settings}>
-                <GroupRow
-                  title={subtitle()}
-                  subtitle={connectionDetail() || undefined}
-                  leading={<StatusDot kind={hostStatusKind(props.rootId)} />}
-                  divider
-                />
-              </If>
+              <GroupRow
+                title={subtitle()}
+                subtitle={props.settings ? connectionDetail() || undefined : undefined}
+                leading={<StatusDot kind={hostStatusKind(props.rootId)} />}
+                divider
+              />
               <If
                 when={isHostConnected(props.rootId)}
                 else={
                   <View>
                     <GroupRow
                       title={
-                        connState().status === 'connecting' ? tr('Connecting…') : tr('Reconnect')
+                        reconnecting()
+                          ? tr('Retry now')
+                          : connState().status === 'connecting'
+                            ? tr('Connecting…')
+                            : tr('Reconnect')
                       }
                       tone="primary"
-                      disabled={busy() || connState().status === 'connecting'}
+                      disabled={busy() || (!reconnecting() && connState().status === 'connecting')}
                       divider
-                      onPress={() => void handleConnect(false)}
+                      onPress={() => {
+                        if (reconnecting()) retrySavedHostNow(props.rootId);
+                        else void handleConnect();
+                      }}
                     />
                     <GroupRow
                       title={tr('Reconnect with relay token')}
@@ -252,7 +286,7 @@ export function DeviceDetailScreen(props: {
                           <Input
                             accessibilityLabel={tr('Saved Host relay URL')}
                             value={relayUrl()}
-                            placeholder={host()!.relayUrls?.[0] ?? 'https://relay.example.com'}
+                            placeholder={relays()[0]?.url ?? 'https://relay.example.com'}
                             onChange={({ value }) => relayUrl.set(value)}
                             style={{
                               minHeight: 38,
@@ -381,7 +415,7 @@ export function DeviceDetailScreen(props: {
                     subtitle={devicePeerId()}
                     divider={
                       (conn()?.endpoints.length ?? host()!.endpoints.length) > 0 ||
-                      (host()!.relayUrls?.length ?? 0) > 0
+                      relays().length > 0
                     }
                     onPress={() => copyText(devicePeerId(), tr('This iPhone Peer ID'))}
                   />
@@ -390,12 +424,26 @@ export function DeviceDetailScreen(props: {
                   <GroupRow
                     title={tr('Endpoints')}
                     subtitle={(conn()?.endpoints ?? host()!.endpoints).join(', ')}
-                    divider={(host()!.relayUrls?.length ?? 0) > 0}
+                    divider={relays().length > 0}
                   />
                 </If>
-                <If when={(host()!.relayUrls?.length ?? 0) > 0}>
-                  <GroupRow title={tr('Relays')} subtitle={host()!.relayUrls!.join(', ')} />
-                </If>
+                <Each of={relays()} key={(relay) => relay.url}>
+                  {(relay) => {
+                    const discovery = () => {
+                      const port = relay().quicPort;
+                      return port == null
+                        ? tr('Without a discovery port, direct connections may be harder.')
+                        : tr('Direct connection discovery · Port {port}', { port });
+                    };
+                    return (
+                      <GroupRow
+                        title={relay().url}
+                        subtitle={discovery()}
+                        divider={relay().url !== relays().at(-1)?.url}
+                      />
+                    );
+                  }}
+                </Each>
               </If>
             </InsetGroup>
             <If when={!props.settings || !isHostConnected(props.rootId)}>

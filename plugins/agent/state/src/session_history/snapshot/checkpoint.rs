@@ -38,11 +38,16 @@ fn live_baseline(
     namespace: &HistoryNamespace,
     cut: &HistoryCut,
 ) -> Result<Option<(RunId, u64)>, StoreError> {
+    let Some(namespace_id) =
+        crate::namespace::find_owner_id(c, &namespace.owner, &namespace.session)?
+    else {
+        return Ok(None);
+    };
     let row: Option<(String, u64)> = c.query_row(
         "SELECT h.run,h.sequence FROM agent_session_history h INDEXED BY agent_session_history_historical
-        WHERE h.owner=? AND h.session=? AND h.sequence<=? AND h.historical=1
+        WHERE h.namespace_id=? AND h.sequence<=? AND h.historical=1
         ORDER BY h.sequence DESC LIMIT 1",
-        params![serde_json::to_string(&namespace.owner)?, namespace.session, sql::bind_u64(cut.through_sequence)?],
+        params![namespace_id, sql::bind_u64(cut.through_sequence)?],
         |row| Ok((row.get(0)?, sql::read_u64(row, 1)?)),
     ).optional()?;
     row.map(|(run, sequence)| {
@@ -125,7 +130,7 @@ pub(crate) fn checkpoint_member(
             "SELECT f.run FROM agent_facts f JOIN agent_run_specs s ON s.run=f.run
         JOIN agent_facts a ON a.run=f.run AND a.revision=1 JOIN contents b ON b.id=f.body_content_id
         WHERE f.id=? AND s.owner=? AND s.session=? AND f.sequence<=? AND a.sequence>?
-        AND json_extract(CAST(b.payload AS TEXT),'$.fact.kind')='context_compacted'",
+        AND json_extract(maka_content_text(b.payload,b.encoding),'$.fact.kind')='context_compacted'",
             params![
                 id.to_string(),
                 serde_json::to_string(&namespace.owner)?,

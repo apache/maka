@@ -267,7 +267,8 @@ pub(crate) async fn attachment_image(
             position,
             attachment_index,
         } => {
-            let history = open(owner, scope, &input.session_id).await?;
+            let history = scoped_state(owner, scope)?
+                .session_history(owner.run_owner(), input.session_id.clone());
             let cut = cut(&history, Some(*through)).await?;
             let tree =
                 maka_agent_state::session_history::source_tree::SourceTree::live(&history, &cut)

@@ -26,7 +26,7 @@ Scripts under `scripts/rust/` and `scripts/ci/` manage native cross-platform pac
 ## Toolchain and V8 prebuilts
 
 - **macOS** — Xcode 26+ and `libclang` (required by SQLite preupdate-hook bindgen).
-- **Linux** — GLib, X11/XCB, `xkbcommon`, Wayland, Fontconfig, FreeType dev headers, `libclang`, `cargo-zigbuild`, and Zig (exact versions match [`.github/workflows/npm-publication.yml`](../../.github/workflows/npm-publication.yml)).
+- **Linux** — GLib, X11/XCB, `xkbcommon`, Wayland, Fontconfig, FreeType dev headers, `libclang`, `cargo-zigbuild`, and Zig (exact versions match [`.github/workflows/nightly.yml`](../../.github/workflows/nightly.yml)).
 - **V8 cache** — Release builds pull pinned V8 archives (with LGPL glibc math disabled) from [`v8-prebuilts.json`](v8-prebuilts.json) into `target/v8` (`$CARGO_TARGET_DIR/v8`) and verify SHA-256 digests. A missing pin falls back to a full V8 source build (requires Python, Git, Clang/libclang 19+, and significant disk/CPU).
 
 ## Dependency and notice inventories

@@ -21,6 +21,7 @@ on:
       - "crates/nsh-core/**"
       - "crates/nsh-dev/**"
       - "crates/nsh-engine/**"
+      - "crates/nsh-gpu/**"
       - "crates/nsh-i18n/**"
       - "crates/nsh-js/**"
       - "crates/nsh-macros/**"
@@ -82,7 +83,10 @@ jobs:
     environment:
       name: ci-debounce
       deployment: false
-    runs-on: ubuntu-24.04
+    # Pull requests from forks and the scheduled runs (which save the
+    # dependencies' caches forks restore) run on GitHub's runners, everything
+    # else on the self-hosted ones (docs/dev/tooling.md "Runners").
+    runs-on: ${{ (github.event_name == 'schedule' || (github.event.pull_request && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["public", "Linux", "X64"]') }}
     steps:
       - uses: actions/checkout@v6
 
@@ -92,14 +96,27 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y clang libclang-dev
 
       - name: Setup Rust
+        if: runner.environment == 'github-hosted'
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
           # The web runtime builds the core for WebAssembly (step below).
           targets: wasm32-unknown-unknown
 
-      # huacnlee/cargo, and the dependencies' builds: main's runs save
-      # them, pull requests restore them.
+      # The self-hosted runners are shared: install the toolchain without
+      # making it the machine's default (RUSTUP_TOOLCHAIN picks it).
+      - name: Setup Rust (self-hosted)
+        if: runner.environment == 'self-hosted'
+        run: |
+          bin="${CARGO_HOME:-$HOME/.cargo}/bin"
+          export PATH="$bin:$PATH"
+          command -v rustup || curl -fsSL https://sh.rustup.rs | sh -s -- -y --no-modify-path --default-toolchain none
+          rustup toolchain install stable --profile minimal -c clippy -t wasm32-unknown-unknown
+          echo "$bin" >> "$GITHUB_PATH"
+
+      # huacnlee/cargo, and the dependencies' builds: on GitHub's runners
+      # main's runs save them and pull requests restore them; the
+      # self-hosted runners keep their own and skip the caches.
       - name: Cargo
         uses: ./.github/actions/cargo
         with:

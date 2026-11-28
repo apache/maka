@@ -186,6 +186,7 @@ pub enum Request {
     RevokePeerAccess {
         peer_id: String,
     },
+    PeerPairingInfo,
     RedeemPeerPairing {
         invite_secret: String,
         device_label: Option<String>,
@@ -224,6 +225,7 @@ pub enum Response {
     RemoteAccessUpdated(Result<super::remote_access::RemoteAccessConfig>),
     PeerPairingInvite(Result<super::PeerPairingInvite>),
     PeerAccess(Result<Vec<super::HostPeerAccess>>),
+    PeerPairingInfo(Option<maka_remote_pairing::HostPlatform>),
     PeerPairingReceipt(Result<super::PeerPairingReceipt>),
     Finalized(Result<()>),
 }

@@ -48,7 +48,15 @@ struct Receipt {
 impl Setup {
     pub async fn run(self) -> Result<(), HostError> {
         let pairing_input = self.principal.map(access::pairing_input).transpose()?;
-        let (deployment, lease) = self.installation.install(ExistingDeployment::Reuse).await?;
+        let (mut deployment, mut lease) =
+            self.installation.install(ExistingDeployment::Reuse).await?;
+        let dir = super::directory(&deployment.root_id)?;
+        if super::query::pending(&dir, &deployment).await?.is_some() {
+            let root_id = super::RootId(deployment.root_id.clone());
+            drop(lease);
+            super::update::recover_pending(&root_id).await?;
+            (deployment, lease) = activation::prepare(&root_id).await?;
+        }
         // Keep the same executor lease through activation and credential delivery.
         // A failed response does not undo an installation or grant reinstall rights.
         let (mut client, host) = activation::connect_or_launch(&deployment, lease.clone()).await?;

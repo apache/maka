@@ -164,5 +164,6 @@ export const type = {
 export const motion = {
   fast: 150,
   normal: 220,
+  skeletonPulse: 2200,
   spring: { stiffness: 380, damping: 32 },
 } as const;

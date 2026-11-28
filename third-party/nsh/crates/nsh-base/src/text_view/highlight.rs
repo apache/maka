@@ -24,6 +24,26 @@
 
 #[cfg(feature = "highlight")]
 pub(super) use self::syntect_highlighter::built_in;
+#[cfg(all(feature = "highlight", feature = "rich-editor"))]
+pub(crate) use self::syntect_highlighter::{tokens_later, tokens_now};
+
+/// Tokens of a block's code: byte ranges in order, not overlapping, on
+/// character boundaries, adjacent equal tokens merged.
+#[cfg_attr(not(feature = "highlight"), allow(dead_code))]
+pub(crate) type Tokens = Vec<(std::ops::Range<usize>, crate::syntax::Token)>;
+
+/// Without the feature code is plain: no tokens.
+#[cfg(all(not(feature = "highlight"), feature = "rich-editor"))]
+pub(crate) fn tokens_now(_: &str, _: &str) -> Option<Result<Tokens, Tokens>> {
+    crate::syntax::warn_no_highlight();
+    None
+}
+
+/// Without the feature code is plain: no tokens.
+#[cfg(all(not(feature = "highlight"), feature = "rich-editor"))]
+pub(crate) async fn tokens_later(_: String, _: String) -> Option<Tokens> {
+    None
+}
 
 /// No built-in highlighter without the feature: code blocks are plain.
 #[cfg(not(feature = "highlight"))]
@@ -46,7 +66,7 @@ mod syntect_highlighter {
     };
 
     use crate::{
-        syntax::{Parse, Token, find_syntax, loaded, plain, scope_token, syntaxes},
+        syntax::{Parse, find_syntax, loaded, plain, scope_token, syntaxes},
         text_view::CodeBlock,
     };
 
@@ -147,10 +167,43 @@ mod syntect_highlighter {
         out
     }
 
-    /// Tokens of a block's code: byte ranges in order, not overlapping,
-    /// on character boundaries (syntect's operations are), adjacent equal
-    /// tokens merged.
-    pub(super) type Tokens = Vec<(Range<usize>, Token)>;
+    pub(super) use super::Tokens;
+
+    /// The tokens of `code` in `language` for a view that colors code of
+    /// its own (`RichEditor`'s code blocks), on the same terms as
+    /// `TextView`'s: `Ok` when they cost little to get here, else `Err`
+    /// with the tokens known so far ([`tokens_later`] gets the rest);
+    /// `None` for code left plain (no language, or one syntect does not
+    /// know).
+    #[cfg(feature = "rich-editor")]
+    pub(crate) fn tokens_now(language: &str, code: &str) -> Option<Result<Tokens, Tokens>> {
+        let language = language.trim();
+        if language.is_empty() || plain(language) {
+            return None;
+        }
+        if !loaded() {
+            return Some(Err(Tokens::new()));
+        }
+        Some(now(find_syntax(language)?, code))
+    }
+
+    /// The tokens of `code` in `language` off the engine thread (on the
+    /// web once the page's syntaxes have come; `None` without them).
+    #[cfg(all(feature = "rich-editor", not(target_arch = "wasm32")))]
+    pub(crate) async fn tokens_later(language: String, code: String) -> Option<Tokens> {
+        blocking(move || tokens(&language, &code)).await.ok()
+    }
+
+    /// The tokens of `code` in `language` after the frame that shows it
+    /// plain, once the page's syntaxes have come; `None` without them.
+    #[cfg(all(feature = "rich-editor", target_arch = "wasm32"))]
+    pub(crate) async fn tokens_later(language: String, code: String) -> Option<Tokens> {
+        if crate::syntax::load_async().await {
+            Some(tokens(&language, &code))
+        } else {
+            None
+        }
+    }
 
     /// The tokens of `code` in `language`, however long they take; none for
     /// a language syntect does not know.
@@ -348,6 +401,7 @@ mod syntect_highlighter {
     #[cfg(test)]
     mod tests {
         use super::*;
+        use crate::syntax::Token;
 
         fn check(language: &str, code: &str) -> Tokens {
             let tokens = tokens(language, code);

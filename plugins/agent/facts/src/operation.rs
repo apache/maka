@@ -27,6 +27,17 @@ pub type RecordedOperationReply = OperationReply<RecordedOperationResult>;
 pub type RecordedReceipt = Receipt<RecordedOperationResult>;
 pub type RecordedOutcome = OperationOutcome<RecordedOperationResult>;
 
+/// Whether a recorded operation receipt settles the tool call for transcript visibility.
+pub fn has_recorded_settlement(reply: &RecordedOperationReply) -> bool {
+    !matches!(
+        reply.receipt,
+        Receipt::Recorded {
+            outcome: OperationOutcome::Unresolved,
+            ..
+        }
+    )
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum RecordedOperationResult {

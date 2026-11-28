@@ -17,8 +17,29 @@
  * under the License.
  */
 
+import type { AgentInteractionRejection } from '../../../../packages/plugin-sdk/src/generated/runtime';
 import type { AgentInteractionRequest } from './bridge';
-import { tr } from './locale';
+import { type MessageKey, tr } from './locale';
+
+const REJECTION_LABELS = {
+  not_your_child: 'This conversation is not managed by the caller',
+  human_action_required: 'User action required',
+  authorization_changed: 'Permissions have changed',
+  permission_requests_disabled: 'Permission requests are disabled',
+  closed: 'Request closed',
+  unavailable: 'Request is unavailable',
+  invalid_answer: 'Answer is invalid',
+  unsupported: 'Answer is unsupported',
+} satisfies Record<AgentInteractionRejection, MessageKey>;
+
+export function approvalRejectionError(reason: AgentInteractionRejection): Error {
+  return new Error(
+    tr(Object.hasOwn(REJECTION_LABELS, reason) ? REJECTION_LABELS[reason] : 'Rejected'),
+    {
+      cause: reason,
+    },
+  );
+}
 
 function exactObject(value: unknown, keys: string[]): Record<string, unknown> | null {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return null;
@@ -75,7 +96,7 @@ export function describePermissions(value: unknown): string | null {
       lines.push(
         tr('Network: exact host {host}, port {port}', {
           host: JSON.stringify(target.host),
-          port: target.port,
+          port: String(target.port),
         }),
       );
     }
@@ -130,7 +151,10 @@ function describeGrantScope(scope: unknown): string | null {
     case 'browser_profile': {
       const value = fields('browserId', 'generation');
       return text(value?.browserId) && text(value.generation)
-        ? tr('Browser profile') + ': ' + value.browserId + ' · ' + value.generation
+        ? tr('Browser profile: {browser} · {generation}', {
+            browser: value.browserId,
+            generation: value.generation,
+          })
         : null;
     }
     case 'capability':
@@ -145,7 +169,7 @@ function describeGrantScope(scope: unknown): string | null {
       const value = fields('platform', 'applicationId');
       return (value?.platform === 'macos' || value?.platform === 'windows') &&
         text(value.applicationId)
-        ? value.platform + ': ' + value.applicationId
+        ? (value.platform === 'macos' ? 'macOS' : 'Windows') + ': ' + value.applicationId
         : null;
     }
     default:
@@ -195,7 +219,11 @@ export function approvalDetail(request: AgentInteractionRequest): {
           request.display.appPath,
           request.target?.toolName,
           request.target?.serverId,
-          request.display.risk,
+          request.display.risk === 'high'
+            ? tr('Application risk: high')
+            : request.display.risk === 'low'
+              ? tr('Application risk: low')
+              : tr('Application risk is unknown. Review its identity before allowing access.'),
           request.display.warning,
         ]
           .filter(Boolean)

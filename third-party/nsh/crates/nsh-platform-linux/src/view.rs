@@ -77,6 +77,8 @@ pub(crate) struct ViewState {
     pub(crate) canvas: Option<crate::canvas::CanvasState>,
     /// What a shader draws under the children ([`crate::shader`]).
     pub(crate) shader: Option<crate::shader::ShaderState>,
+    /// What a GPU view's renderer drew ([`crate::gpu`]).
+    pub(crate) gpu: Option<crate::gpu::GpuState>,
     /// Text field (input views).
     pub(crate) input: Option<std::rc::Rc<crate::text_input::InputState>>,
     /// Hosted GTK widgets.
@@ -110,6 +112,7 @@ impl ViewState {
             image: None,
             canvas: None,
             shader: None,
+            gpu: None,
             input: None,
             natives: Vec::new(),
             overflow: None,
@@ -490,6 +493,7 @@ mod imp {
                 ));
             }
             crate::shader::draw(snapshot, &state);
+            crate::gpu::draw(snapshot, &state);
             crate::text::draw(snapshot, &state);
             // The surface's own scale, fractional ones included.
             let scale = surface_scale(&*obj) as f64;

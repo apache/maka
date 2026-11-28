@@ -235,6 +235,7 @@ impl Mounter {
                 // A picture taken while drawing was deferred lacks this content.
                 crate::shader::ui_changed(&view);
                 crate::shader::shown(&view);
+                crate::gpu_view::shown(&view);
             }
         }
         true
@@ -316,6 +317,7 @@ impl Mounter {
         // Pictures of items the batch did not apply (their views gone).
         self.rasters = crate::text::Rasters::default();
         self.draw_shown();
+        crate::view::compact_gone_leaves();
         self.deleting.clear();
         self.layout_animation = None;
         crate::navigation::end_batch(surface);
@@ -396,6 +398,12 @@ impl Mounter {
                 let before = before
                     .and_then(|b| self.views.get(&b))
                     .filter(|b| b.parent_view().as_ref() == Some(parent));
+                // A move within the parent keeps the focus it holds.
+                if child.parent_view().as_ref() == Some(parent)
+                    && child.restack_focused(parent, before)
+                {
+                    return;
+                }
                 if child.has_parent() {
                     child.unparent();
                 }
@@ -427,6 +435,7 @@ impl Mounter {
                     crate::text_input::deleted(&view);
                     crate::native::deleted(surface, &view);
                     crate::shader::deleted(surface, &view);
+                    crate::gpu_view::deleted(surface, &view);
                     crate::scroll::deleted(&view);
                     // A view whose parent the batch deletes too stays in it:
                     // the subtree leaves the window with its root, in one
@@ -522,14 +531,22 @@ impl Mounter {
                         }
                     }
                     ViewKind::Scroll => crate::scroll::resized(surface, view),
-                    _ => crate::shader::resized(surface, view),
+                    _ => {
+                        crate::shader::resized(surface, view);
+                        crate::gpu_view::resized(surface, view);
+                    }
                 }
             }
             MountItem::ViewStyle { id, style } => {
                 let Some(view) = self.get(*id) else { return };
                 let old = std::mem::replace(&mut view.state_mut().style, style.clone());
                 if old.hidden != style.hidden {
-                    crate::sight::moved();
+                    // The focus inside goes to the root, as when a batch
+                    // hides it otherwise, not to AppKit's next key view.
+                    if style.hidden {
+                        crate::navigation::drop_focus(surface, view.ns());
+                    }
+                    view.sync_hidden();
                 }
                 crate::input::style_changed(surface, view, &old);
                 crate::transition::style_changed(surface, view, &old);
@@ -660,6 +677,11 @@ impl Mounter {
                     crate::navigation::set_shader(surface, view, shader.clone());
                 }
             }
+            MountItem::GpuView { id, source } => {
+                if let Some(view) = self.get(*id) {
+                    crate::gpu_view::set(surface, view, source.clone());
+                }
+            }
             MountItem::Shader { id, layer } => {
                 if let Some(view) = self.get(*id) {
                     crate::shader::set(surface, view, layer.clone());
@@ -715,7 +737,9 @@ impl Mounter {
                 }
             }
             MountItem::ComponentProps { id, props } => {
-                if let Some(view) = self.get(*id) {
+                if let Some(view) = self.get(*id)
+                    && !crate::gpu_view::props(surface, view, props)
+                {
                     crate::native::component_props(surface, view, props);
                 }
             }

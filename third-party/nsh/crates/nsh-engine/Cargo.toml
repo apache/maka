@@ -19,7 +19,7 @@ default = ["js"]
 js = ["js-core", "zlib", "crypto"]
 # The VM without the standard modules `zlib` and `crypto` (and the global
 # `crypto`): a runtime for apps that use neither (the web's lite runtime).
-js-core = ["dep:nsh-js", "dep:nsh-package", "dep:oxc_sourcemap"]
+js-core = ["dep:nsh-js", "dep:nsh-package", "dep:nsh-updater", "dep:oxc_sourcemap"]
 # The standard modules on their own, for a runtime that picks them.
 zlib = ["js-core", "nsh-js/zlib"]
 crypto = ["js-core", "nsh-js/crypto"]
@@ -28,13 +28,14 @@ browser = []
 # `net`: the HTTP stack behind `fetch` on ureq, which the Windows, Linux and
 # GPUI backends hand their engines.
 net = ["dep:ureq"]
-# `shader`: the native backends' shader renderer (`shader`), on wgpu. Without
-# it `shader` has the same API and finds no GPU, so shader views draw nothing.
-shader = ["dep:wgpu", "dep:pollster", "nsh-core/shader", "dep:objc2", "dep:objc2-metal", "dep:objc2-core-foundation", "dep:block2", "dep:windows"]
+# `shader`: the native backends' shader renderer (`shader`) and GPU views'
+# runtime (`gpu`), on wgpu. Without it both have the same API and find no
+# GPU, so shader views and GPU views draw nothing.
+shader = ["dep:wgpu", "dep:nsh-gpu", "dep:pollster", "nsh-core/shader", "dep:objc2", "dep:objc2-metal", "dep:objc2-core-foundation", "dep:block2", "dep:windows"]
 
 # The native WebSocket client (tokio-tungstenite, rustls). Without it
 # `connect` of `websocket` rejects with ERR_FEATURE_UNAVAILABLE_ON_PLATFORM.
-websocket = ["nsh-core/websocket"]
+websocket = ["nsh-core/websocket", "nsh-js?/websocket"]
 # App self-updates (`nsh/updater`). Without it a check finds no update.
 updater = ["nsh-core/updater"]
 
@@ -47,16 +48,17 @@ nsh-package = { workspace = true, optional = true }
 serde_json.workspace = true
 nsh-js = { workspace = true, optional = true }
 crossbeam-channel.workspace = true
-tokio = { workspace = true, features = ["rt", "sync", "time"] }
+tokio = { workspace = true, features = ["rt", "time"] }
 ureq = { workspace = true, optional = true }
 wgpu = { workspace = true, optional = true }
+nsh-gpu = { workspace = true, optional = true }
 pollster = { workspace = true, optional = true }
 
 # WebAssembly has no threads: `LocalEngine` drives the engine there.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread"] }
-# A packaged app's update configuration (`updates`).
-nsh-updater.workspace = true
+# A packaged app's update configuration (`updates`, with `js-core`).
+nsh-updater = { workspace = true, optional = true }
 # `RUST_LOG` of the desktop release runners' logger (`logging`).
 env_filter.workspace = true
 
@@ -88,7 +90,8 @@ nsh-base = { workspace = true, features = ["editor", "highlight", "plot", "rich-
 # The host's shared data in `nativeModule`'s tests.
 tokio = { workspace = true, features = ["sync"] }
 nsh-bundler = { workspace = true, features = ["bundle"] }
-nsh-js.workspace = true
+# The global `WebSocket` in `tests/engine/websocket.rs`.
+nsh-js = { workspace = true, features = ["websocket"] }
 # The language data an app ships (`locale_and_font_scale_follow_the_environment`).
 nsh-i18n.workspace = true
 crossbeam-channel.workspace = true

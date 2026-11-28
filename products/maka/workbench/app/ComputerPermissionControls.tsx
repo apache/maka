@@ -18,7 +18,14 @@
  */
 import { Text, View, type ViewRef } from 'nsh';
 import { Button } from 'nsh/base';
-import { C, bodyTextStyle, captionTextStyle, controlStyle, controlDisabledStyle } from './ui';
+import {
+  bodyTextStyle,
+  C,
+  captionTextStyle,
+  controlDisabledStyle,
+  controlStyle,
+  lineWidth,
+} from './ui';
 import { Icon } from './Icon';
 import { LoadingIndicator } from './Loading';
 import { tr } from './locale';
@@ -38,8 +45,8 @@ export function PermissionButton(props: {
       disabled={props.disabled}
       onPress={props.onPress}
       style={{
-        ...controlStyle,
-        borderWidth: 1,
+        ...controlStyle(),
+        borderWidth: lineWidth(),
         borderColor: C.line,
         backgroundColor: props.primary ? C.accent : C.surface,
       }}

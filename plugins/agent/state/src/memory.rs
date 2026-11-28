@@ -28,6 +28,9 @@ use rusqlite::{Connection, OptionalExtension, params};
 use sha2::{Digest, Sha256};
 
 mod matching;
+pub(crate) mod migrate_pinned;
+pub mod pinned;
+pub mod reads;
 pub mod recall;
 pub mod resolution;
 
@@ -309,6 +312,9 @@ impl UserChange {
         if body.is_some() {
             c.execute("INSERT INTO agent_memory_evidence(namespace,scope,id,assertion,source,source_key) SELECT namespace,scope,id,revision,source,source FROM agent_memory_versions WHERE namespace=?1 AND scope=?2 AND id=?3 AND revision=?4", params![self.scope.namespace,self.scope.location,key,revision])?;
         }
+        if mode == "user_always" {
+            pinned::check_budget(c, &self.scope)?;
+        }
         if deleted {
             c.execute("UPDATE agent_memory_versions SET disposition='suppressed' WHERE namespace=?1 AND scope=?2 AND id=?3",params![self.scope.namespace,self.scope.location,key])?;
         }
@@ -488,13 +494,46 @@ fn evidence_source(
     sequence: u64,
     item_index: u64,
 ) -> Result<(String, String, i64), StoreError> {
-    let source: Option<(String, String, i64, String)> = c.query_row(
-        "SELECT d.body,h.fact_id,d.at,s.configuration FROM agent_recall_messages d JOIN agent_session_history h ON h.owner=d.owner AND h.session=d.session AND h.sequence=d.sequence JOIN session_control s ON s.id=d.session WHERE d.owner=?1 AND d.session=?2 AND d.sequence=?3 AND d.ordinal=?4 AND d.internal=0 AND s.archived=0 AND NOT EXISTS(SELECT 1 FROM session_retirements WHERE session_id=d.session AND remove_session=1)",
-        params![namespace,session,i64::try_from(sequence).map_err(|_| invalid("source sequence overflow"))?,i64::try_from(item_index).map_err(|_| invalid("source ordinal overflow"))?],
-        |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?;
-    let Some((body, fact, observed_at, configuration)) = source else {
+    let Some(ns_id) = crate::namespace::find_id(c, namespace, session)? else {
         return Err(invalid("memory evidence source unavailable"));
     };
+    let seq_i64 = i64::try_from(sequence).map_err(|_| invalid("source sequence overflow"))?;
+    let ord_i64 = i64::try_from(item_index).map_err(|_| invalid("source ordinal overflow"))?;
+    type EvidenceSourceRow = (
+        String,
+        Option<i64>,
+        Option<i64>,
+        Option<i64>,
+        String,
+        i64,
+        String,
+    );
+    let source: Option<EvidenceSourceRow> = c
+        .query_row(
+            "SELECT d.body,d.body_ref_sequence,d.body_ref_start,d.body_ref_end,h.fact_id,d.at,s.configuration FROM agent_recall_messages d JOIN agent_session_history h ON h.namespace_id=d.namespace_id AND h.sequence=d.sequence JOIN session_control s ON s.id=?2 WHERE d.namespace_id=?1 AND d.sequence=?3 AND d.ordinal=?4 AND d.internal=0 AND s.archived=0 AND NOT EXISTS(SELECT 1 FROM session_retirements WHERE session_id=?2 AND remove_session=1)",
+            params![ns_id, session, seq_i64, ord_i64],
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((mut body, ref_seq, ref_start, ref_end, fact, observed_at, configuration)) = source
+    else {
+        return Err(invalid("memory evidence source unavailable"));
+    };
+    if let Some(ref_seq) = ref_seq {
+        body = crate::recall::index::resolve_body_ref(
+            c, ns_id, sequence, ref_seq, ref_start, ref_end,
+        )?;
+    }
     let configuration: serde_json::Value = serde_json::from_str(&configuration)?;
     if configuration
         .get("incognito")
@@ -575,6 +614,87 @@ mod tests {
         .unwrap()
         .value
     }
+    #[test]
+    fn pinned_projection_obeys_scope_order_and_half_open_validity() {
+        let db = setup();
+        let capture = |at| {
+            pinned::Capture {
+                personal: scope("owner", "personal"),
+                project: scope("owner", "project"),
+                at,
+            }
+            .execute(&db)
+            .unwrap()
+        };
+        for (owner, location, body, temporal) in [
+            ("owner", "project", "Project", MemoryTemporal::Timeless),
+            ("owner", "personal", "First", MemoryTemporal::Timeless),
+            ("owner", "personal", "Second", MemoryTemporal::Timeless),
+            (
+                "owner",
+                "project",
+                "During",
+                MemoryTemporal::Interval {
+                    start: 5,
+                    end: Some(8),
+                },
+            ),
+            ("owner", "other", "Other project", MemoryTemporal::Timeless),
+            ("peer", "personal", "Other agent", MemoryTemporal::Timeless),
+        ] {
+            let scope = scope(owner, location);
+            let MemoryResult::Saved { id, revision, .. } = change(
+                &db,
+                scope.clone(),
+                MemoryEdit::Create {
+                    body: body.into(),
+                    metadata: MemoryMetadata {
+                        temporal,
+                        ..Default::default()
+                    },
+                },
+            ) else {
+                panic!("fixture entry was not created")
+            };
+            change(
+                &db,
+                scope,
+                MemoryEdit::SetAlways {
+                    id,
+                    expected_revision: revision,
+                    always: true,
+                },
+            );
+        }
+        let before = capture(4);
+        assert_eq!(before.len(), 3);
+        assert_eq!(before[0].loaded.scope, "personal");
+        assert_eq!(before[1].loaded.scope, "personal");
+        assert!(before[0].loaded.id.0 < before[1].loaded.id.0);
+        assert_eq!(before[2].body, "Project");
+        assert_eq!(capture(5).len(), 4);
+        assert_eq!(capture(7), capture(5));
+        assert_eq!(capture(8), before);
+        let projection = MemoryProjection {
+            policy_revision: 1,
+            entries: before,
+        };
+        assert!(projection.check_window(Some(256), 0).is_ok());
+        assert!(projection.check_window(Some(8), 0).is_err());
+        assert!(projection.check_window(Some(256), 250).is_err());
+        assert!(projection.check_window(None, 0).is_err());
+        let system = maka_agent_facts::execution::SystemPrompt {
+            text: "x".repeat(768),
+            policy_revision: 1,
+            sources: vec![],
+        };
+        assert!(
+            projection
+                .check_admitted_window(Some(256), Some(&system), 0)
+                .is_err()
+        );
+    }
+
     #[test]
     fn correction_retains_version_evidence_and_suppression_in_one_transaction() {
         let c = setup();
@@ -978,18 +1098,23 @@ mod tests {
     #[test]
     fn evidence_is_verified_incremental_and_never_carried_to_a_correction() {
         let c = setup();
-        c.execute_batch("CREATE TABLE session_control(id TEXT PRIMARY KEY, configuration TEXT, archived INTEGER); CREATE TABLE session_retirements(session_id TEXT, remove_session INTEGER); CREATE TABLE agent_recall_messages(owner TEXT,session TEXT,sequence INTEGER,ordinal INTEGER,body TEXT,at INTEGER,internal INTEGER); CREATE TABLE agent_session_history(owner TEXT,session TEXT,sequence INTEGER,fact_id TEXT);").unwrap();
+        c.execute_batch("CREATE TABLE session_control(id TEXT PRIMARY KEY, configuration TEXT, archived INTEGER); CREATE TABLE session_retirements(session_id TEXT, remove_session INTEGER); CREATE TABLE agent_namespaces(id INTEGER PRIMARY KEY, owner TEXT NOT NULL, session TEXT NOT NULL, UNIQUE(owner, session)); CREATE TABLE agent_recall_messages(namespace_id INTEGER,sequence INTEGER,ordinal INTEGER,body TEXT,at INTEGER,internal INTEGER,body_ref_sequence INTEGER,body_ref_start INTEGER,body_ref_end INTEGER); CREATE TABLE agent_session_history(namespace_id INTEGER,sequence INTEGER,fact_id TEXT);").unwrap();
         let text = "Prefer 中文";
         let fact = uuid::Uuid::new_v4();
         c.execute("INSERT INTO session_control VALUES('s','{}',0)", [])
             .unwrap();
         c.execute(
-            "INSERT INTO agent_recall_messages VALUES('host/agent','s',1,0,?,100,0)",
+            "INSERT INTO agent_namespaces VALUES(1,'host/agent','s')",
+            [],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO agent_recall_messages(namespace_id,sequence,ordinal,body,at,internal) VALUES(1,1,0,?,100,0)",
             [text],
         )
         .unwrap();
         c.execute(
-            "INSERT INTO agent_session_history VALUES('host/agent','s',1,?)",
+            "INSERT INTO agent_session_history VALUES(1,1,?)",
             [fact.to_string()],
         )
         .unwrap();

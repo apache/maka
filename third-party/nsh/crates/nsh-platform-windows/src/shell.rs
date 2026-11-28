@@ -49,6 +49,8 @@ pub(crate) struct Attrs {
     pub(crate) frame: WindowFrameStyle,
     pub(crate) min_size: Option<Size<Points>>,
     pub(crate) max_size: Option<Size<Points>>,
+    /// Content width / height the user's resizes keep (`aspectRatio`).
+    pub(crate) aspect_ratio: Option<f32>,
     pub(crate) resizable: bool,
     pub(crate) movable: bool,
     pub(crate) minimizable: bool,
@@ -77,6 +79,7 @@ impl Default for Attrs {
             frame: WindowFrameStyle::Default,
             min_size: None,
             max_size: None,
+            aspect_ratio: None,
             resizable: true,
             movable: true,
             minimizable: true,
@@ -122,6 +125,7 @@ impl Attrs {
             frame,
             min_size,
             max_size,
+            aspect_ratio,
             resizable,
             movable,
             minimizable,
@@ -390,6 +394,72 @@ pub(crate) fn track_sizes(attrs: &Attrs, scale: f32, extra: (i32, i32)) -> Track
         )
     };
     (attrs.min_size.map(outer), attrs.max_size.map(outer))
+}
+
+/// The outer rect `(left, top, right, bottom)` a `WM_SIZING` drag by
+/// `edge` (`WMSZ_*`) gets so the content (the rect less `extra` pixels of
+/// frame) keeps `ratio` (width / height), within the track sizes
+/// `(min, max)`: a side edge sets the height from the width, the top or
+/// bottom edge the width from the height, a corner the height from the
+/// width. The edge the user holds stays where they put it; the
+/// opposite side gives.
+pub(crate) fn aspect_sizing(
+    rect: (i32, i32, i32, i32),
+    edge: u32,
+    ratio: f32,
+    extra: (i32, i32),
+    (min, max): TrackSizes,
+) -> (i32, i32, i32, i32) {
+    let (mut l, mut t, mut r, mut b) = rect;
+    if !(ratio.is_finite() && ratio > 0.0) {
+        return rect;
+    }
+    let ratio = f64::from(ratio);
+    // The content's limits, in pixels, from the outer track sizes.
+    let lo = min.map_or((1, 1), |(w, h)| {
+        ((w - extra.0).max(1), (h - extra.1).max(1))
+    });
+    let hi = max.map_or((i32::MAX, i32::MAX), |(w, h)| {
+        ((w - extra.0).max(1), (h - extra.1).max(1))
+    });
+    let by_height = matches!(edge, WMSZ_TOP | WMSZ_BOTTOM);
+    if by_height {
+        // The height the drag gives, within what both limits allow.
+        let h_lo = f64::from(lo.1).max((f64::from(lo.0) / ratio).ceil());
+        let h_hi = f64::from(hi.1).min((f64::from(hi.0) / ratio).floor());
+        let mut h = f64::from((b - t - extra.1).max(1));
+        if h_lo <= h_hi {
+            h = h.clamp(h_lo, h_hi);
+        }
+        let h = h as i32;
+        let w = (f64::from(h) * ratio).round() as i32;
+        if edge == WMSZ_TOP {
+            t = b - h - extra.1;
+        } else {
+            b = t + h + extra.1;
+        }
+        r = l + w + extra.0;
+    } else {
+        let w_lo = f64::from(lo.0).max((f64::from(lo.1) * ratio).ceil());
+        let w_hi = f64::from(hi.0).min((f64::from(hi.1) * ratio).floor());
+        let mut w = f64::from((r - l - extra.0).max(1));
+        if w_lo <= w_hi {
+            w = w.clamp(w_lo, w_hi);
+        }
+        let w = w as i32;
+        let h = (f64::from(w) / ratio).round() as i32;
+        if matches!(edge, WMSZ_LEFT | WMSZ_TOPLEFT | WMSZ_BOTTOMLEFT) {
+            l = r - w - extra.0;
+        } else {
+            r = l + w + extra.0;
+        }
+        if matches!(edge, WMSZ_TOPLEFT | WMSZ_TOPRIGHT) {
+            t = b - h - extra.1;
+        } else {
+            b = t + h + extra.1;
+        }
+    }
+    (l, t, r, b)
 }
 
 /// How the user asked to close a window, from what came before its
@@ -790,14 +860,11 @@ fn bare_when_zoomed(attrs: &Attrs) -> bool {
 /// before), the shadow of a frameless window and its corners.
 fn set_material(hwnd: HWND, attrs: &Attrs) {
     let frameless = attrs.frameless();
-    let backdrop = attrs.backdrop != Backdrop::None;
     // SAFETY: a plain query on a live window.
     let zoomed = bare_when_zoomed(attrs) && unsafe { IsZoomed(hwnd) }.as_bool();
     // A frameless window's shadow is the frame's, extended by a pixel;
     // a backdrop shows through the whole client area.
-    let margin = if backdrop {
-        -1
-    } else if frameless && attrs.shadow && !attrs.transparent && !zoomed {
+    let margin = if frameless && attrs.shadow && !attrs.transparent && !zoomed {
         1
     } else {
         0
@@ -1222,6 +1289,35 @@ mod tests {
         let (min, max) = track_sizes(&attrs, 1.5, (16, 39));
         assert_eq!(min, Some((466, 339)));
         assert_eq!(max, None);
+    }
+
+    #[test]
+    fn aspect_ratio_drags_keep_the_content_at_the_ratio() {
+        let extra = (16, 39);
+        let none = (None, None);
+        let content = |(l, t, r, b): (i32, i32, i32, i32)| (r - l - extra.0, b - t - extra.1);
+        // The right edge: the width stays, the bottom follows.
+        let rect = aspect_sizing((100, 100, 916, 500), WMSZ_RIGHT, 2.0, extra, none);
+        assert_eq!(content(rect), (800, 400));
+        assert_eq!((rect.0, rect.1, rect.2), (100, 100, 916));
+        // The bottom edge: the height stays, the right side follows.
+        let rect = aspect_sizing((100, 100, 300, 539), WMSZ_BOTTOM, 2.0, extra, none);
+        assert_eq!(content(rect), (800, 400));
+        assert_eq!((rect.0, rect.1, rect.3), (100, 100, 539));
+        // The top edge: the bottom stays put.
+        let rect = aspect_sizing((100, 100, 300, 539), WMSZ_TOP, 2.0, extra, none);
+        assert_eq!((rect.3, content(rect)), (539, (800, 400)));
+        // The top left corner: the bottom right corner stays put.
+        let rect = aspect_sizing((100, 100, 916, 900), WMSZ_TOPLEFT, 2.0, extra, none);
+        assert_eq!((rect.2, rect.3, content(rect)), (916, 900, (800, 400)));
+        // The limits hold with the ratio: a height of at least 300 needs a
+        // width of 600.
+        let min = Some((300 + extra.0, 300 + extra.1));
+        let rect = aspect_sizing((0, 0, 216, 239), WMSZ_RIGHT, 2.0, extra, (min, None));
+        assert_eq!(content(rect), (600, 300));
+        // A ratio out of range leaves the drag alone.
+        let rect = (0, 0, 216, 239);
+        assert_eq!(aspect_sizing(rect, WMSZ_RIGHT, f32::NAN, extra, none), rect);
     }
 
     #[test]

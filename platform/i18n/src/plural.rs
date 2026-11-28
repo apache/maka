@@ -49,7 +49,7 @@ pub const fn plural_category(locale: BuiltinLocale, n: i64) -> PluralCategory {
         BuiltinLocale::Es | BuiltinLocale::It => {
             if abs == 1 {
                 PluralCategory::One
-            } else if abs != 0 && abs % 1_000_000 == 0 {
+            } else if abs != 0 && abs.is_multiple_of(1_000_000) {
                 PluralCategory::Many
             } else {
                 PluralCategory::Other
@@ -58,7 +58,7 @@ pub const fn plural_category(locale: BuiltinLocale, n: i64) -> PluralCategory {
         BuiltinLocale::Fr | BuiltinLocale::PtBr => {
             if abs == 0 || abs == 1 {
                 PluralCategory::One
-            } else if abs != 0 && abs % 1_000_000 == 0 {
+            } else if abs != 0 && abs.is_multiple_of(1_000_000) {
                 PluralCategory::Many
             } else {
                 PluralCategory::Other

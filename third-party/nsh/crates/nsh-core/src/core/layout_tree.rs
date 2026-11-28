@@ -150,6 +150,9 @@ pub(crate) struct LayoutTree<C> {
     /// The styles set last, newest last: what a node styled like one of
     /// them shares ([`LayoutTree::share`]).
     shared: Vec<Rc<Style>>,
+    /// The style of an unstyled view (`crate::style::unstyled_layout()`),
+    /// shared directly on node creation and by text-only nodes.
+    default_style: Rc<Style>,
 }
 
 /// How many recent styles [`LayoutTree::share`] looks among.
@@ -167,12 +170,16 @@ impl<C> LayoutTree<C> {
             grid: None,
             plain: Style::DEFAULT,
             shared: Vec::with_capacity(SHARED),
+            default_style: Rc::new(crate::style::unstyled_layout()),
         }
     }
 
     /// `style`, shared with the nodes styled alike among the last styles
     /// set: rows of a list, cells of a table and runs of text repeat a few.
-    fn share(&mut self, style: Style) -> Rc<Style> {
+    pub(crate) fn share(&mut self, style: Style) -> Rc<Style> {
+        if *self.default_style == style {
+            return self.default_style.clone();
+        }
         if let Some(i) = self.shared.iter().rposition(|s| **s == style) {
             let s = self.shared.remove(i);
             self.shared.push(s.clone());
@@ -194,6 +201,12 @@ impl<C> LayoutTree<C> {
             self.nodes[key(child)].parent = Some(id);
         }
         id
+    }
+
+    /// A new detached node using [`Self::default_style`] without scanning [`Self::shared`].
+    pub(crate) fn new_default_leaf(&mut self, context: Option<C>) -> NodeId {
+        let node = LayoutNode::new(self.default_style.clone(), context);
+        NodeId::from(self.nodes.insert(node))
     }
 
     /// A new detached node.
@@ -387,6 +400,22 @@ impl<C> LayoutTree<C> {
             return false;
         }
         let style = self.share(style);
+        self.apply_shared_style(node, style);
+        true
+    }
+
+    /// Replaces `node`'s style with an already-shared `Rc<Style>`, fast-pathing
+    /// pointer equality and skipping `Self::shared` scans.
+    pub(crate) fn set_style_shared(&mut self, node: NodeId, style: Rc<Style>) -> bool {
+        let current = &self.nodes[key(node)].style;
+        if Rc::ptr_eq(current, &style) || **current == *style {
+            return false;
+        }
+        self.apply_shared_style(node, style);
+        true
+    }
+
+    fn apply_shared_style(&mut self, node: NodeId, style: Rc<Style>) {
         self.mark_stale(node);
         let n = &mut self.nodes[key(node)];
         if n.holder {
@@ -397,7 +426,6 @@ impl<C> LayoutTree<C> {
         if let Some(parent) = n.parent {
             self.mark_dirty(parent);
         }
-        true
     }
 
     /// Replaces what measures `node`.
@@ -449,7 +477,13 @@ impl<C> LayoutTree<C> {
 
     /// Detaches `child` from `parent`.
     pub(crate) fn remove_child(&mut self, parent: NodeId, child: NodeId) {
-        self.nodes[key(parent)].children.retain(|&c| c != child);
+        // Once: a child is in its parent once. (`retain` would look at
+        // and move every child after it one by one, for each child moved
+        // in a long list.)
+        let children = &mut self.nodes[key(parent)].children;
+        if let Some(at) = children.iter().position(|&c| c == child) {
+            children.remove(at);
+        }
         self.nodes[key(child)].parent = None;
         self.mark_dirty(parent);
     }

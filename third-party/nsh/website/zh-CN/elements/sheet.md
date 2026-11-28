@@ -137,14 +137,17 @@ const detent = signal<SheetDetent>("medium");
 
 ## 软键盘
 
-原生 Android 中，Sheet 自己的模态窗口已扣除整个输入法区域。Sheet 与抽屉只补回键盘与底部安全区重叠的部分，让原有安全区留白落在键盘后方，不再重复抬升面板。标题与关闭按钮保留在屏幕内，面板内容与其他平台一样停在键盘上方；其他平台则在完整高度的呈现区域内移动面板。这项偏移仅属于 Sheet 的模态根视图，其他弹层保留各自的呈现方式和键盘处理。
-
 软键盘弹起时，贴着屏幕底边的面板（底部 sheet、左右两侧的抽屉）改为贴在键盘上沿，并随键盘的弹起和收起按键盘自己的曲线移动。
 面板底部照常按安全区留白（`pb-[env(safe-area-inset-bottom)]`，Rust 用 `.pb_safe_area()`），与没有键盘时一样：
-这段留白此时落在键盘后面，面板内容正好停在键盘上方，即安全区与键盘取较大者。被键盘抬起时，底部 sheet 内容再高也不会越过状态栏。
-`popupStyle` 中的 `maxHeight` 会取代这一上限，因此更矮的上限要自行扣除键盘超出安全区的高度（`keyboardFrame().height - safeArea().bottom`），
-例如 `windowSize().height - safeArea().top - Math.max(0, keyboardFrame().height - safeArea().bottom) - 24`。
-手机上以 sheet 呈现的菜单、选择器和日期选择器也是如此，它们的 `popupStyle` 或 `popupClass` 中的 `maxHeight` 同样取代其上限。
+这段留白此时落在键盘后面，面板内容正好停在键盘上方，即安全区与键盘取较大者。iOS、Android 和 Web 上行为相同，同一个 Sheet 不需要按平台写两套代码。
+
+被键盘抬起时，底部 sheet 内容再高也不会越过状态栏。Sheet 自己的 `maxHeight`（`popupStyle={{ maxHeight: "92%" }}` 或 `max-h-*` 类）
+只要放得进状态栏与键盘之间就照常生效；更高的，在键盘弹起期间让位给这段空间，键盘收起后恢复。
+让内容随面板收缩（内容加 `max-h-full`，里面用带 `shrink` 的 `Scroll`），标题栏就留在屏幕内，其余部分滚动。
+
+在被抬起的面板里，`env(keyboard-inset-height)` 读作 0：面板已经站在键盘上方，按它留白的内容（`pb-[env(keyboard-inset-height)]`，
+像页面避让键盘那样）不会被抬第二次。手机上以 sheet 呈现的菜单、选择器和日期选择器保留各自的上限，
+它们的 `popupStyle` 或 `popupClass` 中的 `maxHeight` 会取代这一上限，更矮的上限要自行扣除键盘超出安全区的高度（`keyboardFrame().height - safeArea().bottom`）。
 
 <a id="screen-readers-and-keyboard-focus"></a>
 

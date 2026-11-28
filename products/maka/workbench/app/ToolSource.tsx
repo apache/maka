@@ -198,7 +198,7 @@ export function ToolCopyButton(props: { text(): string; label: string; source: T
           accessibilityLabel={props.label}
           tooltip={textTooltip(() => (copied() ? tr('Copied') : props.label))}
           onPress={action()}
-          style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
+          style={{ ...controlStyle(), width: 32, paddingHorizontal: 8, alignItems: 'center' }}
           hoverStyle={{ backgroundColor: C.cardRaised }}
           activeStyle={{ opacity: 0.72 }}
           focusStyle={quietFocusStyle()}
@@ -247,7 +247,7 @@ export function OriginalToolSource(props: { source: ToolSource; label: string; t
       <If when={!source.complete()}>
         <Button
           disabled={!source.error()}
-          style={controlStyle}
+          style={controlStyle()}
           hoverStyle={{ backgroundColor: C.cardRaised }}
           focusStyle={{ backgroundColor: C.pressed }}
           onPress={inputAction(source.read, {

@@ -243,13 +243,25 @@ impl EditorDiagnosticRelatedInformation {
 pub struct EditorDecoration {
     /// What it styles.
     pub range: EditorRange,
-    /// Tailwind classes of the range's text (`text-*`, `font-*`,
-    /// `underline`, `bg-*`).
+    /// Tailwind classes of the range's text (colors, weights, `italic`,
+    /// `underline`, `bg-*`); its font is `fontFamily` and `fontSize`.
     #[prop(skip_none)]
     pub class: Option<SharedString>,
     /// The inline style of the range's text, over `class`.
     #[prop(skip_none)]
     pub style: Option<Style>,
+    /// The font family of the range's text (a Markdown app's code in a
+    /// monospaced font; default the editor's `fontFamily`). The editor
+    /// measures the text in it, so set the font here rather than with
+    /// `class` or `style`.
+    #[prop(skip_none)]
+    pub font_family: Option<SharedString>,
+    /// The font size of the range's text, in points (a Markdown app's
+    /// headings; default the editor's `fontSize`). A row with larger text
+    /// is taller: the editor's `lineHeight` grown in proportion to the
+    /// largest size on it. A terminal's text keeps its Cells.
+    #[prop(skip_none)]
+    pub font_size: Option<Points>,
     /// Tailwind classes of the rows of the lines it covers (a background).
     #[prop(skip_none)]
     pub line_class: Option<SharedString>,
@@ -271,6 +283,23 @@ pub struct EditorDecoration {
     /// edge that maps the whole text to its height (Monaco's).
     #[prop(skip_none)]
     pub overview_ruler: Option<EditorOverviewRulerMark>,
+    /// Text shown in place of the range's own (a replacing decoration, as
+    /// CodeMirror's `replace`): a date's source as "Tomorrow 09:00", a
+    /// link's source as its title. The range's text comes back while the
+    /// editor has the focus and a caret or a selection touches the range
+    /// (inside it or at either end), so the caret moves and edits through
+    /// the text as it is; copying, undo, search and screen readers keep
+    /// the text. A range on one line that is not empty shows it; one
+    /// overlapping an earlier replacing decoration does not.
+    #[prop(skip_none)]
+    pub label: Option<SharedString>,
+    /// Tailwind classes of the label's box (`bg-*`, `rounded-*`, `px-*`,
+    /// `text-*`), which sits in the row, centered on the text.
+    #[prop(skip_none)]
+    pub label_class: Option<SharedString>,
+    /// The inline style of the label's box, over `labelClass`.
+    #[prop(skip_none)]
+    pub label_style: Option<Style>,
 }
 
 /// A decoration's mark in the gutter's strip of marks

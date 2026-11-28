@@ -78,8 +78,8 @@ frame is whole Cells, and spacing designed in points for a screen becomes the Ce
 Every control is reachable from the keyboard. Tab and Shift+Tab visit pressable and editable views in document order,
 as on the desktops; the arrows move to the nearest control in that direction, scrolling to reach it. A control
 scrolled into view by the keyboard is centered in its scroll view. While a dialog or a sheet is open over its
-backdrop, Tab stays in it, and closing it gives the focus back to the control it came from. Tab always moves to the
-next control: in a `DataTable` it leaves the table, and the arrows move between its columns. A click gives the focus
+backdrop, Tab stays in it, and closing it gives the focus back to the control it came from. In a `DataTable` Tab and
+the arrows move between its cells, as on the desktops, and Escape gives the keyboard back so Tab moves on. A click gives the focus
 to the control it is on, or the one around it, and Tab goes on from there.
 
 | Keys | Do |
@@ -260,7 +260,7 @@ portrait takes the Cells its box rounds to, and a picture that stays transparent
 the same. PNG, JPEG, GIF, WebP and SVG files, assets, remote URLs and `data:` /
 `blob:` sources load as on the other platforms, `onLoad`, `onError` and the other load events report, and
 `Image.getSize` and `Image.prefetch` answer. An animated image shows its first frame. With 16 colors or none the box
-stays blank.
+shows the image's label in brackets (`[Green mountains]`, or `[Image]` without one), dim.
 
 **Other media keep their space in the layout.** A `Video`, `WebView` or shader view larger than an icon keeps its
 box, so the text and controls around it stay where the design puts them; the box is blank Cells. Videos, web views,

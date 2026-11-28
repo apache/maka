@@ -5,7 +5,7 @@
 pub mod clipboard;
 pub mod web_evaluation;
 
-use crate::geometry::{Edges, Points, Size};
+use crate::geometry::{Bounds, Edges, Points, Size};
 
 /// The native component of `nsh/mobile`'s `TabBar`, which the iOS and
 /// Android backends register themselves (`TabBarComponent.java`'s `NAME` keeps
@@ -440,6 +440,11 @@ pub struct Environment {
     pub vertical_size_class: Option<SizeClass>,
     /// Insets not covered by system UI (notch, home indicator, title bar).
     pub safe_area: Edges<Points>,
+    /// The parts of the surface the device reserves inside the safe area
+    /// (TS: `reservedRegions()`): the fold of a partly folded display,
+    /// a camera that shows through it. Empty where the platform reports
+    /// none.
+    pub reserved_regions: ReservedRegions,
     /// The title bar's area while the app hides it (desktops,
     /// [`crate::desktop::TitleBarStyle::Hidden`]): `top` is its height,
     /// `left` and `right` the widths the system's window controls take at
@@ -591,8 +596,7 @@ pub struct Environment {
     pub tab_bar: bool,
     /// Whether the platform puts images on the system clipboard and reads
     /// them back (`Clipboard.readImage`, `writeImage`, `hasImage`). `None`
-    /// (the default): as NSH's own backends on [`Self::os`], every OS but
-    /// Android, whose backend holds text only. A platform built outside
+    /// (the default): yes, as every NSH backend does. A platform built outside
     /// NSH says what it does with `Some`: without images its image calls
     /// reject with `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` and `hasImage` is
     /// false.
@@ -682,6 +686,7 @@ impl Default for Environment {
             horizontal_size_class: None,
             vertical_size_class: None,
             safe_area: Edges::default(),
+            reserved_regions: ReservedRegions::NONE,
             title_bar: Edges::default(),
             window_state: None,
             keyboard_height: Points(0.0),
@@ -855,6 +860,125 @@ impl std::fmt::Debug for Locale {
 impl std::fmt::Display for Locale {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())
+    }
+}
+
+/// What a reserved region asks of the content in it (TS:
+/// `ReservedRegion["kind"]`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, crate::element::PropEnum)]
+#[non_exhaustive]
+pub enum ReservedRegionKind {
+    /// Something covers it (a camera that shows through the display):
+    /// keep what matters out of it.
+    #[default]
+    Occlusion,
+    /// The display divides there (the fold of a partly folded display):
+    /// keep content clear of it, on either side.
+    Division,
+}
+
+impl ReservedRegionKind {
+    /// The kind's name in TS (`"occlusion"`, `"division"`).
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Occlusion => "occlusion",
+            Self::Division => "division",
+        }
+    }
+}
+
+/// A part of the surface the device reserves (TS: `ReservedRegion`): what
+/// UIKit calls a reserved region (`UIView.ReservedRegion`), Jetpack
+/// WindowManager a display feature.
+#[derive(Debug, Clone, Copy, PartialEq, Default, crate::element::JsObject)]
+#[non_exhaustive]
+pub struct ReservedRegion {
+    /// What it asks of the content in it.
+    pub kind: ReservedRegionKind,
+    /// Where it is, in the surface's points (as layout places views),
+    /// with the margin interactive content keeps from it.
+    pub bounds: Bounds<Points>,
+}
+
+impl ReservedRegion {
+    /// A region of `kind` at `bounds`.
+    pub fn new(kind: ReservedRegionKind, bounds: Bounds<Points>) -> ReservedRegion {
+        ReservedRegion { kind, bounds }
+    }
+}
+
+/// The regions the device reserves in a surface ([`ReservedRegion`]), at
+/// most [`ReservedRegions::CAPACITY`]. Held inline so that the environment
+/// stays `Copy`.
+#[derive(Clone, Copy, PartialEq)]
+pub struct ReservedRegions {
+    regions: [ReservedRegion; ReservedRegions::CAPACITY],
+    len: u8,
+}
+
+impl ReservedRegions {
+    /// How many it keeps: a device reserves a few (iPhone Duo: its fold
+    /// and its cameras); the rest are left out.
+    pub const CAPACITY: usize = 8;
+
+    /// None, the default.
+    pub const NONE: ReservedRegions = ReservedRegions {
+        regions: [ReservedRegion {
+            kind: ReservedRegionKind::Occlusion,
+            bounds: Bounds {
+                origin: crate::geometry::Point {
+                    x: Points(0.0),
+                    y: Points(0.0),
+                },
+                size: Size {
+                    width: Points(0.0),
+                    height: Points(0.0),
+                },
+            },
+        }; ReservedRegions::CAPACITY],
+        len: 0,
+    };
+
+    /// These regions, the first [`ReservedRegions::CAPACITY`] kept.
+    pub fn new(regions: impl IntoIterator<Item = ReservedRegion>) -> ReservedRegions {
+        let mut list = Self::NONE;
+        for region in regions.into_iter().take(Self::CAPACITY) {
+            list.regions[usize::from(list.len)] = region;
+            list.len += 1;
+        }
+        list
+    }
+
+    /// All of them.
+    pub fn as_slice(&self) -> &[ReservedRegion] {
+        &self.regions[..usize::from(self.len)]
+    }
+
+    /// All of them.
+    pub fn iter(&self) -> impl Iterator<Item = ReservedRegion> + '_ {
+        self.as_slice().iter().copied()
+    }
+
+    /// There are none.
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// How many there are.
+    pub fn len(&self) -> usize {
+        usize::from(self.len)
+    }
+}
+
+impl Default for ReservedRegions {
+    fn default() -> Self {
+        Self::NONE
+    }
+}
+
+impl std::fmt::Debug for ReservedRegions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list().entries(self.as_slice()).finish()
     }
 }
 
@@ -1106,6 +1230,11 @@ pub struct PerfStats {
     /// The share of recent frames that took longer than one refresh, from 0
     /// to 1 (`0.05` is 5%), as TS's `dropped` reads it.
     pub dropped: crate::geometry::Percentage,
+    /// Memory the process owns, in bytes, as the monitor's panel shows it:
+    /// the physical footprint on Apple platforms (Activity Monitor's Memory
+    /// column), the resident set elsewhere. `None` where the platform does
+    /// not say, and on the web.
+    pub memory: Option<u64>,
 }
 
 impl PerfStats {
@@ -2340,5 +2469,76 @@ mod tests {
         ] {
             assert_eq!(file_mime_type(none), "", "{none}");
         }
+    }
+}
+
+/// Logs, once per backend and command kind, that a backend ignores a command.
+///
+/// Backends call this from their catch-all arm so an app learns that a call
+/// does nothing on this platform, without one log line per frame or call. The
+/// kind is the leading variant chain of the command's `Debug` output (for
+/// `Desktop(SetAttributes(..))`, `Desktop(SetAttributes`), so commands with
+/// different payloads share one warning.
+pub fn warn_unsupported(backend: &str, command: &dyn std::fmt::Debug) {
+    use std::collections::HashSet;
+    use std::sync::{Mutex, OnceLock};
+
+    static SEEN: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    let debug = format!("{command:?}");
+    let key = format!("{backend}:{}", unsupported_kind(&debug));
+    let seen = SEEN.get_or_init(Default::default);
+    if seen
+        .lock()
+        .map(|mut seen| seen.insert(key))
+        .unwrap_or(false)
+    {
+        log::warn!(
+            "{backend}: {} is not supported on this platform and is ignored",
+            unsupported_kind(&debug)
+        );
+    }
+}
+
+/// The leading `Variant(Variant` (at most two levels) of a `Debug` string.
+fn unsupported_kind(debug: &str) -> &str {
+    let mut end = 0;
+    let bytes = debug.as_bytes();
+    let mut i = 0;
+    // A command and, for grouped commands such as `Desktop`, its subcommand.
+    for _ in 0..2 {
+        let start = i;
+        // Variants start with an uppercase letter; a number or a string is a payload.
+        if !bytes.get(i).is_some_and(u8::is_ascii_uppercase) {
+            break;
+        }
+        while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+            i += 1;
+        }
+        if i == start {
+            break;
+        }
+        end = i;
+        if i < bytes.len() && bytes[i] == b'(' {
+            i += 1;
+        } else {
+            break;
+        }
+    }
+    if end == 0 { debug } else { &debug[..end] }
+}
+
+#[cfg(test)]
+mod unsupported_tests {
+    use super::unsupported_kind;
+
+    #[test]
+    fn kind_is_the_variant_chain() {
+        assert_eq!(
+            unsupported_kind("Desktop(SetAttributes(Foo { a: 1 }))"),
+            "Desktop(SetAttributes"
+        );
+        assert_eq!(unsupported_kind("Share { text: \"x\" }"), "Share");
+        assert_eq!(unsupported_kind("Vibrate(12)"), "Vibrate");
+        assert_eq!(unsupported_kind("Quit"), "Quit");
     }
 }

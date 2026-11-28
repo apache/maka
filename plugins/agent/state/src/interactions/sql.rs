@@ -182,7 +182,7 @@ fn pin(c: &Connection, run: RunId, reference: &ContentRef) -> Result<(), StoreEr
     reference.validate().map_err(invalid)?;
     let content: i64 = c
         .query_row(
-            "SELECT id FROM contents WHERE content_sha256=? AND length(payload)=?",
+            "SELECT id FROM contents WHERE content_sha256=? AND COALESCE(logical_bytes,length(payload))=?",
             params![reference.digest, bind_u64(reference.bytes)?],
             |r| r.get(0),
         )

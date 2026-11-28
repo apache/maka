@@ -66,6 +66,34 @@ use crate::{
 /// (less than the platforms' long press, so it opens while the finger is
 /// still down), and how far it may move meanwhile.
 const HOLD: Duration = Duration::from_millis(400);
+
+thread_local! {
+    /// The finger (its id) whose hold a context menu's trigger took, and
+    /// that trigger. A touch reaches every trigger around the finger,
+    /// innermost first: the triggers outside the one that took it start no
+    /// hold of their own, so one hold opens one menu, as the secondary
+    /// click does.
+    static HELD: std::cell::Cell<Option<(u32, nsh_core::NodeId)>> = const { std::cell::Cell::new(None) };
+}
+
+/// Whether the hold of the finger starting `e` belongs to a context menu
+/// inside the trigger `me` (one before it on the finger's path).
+fn held_inside(e: &TouchEvent, me: Option<nsh_core::NodeId>) -> bool {
+    let (Some(point), Some(me)) = (e.points.first(), me) else {
+        return false;
+    };
+    let Some((finger, by)) = HELD.get() else {
+        return false;
+    };
+    finger == point.id
+        && by != me
+        && point
+            .path
+            .iter()
+            .position(|&n| n == by)
+            .zip(point.path.iter().position(|&n| n == me))
+            .is_some_and(|(inner, outer)| inner < outer)
+}
 const SLOP: f32 = 10.0;
 /// iOS's system menu: how long a `ContextMenu`'s preview stays made after
 /// the finger lifted or was taken over without the menu coming up (a tap,
@@ -2342,6 +2370,7 @@ pub fn ContextMenu(props: ContextMenuProps, cx: Scope<ContextMenuEvents>) -> imp
     };
     let hold = stored(None::<(Spawned<()>, Point<Points>)>);
     let opener = change.clone();
+    let disabled = props.disabled;
     view()
         .child(props.trigger.place(move |trigger| {
             let on_menu = opener.clone();
@@ -2373,12 +2402,25 @@ pub fn ContextMenu(props: ContextMenuProps, cx: Scope<ContextMenuEvents>) -> imp
                     if is_system() {
                         preview.touched(e.phase);
                     }
+                    let me = anchor.node();
+                    let takes = e.phase == TouchPhase::Start
+                        && e.points.len() == 1
+                        && e.points[0].pointer_type != PointerType::Mouse
+                        && !disabled.get_untracked()
+                        && !held_inside(e, me);
+                    if e.phase == TouchPhase::Start {
+                        // Claimed for the triggers around this one; a
+                        // trigger that declines lets go of its old claim.
+                        match (takes, me, e.points.first()) {
+                            (true, Some(me), Some(p)) => HELD.set(Some((p.id, me))),
+                            _ if HELD.get().is_some_and(|(_, by)| Some(by) == me) => HELD.set(None),
+                            _ => {}
+                        }
+                    }
                     match e.phase {
-                        TouchPhase::Start
-                            if e.points.len() == 1
-                                && e.points[0].pointer_type != PointerType::Mouse
-                                && !opens_itself() =>
-                        {
+                        // iOS opens its system menu itself: the hold is
+                        // taken, with no timer.
+                        TouchPhase::Start if takes && !opens_itself() => {
                             let on_hold = on_hold.clone();
                             let page = at.unwrap_or_default();
                             let task = set_timeout(HOLD, move || {

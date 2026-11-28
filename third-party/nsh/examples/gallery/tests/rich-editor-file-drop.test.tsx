@@ -9,6 +9,8 @@ test("files dropped on a RichEditor reach its onFileDrop, and the document and c
   const before = app.texts().find((t) => t.startsWith("caret: "));
   await app.dropFiles("id:composer", ["file:///tmp/shot%201.png", "file:///tmp/notes.pdf"]);
   await app.waitFor("text:attached: file:///tmp/shot%201.png file:///tmp/notes.pdf [image/png application/pdf]");
+  // Where the files were let go comes with them, for the app to place what it inserts there.
+  await app.waitFor("text:/^dropped at: \\d+ \\d+$/");
   // The editor inserted nothing and kept the caret where it was.
   expect(app.texts().find((t) => t.startsWith("caret: "))).toBe(before);
   expect(app.shows("text:Drop files on the composer")).toBe(true);

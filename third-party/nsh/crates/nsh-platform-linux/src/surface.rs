@@ -55,6 +55,9 @@ enum Message {
     /// A function the app runs on the main thread
     /// ([`MountSink::run_on_main_thread`]), after the batches before it.
     Run(MainThreadTask),
+    /// The engine laid root `id` out at a size ([`MountSink::root_resized`]),
+    /// after the batch that came of it.
+    RootResized(NodeId, Size<Points>),
 }
 
 thread_local! {
@@ -116,6 +119,10 @@ impl MountSink for Sink {
 
     fn run_on_main_thread(&self, task: MainThreadTask) {
         self.send(Message::Run(task));
+    }
+
+    fn root_resized(&self, id: NodeId, size: Size<Points>) {
+        self.send(Message::RootResized(id, size));
     }
 }
 
@@ -186,10 +193,9 @@ pub(crate) struct Surface {
     /// clock's, or one a deadline ran without it. Frames never go back
     /// before it.
     last_frame: Cell<f64>,
-    /// When the last frame ran (seconds, GLib's monotonic time, which the
-    /// frame clock's times are on): whether frames come
-    /// ([`Surface::keep_deadline`]).
-    last_run: Cell<f64>,
+    /// How many frames ran (the clock's and the keeper's): whether one ran
+    /// since the keeper's timer was armed ([`Surface::keep_deadline`]).
+    frames: Cell<u64>,
     /// The deadline the scheduled timer waits for
     /// ([`Surface::keep_deadline`]).
     keeper: Cell<Option<f64>>,
@@ -227,6 +233,8 @@ pub(crate) struct Surface {
     /// The performance monitor, while it measures ([`crate::fps`]).
     fps: RefCell<Option<Rc<crate::fps::Fps>>>,
     pub(crate) fps_overlay: RefCell<glib::WeakRef<gtk::Overlay>>,
+    /// The GPU views and their render thread ([`crate::gpu`]).
+    pub(crate) gpu: RefCell<crate::gpu::SurfaceGpu>,
 }
 
 /// A per-frame callback ([`Surface::add_frame_callback`]): gets the frame
@@ -302,7 +310,7 @@ impl Surface {
             ticking: RefCell::new(None),
             frame_callbacks: RefCell::default(),
             last_frame: Cell::new(0.0),
-            last_run: Cell::new(0.0),
+            frames: Cell::new(0),
             keeper: Cell::new(None),
             on_error: RefCell::new(None),
             on_hot_update_failed: RefCell::new(None),
@@ -329,6 +337,7 @@ impl Surface {
             selection: Default::default(),
             fps: RefCell::new(None),
             fps_overlay: RefCell::default(),
+            gpu: RefCell::default(),
         });
         SURFACES.with(|s| s.borrow_mut().insert(key, Rc::downgrade(&surface)));
         let weak = Rc::downgrade(&surface);
@@ -337,12 +346,16 @@ impl Surface {
                 surface.resized(width, height);
             }
         });
-        // Canvases that came into sight are drawn in the frame that shows them.
-        root.connect_realize(|root| {
+        reveal_on_frames(root.upcast_ref());
+        // GPU views that came into sight are drawn in the frame that shows them.
+        let weak = Rc::downgrade(&surface);
+        root.connect_realize(move |root| {
             if let Some(clock) = root.frame_clock() {
-                clock.connect_layout(|_| {
-                    crate::canvas::reveal();
-                    crate::shader::reveal();
+                let weak = weak.clone();
+                clock.connect_layout(move |_| {
+                    if let Some(surface) = weak.upgrade() {
+                        crate::gpu::reveal(&surface);
+                    }
                 });
                 crate::fps::log_first_frame(&clock);
             }
@@ -765,6 +778,7 @@ impl Surface {
                     }
                 }
                 Message::Run(task) => task.run(),
+                Message::RootResized(id, size) => crate::window::laid_out(self, id, size),
             }
         }
         if applied {
@@ -812,11 +826,13 @@ impl Surface {
             anim.write(&self.mounter.borrow());
             let mut moved = Vec::new();
             anim.write_components(
-                |id| crate::native::has_component(self, id),
+                |id| crate::native::has_component(self, id) || crate::gpu::has(self, id),
                 |id, name, value| moved.push((id, std::sync::Arc::<str>::from(name), value)),
             );
             (std::mem::take(&mut anim.finished), moved)
         };
+        let mut moved = moved;
+        crate::gpu::animated(self, &mut moved);
         // No surface state borrowed while the app's components run.
         crate::native::component_animated(self, moved);
         crate::scroll::pin_animated_sticky(self);
@@ -925,7 +941,7 @@ impl Surface {
     /// transition detaches its views when it does, a modal reports its
     /// dismissal, an animation its end to JS, a scroll its end). A timer
     /// waits for the next deadline ([`Surface::deadline`]) and a little
-    /// more ([`LATE`]); if no frame ran since it came due, it runs one,
+    /// more ([`LATE`]); if no frame ran since it was armed, it runs one,
     /// which steps everything to its time, ends what ended and gives the
     /// next deadline. While the window shows, frames always come first and
     /// the timer does nothing. Nothing is scheduled for what only draws (a
@@ -942,6 +958,7 @@ impl Surface {
             return;
         }
         self.keeper.set(Some(at));
+        let stepped = self.frames.get();
         let weak = Rc::downgrade(self);
         // Whole milliseconds, rounded up: never before the deadline.
         let ms = ((at + LATE - now).max(0.0) * 1000.0).ceil() as u64;
@@ -954,9 +971,17 @@ impl Surface {
                 return;
             }
             surface.keeper.set(None);
-            // A frame ran since it came due: frames come and step it (the
-            // frame clock may time a frame a little before it runs).
-            if surface.last_run.get() < at {
+            // No frame ran since the timer was armed: run one. Asked of the
+            // frames, not of a clock or of the deadline's value: a slow frame
+            // is timed before a deadline it runs after, the frame clock may
+            // time a frame ahead of the monotonic clock (a callback added
+            // after it is due at its time without having run), and the
+            // graph's deadlines for what it cannot time move on with `now`
+            // (an animation not started yet, a spring checked every 0.1 s).
+            // A frame that ran meanwhile without reaching the deadline leaves
+            // it due: the timer is armed again at once, and runs the frame
+            // on its next turn of the loop, ahead of the paint.
+            if surface.frames.get() == stepped {
                 surface.frame(surface.now());
             }
             surface.keep_deadline();
@@ -967,7 +992,7 @@ impl Surface {
     /// one a deadline ran without it.
     fn frame(self: &Rc<Self>, now: f64) {
         self.last_frame.set(now);
-        self.last_run.set(monotonic());
+        self.frames.set(self.frames.get().wrapping_add(1));
         if self.anim.borrow().animating() {
             // Frame clock frames and deadline runs both step here, so it
             // keeps the plain tick, without the first frame's stall
@@ -1020,6 +1045,20 @@ fn monotonic() -> f64 {
     glib::monotonic_time() as f64 / 1_000_000.0
 }
 
+/// Draws the canvases and starts the shader views that came into sight in
+/// the frame that shows them, on the frame clock of `toplevel`: the root's
+/// window, and each window the app opens, which has a clock of its own.
+pub(crate) fn reveal_on_frames(toplevel: &gtk::Widget) {
+    toplevel.connect_realize(|toplevel| {
+        if let Some(clock) = toplevel.frame_clock() {
+            clock.connect_layout(|_| {
+                crate::canvas::reveal();
+                crate::shader::reveal();
+            });
+        }
+    });
+}
+
 /// The widget type a surface is shown in.
 pub(crate) fn widget(surface: &Surface) -> gtk::Widget {
     surface.root.clone().upcast()
@@ -1056,6 +1095,172 @@ mod tests {
             let until = Instant::now() + Duration::from_millis(200);
             gtk_test::wait_until(|| Instant::now() >= until);
             assert_eq!(calls.borrow().len(), 2, "drawing only, without frames");
+        });
+    }
+
+    /// A slow frame is timed before a deadline it runs after (the frame
+    /// clock's time lags the monotonic clock): the deadline is still the
+    /// keeper's to run. Waiting for a frame instead re-armed its timer at
+    /// once, at the default priority, for good: nothing below it ran again,
+    /// neither the frame clock's paint nor what the engine sent.
+    #[test]
+    fn a_deadline_a_late_frame_did_not_reach_is_kept() {
+        gtk_test::run(|| {
+            let surface = gtk_test::surface();
+            let calls = Rc::new(Cell::new(0));
+            let seen = calls.clone();
+            surface.add_frame_callback(move |_, now| {
+                seen.set(seen.get() + 1);
+                if seen.get() == 1 {
+                    Next::At(now + 0.1)
+                } else {
+                    Next::Done
+                }
+            });
+            // A frame timed half a second ago, as a slow frame's is: the
+            // callback comes due 0.1 s after that, already past.
+            surface.frame(monotonic() - 0.5);
+            assert_eq!(calls.get(), 1);
+            surface.keep_deadline();
+            let below = Rc::new(Cell::new(false));
+            let ran = below.clone();
+            glib::idle_add_local_full(glib::Priority::HIGH_IDLE, move || {
+                ran.set(true);
+                glib::ControlFlow::Break
+            });
+            assert!(
+                gtk_test::wait_until(|| calls.get() == 2),
+                "the deadline the late frame did not reach ran"
+            );
+            assert!(
+                gtk_test::wait_until(|| below.get()),
+                "what runs below the default priority ran"
+            );
+        });
+    }
+
+    /// The frame clock may time a frame ahead of the monotonic clock: a
+    /// callback added after such a frame is due at its time without having
+    /// run, and while no frame comes (a window not shown) the keeper still
+    /// runs it.
+    #[test]
+    fn a_callback_added_after_a_frame_timed_ahead_is_kept() {
+        gtk_test::run(|| {
+            let surface = gtk_test::surface();
+            let ahead = monotonic() + 0.5;
+            surface.frame(ahead);
+            let called = Rc::new(Cell::new(false));
+            let seen = called.clone();
+            surface.add_frame_callback(move |_, _| {
+                seen.set(true);
+                Next::Done
+            });
+            assert_eq!(surface.last_frame.get(), ahead);
+            assert_eq!(
+                surface.keeper.get(),
+                Some(ahead),
+                "due at the last frame's time"
+            );
+            assert!(
+                gtk_test::wait_until(|| called.get()),
+                "the callback due at the last frame's time ran"
+            );
+        });
+    }
+
+    /// A frame ran since the keeper's timer was armed and stepped what was
+    /// due: the keeper does not run it again.
+    #[test]
+    fn a_frame_run_since_the_keeper_was_armed_is_not_run_again() {
+        gtk_test::run(|| {
+            let surface = gtk_test::surface();
+            let calls = Rc::new(Cell::new(0));
+            let seen = calls.clone();
+            // Due at once (the keeper's timer is armed), then drawing only.
+            surface.add_frame_callback(move |_, _| {
+                seen.set(seen.get() + 1);
+                Next::Frame
+            });
+            surface.frame(monotonic());
+            assert_eq!(calls.get(), 1);
+            let until = Instant::now() + Duration::from_millis(300);
+            gtk_test::wait_until(|| Instant::now() >= until);
+            assert_eq!(calls.get(), 1, "the frame that ran was not run again");
+        });
+    }
+
+    /// An animation not started yet is due "now" whatever `now` is (the
+    /// graph's deadline moves on with time): without frames, the keeper
+    /// starts it and runs it to its end.
+    #[test]
+    fn a_timing_animation_starts_and_ends_without_frames() {
+        use nsh_core::animation::{AnimationOp, Driver, Easing};
+        gtk_test::run(|| {
+            let surface = gtk_test::surface();
+            {
+                let mut anim = surface.anim.borrow_mut();
+                anim.apply(&MountItem::Animation(AnimationOp::CreateValue {
+                    node: 1,
+                    value: 0.0,
+                }));
+                anim.apply(&MountItem::Animation(AnimationOp::Start {
+                    node: 1,
+                    animation: 7,
+                    driver: Driver::Timing {
+                        to: 1.0,
+                        duration_ms: 100.0,
+                        easing: Easing::Linear,
+                        delay_ms: 0.0,
+                        frame_rate: None,
+                    },
+                }));
+            }
+            assert!(surface.anim.borrow().animating());
+            surface.ensure_ticking();
+            assert!(
+                gtk_test::wait_until(|| !surface.anim.borrow().animating()),
+                "the animation ended without frames"
+            );
+            assert_eq!(surface.anim.borrow().value(1), 1.0);
+        });
+    }
+
+    /// A running spring is checked every 0.1 s after `now` (its deadline
+    /// moves on with time): without frames, the keeper runs it until it
+    /// settles.
+    #[test]
+    fn a_started_spring_settles_without_frames() {
+        use nsh_core::animation::{AnimationOp, Driver};
+        gtk_test::run(|| {
+            let surface = gtk_test::surface();
+            {
+                let mut anim = surface.anim.borrow_mut();
+                anim.apply(&MountItem::Animation(AnimationOp::CreateValue {
+                    node: 1,
+                    value: 0.0,
+                }));
+                anim.apply(&MountItem::Animation(AnimationOp::Start {
+                    node: 1,
+                    animation: 7,
+                    driver: Driver::Spring {
+                        to: 1.0,
+                        stiffness: 200.0,
+                        damping: 20.0,
+                        mass: 1.0,
+                        velocity: None,
+                        frame_rate: None,
+                    },
+                }));
+            }
+            // Started by a frame: from here its deadline is "checked again".
+            surface.frame(monotonic());
+            assert!(surface.anim.borrow().animating());
+            surface.ensure_ticking();
+            assert!(
+                gtk_test::wait_until(|| !surface.anim.borrow().animating()),
+                "the spring settled without frames"
+            );
+            assert_eq!(surface.anim.borrow().value(1), 1.0);
         });
     }
 

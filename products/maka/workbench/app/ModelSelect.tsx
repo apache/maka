@@ -171,7 +171,7 @@ export function ModelSelect(props: {
               : `${tooltipLabel()} · ${shortcut(tr(props.running?.() ? 'Model for queued and future messages' : 'Choose model and effort'), 'mod+g')}`,
           )}
           style={{
-            ...composerToolbarControlStyle,
+            ...composerToolbarControlStyle(),
             maxWidth: '100%',
             minWidth: 0,
             flexDirection: 'row',

@@ -29,6 +29,7 @@ import {
   controlHoverStyle,
   floatingStyle,
   quietFocusStyle,
+  radius,
   textTooltip,
 } from './ui';
 
@@ -171,7 +172,7 @@ export function SidebarUpdateButton(props: {
             style={{
               height: 28,
               paddingHorizontal: 10,
-              borderRadius: 8,
+              borderRadius: radius(8),
               alignItems: 'center',
               justifyContent: 'center',
             }}
@@ -186,7 +187,7 @@ export function SidebarUpdateButton(props: {
             style={{
               height: 28,
               paddingHorizontal: 10,
-              borderRadius: 8,
+              borderRadius: radius(8),
               alignItems: 'center',
               justifyContent: 'center',
               backgroundColor: C.accent,

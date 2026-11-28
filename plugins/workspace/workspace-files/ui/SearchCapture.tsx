@@ -22,9 +22,10 @@ import type { UiToolProps } from '../../../../packages/plugin-sdk/src/workbench.
 import { tr } from '../../../../products/maka/workbench/app/locale';
 import {
   bodyTextStyle,
+  C,
   captionTextStyle,
   codeTextStyle,
-  C,
+  radius,
 } from '../../../../products/maka/workbench/app/ui';
 
 function Section(props: { label: string; text: string; warning?: boolean }) {
@@ -34,7 +35,7 @@ function Section(props: { label: string; text: string; warning?: boolean }) {
         paddingHorizontal: 8,
         paddingVertical: 8,
         backgroundColor: C.background,
-        borderRadius: 8,
+        borderRadius: radius(8),
       }}
     >
       <Text

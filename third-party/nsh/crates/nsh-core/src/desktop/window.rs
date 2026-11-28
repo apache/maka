@@ -457,6 +457,9 @@ attributes! {
     min_size: Option<Size<Points>> = "minSize", nullable;
     /// The largest size the user may give it (content size, points).
     max_size: Option<Size<Points>> = "maxSize", nullable;
+    /// The ratio of width to height the user's resizes keep its content
+    /// at (`16 / 9`); the app's own `setBounds` is not limited.
+    aspect_ratio: Option<f32> = "aspectRatio", nullable;
     /// The window follows its content's laid-out size.
     size_to_content: SizeToContent = "sizeToContent", plain;
     /// The user may resize it.
@@ -511,6 +514,7 @@ impl WindowAttributes {
             frame: Some(super::WindowFrameStyle::Default),
             min_size: Some(None),
             max_size: Some(None),
+            aspect_ratio: Some(None),
             size_to_content: Some(SizeToContent::Off),
             resizable: Some(true),
             movable: Some(true),
@@ -595,8 +599,8 @@ impl WindowAttributes {
         self.pointer_events == Some(WindowPointerEvents::None)
     }
 
-    /// Keeps the values in their ranges: a size not finite and positive and
-    /// a progress out of 0 to 1 are left out (with `false`), the title bar's height capped as
+    /// Keeps the values in their ranges: a size or an aspect ratio not
+    /// finite and positive and a progress out of 0 to 1 are left out (with `false`), the title bar's height capped as
     /// [`super::title_bar_height`] does.
     pub fn sanitize(&mut self) -> bool {
         let mut fine = true;
@@ -610,6 +614,12 @@ impl WindowAttributes {
                 *size = None;
                 fine = false;
             }
+        }
+        if let Some(Some(r)) = self.aspect_ratio
+            && !(r.is_finite() && r > 0.0)
+        {
+            self.aspect_ratio = None;
+            fine = false;
         }
         if let Some(Some(p)) = &mut self.progress
             && let Some(v) = p.value
@@ -1089,16 +1099,24 @@ pub(crate) struct WindowRecord {
     /// The size it opened at, its content's until the platform reports
     /// it (`Core::set_root_size`).
     pub(crate) size: Option<Size<Points>>,
+    /// Whether this window is the implicit first window created by `mount`
+    /// for a plain root that declared no `<Window>` scenes.
+    pub(crate) implicit: bool,
 }
 
 impl WindowRecord {
     /// A window the platform opened with `attributes`, at `size`.
-    pub(crate) fn opened(attributes: WindowAttributes, size: Option<Size<Points>>) -> WindowRecord {
+    pub(crate) fn opened(
+        attributes: WindowAttributes,
+        size: Option<Size<Points>>,
+        implicit: bool,
+    ) -> WindowRecord {
         WindowRecord {
             sent: attributes,
             pending: WindowAttributes::default(),
             fitted: None,
             size,
+            implicit,
         }
     }
 
@@ -1247,6 +1265,7 @@ mod tests {
         let mut record = WindowRecord::opened(
             WindowAttributes::resolve(WindowKind::Normal, &Default::default()),
             None,
+            false,
         );
         // Setting what it has sends nothing.
         record.pending.title = Some(String::new());
@@ -1285,6 +1304,7 @@ mod tests {
     fn values_out_of_range_are_left_out() {
         let mut a = WindowAttributes {
             min_size: Some(Some(size(px(-1.0), px(10.0)))),
+            aspect_ratio: Some(Some(0.0)),
             progress: Some(Some(WindowProgress {
                 value: Some(Percentage(2.0)),
                 state: ProgressState::Normal,
@@ -1293,6 +1313,24 @@ mod tests {
         };
         assert!(!a.sanitize());
         assert_eq!(a.min_size, None);
+        assert_eq!(a.aspect_ratio, None);
         assert_eq!(a.progress.unwrap().unwrap().value, Some(Percentage(1.0)));
+        for bad in [f32::NAN, f32::INFINITY, -1.5] {
+            let mut a = WindowAttributes {
+                aspect_ratio: Some(Some(bad)),
+                ..Default::default()
+            };
+            assert!(!a.sanitize());
+            assert_eq!(a.aspect_ratio, None);
+        }
+        // A ratio given and `null` (cleared) are both kept.
+        for fine in [Some(16.0 / 9.0), None] {
+            let mut a = WindowAttributes {
+                aspect_ratio: Some(fine),
+                ..Default::default()
+            };
+            assert!(a.sanitize());
+            assert_eq!(a.aspect_ratio, Some(fine));
+        }
     }
 }

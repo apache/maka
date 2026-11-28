@@ -30,7 +30,7 @@ mount(() => {
     draft: () => '',
     editable: () => true,
     run: () => null,
-    blockedReason: () => '',
+    sendBlock: () => null,
     attachments: { files: () => [] },
     quotes,
     removeQuote: (index: number) => quotes.set(quotes().filter((_, i) => i !== index)),

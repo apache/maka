@@ -1,0 +1,7 @@
+{
+  "name": "Implicit Platform Quit",
+  "id": "com.example.implicit-platform-quit",
+  "application": {
+    "quitMode": "platform"
+  }
+}

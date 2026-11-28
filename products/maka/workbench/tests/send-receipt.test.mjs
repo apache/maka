@@ -98,7 +98,7 @@ test('a missing workspace is a definitive non-delivery and can be retried', () =
     }),
   );
   assert.equal(result?.retryable, true);
-  assert.equal(result?.detail.key, 'The workspace for this task is unavailable.');
+  assert.equal(result?.detail.key, 'Not sent. Choose a workspace, then retry.');
 });
 
 test('a run that is still unsettled produces a definitive send failure', () => {

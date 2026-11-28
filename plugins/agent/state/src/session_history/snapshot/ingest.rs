@@ -90,13 +90,21 @@ impl SessionHistory {
         if operation.is_nil() {
             return Err(invalid("nil snapshot import operation"));
         }
+        if let Some(source) = self.imported_snapshot_receipt(operation, &expected).await? {
+            source.ensure_navigation(stop).await?;
+            return Ok(source);
+        }
+        let expected_for_stage = expected.clone();
+        let staged = tokio::task::spawn_blocking(move || wire::stage(&expected_for_stage, &file))
+            .await
+            .map_err(|error| invalid(format!("snapshot archive staging failed: {error}")))??;
         let (id, manifest) = self
             .data
             .write(Ingest {
                 target: self.namespace.clone(),
                 operation,
                 expected,
-                file: Arc::new(file),
+                staged,
             })
             .await?;
         let source = Snapshot {
@@ -120,15 +128,12 @@ struct Ingest {
     target: HistoryNamespace,
     operation: Uuid,
     expected: maka_event_log::checkpoints::HistorySnapshot,
-    file: Arc<File>,
+    staged: wire::StagedArchive,
 }
 impl Statement for Ingest {
     type Value = (SnapshotId, ContentRef);
     type Output = Self::Value;
-    fn retain(&self) -> Vec<Arc<dyn Send + Sync>> {
-        vec![self.file.clone()]
-    }
-    fn execute(self, c: &Connection) -> Result<Prepared<Self::Value>, StoreError> {
+    fn execute(mut self, c: &Connection) -> Result<Prepared<Self::Value>, StoreError> {
         let owner = serde_json::to_string(&self.target.owner)?;
         let key = content_digest(&serde_json::to_vec(&(
             "maka.snapshot-import.v1",
@@ -144,7 +149,7 @@ impl Statement for Ingest {
                 notification: Notification::NONE,
             });
         }
-        let inventory = wire::copy(c, &key, &self.expected, &self.file)?;
+        let inventory = wire::install(c, &key, &mut self.staged)?;
         let manifest: Manifest = decode(c, &key, &inventory.manifest)?;
         manifest.validate().map_err(invalid)?;
         if manifest.objects != inventory.objects
@@ -251,7 +256,7 @@ pub(super) fn authorize(c: &Connection, snapshot: &Snapshot) -> Result<(), Store
         return Err(invalid("snapshot has no imported-file authority"));
     };
     let accepted: bool = c.query_row(
-        "SELECT EXISTS(SELECT 1 FROM agent_history_snapshot_imports i JOIN contents b ON b.id=i.manifest_content_id WHERE i.owner=?1 AND i.session=?2 AND i.operation=?3 AND i.snapshot=?4 AND b.content_sha256=?5 AND length(b.payload)=?6)",
+        "SELECT EXISTS(SELECT 1 FROM agent_history_snapshot_imports i JOIN contents b ON b.id=i.manifest_content_id WHERE i.owner=?1 AND i.session=?2 AND i.operation=?3 AND i.snapshot=?4 AND b.content_sha256=?5 AND COALESCE(b.logical_bytes,length(b.payload))=?6)",
         params![serde_json::to_string(owner)?, session, operation.to_string(), snapshot.authority_id.to_string(), snapshot.authority_manifest.digest, bind_u64(snapshot.authority_manifest.bytes)?], |row| row.get(0),
     )?;
     if !accepted {

@@ -39,7 +39,7 @@
   "pkg.maka.agent.workspace-web.displayName": "Web-Werkzeuge",
   "pkg.maka.application.host-logs.description": "Erfasste Protokolle des verbundenen Hosts lesen und verfolgen.",
   "pkg.maka.application.host-logs.displayName": "Host-Protokolle",
-  "pkg.maka.applications.description": "Installierte Apps über den Schnellstarter unter macOS finden, öffnen und verwalten.",
+  "pkg.maka.applications.description": "Installierte Apps über den Schnellstarter unter Windows und macOS finden, öffnen und verwalten.",
   "pkg.maka.applications.displayName": "Programme",
   "pkg.maka.calculator.description": "Im Schnellstarter rechnen, Einheiten umrechnen und das Ergebnis kopieren.",
   "pkg.maka.calculator.displayName": "Rechner",

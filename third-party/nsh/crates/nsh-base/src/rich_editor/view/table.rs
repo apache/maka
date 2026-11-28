@@ -5,7 +5,8 @@
 //! their `height`. Over the content box: the handles resizing columns and
 //! rows on their right and bottom borders, the current cell's column and
 //! row grips (on the table's top and left borders), which select and drag
-//! a column or row, and the line showing where it drops. The
+//! a column or row (a press let go before it drags is reported to the
+//! app), and the line showing where it drops. The
 //! gestures are the content box's own presses and drags, so they take
 //! nothing from its selecting: a press on a handle or a grip starts one.
 
@@ -13,6 +14,7 @@ use nsh_core::prelude::*;
 use serde_json::Value;
 
 use super::{
+    RichEditorEvent, RichEditorTableMenu,
     controller::{BlockItem, Rv, Tree},
     geometry::{Geometry, Hit},
     parts::Part,
@@ -108,6 +110,9 @@ pub(crate) struct TableGesture {
     pub(crate) shift: Point<Points>,
     /// The scroll offset at the press.
     pub(crate) scroll: Points,
+    /// A grip's press that has not dragged past `DRAG_SLOP` and was not
+    /// taken away: its release reports `onTableMenu`.
+    pub(crate) grip_press: bool,
 }
 
 /// What a table gesture shows while it lasts.
@@ -830,8 +835,9 @@ impl Rv {
     }
 
     /// A press starting table gesture `drag`: a grip selects its column or
-    /// row at once; the rest happens as it drags (desktops: a finger's
-    /// press is a tap).
+    /// row at once; the rest happens as it drags, and on desktops a grip let
+    /// go before it dragged reports its press. On touch screens a press is a
+    /// tap and reports at once.
     pub(crate) fn start_table_drag(&self, drag: TableDrag, at: Point<Points>, page: Point<Points>) {
         let doc = self.session.state().doc().clone();
         let selection = match drag {
@@ -846,13 +852,61 @@ impl Rv {
         if let Some(selection) = selection {
             self.set_pointer_selection(selection, false);
         }
+        let shift = Point::new(at.x - page.x, at.y - page.y);
         if is_desktop() {
             *self.table_gesture.borrow_mut() = Some(TableGesture {
                 drag,
-                shift: Point::new(at.x - page.x, at.y - page.y),
+                shift,
                 scroll: self.scroll_y.get_untracked(),
+                grip_press: matches!(drag, TableDrag::MoveCol { .. } | TableDrag::MoveRow { .. }),
             });
+        } else {
+            self.report_table_menu(drag, shift, px(0.0));
         }
+    }
+
+    /// The platform took the pointer from a table gesture: its release is
+    /// no press of a grip.
+    pub(crate) fn cancel_table_press(&self) {
+        if let Some(gesture) = self.table_gesture.borrow_mut().as_mut() {
+            gesture.grip_press = false;
+        }
+    }
+
+    /// Reports `onTableMenu` for the grip `drag` pressed: `shift` is
+    /// the press in the content less the press in the root, `scrolled` the
+    /// scroll since the press.
+    fn report_table_menu(&self, drag: TableDrag, shift: Point<Points>, scrolled: Points) {
+        let (table, row, column) = match drag {
+            TableDrag::MoveCol { table, from, .. } => (table, None, Some(from)),
+            TableDrag::MoveRow { table, from, .. } => (table, Some(from), None),
+            _ => return,
+        };
+        // A grip the document lost while it was held (its table or line
+        // gone) has no place for a menu: no press.
+        let Some(grip) = self
+            .table_layouts()
+            .into_iter()
+            .find(|t| t.pos == table)
+            .and_then(|t| match (row, column) {
+                (_, Some(col)) => col_grip(&t, col),
+                (Some(row), None) => (row < t.rows.len()).then(|| row_grip(&t, row)),
+                (None, None) => None,
+            })
+        else {
+            return;
+        };
+        let bounds = Bounds::new(
+            Point::new(grip.origin.x - shift.x, grip.origin.y - shift.y - scrolled),
+            grip.size,
+        );
+        self.cx
+            .emit(RichEditorEvent::TableMenu(RichEditorTableMenu {
+                table: table as u32,
+                row: row.map(|r| r as u32),
+                column: column.map(|c| c as u32),
+                bounds,
+            }));
     }
 
     /// Whether a table gesture is under way.
@@ -870,6 +924,17 @@ impl Rv {
             page.x + gesture.shift.x,
             page.y + gesture.shift.y + scrolled,
         );
+        // Past the slop in any direction, a grip's press is a drag.
+        if gesture.grip_press
+            && let TableDrag::MoveCol { press, .. } | TableDrag::MoveRow { press, .. } =
+                gesture.drag
+            && (at.x - press.x).0.hypot((at.y - press.y).0) >= DRAG_SLOP
+        {
+            // Both: the stored gesture too, since the moves below may return
+            // before `gesture` is written back.
+            gesture.grip_press = false;
+            self.cancel_table_press();
+        }
         let preview = match &mut gesture.drag {
             TableDrag::ColWidth {
                 table,
@@ -959,6 +1024,11 @@ impl Rv {
             return;
         };
         if !self.editable() {
+            return;
+        }
+        if gesture.grip_press {
+            let scrolled = self.scroll_y.get_untracked() - gesture.scroll;
+            self.report_table_menu(gesture.drag, gesture.shift, scrolled);
             return;
         }
         let command: Option<BoxCommand> = match (gesture.drag, preview) {

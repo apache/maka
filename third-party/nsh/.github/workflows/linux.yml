@@ -21,6 +21,7 @@ on:
       - "crates/nsh-core/**"
       - "crates/nsh-dev/**"
       - "crates/nsh-engine/**"
+      - "crates/nsh-gpu/**"
       - "crates/nsh-i18n/**"
       - "crates/nsh-js/**"
       - "crates/nsh-linux-app/**"
@@ -135,6 +136,7 @@ jobs:
           run crates/nsh-testing/tests/testing/input-target/App.test.tsx --filter 'shared prefix'
           run crates/nsh-testing/tests/testing/input-target/gpui/Editor.test.tsx
           run crates/nsh-testing/tests/testing/input-target/gpui/Input.test.tsx
+          run crates/nsh-testing/tests/testing/input-target/gpui/Dialog.test.tsx
 
   check:
     needs: changed
@@ -157,7 +159,7 @@ jobs:
       # decodes and mixes sounds; its base and good plug-ins are what the
       # sound tests decode (WAV) and mix with.
       - name: Install clang, GTK 4, WebKitGTK and GStreamer
-        run: sudo apt-get update && sudo apt-get install -y clang libclang-dev libgtk-4-dev libwebkitgtk-6.0-dev xvfb xauth at-spi2-core python3 libxtst6 libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-base gstreamer1.0-plugins-good
+        run: sudo apt-get update && sudo apt-get install -y clang libclang-dev libgtk-4-dev libwebkitgtk-6.0-dev xvfb xauth at-spi2-core python3 libxtst6 gstreamer1.0-plugins-base gstreamer1.0-plugins-good
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -222,9 +224,52 @@ jobs:
           # it (the storage test's note is typed into this way).
           dbus-run-session -- xvfb-run -a cargo test -p nsh-platform-linux --no-default-features --features dev --lib input::tests::a_press_focuses -- --nocapture
 
-      # The examples' tests in GTK windows on a virtual display, with the
-      # platform's input (`nsh test --target linux`): those a real platform
-      # runs (real time).
+      # The apps with Rust crates build a host of their own from the
+      # workspace the steps above built, so they stay in this job.
+      - name: Run the Rust examples' tests in GTK windows
+        run: |
+          cargo build -p nsh-cli
+          # A session bus of its own: without one, GTK's portal and
+          # accessibility lookups wait for D-Bus autolaunch on each display.
+          run() { dbus-run-session -- xvfb-run -a ./target/debug/nsh test "$@" --target linux; }
+          run examples/rust-exports/App.test.tsx
+          run examples/gallery-rs/App.test.tsx
+
+  # The TSX examples' tests in GTK windows on a virtual display, with the
+  # platform's input (`nsh test --target linux`): those a real platform runs
+  # (real time). The job of its own takes the build these need, and runs it
+  # beside the lints and unit tests above. Each `nsh test` keeps its own
+  # display and session bus.
+  examples:
+    needs: changed
+    # Nothing for drafts or a pull request being closed, nor for a scheduled
+    # run when main has not changed since the last one.
+    if: ${{ !cancelled() && needs.changed.outputs.run != 'false' && (github.event_name != 'pull_request' || (github.event.action != 'closed' && !github.event.pull_request.draft)) }}
+    # Debounce (AGENTS.md "CI"): waits without a runner, so a newer
+    # push cancels this run before it takes one.
+    environment:
+      name: ci-debounce
+      deployment: false
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+
+      # QuickJS is C (bindgen needs libclang); the backend links GTK 4 and
+      # Pango, WebKitGTK 6.0 for web views, GStreamer for sound, and Xvfb is
+      # the display the tests open their windows on.
+      - name: Install clang, GTK 4, WebKitGTK and GStreamer
+        run: sudo apt-get update && sudo apt-get install -y clang libclang-dev libgtk-4-dev libwebkitgtk-6.0-dev xvfb xauth at-spi2-core python3 libxtst6 libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-base gstreamer1.0-plugins-good
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      # huacnlee/cargo, and the dependencies' builds: main's runs save
+      # them, pull requests restore them.
+      - name: Cargo
+        uses: ./.github/actions/cargo
+        with:
+          cache: linux
+
       - name: Run the examples' tests in GTK windows
         run: |
           cargo build -p nsh-cli
@@ -236,7 +281,3 @@ jobs:
             run "examples/gallery/tests/$file.test.tsx"
           done
           run examples/gallery/tests/environment.test.tsx --filter appearance
-          # Apps with Rust crates, in hosts built with them: a TSX app and a
-          # Rust app (its root).
-          run examples/rust-exports/App.test.tsx
-          run examples/gallery-rs/App.test.tsx

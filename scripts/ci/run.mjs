@@ -582,30 +582,43 @@ export function executor(
       ]);
     } else if (id === 'macos-host') {
       const tree = await cargo(
-        ['tree', '--locked', '-p', 'maka-cli', '-e', 'normal', '--prefix', 'none'],
-        {
-          capture: true,
-        },
+        [
+          'tree',
+          '--locked',
+          '-p',
+          'maka-cli',
+          '-e',
+          'normal',
+          '--prefix',
+          'depth',
+          '--format',
+          ' {p}',
+        ],
+        { capture: true },
       );
-      // The signed updater also serves headless Hosts. The UI engine and compiler belong to the shell.
-      const ui = tree
-        .split('\n')
-        .map((line) => line.split(' ')[0])
-        .find(
-          (name) =>
-            name !== 'nsh-updater' &&
-            /^(?:nsh-|oxc|quickjs-|syntect$|maka-(?:ui-build|workbench|terminal-shell)$)/u.test(
-              name,
-            ),
-        );
-      if (ui) throw new Error(`macOS maka-cli links a shell dependency: ${ui}`);
-      await nextest(id);
-      await node([
-        '--test',
-        'scripts/rust/build-cli.test.mjs',
-        'scripts/rust/pack-cli.test.mjs',
-        'scripts/rust/run-cli.test.mjs',
+      // The headless Host uses the signed updater and CUA's scripting runtime.
+      const runtimeParents = new Map([
+        ['quickjs-jit', 'cua-driver-core'],
+        ['quickjs-jit-core', 'quickjs-jit'],
+        ['quickjs-jit-sys', 'quickjs-jit-core'],
       ]);
+      const path = [];
+      for (const line of tree.trimEnd().split('\n')) {
+        const [depth, name] = line.split(' ', 2);
+        const parent = path[Number(depth) - 1];
+        path[Number(depth)] = name;
+        if (
+          name === 'nsh-updater' ||
+          (runtimeParents.has(name) && runtimeParents.get(name) === parent)
+        )
+          continue;
+        if (
+          /^(?:nsh-|oxc|quickjs-|syntect$|maka-(?:ui-build|workbench|terminal-shell)$)/u.test(name)
+        )
+          throw new Error(`macOS maka-cli links a shell dependency: ${parent} -> ${name}`);
+      }
+      await nextest(id);
+      await node(['--test', 'scripts/rust/build-cli.test.mjs', 'scripts/rust/run-cli.test.mjs']);
     } else if (id === 'root') {
       await nextest('root', false, filter ?? 'all()', extra);
     } else if (id === 'windows-shell') {

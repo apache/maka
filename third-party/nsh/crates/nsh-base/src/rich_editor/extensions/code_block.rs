@@ -7,12 +7,41 @@
 
 use serde_json::Value;
 
+use std::sync::Arc;
+
 use super::helpers::{Step, chain, clear_nodes, insert_default_block};
 use crate::rich_editor::{
     commands::{BoxCommand, Dispatch, command, exit_code, tiptap},
     model::NodeType,
-    state::{EditorState, Selection, TextSelection},
+    state::{EditorState, Plugin, PluginKey, PluginSpec, Selection, TextSelection},
 };
+
+/// The key of [`code_block_highlight_plugin`].
+pub const CODE_BLOCK_HIGHLIGHT: &str = "codeBlockHighlight";
+
+struct CodeBlockHighlight;
+
+impl PluginSpec for CodeBlockHighlight {
+    fn key(&self) -> PluginKey {
+        PluginKey::new(CODE_BLOCK_HIGHLIGHT)
+    }
+}
+
+/// The plugin of the `codeBlockHighlight` extension: a view whose state
+/// has it colors its code blocks' code by their `language`, as `TextView`
+/// colors fenced code (feature `highlight`; without it code stays plain).
+/// It changes nothing in the document: the colors are the view's.
+pub fn code_block_highlight_plugin() -> Plugin {
+    Arc::new(CodeBlockHighlight)
+}
+
+/// Whether `state` has [`code_block_highlight_plugin`].
+pub fn highlights_code_blocks(state: &EditorState) -> bool {
+    state
+        .plugins()
+        .iter()
+        .any(|p| p.key().name() == CODE_BLOCK_HIGHLIGHT)
+}
 
 /// The options of [`code_block_keymap`], with Tiptap's defaults.
 #[derive(Debug, Clone, PartialEq, Eq)]

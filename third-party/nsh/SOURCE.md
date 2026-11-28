@@ -20,7 +20,7 @@
 # Native Shell (NSH)
 
 This directory contains NSH from [`longbridge/nsh`](https://github.com/longbridge/nsh),
-synchronized through revision `3f8ecd8b3c55ad6274c6babbf7ee55c4cd4ae359`.
+synchronized through revision `a901baa2e2d82a17066abb589b542b0a90890e0a`.
 The original import came from `M4n5ter/nsh`, branch
 `tui/terminal-backend`, at `de176695240d550f2b303643b8019146c7989e7f`.
 
@@ -40,8 +40,11 @@ structured skill composer uses RichEditor's schema and node-view model, as
 upstream's structured editors do. NSH 0.7 moves `Speech` to `nsh-extra`; Maka
 dictation uses its own host binding.
 
-Lists, reactive item publication, component event traversal, input modality and
-focus-visible behavior use upstream implementations. Immutable captured files
+Lists (including `display: none` retention), reactive item publication,
+component event traversal, caller-scoped `HostCall::sender()` (`HostSender`),
+iOS `AppOptions::host`, `TextView` `InContext<Image, TextViewImageContext>`
+`renderImage` callbacks, input modality and focus-visible behavior use upstream
+implementations. Immutable captured files
 provide indexed rows through the same list items memo and cell publication,
 without materializing a full JavaScript array. Cached cells distinguish their
 current row assignment from retained content, so accessibility follows only
@@ -49,7 +52,7 @@ bound rows. Keyed changes use NSH's `ListDiff` and sibling placement logic.
 AppKit uses the upstream keyboard monitor for both raw keys and scoped
 shortcuts. Windows uses the upstream selection lifecycle when text changes.
 
-Asset builds use upstream app roots and package-relative paths; built-in plugin builds declare the Maka
+Asset builds use upstream app roots, package-relative paths and default unresolved-import errors; built-in plugin builds declare the Maka
 repository as their shared root. Callers migrate with upstream rather than
 keeping aliases or older implementations.
 
@@ -72,9 +75,6 @@ terminal surfaces. Desktop window operations take explicit `WindowRef` values.
   `ROOT_ID`; configured host loading, lazy plugin chunks,
   `import.meta.assetBase` resource namespaces, main-thread lifecycle hooks and
   terminal inspection are required by Maka's shells and plugin composition.
-- **Caller-scoped Host events:** `HostChannel::send_to_caller` and
-  `Message::CallerHostEvent` keep progress with the originating app;
-  `HostChannel::caller_detached` wakes pending delivery when that app detaches.
 - **Source-aware reading:** TextView preserves canonical source identity,
   byte offsets and reading anchors through Markdown rendering and repair.
   Markdown without source mapping uses the upstream incremental parser,
@@ -83,7 +83,9 @@ terminal surfaces. Desktop window operations take explicit `WindowRef` values.
 - **Input ordering and scopes:** `inputAction`, `ScrollIntent`, scoped/fallback
   key bindings and focus-event fences preserve editor actions, IME, paste and
   reload ordering. Scoped lookups also enforce upstream window isolation.
-  On Windows, selecting output keeps an input focused only in the same window.
+  On Windows, selecting output keeps an input focused only in the same window,
+  and moving RichEdit's client rectangle shifts its cached caret so small
+  layout shifts keep drawn and IME caret bounds aligned.
   Copy prefers the focused RichEditor's document selection, then the output.
 - **Localization and TUI:** Maka's CJK locale and international formatting
   support and bandless selection and focus marks remain local extensions.

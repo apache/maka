@@ -69,6 +69,7 @@ import {
   quietActiveStyle,
   quietFocusStyle,
   quietHoverStyle,
+  radius,
   shortcut,
   textTooltip,
 } from '../../../../products/maka/workbench/app/ui';
@@ -215,7 +216,7 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
             disabled={!resources.canGoBack()}
             onPress={resources.goBack}
             style={{
-              ...controlStyle,
+              ...controlStyle(),
               width: 28,
               minHeight: 28,
               height: 28,
@@ -235,7 +236,7 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
             disabled={!resources.canGoForward()}
             onPress={resources.goForward}
             style={{
-              ...controlStyle,
+              ...controlStyle(),
               width: 28,
               minHeight: 28,
               height: 28,
@@ -264,7 +265,7 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
                       height: 28,
                       flexDirection: 'row',
                       alignItems: 'center',
-                      borderRadius: 8,
+                      borderRadius: radius(8),
                       backgroundColor: selected() ? C.cardRaised : C.card,
                     }}
                   >
@@ -291,7 +292,7 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
                         height: 28,
                         paddingLeft: 8,
                         paddingRight: 4,
-                        borderRadius: 8,
+                        borderRadius: radius(8),
                         flexDirection: 'row',
                         alignItems: 'center',
                         justifyContent: 'flex-start',
@@ -327,7 +328,7 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
                         width: 22,
                         height: 22,
                         marginRight: 2,
-                        borderRadius: 4,
+                        borderRadius: radius(4),
                         alignItems: 'center',
                         justifyContent: 'center',
                       }}
@@ -352,7 +353,7 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
                       height: 28,
                       flexDirection: 'row',
                       alignItems: 'center',
-                      borderRadius: 8,
+                      borderRadius: radius(8),
                       backgroundColor: selected() ? C.cardRaised : C.card,
                     }}
                   >
@@ -382,7 +383,7 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
                         height: 28,
                         paddingLeft: 8,
                         paddingRight: 4,
-                        borderRadius: 8,
+                        borderRadius: radius(8),
                         flexDirection: 'row',
                         alignItems: 'center',
                         justifyContent: 'flex-start',
@@ -425,7 +426,7 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
                         width: 22,
                         height: 22,
                         marginRight: 2,
-                        borderRadius: 4,
+                        borderRadius: radius(4),
                         alignItems: 'center',
                         justifyContent: 'center',
                       }}
@@ -447,7 +448,7 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
               style={{
                 width: 28,
                 height: 28,
-                borderRadius: 8,
+                borderRadius: radius(8),
                 alignItems: 'center',
                 justifyContent: 'center',
               }}
@@ -473,7 +474,7 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
                   style={{
                     width: 28,
                     height: 28,
-                    borderRadius: 8,
+                    borderRadius: radius(8),
                     alignItems: 'center',
                     justifyContent: 'center',
                   }}
@@ -491,7 +492,7 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
                 style={{
                   width: 28,
                   height: 28,
-                  borderRadius: 8,
+                  borderRadius: radius(8),
                   alignItems: 'center',
                   justifyContent: 'center',
                 }}
@@ -511,7 +512,7 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
             style={{
               height: 28,
               paddingHorizontal: 8,
-              borderRadius: 8,
+              borderRadius: radius(8),
               backgroundColor: C.card,
               flexDirection: 'row',
               alignItems: 'center',
@@ -583,7 +584,7 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
             style={{
               height: 28,
               paddingHorizontal: 8,
-              borderRadius: 8,
+              borderRadius: radius(8),
               backgroundColor: personal() ? C.card : 'transparent',
               justifyContent: 'center',
             }}
@@ -608,7 +609,7 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
             style={{
               height: 28,
               paddingHorizontal: 8,
-              borderRadius: 8,
+              borderRadius: radius(8),
               backgroundColor: agent() ? C.card : 'transparent',
               flexDirection: 'row',
               alignItems: 'center',
@@ -730,7 +731,7 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
                       onPress={showTerminals('agent-terminals')}
                       tooltip={textTooltip(() => tr('Back to Agent terminals'))}
                       style={{
-                        ...controlStyle,
+                        ...controlStyle(),
                         flexDirection: 'row',
                         gap: 4,
                         alignItems: 'center',

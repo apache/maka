@@ -11,7 +11,7 @@
 //! at the start of a commit, so a view starts with all the props set in
 //! the JS turn before.
 
-use std::{any::Any, cell::RefCell, collections::VecDeque, rc::Rc, sync::Arc};
+use std::{any::Any, cell::RefCell, rc::Rc, sync::Arc};
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -516,6 +516,68 @@ pub(super) enum NewChild {
     Kept(SharedString),
 }
 
+/// The keyed old elements of a parent by key ([`Core::match_children`]),
+/// indexed the first time one is looked up: a few elements are searched in
+/// order, many once, so a long keyed list moved or reversed is matched in
+/// linear time. Old elements are only ever taken (`None`) while matching,
+/// so the index stays valid.
+#[derive(Default)]
+pub(super) struct OldKeys {
+    /// The first old element of each key.
+    first: FxHashMap<SharedString, usize>,
+    /// The next old element of the same key after each one (`usize::MAX`
+    /// for none).
+    next: Vec<usize>,
+    indexed: bool,
+}
+
+impl OldKeys {
+    /// Up to this many old elements are searched rather than indexed.
+    const SEARCHED: usize = 16;
+
+    /// The first old element of key `key` left in `old` that is `ok`.
+    fn find(
+        &mut self,
+        old: &[Option<Expanded>],
+        key: &SharedString,
+        ok: impl Fn(&Expanded) -> bool,
+    ) -> Option<usize> {
+        let is = |o: &Option<Expanded>| {
+            o.as_ref()
+                .is_some_and(|o| o.key.as_ref() == Some(key) && ok(o))
+        };
+        if old.len() <= Self::SEARCHED {
+            return old.iter().position(is);
+        }
+        if !self.indexed {
+            self.indexed = true;
+            self.next = vec![usize::MAX; old.len()];
+            // From the end, so each key's first is the earliest.
+            for (at, o) in old.iter().enumerate().rev() {
+                if let Some(k) = o.as_ref().and_then(|o| o.key.as_ref())
+                    && let Some(next) = self.first.insert(k.clone(), at)
+                {
+                    self.next[at] = next;
+                }
+            }
+        }
+        // Those taken go from the front (duplicate keys taken in order are
+        // not walked again).
+        let first = self.first.get_mut(key)?;
+        while *first != usize::MAX && old[*first].is_none() {
+            *first = self.next[*first];
+        }
+        let mut at = *first;
+        while at != usize::MAX {
+            if is(&old[at]) {
+                return Some(at);
+            }
+            at = self.next[at];
+        }
+        None
+    }
+}
+
 /// Whether a slot's place only places it: no styles, props, listeners or
 /// children of its own (what fills it then needs no node around it).
 fn is_plain(el: &ElNode) -> bool {
@@ -754,7 +816,7 @@ pub(super) struct Components {
     styles: FxHashMap<StyleRefinement, std::rc::Rc<ClassList>>,
     /// The styles a component on another's host gets from each above it,
     /// merged (by the lists', which the entry keeps).
-    merges: FxHashMap<(usize, usize), [std::rc::Rc<ClassList>; 3]>,
+    pub(super) merges: FxHashMap<(usize, usize), [std::rc::Rc<ClassList>; 3]>,
     /// While a view's slot content is matched: the nested component's host
     /// and the slot (its regions are the slot's).
     pub(super) filling: Option<(NodeId, &'static str)>,
@@ -1146,6 +1208,13 @@ fn same(a: &Option<std::rc::Rc<ClassList>>, b: &Option<std::rc::Rc<ClassList>>) 
         (Some(a), Some(b)) => std::rc::Rc::ptr_eq(a, b),
         (None, None) => true,
         _ => false,
+    }
+}
+
+impl Components {
+    /// The GPU renderer the sets registered as `name`.
+    pub(super) fn gpu_renderer(&self, name: &str) -> Option<crate::gpu::GpuSource> {
+        self.registry.registered_gpu_renderer(name).cloned()
     }
 }
 
@@ -1755,6 +1824,13 @@ impl<M: TextEngine> Core<M> {
         self.components.executor.quitting.get() > 0
     }
 
+    /// Whether a JS call of an `async fn` into Rust (a native module's, a
+    /// class's) has not answered yet: its answer comes from elsewhere (a
+    /// request made in Rust, another thread), which nothing else counts.
+    pub fn async_calls_pending(&self) -> bool {
+        self.components.executor.calls.get() > 0
+    }
+
     /// Runs the closures that waited for the app's answer to the events
     /// handed to JS before this commit ([`crate::element::after_answer`]),
     /// each under its owner; one whose owner went is dropped unrun.
@@ -1971,6 +2047,10 @@ impl<M: TextEngine> Core<M> {
                 child,
                 before,
             } if self.is_host(parent) => {
+                // A raw text run (`<Button>Open</Button>`) has no node
+                // until a use needs one: the view places it, so it does.
+                let run = self.runs.contains_key(&child);
+                self.materialize_run(child)?;
                 self.key(child)?;
                 let inst = self.components.instances.get_mut(&parent).expect("host");
                 let was_empty = inst.js_children.is_empty();
@@ -1996,7 +2076,18 @@ impl<M: TextEngine> Core<M> {
                             parent: p,
                             child,
                             before: at.and(before).or(anchor),
-                        })?
+                        })?;
+                        if run
+                            && self
+                                .key(p)
+                                .is_ok_and(|k| self.nodes[k as usize].kind != Kind::Text)
+                        {
+                            let text = self.key(child).map_or("", |k| &self.nodes[k as usize].text);
+                            log::warn!(
+                                target: "js",
+                                "text in a component's children is not shown: text shows in a <Text> (`<Text>{text}</Text>`)"
+                            );
+                        }
                     }
                     Placement::Nested(nested, anchor) => {
                         let anchor = self.anchor_node(anchor);
@@ -2315,12 +2406,15 @@ impl<M: TextEngine> Core<M> {
             RustCall::Task(start) => match caught(start) {
                 Ok(future) => {
                     let executor = Rc::downgrade(&self.components.executor);
+                    let pending =
+                        crate::element::quit::Pending::new(&self.components.executor.calls);
                     // A task of the root: it never goes away.
                     crate::element::task::spawn_raw(
                         &self.components.executor,
                         ROOT_ID,
                         Box::pin(async move {
                             let result = crate::element::module::catching(future).await;
+                            drop(pending);
                             match executor.upgrade() {
                                 Some(executor) if call != 0 => {
                                     executor.act(Action::Return(call, result));
@@ -3179,6 +3273,11 @@ impl<M: TextEngine> Core<M> {
         }
         // Bound parts are bound first: what they read now is applied with
         // the static parts.
+        let applied_layout = if matches!(el.kind, ElKind::VirtualList(_)) {
+            self.components.list_layouts.remove(&host)
+        } else {
+            None
+        };
         let bound = super::views::Bound::take(&mut el).map(|bound| {
             self.bind_parts(host, host, bound, &mut el);
         });
@@ -3282,6 +3381,7 @@ impl<M: TextEngine> Core<M> {
         let (list, part) = match std::mem::replace(&mut el.kind, ElKind::Plain) {
             ElKind::VirtualList(list) => {
                 let config = list.config;
+                let old_list = applied_layout.unwrap_or(old_list);
                 self.update_virtual_list(self.native_id(host), host, *list, &old_list);
                 (Some(Box::new(config)), Part::VirtualList)
             }
@@ -3668,12 +3768,7 @@ impl<M: TextEngine> Core<M> {
             Some(self.components.lowered(style))
         };
         if !same(&own, &old.0) || !same(&user, &old.1) {
-            let list = match (&own, &user) {
-                (Some(a), Some(b)) => Some(std::rc::Rc::new(a.merged(b))),
-                (Some(a), None) => Some(a.clone()),
-                (None, Some(b)) => Some(b.clone()),
-                (None, None) => None,
-            };
+            let list = self.merge_user(own.clone(), user.clone());
             if let Ok(key) = self.key(id) {
                 self.set_class_list(key, list);
             }
@@ -3972,15 +4067,6 @@ impl<M: TextEngine> Core<M> {
             new
         };
         let mut old: Vec<Option<Expanded>> = old.into_iter().map(Some).collect();
-        // Old positions stay authoritative: other branches can consume a
-        // candidate too. Duplicate keys retain their original FIFO order.
-        let mut keyed: FxHashMap<SharedString, VecDeque<usize>> = FxHashMap::default();
-        for (index, entry) in old.iter().enumerate() {
-            if let Some(key) = entry.as_ref().and_then(|entry| entry.key.as_ref()) {
-                keyed.entry(key.clone()).or_default().push_back(index);
-            }
-        }
-
         let mut out = Vec::with_capacity(new.len());
         let mut placeholder = None;
         // Unkeyed elements take the next unused old element of their kind,
@@ -3991,6 +4077,9 @@ impl<M: TextEngine> Core<M> {
         // follow each other as they did, and are then found without a
         // search of all the old ones for each.
         let mut after_kept = 0;
+        // The keyed old elements by key, for the rows and elements not
+        // where they were (a reversed list: each would search them all).
+        let mut keys = OldKeys::default();
         for child in new {
             let (owner, el) = match child {
                 NewChild::Made(owner, el) => (owner, el),
@@ -4003,7 +4092,7 @@ impl<M: TextEngine> Core<M> {
                     let at = if old.get(after_kept).is_some_and(is) {
                         Some(after_kept)
                     } else {
-                        old.iter().position(is)
+                        keys.find(&old, &key, |_| true)
                     };
                     match at.and_then(|at| {
                         after_kept = at + 1;
@@ -4022,10 +4111,10 @@ impl<M: TextEngine> Core<M> {
                     host,
                     inst,
                     &mut old,
-                    &mut keyed,
                     &mut out,
                     &mut placeholder,
                     &mut cursor,
+                    &mut keys,
                 );
             };
             match owner {
@@ -4066,10 +4155,10 @@ impl<M: TextEngine> Core<M> {
         host: NodeId,
         inst: &mut Instance,
         old: &mut [Option<Expanded>],
-        keyed: &mut FxHashMap<SharedString, VecDeque<usize>>,
         out: &mut Vec<Expanded>,
         placeholder: &mut Option<usize>,
         cursor: &mut usize,
+        keys: &mut OldKeys,
     ) {
         // A slot a view fills: placed as it is (`Filled`), or in a node of
         // this view's own when the view gives it anything, which lays its
@@ -4180,9 +4269,11 @@ impl<M: TextEngine> Core<M> {
                         .is_some_and(|o| o.part == Part::Slot && o.id == node)
                 });
                 let prev = at.and_then(|j| old[j].take());
-                let old_config = prev
-                    .as_ref()
-                    .and_then(|p| p.list.as_deref().copied())
+                let old_config = self
+                    .components
+                    .list_layouts
+                    .remove(&node)
+                    .or_else(|| prev.as_ref().and_then(|p| p.list.as_deref().copied()))
                     .unwrap_or_default();
                 // Its bound layout is a binding.
                 let parts = std::mem::take(&mut el.bound_list);
@@ -4233,12 +4324,7 @@ impl<M: TextEngine> Core<M> {
                 let component = matches!(part, Part::Component(_));
                 let matches = |o: &Expanded| !component && o.tag == el.tag && o.part == part;
                 let at = match &el.key {
-                    Some(key) => keyed.get(key).and_then(|candidates| {
-                        candidates
-                            .iter()
-                            .copied()
-                            .find(|&index| old[index].as_ref().is_some_and(matches))
-                    }),
+                    Some(k) => keys.find(old, k, matches),
                     None => {
                         let at = old[(*cursor).min(old.len())..]
                             .iter()
@@ -5020,6 +5106,12 @@ impl<M: TextEngine> Core<M> {
                 )
             }
         };
+        // The element snapshot predates any applied layout binding patches.
+        let old_list = if matches!(el.kind, ElKind::VirtualList(_)) {
+            self.components.list_layouts.remove(&id).unwrap_or(old_list)
+        } else {
+            old_list
+        };
         let bound = bound.map(|bound| self.bind_parts(host, id, bound, &mut el));
         let (component, virtual_list) = match std::mem::replace(&mut el.kind, ElKind::Plain) {
             ElKind::Component(c) => (Some(c), None),
@@ -5298,6 +5390,7 @@ impl<M: TextEngine> Core<M> {
                     count_signal.set(count as usize);
                     patches.borrow_mut().push(super::views::Patch::Rows {
                         list: id,
+                        binding: crate::element::Owner::current(),
                         count,
                         keys,
                     });
@@ -5329,16 +5422,7 @@ impl<M: TextEngine> Core<M> {
         state.moves = moves;
         state.separator = list.separator;
         state.min_view = list.min_view_time;
-        let marked: Vec<NodeId> = state
-            .cells
-            .iter()
-            .chain(&state.contents)
-            .copied()
-            .filter(|&c| c != 0)
-            .collect();
-        for cell in marked {
-            self.components.mark(cell);
-        }
+        self.sync_virtual_cells(id, true);
     }
 
     /// Sends list `id` its rows' changes from `before` (none: a new list):
@@ -5379,30 +5463,32 @@ impl<M: TextEngine> Core<M> {
         let state = self.components.virtual_lists.get_mut(&id).expect("list");
         state.count = count;
         state.keys = keys;
-        let parts: Vec<NodeId> = state
-            .cells
-            .iter()
-            .chain(&state.contents)
-            .copied()
-            .filter(|&c| c != 0)
-            .collect();
-        for part in parts {
-            let Some(inst) = self.components.instances.get_mut(&part) else {
-                continue;
-            };
-            let Some(signal) = inst.cell_position else {
-                continue;
-            };
-            let live = inst.cell_owner.is_some_and(|o| o.is_live());
-            if let Inner::VirtualRow { index, .. } | Inner::Row { index, .. } = &mut inst.inner {
-                *index = if live {
-                    signal.index.get_untracked()
-                } else {
-                    usize::MAX
+        self.sync_virtual_cells(id, false);
+    }
+
+    fn sync_virtual_cells(&mut self, id: NodeId, rebuild: bool) {
+        let key = self.key(id).expect("virtual list node");
+        let slots = &self.nodes[key as usize].list.as_ref().expect("list").slots;
+        let state = &self.components.virtual_lists[&id];
+        for (slot, (&cell, &content)) in state.cells.iter().zip(&state.contents).enumerate() {
+            for part in [cell, content].into_iter().filter(|&part| part != 0) {
+                let Some(inst) = self.components.instances.get_mut(&part) else {
+                    continue;
                 };
-            }
-            if !live {
-                self.components.mark(part);
+                let remake = rebuild || !inst.cell_owner.is_some_and(|o| o.is_live());
+                if let Inner::VirtualRow { index, .. } | Inner::Row { index, .. } = &mut inst.inner
+                {
+                    if remake {
+                        // The content owner can die while the slot still has a row.
+                        *index = slots[slot].requested.map_or(usize::MAX, |i| i as usize);
+                    } else if let Some(position) = inst.cell_position {
+                        *index = position.index.get_untracked();
+                    }
+                }
+                if remake && !inst.dirty {
+                    inst.dirty = true;
+                    self.components.dirty.push(part);
+                }
             }
         }
     }
@@ -8347,15 +8433,15 @@ impl<M: TextEngine> Core<M> {
         drop(keys);
         // JS's first, then the views', where the newest that may fire wins:
         // a focused component's keys win over the app's. Bindings
-        // `over_focused` come after both, so they win over the components';
+        // `OverFocused::Always` come after both, so they win over the components';
         // the overlay's Escape (a popup closing) stays last.
         let js = self.components.js_keymap.bindings();
         let bindings = js
             .iter()
-            .filter(|b| !b.over_focused)
-            .chain(views.iter().filter(|b| !b.over_focused))
-            .chain(js.iter().filter(|b| b.over_focused))
-            .chain(views.iter().filter(|b| b.over_focused))
+            .filter(|b| !b.comes_after_views())
+            .chain(views.iter().filter(|b| !b.comes_after_views()))
+            .chain(js.iter().filter(|b| b.comes_after_views()))
+            .chain(views.iter().filter(|b| b.comes_after_views()))
             .copied()
             .chain(overlay)
             .collect();
@@ -8388,9 +8474,27 @@ impl<M: TextEngine> Core<M> {
         safe
     }
 
+    /// Whether `key` or a view around it already stands clear of the
+    /// software keyboard (`Prop::ClearsKeyboard`, a bottom sheet the
+    /// keyboard lifts): the keyboard takes nothing more from it.
+    fn clears_keyboard(&self, key: super::Key) -> bool {
+        let mut key = key;
+        loop {
+            let node = &self.nodes[key as usize];
+            if node.clears_keyboard {
+                return true;
+            }
+            if node.parent == NO_KEY {
+                return false;
+            }
+            key = node.parent;
+        }
+    }
+
     /// What `env` (a node's `env()` terms) comes to for `key` now: the
     /// insets of the root view it renders in ([`Self::insets_of`]) and the
-    /// software keyboard's height.
+    /// software keyboard's height, 0 where a view around it stands clear
+    /// of the keyboard already ([`Self::clears_keyboard`]).
     pub(super) fn env_insets(
         &self,
         key: super::Key,
@@ -8403,6 +8507,9 @@ impl<M: TextEngine> Core<M> {
                 return Points::ZERO;
             };
             if var == EnvVar::KeyboardInsetHeight {
+                if self.clears_keyboard(key) {
+                    return Points::ZERO;
+                }
                 return self
                     .components
                     .environment

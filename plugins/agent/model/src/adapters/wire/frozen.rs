@@ -1059,6 +1059,7 @@ mod tests {
             let reads = Arc::new(AtomicUsize::new(0));
             let input = Arc::new(Messages {
                 recipes: GeneratedRecipes::new(vec![MessageRecipe::User {
+                    is_pinned_memory: false,
                     content: Arc::new(GeneratedRecipes::new(vec![source::ContentRecipe::Media {
                         media: source::MediaSource {
                             bytes: source::SourceBytes::Source(Arc::new(Counted {

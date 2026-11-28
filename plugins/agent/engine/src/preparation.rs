@@ -107,9 +107,15 @@ impl PromptBuilder {
     }
     pub async fn append(&mut self, message: maka_model::prompt::Message) -> Result<(), RunError> {
         self.builder
-            .append(message)
+            .append(message, false)
             .await
             .map_err(RunError::Preparation)
+    }
+    pub async fn append_pinned_memory(&mut self, text: String) -> Result<(), RunError> {
+        self.builder
+            .append(maka_model::prompt::Message::user(text), true)
+            .await?;
+        Ok(())
     }
     pub async fn append_recipe(
         &mut self,

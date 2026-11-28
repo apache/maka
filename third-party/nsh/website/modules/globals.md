@@ -6,7 +6,18 @@ order: 15
 
 # Global APIs
 
-Besides the ECMAScript standard library, an NSH app's JS environment has a set of standard globals: `fetch` with `Headers`, `Request` and `Response`; the Streams Standard; `URL` and `URLSearchParams`; `TextEncoder` / `TextDecoder`; `Blob`, `File` and `FormData`; `EventTarget`, `Event` and `AbortController`; timers, `requestAnimationFrame` and `console`; and `Intl` for number and date formatting. They are implemented natively in Rust, follow the WHATWG standards, and need no import, so the many JavaScript libraries built on these standards (HTTP clients, URL and encoding helpers, stream utilities) work unchanged.
+NSH apps get a set of standard globals without any import. They are implemented natively in Rust, follow the WHATWG standards, and sit on top of the ECMAScript standard library:
+
+- `fetch` with `Headers`, `Request` and `Response`
+- the Streams Standard
+- `URL` and `URLSearchParams`
+- `TextEncoder` / `TextDecoder`
+- `Blob`, `File` and `FormData`
+- `EventTarget`, `Event` and `AbortController`
+- timers, `requestAnimationFrame` and `console`
+- `Intl`, for number and date formatting
+
+Because they follow the standards, JavaScript libraries built on them (HTTP clients, URL and encoding helpers, stream utilities) work unchanged.
 
 This page lists every global an app has. These are the TSX environment's: Rust code uses Rust's standard library, crates.io and NSH's services of `nsh_core::prelude` instead (`fetch`, timers, tasks; see [Building with Rust](../docs/rust.md)), named in the table's Rust column. UI is built with [elements](../elements/index.md) and the app's own components, and everything else an app uses comes from the [modules](./index.md) it imports.
 

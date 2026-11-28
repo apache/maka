@@ -7,10 +7,11 @@ use std::time::Duration;
 
 use nsh_base::{
     editor::{
-        EditorClasses, EditorDiagnostic, EditorDiagnosticCodeDescription,
+        EditorClasses, EditorDecoration, EditorDiagnostic, EditorDiagnosticCodeDescription,
         EditorDiagnosticRelatedInformation, EditorDiagnosticSeverity, EditorDiagnosticTag,
-        EditorHoverEvent, EditorLocation, EditorPosition, EditorRange, editor,
+        EditorHoverEvent, EditorLocation, EditorPosition, EditorRange, EditorStyles, editor,
     },
+    text_view::PartStyle,
     theme,
 };
 use nsh_core::{
@@ -27,6 +28,11 @@ const TEXT: &str = "let unused = old();";
 struct HarnessProps {
     /// The editor's `classes`.
     classes: EditorClasses,
+    /// Typed styles (`StyleRefinement`, as a Rust app types them) for
+    /// `old`, each over the one before: the `diagnosticWarning` part red
+    /// and light, the `deprecatedText` part blue, and a decoration over
+    /// `old` bold.
+    typed: bool,
 }
 
 fn range(line: u32, from: u32, to: u32) -> EditorRange {
@@ -97,6 +103,28 @@ fn hover_text(e: &EditorHoverEvent) -> String {
 #[component]
 fn Harness(props: HarnessProps) -> impl IntoElement {
     let hovered = signal(String::from("Hover none"));
+    let mut styles = EditorStyles::default();
+    let mut decorations = Vec::new();
+    if props.typed {
+        use nsh_core::element::StyleRefinement;
+        styles.diagnostic_warning = Some(PartStyle(
+            StyleRefinement::default()
+                .text_color(rgb(0xff0000))
+                .font_weight(FontWeight::LIGHT)
+                .into(),
+        ));
+        styles.deprecated_text = Some(PartStyle(
+            StyleRefinement::default().text_color(rgb(0x0000ff)).into(),
+        ));
+        let mut bold = EditorDecoration::default();
+        bold.range = range(0, 13, 16);
+        bold.style = Some(
+            StyleRefinement::default()
+                .font_weight(FontWeight::BOLD)
+                .into(),
+        );
+        decorations.push(bold);
+    }
     view()
         .child(
             view().test_id("editor").w(px(600.0)).h(px(400.0)).child(
@@ -104,6 +132,8 @@ fn Harness(props: HarnessProps) -> impl IntoElement {
                     .default_value(TEXT)
                     .diagnostics(diagnostics())
                     .classes(props.classes.clone())
+                    .styles(styles)
+                    .decorations(decorations)
                     .on_hover(move |e: &EditorHoverEvent| hovered.set(hover_text(e)))
                     .size_full(),
             ),
@@ -114,11 +144,18 @@ fn Harness(props: HarnessProps) -> impl IntoElement {
 }
 
 fn start(classes: EditorClasses) -> Headless {
+    start_styled(classes, false)
+}
+
+/// [`start`], with the typed part styles of [`HarnessProps::typed`] when
+/// `typed`.
+fn start_styled(classes: EditorClasses, typed: bool) -> Headless {
     let mut config = EngineConfig {
         viewport: Size::new(px(800.0), px(900.0)),
         ..EngineConfig::new(nsh_testing::windowed_root_with::<Harness>(move || {
             HarnessProps {
                 classes: classes.clone(),
+                typed,
             }
         }))
     };
@@ -160,6 +197,21 @@ fn the_apps_classes_restyle_the_tagged_text() {
     assert_eq!(old.font_weight, 700);
     assert!(!old.decoration.line_through);
     assert!(!screen.span_style("id:editor >> text:let").unwrap().italic);
+}
+
+/// Typed styles reach a diagnostic's text as the parts' classes do: its
+/// severity's part, then its tags', then the decorations over it, the
+/// later winning (`old` is a deprecated warning).
+#[test]
+fn the_apps_typed_styles_restyle_the_tagged_text() {
+    let app = start_styled(EditorClasses::default(), true);
+    let screen = app.screen();
+    let style = |selector: &str| screen.span_style(selector).unwrap();
+    let old = style("id:editor >> text:old");
+    assert_eq!(old.color, nsh_core::Color(0x0000_ffff));
+    assert_eq!(old.font_weight, 700);
+    assert!(old.decoration.line_through);
+    assert_ne!(style("id:editor >> text:let").font_weight, 700);
 }
 
 #[test]

@@ -163,7 +163,7 @@ pub(crate) fn observe(
         ),
         (
             SessionObligation::ExternalTask,
-            "SELECT EXISTS(SELECT 1 FROM agent_runs r LEFT JOIN agent_run_specs s ON s.run=r.run LEFT JOIN contents c ON c.id=s.spec_content_id WHERE r.owner=?1 AND r.session=?2 AND r.local=1 AND json_extract(r.external,'$.admitted')=1 AND (json_extract(r.external,'$.cleanup.kind') IS NOT 'confirmed' OR (json_extract(r.external,'$.closed') IS NULL AND json_extract(r.terminal,'$') IS NOT 'cancelled' AND NOT (r.terminal IS NOT NULL AND COALESCE(CAST(c.payload AS TEXT)->>'$.backend.kind'='executor' AND CAST(c.payload AS TEXT)->>'$.backend.selection.executor'='external',0)))))",
+            "SELECT EXISTS(SELECT 1 FROM agent_runs r LEFT JOIN agent_run_specs s ON s.run=r.run LEFT JOIN contents c ON c.id=s.spec_content_id WHERE r.owner=?1 AND r.session=?2 AND r.local=1 AND json_extract(r.external,'$.admitted')=1 AND (json_extract(r.external,'$.cleanup.kind') IS NOT 'confirmed' OR (json_extract(r.external,'$.closed') IS NULL AND json_extract(r.terminal,'$') IS NOT 'cancelled' AND NOT (r.terminal IS NOT NULL AND COALESCE(maka_content_text(c.payload,c.encoding)->>'$.backend.kind'='executor' AND maka_content_text(c.payload,c.encoding)->>'$.backend.selection.executor'='external',0)))))",
         ),
         (
             SessionObligation::ExternalSteering,
@@ -204,7 +204,7 @@ pub(crate) fn observe(
             ));
         }
     }
-    let mut cells=c.prepare_cached("SELECT c.body,r.terminal FROM agent_cells c LEFT JOIN agent_runs r ON r.run=c.run WHERE c.session=?2 AND c.pending=1 AND (c.run IS NULL OR (r.owner=?1 AND r.local=1))")?;
+    let mut cells=c.prepare_cached("SELECT maka_content_text(c.body,c.body_encoding),r.terminal FROM agent_cells c LEFT JOIN agent_runs r ON r.run=c.run WHERE c.session=?2 AND c.pending=1 AND (c.run IS NULL OR (r.owner=?1 AND r.local=1))")?;
     let mut rows = cells.query(params![owner, session])?;
     while let Some(row) = rows.next()? {
         let cell: maka_agent_facts::cells::CellView =

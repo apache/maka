@@ -1,5 +1,7 @@
 //! What is selected in a table and how the keyboard moves it.
 
+use super::DataTableCellRange;
+
 /// What a table lets presses and keys select (`rowSelectable`,
 /// `columnSelectable`, `cellSelectable`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -9,7 +11,7 @@ pub(crate) struct Selectable {
     pub(crate) cells: bool,
 }
 
-/// The selection: nothing, a row, a column (a definition index) or a cell.
+/// The selection: nothing, a row, a column, a cell or a range of cells.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum Selection {
     #[default]
@@ -17,12 +19,14 @@ pub(crate) enum Selection {
     Row(usize),
     Column(usize),
     Cell(usize, usize),
+    Range(DataTableCellRange),
 }
 
 impl Selection {
     pub(crate) fn row(&self) -> Option<usize> {
         match *self {
             Selection::Row(r) | Selection::Cell(r, _) => Some(r),
+            Selection::Range(range) => Some(range.active_cell().row as usize),
             _ => None,
         }
     }
@@ -30,6 +34,7 @@ impl Selection {
     pub(crate) fn column(&self) -> Option<usize> {
         match *self {
             Selection::Column(c) | Selection::Cell(_, c) => Some(c),
+            Selection::Range(range) => Some(range.active_cell().column as usize),
             _ => None,
         }
     }
@@ -40,7 +45,7 @@ impl Selection {
             Selection::None => true,
             Selection::Row(_) => allowed.rows,
             Selection::Column(_) => allowed.columns,
-            Selection::Cell(..) => allowed.cells,
+            Selection::Cell(..) | Selection::Range(_) => allowed.cells,
         }
     }
 }
@@ -133,15 +138,13 @@ impl Nav<'_> {
         // Where the move starts: a row selected by its header enters its
         // cells at the first (or for End the last) one, a column selected by
         // its title at its first (or last) row, nothing at the first cell.
-        let (row, at) = match from {
-            Selection::Cell(row, col) => (
-                Some(row.min(self.rows - 1)),
-                self.columns.iter().position(|&d| d == col),
-            ),
-            Selection::Row(row) => (Some(row.min(self.rows - 1)), None),
-            Selection::Column(col) => (None, self.columns.iter().position(|&d| d == col)),
-            Selection::None => return Some(Selection::Cell(0, self.columns[0])),
-        };
+        if from == Selection::None {
+            return Some(Selection::Cell(0, self.columns[0]));
+        }
+        let row = from.row().map(|row| row.min(self.rows - 1));
+        let at = from
+            .column()
+            .and_then(|col| self.columns.iter().position(|&def| def == col));
         match movement {
             Move::Left | Move::Right | Move::First | Move::Last => {
                 let to = self.horizontal(at, movement)?;
@@ -205,6 +208,12 @@ impl Nav<'_> {
     }
 }
 
+pub(super) fn range_in_bounds(range: DataTableCellRange, rows: usize, columns: usize) -> bool {
+    [range.start, range.end, range.active_cell()]
+        .iter()
+        .all(|cell| (cell.row as usize) < rows && (cell.column as usize) < columns)
+}
+
 /// `selection` kept inside a table of `rows` rows and `columns` columns, and
 /// of a kind `allowed` selects (anything else is cleared).
 pub(crate) fn clamp(
@@ -220,6 +229,7 @@ pub(crate) fn clamp(
         Selection::Row(r) if r >= rows => Selection::None,
         Selection::Column(c) if c >= columns => Selection::None,
         Selection::Cell(r, c) if r >= rows || c >= columns => Selection::None,
+        Selection::Range(range) if !range_in_bounds(range, rows, columns) => Selection::None,
         other => other,
     }
 }

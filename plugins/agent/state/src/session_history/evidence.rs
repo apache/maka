@@ -18,12 +18,60 @@
  */
 use super::*;
 use crate::recall::Field;
+use crate::store::invalid;
 use maka_agent_facts::history::HistoryRowAddress;
 use rusqlite::{OptionalExtension, params};
 use std::collections::BTreeMap;
 
+pub(super) enum BodySource<'a> {
+    Blob {
+        blob: rusqlite::blob::Blob<'a>,
+        offset: usize,
+        len: usize,
+    },
+    Bytes(Vec<u8>),
+}
+
+impl BodySource<'_> {
+    pub(super) fn len(&self) -> usize {
+        match self {
+            Self::Blob { len, .. } => *len,
+            Self::Bytes(bytes) => bytes.len(),
+        }
+    }
+
+    pub(super) fn read_at_exact(&self, buf: &mut [u8], offset: usize) -> Result<(), StoreError> {
+        match self {
+            Self::Blob {
+                blob,
+                offset: base,
+                len,
+            } => {
+                let end = offset
+                    .checked_add(buf.len())
+                    .ok_or_else(|| invalid("evidence excerpt offset overflow"))?;
+                if end > *len {
+                    return Err(invalid("evidence excerpt exceeds indexed slice"));
+                }
+                blob.read_at_exact(buf, base + offset)?;
+                Ok(())
+            }
+            Self::Bytes(bytes) => {
+                let end = offset
+                    .checked_add(buf.len())
+                    .ok_or_else(|| invalid("evidence excerpt offset overflow"))?;
+                let slice = bytes
+                    .get(offset..end)
+                    .ok_or_else(|| invalid("evidence excerpt exceeds reconstructed body"))?;
+                buf.copy_from_slice(slice);
+                Ok(())
+            }
+        }
+    }
+}
+
 pub(super) struct IndexedBody<'a> {
-    pub(super) body: rusqlite::blob::Blob<'a>,
+    pub(super) body: BodySource<'a>,
     pub(super) fields: Vec<crate::recall::FieldSpan>,
 }
 
@@ -34,28 +82,78 @@ impl<'a> IndexedBody<'a> {
         fact: FactId,
         item_index: u64,
     ) -> Result<Option<Self>, StoreError> {
+        let owner_json = serde_json::to_string(owner)?;
         let mut stmt = c.prepare_cached(
-            "SELECT d.id,d.fields_json FROM agent_session_history h
-             CROSS JOIN agent_recall_messages d ON d.owner=h.owner AND d.session=h.session AND d.sequence=h.sequence
-             WHERE h.fact_id=?1 AND h.owner=?2 AND d.ordinal=?3",
+            "SELECT d.id,d.fields_json,h.namespace_id,h.sequence,d.body_ref_sequence,d.body_ref_start,d.body_ref_end
+             FROM agent_session_history h
+             CROSS JOIN agent_namespaces ns ON ns.id=h.namespace_id
+             CROSS JOIN agent_recall_messages d ON d.namespace_id=h.namespace_id AND d.sequence=h.sequence
+             WHERE h.fact_id=?1 AND ns.owner=?2 AND d.ordinal=?3",
         )?;
         let source = stmt
             .query_row(
                 params![
                     fact.to_string(),
-                    serde_json::to_string(owner)?,
+                    owner_json,
                     super::sql::bind_u64(item_index)?
                 ],
-                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, crate::namespace::NamespaceId>(2)?,
+                        super::sql::read_u64(row, 3)?,
+                        row.get::<_, Option<i64>>(4)?,
+                        row.get::<_, Option<i64>>(5)?,
+                        row.get::<_, Option<i64>>(6)?,
+                    ))
+                },
             )
             .optional()?;
-        let Some((id, fields)) = source else {
+        let Some((id, fields_json, ns_id, sequence, ref_seq, ref_start, ref_end)) = source else {
             return Ok(None);
         };
-        Ok(Some(Self {
-            body: c.blob_open("main", "agent_recall_messages", "body", id, true)?,
-            fields: serde_json::from_str(&fields)?,
-        }))
+        let fields: Vec<crate::recall::FieldSpan> = serde_json::from_str(&fields_json)?;
+        let body = match (ref_seq, ref_start, ref_end) {
+            (None, _, _) => {
+                let blob = c.blob_open("main", "agent_recall_messages", "body", id, true)?;
+                let len = blob.len();
+                BodySource::Blob {
+                    blob,
+                    offset: 0,
+                    len,
+                }
+            }
+            (Some(ref_seq), Some(start), Some(end)) => {
+                let start =
+                    usize::try_from(start).map_err(|_| invalid("negative body_ref_start"))?;
+                let end = usize::try_from(end).map_err(|_| invalid("negative body_ref_end"))?;
+                let len = end
+                    .checked_sub(start)
+                    .ok_or_else(|| invalid("corrupt body_ref span"))?;
+                let target_id =
+                    crate::recall::index::resolve_body_ref_target_id(c, ns_id, ref_seq)?;
+                let blob = c.blob_open("main", "agent_recall_messages", "body", target_id, true)?;
+                if start.checked_add(len).is_none_or(|e| e > blob.len()) {
+                    return Err(invalid("body_ref slice exceeds target body length"));
+                }
+                BodySource::Blob {
+                    blob,
+                    offset: start,
+                    len,
+                }
+            }
+            (Some(ref_seq), None, ref_end) => {
+                let text = crate::recall::index::resolve_body_ref(
+                    c, ns_id, sequence, ref_seq, None, ref_end,
+                )?;
+                BodySource::Bytes(text.into_bytes())
+            }
+            (Some(_), Some(_), None) => {
+                return Err(invalid("corrupt body_ref missing end offset"));
+            }
+        };
+        Ok(Some(Self { body, fields }))
     }
 }
 
@@ -189,8 +287,14 @@ fn complete_results_require_a_unique_byte_match_but_frontend_selected_text_can_b
     use crate::recall::FieldSpan;
     let c = Connection::open_in_memory()?;
     c.execute_batch("CREATE TABLE docs(body TEXT); INSERT INTO docs VALUES ('west east west');")?;
+    let blob = c.blob_open("main", "docs", "body", 1, true)?;
+    let len = blob.len();
     let body = IndexedBody {
-        body: c.blob_open("main", "docs", "body", 1, true)?,
+        body: BodySource::Blob {
+            blob,
+            offset: 0,
+            len,
+        },
         fields: [0, 5, 10]
             .map(|start| FieldSpan {
                 field: Field::Result,
@@ -238,8 +342,14 @@ fn quoted_json_windows_preserve_byte_coordinates_only_without_escapes() -> Resul
             "INSERT OR REPLACE INTO docs(rowid,body) VALUES(1,?1)",
             [format!("tool{encoded}")],
         )?;
+        let blob = c.blob_open("main", "docs", "body", 1, true)?;
+        let len = blob.len();
         let indexed = IndexedBody {
-            body: c.blob_open("main", "docs", "body", 1, true)?,
+            body: BodySource::Blob {
+                blob,
+                offset: 0,
+                len,
+            },
             fields: vec![FieldSpan {
                 field: Field::Arguments,
                 start: 4,

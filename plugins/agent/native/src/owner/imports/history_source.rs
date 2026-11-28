@@ -85,6 +85,8 @@ impl Owner {
             allowed_tools: configuration.tools.clone(),
             mcp_revision: None,
             compaction_prompt: None,
+            memory_admission: maka_agent_facts::memory::MemoryAdmission::Excluded,
+            memory_projection: None,
             system_prompt: system.reference().clone(),
             tool_selection: tools.reference().clone(),
             input: input.reference().clone(),

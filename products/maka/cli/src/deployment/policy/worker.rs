@@ -43,7 +43,7 @@ pub(in crate::deployment) enum Dispatch {
     },
     Local {
         current: Deployment,
-        pending: Option<updates::Pending>,
+        pending: Option<Box<updates::Pending>>,
     },
 }
 
@@ -80,7 +80,10 @@ pub(in crate::deployment) async fn resolve_dispatch_with(
                     root_id: current.root_id,
                 });
             }
-            Ok(Dispatch::Local { current, pending })
+            Ok(Dispatch::Local {
+                current,
+                pending: pending.map(Box::new),
+            })
         }
         store::Handoff::Newer { active, pending } => {
             if active.root_id != root_id {
@@ -140,7 +143,7 @@ impl Reconcile {
                 )
                 .await;
             }
-            Dispatch::Local { current, pending } => (current, pending),
+            Dispatch::Local { current, pending } => (current, pending.map(|p| *p)),
         };
         let executor = current_exe;
         let lease = Arc::new(FileLease::acquire(&directory.join("executor.lock"))?);
@@ -203,7 +206,7 @@ async fn perform(
         .await?;
         return Ok(());
     }
-    let version = distribution::preview_version().await?;
+    let version = distribution::nightly_version().await?;
     let artifact = distribution::fetch(version).await?;
     execute(
         &artifact.executable,
@@ -242,7 +245,7 @@ pub(in crate::deployment) async fn execute(
 pub(crate) struct Upgrade {
     #[command(flatten)]
     expected: deployment::Expected,
-    /// Exact native package version. Omit to resolve rust-preview once.
+    /// Exact native package version. Omit to resolve nightly once.
     #[arg(long)]
     version: Option<Version>,
 }
@@ -252,7 +255,7 @@ impl Upgrade {
         crate::operation::check()?;
         let version = match self.version {
             Some(version) => version,
-            None => distribution::preview_version().await?,
+            None => distribution::nightly_version().await?,
         };
         let artifact = distribution::fetch(version).await?;
         // The selected distribution writes its own configuration and stages the

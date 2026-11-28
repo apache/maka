@@ -51,17 +51,19 @@ import { Icon } from './Icon';
 import { SidebarUpdateButton } from './SidebarUpdateButton';
 import { tr, currentLocale } from './locale';
 import {
-  Header,
-  SidebarTitleRow,
-  C,
   bodyTextStyle,
+  C,
   captionTextStyle,
-  controlStyle,
   controlFocusStyle,
+  controlStyle,
   floatingStyle,
+  Header,
+  inputTextStyle,
+  lineWidth,
   menuRowHoverStyle,
   menuRowStyle,
-  inputTextStyle,
+  radius,
+  SidebarTitleRow,
   type BrowserHeader,
 } from './ui';
 import { ownTitleBar } from './chrome';
@@ -184,7 +186,7 @@ function SidebarRoomGlyph(props: { members: readonly AgentRoomMember[]; pinned: 
                 height: 14,
                 borderRadius: 7,
                 backgroundColor: roomAvatarColor(member().sessionId),
-                borderWidth: 1,
+                borderWidth: lineWidth(),
                 borderColor: C.chrome,
                 alignItems: 'center',
                 justifyContent: 'center',
@@ -546,7 +548,7 @@ export function createRoomWorkspace(options: {
             alignItems: 'center',
             gap: 10,
             padding: 10,
-            borderRadius: 10,
+            borderRadius: radius(10),
           }}
           hoverStyle={{ backgroundColor: C.surface }}
           focusStyle={controlFocusStyle()}
@@ -562,7 +564,7 @@ export function createRoomWorkspace(options: {
             gap: 6,
             paddingHorizontal: 8,
             paddingVertical: 5,
-            borderRadius: 8,
+            borderRadius: radius(8),
             backgroundColor: C.background,
           }}
         >
@@ -594,7 +596,7 @@ export function createRoomWorkspace(options: {
               gap: 6,
               paddingHorizontal: 8,
               paddingVertical: 5,
-              borderRadius: 8,
+              borderRadius: radius(8),
               backgroundColor: C.surface,
             }}
             hoverStyle={{ backgroundColor: C.raised }}
@@ -632,7 +634,7 @@ export function createRoomWorkspace(options: {
                       gap: 10,
                       paddingHorizontal: 10,
                       paddingVertical: 8,
-                      borderRadius: 10,
+                      borderRadius: radius(10),
                       backgroundColor: selected() === session().id ? C.surface : 'transparent',
                     }}
                     hoverStyle={{ backgroundColor: C.surface }}
@@ -676,7 +678,7 @@ export function createRoomWorkspace(options: {
             <Button
               accessibilityLabel={tr('Show more')}
               onPress={() => void browser.loadMore()}
-              style={controlStyle}
+              style={controlStyle()}
             >
               <Text style={{ ...captionTextStyle, color: C.secondary }}>{tr('Show more')}</Text>
             </Button>
@@ -701,7 +703,7 @@ export function createRoomWorkspace(options: {
                 paddingHorizontal: 10,
                 paddingVertical: 7,
                 marginTop: 6,
-                borderRadius: 8,
+                borderRadius: radius(8),
               }}
               hoverStyle={{ backgroundColor: C.surface }}
               focusStyle={controlFocusStyle()}
@@ -724,7 +726,7 @@ export function createRoomWorkspace(options: {
               alignItems: 'center',
               gap: 10,
               padding: 10,
-              borderRadius: 10,
+              borderRadius: radius(10),
             }}
             hoverStyle={{ backgroundColor: C.surface }}
             focusStyle={controlFocusStyle()}
@@ -748,7 +750,7 @@ export function createRoomWorkspace(options: {
             <Button
               accessibilityLabel={tr('New room')}
               onPress={newRoom}
-              style={{ ...controlStyle, paddingHorizontal: 16, backgroundColor: C.surface }}
+              style={{ ...controlStyle(), paddingHorizontal: 16, backgroundColor: C.surface }}
               hoverStyle={{ backgroundColor: C.raised }}
             >
               <Text style={{ ...bodyTextStyle, color: C.text }}>{tr('New room')}</Text>
@@ -806,7 +808,7 @@ export function createRoomWorkspace(options: {
                 ...inputTextStyle,
                 color: C.text,
                 backgroundColor: C.raised,
-                borderRadius: 8,
+                borderRadius: radius(8),
                 padding: 10,
               }}
             />
@@ -820,7 +822,7 @@ export function createRoomWorkspace(options: {
                 ...captionTextStyle,
                 color: C.text,
                 backgroundColor: C.raised,
-                borderRadius: 8,
+                borderRadius: radius(8),
                 padding: 10,
               }}
             />
@@ -832,7 +834,7 @@ export function createRoomWorkspace(options: {
               <Button
                 accessibilityLabel={tr('Change workspace')}
                 onPress={() => choosingWorkspace.set(true)}
-                style={controlStyle}
+                style={controlStyle()}
                 hoverStyle={{ backgroundColor: C.surface }}
               >
                 <Text style={{ ...captionTextStyle, color: C.accentText }}>
@@ -849,7 +851,7 @@ export function createRoomWorkspace(options: {
               accessibilityLabel={tr('Cancel')}
               onPress={() => creating.set(false)}
               disabled={createBusy()}
-              style={controlStyle}
+              style={controlStyle()}
             >
               <Text style={{ color: C.secondary }}>{tr('Cancel')}</Text>
             </Button>
@@ -857,7 +859,7 @@ export function createRoomWorkspace(options: {
               accessibilityLabel={tr('New room')}
               onPress={() => void submitCreate()}
               disabled={createBusy() || !createTitle().trim()}
-              style={controlStyle}
+              style={controlStyle()}
             >
               <Text style={{ color: C.accentText }}>{tr('New room')}</Text>
             </Button>
@@ -906,7 +908,7 @@ export function createRoomWorkspace(options: {
               ...inputTextStyle,
               color: C.text,
               backgroundColor: C.raised,
-              borderRadius: 8,
+              borderRadius: radius(8),
               padding: 10,
             }}
           />
@@ -918,7 +920,7 @@ export function createRoomWorkspace(options: {
               accessibilityLabel={tr('Cancel')}
               onPress={() => renaming.set(null)}
               disabled={createBusy()}
-              style={controlStyle}
+              style={controlStyle()}
             >
               <Text style={{ color: C.secondary }}>{tr('Cancel')}</Text>
             </Button>
@@ -926,7 +928,7 @@ export function createRoomWorkspace(options: {
               accessibilityLabel={tr('Save')}
               onPress={() => void rename()}
               disabled={createBusy() || !renameTitle().trim()}
-              style={controlStyle}
+              style={controlStyle()}
             >
               <Text style={{ color: C.accentText }}>{tr('Save')}</Text>
             </Button>
@@ -953,7 +955,7 @@ export function createRoomWorkspace(options: {
               accessibilityLabel={tr('Cancel')}
               onPress={() => removing.set(null)}
               disabled={createBusy()}
-              style={controlStyle}
+              style={controlStyle()}
             >
               <Text style={{ color: C.secondary }}>{tr('Cancel')}</Text>
             </Button>
@@ -961,7 +963,7 @@ export function createRoomWorkspace(options: {
               accessibilityLabel={tr('Confirm delete room')}
               onPress={() => void remove()}
               disabled={createBusy()}
-              style={controlStyle}
+              style={controlStyle()}
             >
               <Text style={{ color: C.danger }}>{tr('Delete')}</Text>
             </Button>
@@ -1634,7 +1636,7 @@ export function RoomTimeline(props: {
                 accessibilityLabel={tr('Earlier messages')}
                 disabled={loadingEarlier()}
                 onPress={() => void earlier()}
-                style={{ ...controlStyle, alignSelf: 'center', marginBottom: 12 }}
+                style={{ ...controlStyle(), alignSelf: 'center', marginBottom: 12 }}
                 hoverStyle={{ backgroundColor: C.surface }}
               >
                 <Text style={{ ...captionTextStyle, color: C.secondary }}>
@@ -1715,7 +1717,7 @@ export function RoomTimeline(props: {
                 accessibilityLabel={tr('Newer messages')}
                 disabled={loadingNewer()}
                 onPress={() => void newer()}
-                style={{ ...controlStyle, alignSelf: 'center', marginTop: 12 }}
+                style={{ ...controlStyle(), alignSelf: 'center', marginTop: 12 }}
                 hoverStyle={{ backgroundColor: C.surface }}
               >
                 <Text style={{ ...captionTextStyle, color: C.secondary }}>
@@ -1742,7 +1744,7 @@ export function RoomTimeline(props: {
               paddingHorizontal: unseenCount() > 0 ? 10 : 0,
               borderRadius: 17,
               backgroundColor: C.floating,
-              borderWidth: 1,
+              borderWidth: lineWidth(),
               borderColor: C.line,
               flexDirection: 'row',
               alignItems: 'center',
@@ -1819,7 +1821,7 @@ export function RoomTimeline(props: {
               ...inputTextStyle,
               color: C.text,
               backgroundColor: C.raised,
-              borderRadius: 8,
+              borderRadius: radius(8),
               padding: 10,
             }}
           />
@@ -1827,14 +1829,14 @@ export function RoomTimeline(props: {
             <Button
               accessibilityLabel={tr('Cancel')}
               onPress={() => editingTopic.set(false)}
-              style={controlStyle}
+              style={controlStyle()}
             >
               <Text style={{ color: C.secondary }}>{tr('Cancel')}</Text>
             </Button>
             <Button
               accessibilityLabel={tr('Save')}
               onPress={() => void saveTopic()}
-              style={controlStyle}
+              style={controlStyle()}
             >
               <Text style={{ color: C.accentText }}>{tr('Save')}</Text>
             </Button>
@@ -1844,7 +1846,7 @@ export function RoomTimeline(props: {
 
       <If when={viewer()}>
         <ImageViewer
-          image={{ ...viewer()!, title: tr('Message attachments') }}
+          images={[{ ...viewer()!, title: tr('Message attachments') }]}
           close={() => {
             const original = viewer();
             viewer.set(null);

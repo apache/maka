@@ -18,7 +18,7 @@
  */
 
 import { Canvas, Text, View, platform } from 'nsh';
-import { LoadingIndicator } from './Loading';
+import { SettingsSkeleton } from './Loading';
 import { messageDateTime, tr } from './locale';
 import {
   RowLine,
@@ -101,7 +101,7 @@ function RemoteAccessForm({ owner }: Props) {
       when={owner.status() && owner.draft()}
       else={
         <SettingsBody>
-          <If when={owner.loadError()} else={<LoadingIndicator />}>
+          <If when={owner.loadError()} else={<SettingsSkeleton padded={false} rows={3} />}>
             <SettingsProblem message={owner.loadError()} retry={owner.refresh} />
           </If>
         </SettingsBody>
@@ -359,7 +359,7 @@ function Pairing({ owner }: Props) {
           trailing={
             <View
               style={{
-                backgroundColor: C.raised,
+                backgroundColor: C.cardRaised,
                 borderRadius: 8,
                 paddingHorizontal: 14,
                 paddingVertical: 8,

@@ -62,15 +62,16 @@ function quotePreview(quotes: Review['quotes']): string {
     .map(({ text }) => (text.length > 240 ? text.slice(0, 240) + '…' : text))
     .join('\n\n');
 }
-const actionStyle = {
-  ...controlStyle,
-  width: 32,
-  height: 32,
-  paddingHorizontal: 8,
-  alignItems: 'center',
-  justifyContent: 'center',
-  borderRadius: 16,
-} as const;
+const actionStyle = () =>
+  ({
+    ...controlStyle(),
+    width: 32,
+    height: 32,
+    paddingHorizontal: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 16,
+  }) as const;
 
 // Queue content belongs to the existing Host watch. Only an uncommitted inline
 // edit and the current action's receipt/observation fence are local to this view.
@@ -321,7 +322,7 @@ export function createMessagesDock(
               accessibilityLabel={tr('Dismiss error')}
               tooltip={textTooltip(() => tr('Dismiss error'))}
               onPress={inputAction(clearError, null)}
-              style={actionStyle}
+              style={actionStyle()}
               hoverStyle={{ backgroundColor: C.cardRaised }}
               focusStyle={{ backgroundColor: C.pressed }}
             >
@@ -400,7 +401,7 @@ export function createMessagesDock(
                         tooltip={textTooltip(() => tr('Edit message'))}
                         disabled={!connected() || busy() !== null || editing() !== null}
                         onPress={inputAction(act, request('edit'))}
-                        style={actionStyle}
+                        style={actionStyle()}
                         hoverStyle={{ backgroundColor: C.cardRaised }}
                         focusStyle={{ backgroundColor: C.pressed }}
                       >
@@ -413,7 +414,7 @@ export function createMessagesDock(
                         tooltip={textTooltip(() => tr('Remove message'))}
                         disabled={!connected() || busy() !== null || editing() !== null}
                         onPress={inputAction(act, request('retract'))}
-                        style={actionStyle}
+                        style={actionStyle()}
                         hoverStyle={{ backgroundColor: C.cardRaised }}
                         focusStyle={{ backgroundColor: C.pressed }}
                       >
@@ -426,7 +427,7 @@ export function createMessagesDock(
                         tooltip={textTooltip(() => tr('Steer now · use in the current turn'))}
                         disabled={!connected() || busy() !== null || editing() !== null}
                         onPress={inputAction(act, request('promote'))}
-                        style={actionStyle}
+                        style={actionStyle()}
                         hoverStyle={{ backgroundColor: C.cardRaised }}
                         focusStyle={{ backgroundColor: C.pressed }}
                       >
@@ -508,7 +509,7 @@ export function createMessagesDock(
                         accessibilityLabel={tr('Keep my queued message edit')}
                         disabled={busy() !== null}
                         onPress={inputAction(resolveReview, false)}
-                        style={controlStyle}
+                        style={controlStyle()}
                       >
                         <Text style={{ color: C.secondary }}>{tr('Keep my edit')}</Text>
                       </Button>
@@ -516,7 +517,7 @@ export function createMessagesDock(
                         accessibilityLabel={tr('Use current queued message')}
                         disabled={busy() !== null}
                         onPress={inputAction(resolveReview, true)}
-                        style={controlStyle}
+                        style={controlStyle()}
                       >
                         <Text style={{ color: C.secondary }}>{tr('Use current message')}</Text>
                       </Button>
@@ -534,7 +535,7 @@ export function createMessagesDock(
                         !hasContent(edit())
                       }
                       onPress={inputAction(save, null)}
-                      style={controlStyle}
+                      style={controlStyle()}
                       hoverStyle={{ backgroundColor: C.cardRaised }}
                       focusStyle={{ backgroundColor: C.pressed }}
                     >
@@ -545,7 +546,7 @@ export function createMessagesDock(
                         accessibilityLabel={tr('Review current queued message')}
                         disabled={!connected() || busy() !== null}
                         onPress={inputAction(reviewLatest, null)}
-                        style={controlStyle}
+                        style={controlStyle()}
                       >
                         <Text style={{ color: C.secondary }}>{tr('Review current message')}</Text>
                       </Button>
@@ -554,7 +555,7 @@ export function createMessagesDock(
                       <Button
                         accessibilityLabel={tr('Copy queued message edit')}
                         onPress={inputAction(copyEdit, null)}
-                        style={controlStyle}
+                        style={controlStyle()}
                       >
                         <Text style={{ color: C.secondary }}>
                           {copied() === edit().text ? tr('Edit copied') : tr('Copy edit')}
@@ -565,7 +566,7 @@ export function createMessagesDock(
                       accessibilityLabel={tr('Cancel queued message edit')}
                       disabled={busy() !== null}
                       onPress={inputAction(cancel, null)}
-                      style={controlStyle}
+                      style={controlStyle()}
                     >
                       <Text style={{ color: C.muted }}>{tr('Cancel')}</Text>
                     </Button>

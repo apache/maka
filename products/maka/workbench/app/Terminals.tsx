@@ -68,7 +68,12 @@ export function PersonalTerminals(props: {
                   <Button
                     selected={props.selected === row().value().result.ref}
                     onPress={inputAction(props.open, row().value())}
-                    style={{ ...controlStyle, flexDirection: 'row', gap: 6, alignItems: 'center' }}
+                    style={{
+                      ...controlStyle(),
+                      flexDirection: 'row',
+                      gap: 6,
+                      alignItems: 'center',
+                    }}
                     selectedStyle={{ backgroundColor: C.cardRaised }}
                     hoverStyle={controlHoverStyle()}
                     focusStyle={controlFocusStyle()}
@@ -177,7 +182,7 @@ export function AgentTerminals(props: {
                       accessibilityLabel={tr('Finished commands')}
                       onPress={() => expanded.set(!expanded())}
                       style={{
-                        ...controlStyle,
+                        ...controlStyle(),
                         flexDirection: 'row',
                         alignItems: 'center',
                         gap: 6,
@@ -218,7 +223,7 @@ function AgentTerminalRow(props: { entry: ResourceUpdate; open(entry: ResourceUp
       accessibilityLabel={tr('Open terminal {name}', { name: title() })}
       tooltip={textTooltip(title)}
       style={{
-        ...controlStyle,
+        ...controlStyle(),
         minHeight: 48,
         flexDirection: 'row',
         alignItems: 'center',

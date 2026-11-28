@@ -92,6 +92,7 @@ struct EnvSignals {
     horizontal_size_class: Memo<crate::platform::SizeClass>,
     vertical_size_class: Memo<crate::platform::SizeClass>,
     safe_area: Memo<EdgeInsets>,
+    reserved_regions: Memo<crate::platform::ReservedRegions>,
     title_bar: Memo<crate::geometry::Edges<crate::geometry::Points>>,
     window_state: Memo<Option<crate::desktop::WindowState>>,
     keyboard_height: Memo<Points>,
@@ -138,6 +139,7 @@ impl EnvSignals {
                     })
                 }),
                 safe_area: part!(safe_area),
+                reserved_regions: part!(reserved_regions),
                 title_bar: part!(title_bar),
                 window_state: part!(window_state),
                 keyboard_height: part!(keyboard_height),
@@ -354,6 +356,16 @@ pub fn vertical_size_class() -> crate::platform::SizeClass {
 /// The edges system UI covers: notch, home indicator (TS: `safeArea()`).
 pub fn safe_area() -> EdgeInsets {
     env(|e| e.safe_area)
+}
+
+/// The parts of the surface the device reserves inside the safe area, in
+/// the surface's points (reactive; TS: `reservedRegions()`): the fold of a
+/// partly folded display ([`crate::platform::ReservedRegionKind::Division`]),
+/// a camera that shows through it. Keep what matters clear of them, with
+/// small adjustments rather than a new layout. Empty where the platform
+/// reports none.
+pub fn reserved_regions() -> crate::platform::ReservedRegions {
+    env(|e| e.reserved_regions)
 }
 
 /// The software keyboard's height over the surface, 0 when hidden (TS:
@@ -1832,11 +1844,16 @@ pub struct KeyOptions {
     /// give way to the control the focus is on (default)
     /// ([`crate::keymap::KeyBinding::for_focus`]).
     pub for_focus: bool,
-    /// Comes before the views' bindings of the keystroke, so it takes a key
-    /// a focused component binds itself (a query editor's mod+enter over
-    /// the editor's own) while it is kept (default: the views' come first)
-    /// ([`crate::keymap::KeyBinding::over_focused`]).
-    pub over_focused: bool,
+    /// What it takes from the control with the keyboard focus
+    /// ([`crate::keymap::OverFocused`]; default: nothing, a focused
+    /// component's own bindings and press win). `Always`: it comes before
+    /// the views' bindings of the keystroke, so it takes a key a focused
+    /// component binds itself (a query editor's mod+enter over the
+    /// editor's own) while it is kept. `Pointer`: Return and Space from a
+    /// control a pointer gave the focus (a press, a popup a press used
+    /// giving it back), where they would press it; one the keyboard
+    /// focused still takes them.
+    pub over_focused: crate::keymap::OverFocused,
 }
 
 /// Where a keyboard shortcut fires ([`on_key_with`]; TS: `keymap.bind`'s

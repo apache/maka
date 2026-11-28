@@ -190,7 +190,7 @@ fn declarations(
     Ok(records)
 }
 pub(super) fn run_spec(c: &Connection, run: RunId) -> Result<RunSpec, StoreError> {
-    let row:Option<(u32,Vec<u8>)>=c.query_row("SELECT r.schema_version,c.payload FROM agent_run_specs r JOIN contents c ON c.id=r.spec_content_id WHERE r.run=?",[run.to_string()],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
+    let row:Option<(u32,Vec<u8>)>=c.query_row("SELECT r.schema_version,maka_content_bytes(c.payload,c.encoding) FROM agent_run_specs r JOIN contents c ON c.id=r.spec_content_id WHERE r.run=?",[run.to_string()],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
     let (version, bytes) = row.ok_or_else(|| invalid("artifact Run not found"))?;
     let spec: RunSpec = serde_json::from_slice(&bytes)?;
     if version != SCHEMA_VERSION || spec.schema_version != SCHEMA_VERSION {
@@ -199,9 +199,21 @@ pub(super) fn run_spec(c: &Connection, run: RunId) -> Result<RunSpec, StoreError
     Ok(spec)
 }
 pub(super) fn content_id(c: &Connection, reference: &ContentRef) -> Result<i64, StoreError> {
+    content_id_with_encoding(c, reference, true)
+}
+pub(super) fn content_id_with_encoding(
+    c: &Connection,
+    reference: &ContentRef,
+    encoded: bool,
+) -> Result<i64, StoreError> {
     reference.validate().map_err(invalid)?;
+    let sql = if encoded {
+        "SELECT id FROM contents WHERE content_sha256=? AND COALESCE(logical_bytes,length(payload))=?"
+    } else {
+        "SELECT id FROM contents WHERE content_sha256=? AND length(payload)=?"
+    };
     c.query_row(
-        "SELECT id FROM contents WHERE content_sha256=? AND length(payload)=?",
+        sql,
         params![reference.digest, to_sql_integer(reference.bytes)?],
         |r| r.get(0),
     )
@@ -238,8 +250,8 @@ pub(super) fn owned_decode<T: serde::de::DeserializeOwned>(
     reference: &ContentRef,
 ) -> Result<T, StoreError> {
     reference.validate().map_err(invalid)?;
-    let rowid:i64=c.query_row("SELECT x.id FROM agent_run_content p JOIN contents x ON x.id=p.content_id WHERE p.run=? AND x.content_sha256=? AND length(x.payload)=?",params![run.to_string(),reference.digest,to_sql_integer(reference.bytes)?],|row|row.get(0)).optional()?.ok_or_else(||invalid("artifact source is not pinned by original Run"))?;
-    let mut blob = c.blob_open("main", "contents", "payload", rowid, true)?;
+    let rowid:i64=c.query_row("SELECT x.id FROM agent_run_content p JOIN contents x ON x.id=p.content_id WHERE p.run=? AND x.content_sha256=? AND COALESCE(x.logical_bytes,length(x.payload))=?",params![run.to_string(),reference.digest,to_sql_integer(reference.bytes)?],|row|row.get(0)).optional()?.ok_or_else(||invalid("artifact source is not pinned by original Run"))?;
+    let mut blob = maka_event_log::content::open_by_id(c, rowid)?;
     let decoded = serde_json::from_reader(std::io::BufReader::new(&mut blob));
     blob.close()?;
     Ok(decoded?)

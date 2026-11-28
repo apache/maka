@@ -117,6 +117,14 @@ async fn universal_read_and_human_symmetric_session_tools_coordinate_rooms_and_w
             room_digest.contains("ROOM_GUIDELINE: Always verify zero-length snap-back on huge lines."),
             "{room_digest}"
         );
+        let unrelated = create(client, &base, &model, None).await?;
+        let archived = call(client, "agent", "changeSession", json!({
+            "sessionId":unrelated["id"], "expectedRevision":unrelated["revision"], "action":"archive"
+        })).await?;
+        assert_eq!(archived["kind"], "changed");
+        reply2.send_plan(tool_response("Read", json!({"path": format!("session:{room}")})));
+        let (continued, reply2) = provider.next().await?;
+        assert!(text_messages(&continued).contains("ROOM_GUIDELINE"));
         reply2
             .reply_text("Read room guidelines.");
         quiescent_message(client, parent_id, &sent["messageId"]).await?;

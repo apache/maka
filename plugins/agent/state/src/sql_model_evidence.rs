@@ -49,7 +49,7 @@ fn original_request(
             "model evidence attempt differs from its immutable original Step",
         ));
     }
-    let (digest,bytes):(String,i64)=c.query_row("SELECT b.content_sha256,length(b.payload) FROM agent_request_specs r JOIN contents b ON b.id=r.content_id WHERE r.run=? AND r.step=?",params![view.run.to_string(),original.step.to_string()],|r|Ok((r.get(0)?,r.get(1)?)))?;
+    let (digest,bytes):(String,i64)=c.query_row("SELECT b.content_sha256,COALESCE(b.logical_bytes,length(b.payload)) FROM agent_request_specs r JOIN contents b ON b.id=r.content_id WHERE r.run=? AND r.step=?",params![view.run.to_string(),original.step.to_string()],|r|Ok((r.get(0)?,r.get(1)?)))?;
     let reference = ContentRef {
         digest,
         bytes: u64::try_from(bytes)
@@ -82,6 +82,11 @@ pub(super) fn validate_control(
 ) -> Result<(), StoreError> {
     match fact {
         Fact::ModelFirstTokenObserved { attempt } => {
+            let Some(ns_id) =
+                crate::namespace::find_owner_id(c, &view.spec.owner, &view.spec.session_id)?
+            else {
+                return Ok(());
+            };
             let seen: bool = c
                 .prepare_cached(
                     "SELECT EXISTS(
@@ -89,14 +94,13 @@ pub(super) fn validate_control(
                         JOIN agent_session_history h INDEXED BY agent_session_history_run
                           ON h.run=a.run AND h.step=a.step AND h.attempt=a.attempt
                         JOIN agent_facts f ON f.sequence=h.sequence AND f.run=h.run
-                        WHERE h.owner=? AND h.session=? AND h.run=? AND a.attempt=?
+                        WHERE h.namespace_id=? AND h.run=? AND a.attempt=?
                           AND h.kind='model_first_token_observed' AND f.revision<=?
                     )",
                 )?
                 .query_row(
                     params![
-                        serde_json::to_string(&view.spec.owner)?,
-                        view.spec.session_id,
+                        ns_id,
                         view.run.to_string(),
                         attempt.to_string(),
                         signed(view.revision)?,
@@ -208,8 +212,11 @@ pub(super) fn validate_control(
                 .attempts
                 .get(attempt)
                 .ok_or_else(|| invalid("model output has no original prepared attempt"))?;
-            let selected: i64 = c.query_row("SELECT h.sequence FROM agent_session_history h INDEXED BY agent_session_history_kind JOIN agent_facts f ON f.sequence=h.sequence AND f.id=h.fact_id AND f.run=h.run WHERE h.owner=? AND h.session=? AND h.kind='model_transport_selected' AND h.run=? AND f.revision<=? ORDER BY h.sequence DESC LIMIT 1",params![serde_json::to_string(&view.spec.owner)?,view.spec.session_id,view.run.to_string(),signed(view.revision)?],|r|r.get(0))?;
-            let prepared: i64 = c.query_row("SELECT sequence FROM agent_session_history INDEXED BY agent_session_history_run WHERE owner=? AND session=? AND run=? AND step=? AND kind='model_attempt_prepared' AND attempt=?",params![serde_json::to_string(&view.spec.owner)?,view.spec.session_id,view.run.to_string(),original.step.to_string(),attempt.to_string()],|r|r.get(0))?;
+            let ns_id =
+                crate::namespace::find_owner_id(c, &view.spec.owner, &view.spec.session_id)?
+                    .ok_or_else(|| invalid("model output namespace missing from history"))?;
+            let selected: i64 = c.query_row("SELECT h.sequence FROM agent_session_history h INDEXED BY agent_session_history_kind JOIN agent_facts f ON f.sequence=h.sequence AND f.id=h.fact_id AND f.run=h.run WHERE h.namespace_id=? AND h.kind='model_transport_selected' AND h.run=? AND f.revision<=? ORDER BY h.sequence DESC LIMIT 1",params![ns_id,view.run.to_string(),signed(view.revision)?],|r|r.get(0))?;
+            let prepared: i64 = c.query_row("SELECT sequence FROM agent_session_history INDEXED BY agent_session_history_run WHERE namespace_id=? AND run=? AND step=? AND kind='model_attempt_prepared' AND attempt=?",params![ns_id,view.run.to_string(),original.step.to_string(),attempt.to_string()],|r|r.get(0))?;
             if prepared < selected
                 && original_request(c, view, *attempt)?.accounting.purpose == ModelPurpose::Main
             {

@@ -1173,6 +1173,9 @@ fn hold_row(app: &mut App, pointer_type: nsh_core::PointerType) {
                 pressure: 0.5,
                 tilt_x: 0.0,
                 tilt_y: 0.0,
+                coalesced: Vec::new(),
+                eraser: false,
+                barrel: false,
             }],
             modifiers: Default::default(),
             activated: None,
@@ -1941,6 +1944,9 @@ fn touch_row(app: &mut App, phase: nsh_core::TouchPhase) {
             pressure: 0.5,
             tilt_x: 0.0,
             tilt_y: 0.0,
+            coalesced: Vec::new(),
+            eraser: false,
+            barrel: false,
         }],
         modifiers: Default::default(),
         activated: None,
@@ -2062,4 +2068,76 @@ fn without_items_ios_mounts_what_the_other_platforms_do() {
     let ios = mounted(Os::Ios);
     assert!(!ios.is_empty());
     assert_eq!(ios, mounted(Os::Android));
+}
+
+/// A row with a context menu, and a chip inside it with its own.
+#[component]
+fn NestedMenus() -> impl IntoElement {
+    view().pt(px(100.0)).child(
+        context_menu()
+            .trigger(
+                view().test_id("row").w(px(300.0)).h(px(80.0)).child(
+                    context_menu()
+                        .trigger(
+                            view()
+                                .test_id("chip")
+                                .w(px(100.0))
+                                .h(px(30.0))
+                                .child(text("Chip")),
+                        )
+                        .child(menu_item().child(text("Chip item"))),
+                ),
+            )
+            .child(menu_item().child(text("Row item"))),
+    )
+}
+
+/// Holds a finger on `target`, whose touch path is `path` (innermost
+/// first).
+fn hold_on(app: &mut App, path: Vec<nsh_core::NodeId>) {
+    let event = nsh_core::TouchEvent {
+        phase: nsh_core::TouchPhase::Start,
+        timestamp: 0.0,
+        points: vec![nsh_core::TouchPoint {
+            id: 1,
+            target: path[0],
+            path,
+            page: point(px(10.0), px(110.0)),
+            location: point(px(10.0), px(10.0)),
+            changed: true,
+            pointer_type: PointerType::Touch,
+            pressure: 0.5,
+            tilt_x: 0.0,
+            tilt_y: 0.0,
+            coalesced: Vec::new(),
+            eraser: false,
+            barrel: false,
+        }],
+        modifiers: Default::default(),
+        activated: None,
+    };
+    app.app.engine().control().dispatch_event(
+        nsh_core::ROOT_ID,
+        EventKind::Touch,
+        EventPayload::Touch(Box::new(event)),
+    );
+    app.app.wait(std::time::Duration::from_millis(600)).unwrap();
+}
+
+#[test]
+fn a_held_finger_on_a_nested_trigger_opens_the_inner_menu_alone() {
+    let mut app = start_on(nsh_testing::windowed_root::<NestedMenus>(), Os::Windows);
+    let (row, chip) = {
+        let seen = app.seen.lock().unwrap();
+        (seen.test_ids["row"], seen.test_ids["chip"])
+    };
+    hold_on(&mut app, vec![chip, row]);
+    app.app.wait_for("Chip item").unwrap();
+    assert!(!app.app.shows("Row item"), "the outer menu stays shut");
+
+    // A hold on the row outside the chip still opens the row's menu.
+    let mut app = start_on(nsh_testing::windowed_root::<NestedMenus>(), Os::Windows);
+    hold_on(&mut app, vec![row]);
+    app.app.wait_for("Row item").unwrap();
+    assert!(!app.app.shows("Chip item"));
 }

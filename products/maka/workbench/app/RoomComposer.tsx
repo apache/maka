@@ -61,13 +61,16 @@ import { SkillInput } from './SkillInput';
 import type { ComposerEditor } from './ComposerEditor';
 import { Icon } from './Icon';
 import {
-  C,
   bodyTextStyle,
+  C,
   captionTextStyle,
-  controlStyle,
   controlFocusStyle,
+  controlStyle,
   floatingStyle,
   inputTextStyle,
+  lineWidth,
+  radius,
+  raisedShadow,
 } from './ui';
 import { tr } from './locale';
 import {
@@ -325,12 +328,7 @@ export function RoomComposer(props: {
   };
 
   const send = async () => {
-    if (!ready() || busy() || pending() || (!text().trim() && !attachments.ids().length)) return;
-    const blocked = attachments.blocked();
-    if (blocked) {
-      error.set(blocked);
-      return;
-    }
+    if (!canSend()) return;
     busy.set(true);
     error.set('');
     try {
@@ -588,15 +586,22 @@ export function RoomComposer(props: {
     return counts;
   };
 
+  const attachmentBlock = () => attachments.blocked();
+  const attachmentWarning = () => {
+    const block = attachmentBlock();
+    return block?.kind === 'draft' ? block.message : '';
+  };
   const canSend = () =>
     ready() &&
     !busy() &&
     pending() === null &&
+    attachmentBlock() === null &&
     (Boolean(text().trim()) || attachments.ids().length > 0);
 
   const streamError = () => props.streamError?.() ?? '';
   const waiting = () => props.waitingMembers?.() ?? [];
   const hasFailure = () => Boolean(streamError() || error() || pending());
+  const hasAttachmentWarning = () => Boolean(attachmentWarning());
   const hasWaiting = () => waiting().length > 0;
   const failureMessage = () =>
     error() || (pending() ? tr('Could not send to the room.') : streamError());
@@ -769,7 +774,7 @@ export function RoomComposer(props: {
                           gap: 10,
                           paddingHorizontal: 10,
                           paddingVertical: 8,
-                          borderRadius: 8,
+                          borderRadius: radius(8),
                           backgroundColor: index() === choice() ? C.surface : 'transparent',
                         }}
                         hoverStyle={{ backgroundColor: C.surface }}
@@ -803,9 +808,9 @@ export function RoomComposer(props: {
                                 style={{
                                   width: 22,
                                   height: 22,
-                                  borderRadius: 6,
+                                  borderRadius: radius(6),
                                   backgroundColor: C.surface,
-                                  borderWidth: 1,
+                                  borderWidth: lineWidth(),
                                   borderColor: C.line,
                                   alignItems: 'center',
                                   justifyContent: 'center',
@@ -879,14 +884,14 @@ export function RoomComposer(props: {
       </If>
 
       <View style={{ flexShrink: 0 }}>
-        <If when={hasFailure() || hasWaiting()}>
+        <If when={hasFailure() || hasAttachmentWarning() || hasWaiting()}>
           <ComposerShelf inset={20}>
             <If when={hasFailure()}>
               <ComposerShelfRow
                 tone="danger"
                 message={failureMessage()}
                 detail={pending() ? pendingPreview() : undefined}
-                divided={hasWaiting()}
+                divided={hasAttachmentWarning() || hasWaiting()}
                 action={{
                   label: tr('Retry'),
                   primary: true,
@@ -901,6 +906,13 @@ export function RoomComposer(props: {
                     : undefined
                 }
                 dismissLabel={tr('Dismiss message status')}
+              />
+            </If>
+            <If when={hasAttachmentWarning()}>
+              <ComposerShelfRow
+                tone="warning"
+                message={attachmentWarning()}
+                divided={hasWaiting()}
               />
             </If>
             <If when={hasWaiting()}>
@@ -925,7 +937,13 @@ export function RoomComposer(props: {
         </If>
         <View
           ref={(node) => composerCard.set(node)}
-          style={{ backgroundColor: C.card, borderRadius: 20, padding: 16, gap: 12 }}
+          style={{
+            backgroundColor: C.card,
+            borderRadius: radius(20),
+            padding: 16,
+            gap: 12,
+            ...raisedShadow(),
+          }}
         >
           <If when={replyTo() !== null}>
             <View
@@ -953,7 +971,7 @@ export function RoomComposer(props: {
                   replyQuote.set(null);
                   changed();
                 }}
-                style={controlStyle}
+                style={controlStyle()}
                 hoverStyle={{ backgroundColor: C.surface }}
               >
                 <Icon name="close" color={C.muted} />
@@ -985,7 +1003,7 @@ export function RoomComposer(props: {
                       gap: 4,
                       paddingHorizontal: 8,
                       paddingVertical: 4,
-                      borderRadius: 8,
+                      borderRadius: radius(8),
                       backgroundColor: C.surface,
                     }}
                     hoverStyle={{ backgroundColor: C.raised }}
@@ -1051,7 +1069,7 @@ export function RoomComposer(props: {
                 attachments.open({ owner: props.sessionId, value: !attachments.picker() })
               }
               disabled={!ready() || busy() || pending() !== null}
-              style={controlStyle}
+              style={controlStyle()}
               hoverStyle={{ backgroundColor: C.surface }}
               focusStyle={controlFocusStyle()}
             >
@@ -1061,7 +1079,7 @@ export function RoomComposer(props: {
               accessibilityLabel={tr('Mention a session')}
               onPress={openPicker}
               disabled={!ready() || busy() || pending() !== null}
-              style={controlStyle}
+              style={controlStyle()}
               hoverStyle={{ backgroundColor: C.surface }}
               focusStyle={controlFocusStyle()}
             >
@@ -1082,9 +1100,9 @@ export function RoomComposer(props: {
                   gap: 4,
                   paddingHorizontal: 10,
                   paddingVertical: 5,
-                  borderRadius: 10,
+                  borderRadius: radius(10),
                   backgroundColor: delivery() === 'queue' ? C.surface : 'transparent',
-                  borderWidth: 1,
+                  borderWidth: lineWidth(),
                   borderColor: delivery() === 'queue' ? C.accent : C.line,
                 }}
                 hoverStyle={{ backgroundColor: C.surface }}

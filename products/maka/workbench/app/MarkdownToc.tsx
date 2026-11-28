@@ -34,7 +34,7 @@ import {
 import { Button, Popover, Tooltip } from 'nsh/base';
 import { tr } from './locale';
 import type { TocHeadingItem, TocLayoutMode } from './markdownTocModel';
-import { C, captionTextStyle, floatingStyle, tooltipStyle, tooltipTextStyle } from './ui';
+import { C, captionTextStyle, floatingStyle, radius, tooltipStyle, tooltipTextStyle } from './ui';
 
 const ROW_HEIGHT = platform.idiom === 'terminal' ? 16 : 26;
 const FADE_HEIGHT = 24;
@@ -188,7 +188,7 @@ function TocHeadingList(props: {
               style={{
                 width: '100%',
                 height: ROW_HEIGHT,
-                borderRadius: platform.idiom === 'terminal' ? 0 : 6,
+                borderRadius: platform.idiom === 'terminal' ? 0 : radius(6),
                 paddingLeft: 8 + depth() * 10,
                 paddingRight: 8,
                 flexDirection: 'row',
@@ -209,7 +209,7 @@ function TocHeadingList(props: {
                     height: 12,
                     borderRadius: 1,
                     flexShrink: 0,
-                    backgroundColor: isActive() ? C.text : C.line,
+                    backgroundColor: isActive() ? C.text : C.pressed,
                     opacity: isActive() ? 1 : 0.45,
                   }}
                 />
@@ -252,8 +252,7 @@ function CompactTocRail(props: {
   readonly popoverWidth: () => number;
   readonly select: (item: TocHeadingItem) => void;
 }) {
-  const open = signal(false);
-  const pinned = signal(false);
+  const mode = signal<'closed' | 'hover' | 'pinned'>('closed');
   let closeTimer: ReturnType<typeof setTimeout> | undefined;
 
   const clearClose = () => {
@@ -264,10 +263,10 @@ function CompactTocRail(props: {
   };
   const scheduleHoverClose = () => {
     clearClose();
-    if (pinned()) return;
+    if (mode() !== 'hover') return;
     closeTimer = setTimeout(() => {
       closeTimer = undefined;
-      if (!pinned()) open.set(false);
+      if (mode() === 'hover') mode.set('closed');
     }, RAIL_HOVER_CLOSE_MS);
   };
   cleanup(clearClose);
@@ -295,17 +294,17 @@ function CompactTocRail(props: {
       ]}
     >
       <Popover
-        open={open()}
-        onOpenChange={({ open: next, reason }) => {
+        open={mode() !== 'closed'}
+        onOpenChange={({ reason }) => {
+          if (reason !== 'triggerPress') return;
           clearClose();
-          if (reason === 'triggerPress') {
-            const nextPinned = !pinned();
-            pinned.set(nextPinned);
-            open.set(nextPinned);
-            return;
-          }
-          pinned.set(false);
-          open.set(next);
+          mode.set(mode() === 'pinned' ? 'closed' : 'pinned');
+        }}
+        // Pinning a hover preview keeps it open despite the trigger's close request.
+        // A subsequent dismissal is a distinct gesture, even with the same requested value.
+        onCancel={() => {
+          clearClose();
+          mode.set('closed');
         }}
         closeOnEscape
         closeOnPressOutside
@@ -317,17 +316,17 @@ function CompactTocRail(props: {
           <Button
             testID="markdown-toc-rail"
             accessibilityLabel={tr('Table of contents')}
-            selected={open()}
+            selected={mode() === 'pinned'}
             onMouseEnter={() => {
               clearClose();
-              open.set(true);
+              if (mode() === 'closed') mode.set('hover');
             }}
             onMouseLeave={scheduleHoverClose}
             style={{
               width: RAIL_WIDTH,
               paddingVertical: 8,
               paddingHorizontal: 4,
-              borderRadius: 6,
+              borderRadius: radius(6),
               alignItems: 'flex-start',
               justifyContent: 'center',
               gap: 6,
@@ -377,8 +376,7 @@ function CompactTocRail(props: {
             floating
             select={(item) => {
               clearClose();
-              pinned.set(false);
-              open.set(false);
+              mode.set('closed');
               props.select(item);
             }}
           />

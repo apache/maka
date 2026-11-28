@@ -33,13 +33,11 @@
 use std::{
     cell::Cell,
     rc::Rc,
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
-use gstreamer::{self as gst, prelude::*};
-use gstreamer_app as gst_app;
-use gstreamer_audio as gst_audio;
+use crate::gst::{self, Buffer, Caps, Object};
 
 /// The samples' rate.
 pub(crate) const RATE: u32 = 48_000;
@@ -82,26 +80,23 @@ pub(crate) struct Decoded {
     pub(crate) truncated: bool,
 }
 
-/// Initializes GStreamer once (GTK's media streams may have already).
+/// Loads and starts GStreamer once (GTK's media streams may have started
+/// it already); without it, the library missing is named.
 fn init() -> Result<(), String> {
-    static INIT: OnceLock<Result<(), String>> = OnceLock::new();
-    INIT.get_or_init(|| gst::init().map_err(|e| format!("GStreamer did not start: {e}")))
-        .clone()
+    gst::api().map(|_| ())
 }
 
 /// The samples' caps.
-fn caps() -> gst::Caps {
-    gst_audio::AudioCapsBuilder::new_interleaved()
-        .format(gst_audio::AudioFormat::F32le)
-        .rate(RATE as i32)
-        .channels(CHANNELS as i32)
-        .build()
+fn caps_string() -> String {
+    format!("audio/x-raw,format=F32LE,layout=interleaved,rate={RATE},channels={CHANNELS}")
 }
 
-fn element(factory: &str) -> Result<gst::Element, String> {
-    gst::ElementFactory::make(factory)
-        .build()
-        .map_err(|_| format!("the GStreamer element `{factory}` is not installed"))
+fn caps() -> Caps {
+    Caps::parse(&caps_string())
+}
+
+fn element(factory: &str) -> Result<Object, String> {
+    Object::element(factory)
 }
 
 /// Why a sound did not decode.
@@ -136,12 +131,6 @@ fn unsupported(format: Option<&str>) -> Failure {
     ))
 }
 
-/// Whether `error` is GStreamer's for a stream it recognized but has no
-/// plug-in for (as opposed to bytes it cannot read).
-fn is_missing_plugin(error: &gst::glib::Error) -> bool {
-    error.matches(gst::StreamError::CodecNotFound) || error.matches(gst::CoreError::MissingPlugin)
-}
-
 /// The duration of `frames` at [`RATE`].
 fn duration_of(frames: usize) -> Duration {
     Duration::from_secs_f64(frames as f64 / f64::from(RATE))
@@ -168,61 +157,52 @@ pub(crate) fn decode(bytes: Vec<u8>, max: Duration) -> Result<Decoded, Failure> 
             truncated,
         });
     }
-    init()?;
-    let pipeline = gst::Pipeline::new();
-    let src = gst_app::AppSrc::builder()
-        .format(gst::Format::Bytes)
-        .build();
+    // Without GStreamer only WAV files load: anything else is a format
+    // nothing here decodes.
+    init().map_err(Failure::Unsupported)?;
+    let pipeline = Object::pipeline();
+    let src = element("appsrc")?;
+    src.set("format", "bytes");
     let decoder = element("decodebin")?;
     let convert = element("audioconvert")?;
     let resample = element("audioresample")?;
-    let sink = gst_app::AppSink::builder()
-        .caps(&caps())
-        .sync(false)
-        .build();
-    pipeline
-        .add_many([
-            src.upcast_ref::<gst::Element>(),
-            &decoder,
-            &convert,
-            &resample,
-            sink.upcast_ref(),
-        ])
-        .map_err(|e| e.to_string())?;
-    src.link(&decoder).map_err(|e| e.to_string())?;
-    gst::Element::link_many([&convert, &resample, sink.upcast_ref()]).map_err(|e| e.to_string())?;
+    let sink = element("appsink")?;
+    sink.set_sink_caps(&caps());
+    sink.set("sync", "false");
+    for e in [&src, &decoder, &convert, &resample, &sink] {
+        pipeline.add(e)?;
+    }
+    Object::link_many(&[&src, &decoder])?;
+    Object::link_many(&[&convert, &resample, &sink])?;
     // The decoder's pads come once it knows the stream: the first audio one
     // is the sound (a file with video too gives its audio).
     let convert_sink = convert
         .static_pad("sink")
         .ok_or("audioconvert has no sink")?;
-    decoder.connect_pad_added(move |_, pad| {
+    decoder.on_pad_added(move |pad| {
         let audio = pad
             .current_caps()
-            .and_then(|caps| caps.structure(0).map(|s| s.name().starts_with("audio/")))
-            .unwrap_or(false);
+            .and_then(|caps| caps.name())
+            .is_some_and(|name| name.starts_with("audio/"));
         if audio && !convert_sink.is_linked() {
-            let _ = pad.link(&convert_sink);
+            let _ = pad.link_pad(&convert_sink);
         }
     });
     // A stream the decoder recognized but has no plug-in for: its caps name
     // the format the app is told about.
     let missing = Arc::new(Mutex::new(None::<String>));
-    decoder.connect("unknown-type", false, {
+    decoder.on_unknown_type({
         let missing = missing.clone();
-        move |values| {
-            let caps = values.get(2).and_then(|v| v.get::<gst::Caps>().ok());
-            let name = caps.and_then(|c| c.structure(0).map(|s| s.name().to_string()));
+        move |name| {
             if let Ok(mut missing) = missing.lock()
                 && missing.is_none()
             {
                 *missing = Some(name.unwrap_or_default());
             }
-            None
         }
     });
     let result = pull(&pipeline, &src, &sink, bytes, max);
-    let _ = pipeline.set_state(gst::State::Null);
+    let _ = pipeline.set_state(gst::STATE_NULL);
     let missing = missing.lock().ok().and_then(|m| m.clone());
     let format = missing.as_deref().filter(|f| !f.is_empty());
     // The bus's missing-plug-in error does not say which format: the
@@ -250,28 +230,25 @@ pub(crate) fn decode(bytes: Vec<u8>, max: Duration) -> Result<Decoded, Failure> 
 /// Runs the decoding `pipeline` and collects its samples: the bytes and
 /// whether they were cut at `max`.
 fn pull(
-    pipeline: &gst::Pipeline,
-    src: &gst_app::AppSrc,
-    sink: &gst_app::AppSink,
+    pipeline: &Object,
+    src: &Object,
+    sink: &Object,
     bytes: Vec<u8>,
     max: Duration,
 ) -> Result<(Vec<u8>, bool), Failure> {
     let limit = (max.as_secs_f64() * f64::from(RATE)).ceil() as usize * FRAME_BYTES;
-    src.push_buffer(gst::Buffer::from_slice(bytes))
+    src.push_buffer(Buffer::wrap(bytes))
         .map_err(|e| format!("the sound cannot be read: {e}"))?;
-    let _ = src.end_of_stream();
+    src.end_of_stream();
     pipeline
-        .set_state(gst::State::Playing)
+        .set_state(gst::STATE_PLAYING)
         .map_err(|_| "the sound cannot be decoded".to_owned())?;
     let bus = pipeline.bus().ok_or("the pipeline has no bus")?;
     let deadline = Instant::now() + DECODE_TIMEOUT;
     let mut out = Vec::new();
     loop {
-        if let Some(sample) = sink.try_pull_sample(gst::ClockTime::from_mseconds(50)) {
-            if let Some(buffer) = sample.buffer() {
-                let map = buffer.map_readable().map_err(|e| e.to_string())?;
-                out.extend_from_slice(map.as_slice());
-            }
+        if let Some(sample) = sink.try_pull_sample(50_000_000) {
+            sample.append_to(&mut out);
             if out.len() > limit {
                 out.truncate(limit);
                 return Ok((out, true));
@@ -281,14 +258,12 @@ fn pull(
         if sink.is_eos() {
             return Ok((out, false));
         }
-        if let Some(message) = bus.pop_filtered(&[gst::MessageType::Error])
-            && let gst::MessageView::Error(error) = message.view()
-        {
-            let error = error.error();
-            if is_missing_plugin(&error) {
+        if let Some(message) = bus.pop_error() {
+            let error = message.error();
+            if error.missing_plugin {
                 return Err(unsupported(None));
             }
-            return Err(error.to_string().into());
+            return Err(error.message.into());
         }
         if Instant::now() > deadline {
             return Err("the sound did not decode in time".into());
@@ -325,8 +300,8 @@ fn at_rate(pcm: &Pcm, rate: f32) -> Pcm {
 /// A play: its source and the mixer pad it plays through.
 struct Voice {
     sound: u32,
-    src: gst_app::AppSrc,
-    pad: gst::Pad,
+    src: Object,
+    pad: Object,
     started: Instant,
     /// When its samples will have played.
     until: Instant,
@@ -334,12 +309,15 @@ struct Voice {
 
 /// The pipeline every sound of an engine plays through.
 pub(crate) struct Mixer {
-    pipeline: gst::Pipeline,
-    mixer: gst::Element,
+    pipeline: Object,
+    mixer: Object,
     voices: Vec<Voice>,
     /// Set by the bus when the output failed.
     broken: Rc<Cell<bool>>,
-    _bus: Option<gst::bus::BusWatchGuard>,
+    _bus: Option<gst::Watch>,
+    /// The output element, which tests read from.
+    #[cfg(test)]
+    output: Object,
 }
 
 impl Mixer {
@@ -349,19 +327,15 @@ impl Mixer {
         init()?;
         let output = OUTPUTS
             .iter()
-            .find(|factory| gst::ElementFactory::find(factory).is_some())
+            .find(|factory| gst::has_element(factory))
             .ok_or("no GStreamer audio output is installed")?;
         let mut mixer = Self::with_sink(output)?;
         let flag = mixer.broken.clone();
         mixer._bus = mixer.pipeline.bus().and_then(|bus| {
-            bus.add_watch_local(move |_, message| {
-                if let gst::MessageView::Error(error) = message.view() {
-                    log::warn!("the sound output failed: {}", error.error());
-                    flag.set(true);
-                }
-                gst::glib::ControlFlow::Continue
+            bus.watch_errors(move |error| {
+                log::warn!("the sound output failed: {}", error.message);
+                flag.set(true);
             })
-            .ok()
         });
         Ok(mixer)
     }
@@ -370,28 +344,32 @@ impl Mixer {
     /// `fakesink`), unwatched.
     fn with_sink(sink: &str) -> Result<Mixer, String> {
         init()?;
-        let pipeline = gst::Pipeline::new();
+        let pipeline = Object::pipeline();
         // The silent source keeps the mixer running, live, between plays:
-        // a voice's samples go at the running time they were added at.
-        let silence = gst::ElementFactory::make("audiotestsrc")
-            .property_from_str("wave", "silence")
-            .property("is-live", true)
-            .property("samplesperbuffer", SILENCE_SAMPLES)
-            .build()
-            .map_err(|_| "the GStreamer element `audiotestsrc` is not installed".to_owned())?;
-        let filter = gst::ElementFactory::make("capsfilter")
-            .property("caps", caps())
-            .build()
-            .map_err(|_| "the GStreamer element `capsfilter` is not installed".to_owned())?;
+        // a voice's samples go at the running time they were added at. Its
+        // silence is a sine of no frequency, zeros, rather than the
+        // `silence` wave: that one's buffers are gaps, which an audio sink
+        // drops rather than writes, so it loses its place in the output
+        // and cuts the first tens of milliseconds of the next play (all of
+        // a click).
+        let silence = element("audiotestsrc")?;
+        silence.set("wave", "sine");
+        silence.set("freq", "0");
+        silence.set("is-live", "true");
+        silence.set("samplesperbuffer", &SILENCE_SAMPLES.to_string());
+        let filter = element("capsfilter")?;
+        filter.set("caps", &caps_string());
         let mixer = element("audiomixer")?;
         let convert = element("audioconvert")?;
         let resample = element("audioresample")?;
         let output = element(sink)?;
         let all = [&silence, &filter, &mixer, &convert, &resample, &output];
-        pipeline.add_many(all).map_err(|e| e.to_string())?;
-        gst::Element::link_many(all).map_err(|e| e.to_string())?;
+        for e in all {
+            pipeline.add(e)?;
+        }
+        Object::link_many(&all)?;
         pipeline
-            .set_state(gst::State::Playing)
+            .set_state(gst::STATE_PLAYING)
             .map_err(|_| "the sound output did not start".to_owned())?;
         Ok(Mixer {
             pipeline,
@@ -399,6 +377,8 @@ impl Mixer {
             voices: Vec::new(),
             broken: Rc::default(),
             _bus: None,
+            #[cfg(test)]
+            output,
         })
     }
 
@@ -425,25 +405,27 @@ impl Mixer {
         }
         let pcm = at_rate(pcm, rate);
         let length = duration_of(pcm.frames());
-        let src = gst_app::AppSrc::builder()
-            .caps(&caps())
-            .format(gst::Format::Time)
-            .is_live(true)
-            .build();
-        self.pipeline.add(&src).map_err(|e| e.to_string())?;
+        let src = element("appsrc")?;
+        src.set_src_caps(&caps());
+        src.set("format", "time");
+        src.set("is-live", "true");
+        // Its samples are all queued at once: no latency, and no bound on
+        // how long they may wait. By default a live `appsrc` answers a
+        // latency of at most 0, below the silent source's 10 ms, and the
+        // mixer, unable to set its latency, mixes without waiting for the
+        // voice and drops its samples as late.
+        src.set("min-latency", "0");
+        self.pipeline.add(&src)?;
         let pad = self
             .mixer
-            .request_pad_simple("sink_%u")
+            .request_pad("sink_%u")
             .ok_or("the mixer gave no pad")?;
-        pad.set_property("volume", f64::from(volume.clamp(0.0, 1.0)));
+        pad.set("volume", &f64::from(volume.clamp(0.0, 1.0)).to_string());
         let src_pad = src.static_pad("src").ok_or("appsrc has no pad")?;
         // The samples start at 0 in their segment: offset to the running
         // time now, they play from now on (and are not late).
-        let now = self
-            .pipeline
-            .current_running_time()
-            .unwrap_or(gst::ClockTime::ZERO);
-        src_pad.set_offset(now.nseconds() as i64);
+        let now = self.pipeline.running_time().unwrap_or(0);
+        src_pad.set_offset(now as i64);
         let voice = Voice {
             sound,
             src: src.clone(),
@@ -451,20 +433,17 @@ impl Mixer {
             started: Instant::now(),
             until: Instant::now() + length,
         };
-        if let Err(e) = src_pad.link(&pad) {
+        if let Err(e) = src_pad.link_pad(&pad) {
             self.remove(voice);
-            return Err(format!("{e:?}"));
+            return Err(e);
         }
-        let mut buffer = gst::Buffer::from_slice(pcm.0.clone());
-        if let Some(buffer) = buffer.get_mut() {
-            buffer.set_pts(gst::ClockTime::ZERO);
-            buffer.set_duration(gst::ClockTime::from_nseconds(length.as_nanos() as u64));
-        }
-        let pushed = src
-            .sync_state_with_parent()
-            .map_err(|e| e.to_string())
-            .and_then(|()| src.push_buffer(buffer).map_err(|e| e.to_string()))
-            .and_then(|_| src.end_of_stream().map_err(|e| e.to_string()));
+        let mut buffer = Buffer::wrap(Shared(pcm.0.clone()));
+        buffer.set_timing(0, length.as_nanos() as u64);
+        let pushed = src.sync_state_with_parent().and_then(|()| {
+            src.push_buffer(buffer)?;
+            src.end_of_stream();
+            Ok(())
+        });
         if let Err(e) = pushed {
             self.remove(voice);
             return Err(e);
@@ -503,18 +482,27 @@ impl Mixer {
     }
 
     fn remove(&self, voice: Voice) {
-        let _ = voice.src.set_state(gst::State::Null);
+        let _ = voice.src.set_state(gst::STATE_NULL);
         if let Some(src_pad) = voice.src.static_pad("src") {
-            let _ = src_pad.unlink(&voice.pad);
+            src_pad.unlink_pad(&voice.pad);
         }
         self.mixer.release_request_pad(&voice.pad);
-        let _ = self.pipeline.remove(&voice.src);
+        self.pipeline.remove(&voice.src);
     }
 }
 
 impl Drop for Mixer {
     fn drop(&mut self) {
-        let _ = self.pipeline.set_state(gst::State::Null);
+        let _ = self.pipeline.set_state(gst::STATE_NULL);
+    }
+}
+
+/// Samples shared with a buffer.
+struct Shared(Arc<[u8]>);
+
+impl AsRef<[u8]> for Shared {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
     }
 }
 
@@ -733,7 +721,7 @@ mod tests {
         // GStreamer's base plug-ins recognize a SID tune (`audio/x-sid`) by
         // its header; its decoder is in gst-plugins-ugly, which CI does not
         // install.
-        if gst::ElementFactory::find("siddec").is_some() {
+        if gst::has_element("siddec") {
             return;
         }
         let mut tune = b"PSID".to_vec();
@@ -745,6 +733,51 @@ mod tests {
             }
             other => panic!("not unsupported: {other:?}"),
         }
+    }
+
+    /// An Ogg Vorbis tone of about `ms`, encoded by GStreamer itself (base
+    /// plug-ins), `None` without an encoder.
+    fn ogg(ms: u32) -> Option<Vec<u8>> {
+        init().ok()?;
+        let pipeline = Object::pipeline();
+        let src = element("audiotestsrc").ok()?;
+        src.set("num-buffers", &(ms / 10).to_string());
+        src.set("samplesperbuffer", "480");
+        let convert = element("audioconvert").ok()?;
+        let encoder = element("vorbisenc").ok()?;
+        let mux = element("oggmux").ok()?;
+        let sink = element("appsink").ok()?;
+        sink.set("sync", "false");
+        let all = [&src, &convert, &encoder, &mux, &sink];
+        for e in all {
+            pipeline.add(e).ok()?;
+        }
+        Object::link_many(&all).ok()?;
+        pipeline.set_state(gst::STATE_PLAYING).ok()?;
+        let mut out = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !sink.is_eos() && Instant::now() < deadline {
+            if let Some(sample) = sink.try_pull_sample(50_000_000) {
+                sample.append_to(&mut out);
+            }
+        }
+        let _ = pipeline.set_state(gst::STATE_NULL);
+        Some(out)
+    }
+
+    #[test]
+    fn decodes_a_compressed_sound_through_gstreamer() {
+        let Some(bytes) = ogg(500) else {
+            return;
+        };
+        let decoded = decode(bytes, Duration::from_secs(5)).unwrap();
+        // 50 buffers of 480 frames at audiotestsrc's 44.1 kHz.
+        let expected = Duration::from_secs_f64(24_000.0 / 44_100.0);
+        assert!(
+            decoded.duration.abs_diff(expected) < Duration::from_millis(60),
+            "{:?}",
+            decoded.duration
+        );
     }
 
     #[test]
@@ -774,6 +807,17 @@ mod tests {
         mixer.sweep();
         assert_eq!(mixer.voices(), 0);
         assert!(!mixer.is_broken());
+    }
+
+    /// Between plays the output gets silence, not gaps: an audio sink
+    /// drops a gap and cuts the start of the play after it.
+    #[test]
+    fn the_silence_between_plays_is_not_a_gap() {
+        let mixer = Mixer::with_sink("appsink").unwrap();
+        let sample = (0..20)
+            .find_map(|_| mixer.output.try_pull_sample(100_000_000))
+            .expect("the mixer's output");
+        assert!(!sample.is_gap());
     }
 
     #[test]

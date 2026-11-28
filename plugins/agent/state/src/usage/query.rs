@@ -192,7 +192,11 @@ fn fence(db: &Connection, query: &UsageQuery, domain: &str) -> Result<UsageFence
 
 // Parameters ?1..=?5 are the inclusive wall-clock range and the three canonical cuts.
 // All owner/session predicates are concrete equality constraints when selected.
-fn scope(query: &UsageQuery, through: &UsageFence) -> Result<(String, Vec<Value>), StoreError> {
+fn scope(
+    db: &Connection,
+    query: &UsageQuery,
+    through: &UsageFence,
+) -> Result<(String, Vec<Value>), StoreError> {
     let mut values = vec![
         Value::Real(query.from),
         Value::Real(query.to),
@@ -201,13 +205,33 @@ fn scope(query: &UsageQuery, through: &UsageFence) -> Result<(String, Vec<Value>
         Value::Integer(integer(through.cell_sequence)?),
     ];
     let mut predicate = String::new();
-    if let Some(owner) = &query.owner {
-        values.push(Value::Text(serde_json::to_string(owner)?));
-        predicate.push_str(&format!(" AND c.owner=?{}", values.len()));
-    }
-    if let Some(session) = &query.session_id {
-        values.push(Value::Text(session.clone()));
-        predicate.push_str(&format!(" AND c.session=?{}", values.len()));
+    match (&query.owner, &query.session_id) {
+        (Some(owner), Some(session)) => {
+            if let Some(ns_id) = crate::namespace::find_owner_id(db, owner, session)? {
+                values.push(Value::Integer(ns_id.as_i64()));
+                predicate.push_str(&format!(
+                    " AND c.namespace_id=?{} AND c.namespace_id IS NOT NULL",
+                    values.len()
+                ));
+            } else {
+                predicate.push_str(" AND 0");
+            }
+        }
+        (Some(owner), None) => {
+            values.push(Value::Text(serde_json::to_string(owner)?));
+            predicate.push_str(&format!(
+                " AND c.namespace_id IN (SELECT id FROM agent_namespaces WHERE owner=?{}) AND c.namespace_id IS NOT NULL",
+                values.len()
+            ));
+        }
+        (None, Some(session)) => {
+            values.push(Value::Text(session.clone()));
+            let idx = values.len();
+            predicate.push_str(&format!(
+                " AND ((c.standalone_session=?{idx} AND c.standalone_session IS NOT NULL) OR (c.namespace_id IN (SELECT id FROM agent_namespaces WHERE session=?{idx}) AND c.namespace_id IS NOT NULL))"
+            ));
+        }
+        (None, None) => {}
     }
     Ok((predicate, values))
 }
@@ -217,7 +241,8 @@ const CUT: &str =
 
 fn settled(scope: &str) -> String {
     format!(
-        "FROM agent_usage_results r JOIN agent_usage_calls c ON c.request=r.request {}",
+        "FROM agent_usage_results r JOIN agent_usage_calls c ON c.request=r.request
+         LEFT JOIN agent_usage_json_blobs q ON q.id=c.quote_id {}",
         settled_where(scope)
     )
 }

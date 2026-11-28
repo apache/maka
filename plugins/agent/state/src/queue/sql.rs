@@ -107,9 +107,22 @@ fn head(c: &Connection, session: &str, revision: u64) -> Result<(), StoreError> 
     Ok(())
 }
 fn exact_content(c: &Connection, reference: &ContentRef) -> Result<Vec<u8>, StoreError> {
+    exact_content_with_encoding(c, reference, true)
+}
+fn exact_content_with_encoding(
+    c: &Connection,
+    reference: &ContentRef,
+    encoded: bool,
+) -> Result<Vec<u8>, StoreError> {
     reference.validate().map_err(invalid)?;
-    let bytes = content::read(c, &reference.digest)?
-        .ok_or_else(|| invalid("missing pinned queue content"))?;
+    let bytes = if encoded {
+        content::read(c, &reference.digest)?
+    } else {
+        c.prepare_cached("SELECT payload FROM contents WHERE content_sha256=?")?
+            .query_row([&reference.digest], |r| r.get(0))
+            .optional()?
+    }
+    .ok_or_else(|| invalid("missing pinned queue content"))?;
     if bytes.len() as u64 != reference.bytes || content_digest(&bytes) != reference.digest {
         return Err(invalid("corrupt queue content"));
     }
@@ -118,16 +131,22 @@ fn exact_content(c: &Connection, reference: &ContentRef) -> Result<Vec<u8>, Stor
 fn put(c: &Connection, blob: &ContentBlob) -> Result<i64, StoreError> {
     blob.store(c)
 }
-fn pin(
+fn pin_with_encoding(
     c: &Connection,
     session: &str,
     request: &RequestId,
     reference: &ContentRef,
+    encoded: bool,
 ) -> Result<(), StoreError> {
     reference.validate().map_err(invalid)?;
+    let sql = if encoded {
+        "SELECT id FROM contents WHERE content_sha256=? AND COALESCE(logical_bytes,length(payload))=?"
+    } else {
+        "SELECT id FROM contents WHERE content_sha256=? AND length(payload)=?"
+    };
     let content_id: i64 = c
         .query_row(
-            "SELECT id FROM contents WHERE content_sha256=? AND length(payload)=?",
+            sql,
             params![reference.digest, to_sql_integer(reference.bytes)?],
             |r| r.get(0),
         )
@@ -145,17 +164,26 @@ fn references(request: &PreparedRequest) -> Vec<&ContentRef> {
     refs
 }
 fn source(c: &Connection, request: &PreparedRequest) -> Result<RootSourceMessage, StoreError> {
-    let source: RootSourceMessage = serde_json::from_slice(&exact_content(c, &request.source)?)?;
+    source_with_encoding(c, request, true)
+}
+fn source_with_encoding(
+    c: &Connection,
+    request: &PreparedRequest,
+    encoded: bool,
+) -> Result<RootSourceMessage, StoreError> {
+    let source: RootSourceMessage =
+        serde_json::from_slice(&exact_content_with_encoding(c, &request.source, encoded)?)?;
     source.validate().map_err(invalid)?;
     if source.message.message_id != request.message_id {
         return Err(invalid("queue message/source identity differs"));
     }
     Ok(source)
 }
-fn validate_request(
+fn validate_request_with_encoding(
     c: &Connection,
     session: &str,
     request: &PreparedRequest,
+    encoded: bool,
 ) -> Result<RootSourceMessage, StoreError> {
     id(session)?;
     id(&request.id.0)?;
@@ -169,7 +197,7 @@ fn validate_request(
             "queue request is not a local request for this session/schema",
         ));
     }
-    let source = source(c, request)?;
+    let source = source_with_encoding(c, request, encoded)?;
     let matches_source = match &request.spec.trigger {
         Trigger::Message { .. } => is_interactive(request, &source),
         Trigger::Goal { goal_id } => {
@@ -252,7 +280,7 @@ pub(crate) fn stopped_by_user(c: &Connection, run: RunId) -> Result<bool, StoreE
         "SELECT EXISTS(SELECT 1 FROM agent_runs r
          JOIN agent_facts f ON f.id=r.stop_request AND f.run=r.run
          JOIN contents b ON b.id=f.body_content_id
-         WHERE r.run=?1 AND json_extract(b.payload,'$.fact.requester.kind')='user')",
+         WHERE r.run=?1 AND json_extract(maka_content_text(b.payload,b.encoding),'$.fact.requester.kind')='user')",
     )?
     .query_row([run.to_string()], |row| row.get(0))?)
 }
@@ -263,7 +291,7 @@ fn has_held(c: &Connection, session: &str) -> Result<bool, StoreError> {
     .query_row([session], |row| row.get(0))?)
 }
 /// From a user Stop until the Session's next Run, what others send waits.
-fn holding(c: &Connection, session: &str) -> Result<bool, StoreError> {
+pub(super) fn holding(c: &Connection, session: &str) -> Result<bool, StoreError> {
     Ok(has_held(c, session)?
         || match crate::sql::latest(c, session.to_owned())? {
             Some(run) => stopped_by_user(c, run)?,
@@ -315,9 +343,30 @@ pub(crate) fn deliver_held(
     )
 }
 fn run_head(c: &Connection, run: RunId) -> Result<(RunSpec, Head, bool, bool), StoreError> {
-    let row: Option<(Vec<u8>,u32,i64,i64,bool,bool)> = c.query_row(
-        "SELECT c.payload,r.schema_version,r.revision,r.control_version,r.stopped,r.terminal IS NOT NULL FROM agent_run_specs s JOIN contents c ON c.id=s.spec_content_id JOIN agent_runs r ON r.run=s.run WHERE s.run=?",
-        [run.to_string()], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).optional()?;
+    run_head_with_encoding(c, run, true)
+}
+fn run_head_with_encoding(
+    c: &Connection,
+    run: RunId,
+    encoded: bool,
+) -> Result<(RunSpec, Head, bool, bool), StoreError> {
+    let sql = if encoded {
+        "SELECT maka_content_bytes(c.payload,c.encoding),r.schema_version,r.revision,r.control_version,r.stopped,r.terminal IS NOT NULL FROM agent_run_specs s JOIN contents c ON c.id=s.spec_content_id JOIN agent_runs r ON r.run=s.run WHERE s.run=?"
+    } else {
+        "SELECT c.payload,r.schema_version,r.revision,r.control_version,r.stopped,r.terminal IS NOT NULL FROM agent_run_specs s JOIN contents c ON c.id=s.spec_content_id JOIN agent_runs r ON r.run=s.run WHERE s.run=?"
+    };
+    let row: Option<(Vec<u8>, u32, i64, i64, bool, bool)> = c
+        .query_row(sql, [run.to_string()], |r| {
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get(3)?,
+                r.get(4)?,
+                r.get(5)?,
+            ))
+        })
+        .optional()?;
     let (body, version, revision, control_version, stopped, terminal) =
         row.ok_or_else(|| invalid("steering Run not found"))?;
     let spec: RunSpec = serde_json::from_slice(&body)?;
@@ -453,7 +502,7 @@ fn followup(
     type OriginalRunRow = (u32, Vec<u8>, u32, String, String, i64, i64);
     let row: Option<OriginalRunRow> = c
         .query_row(
-            "SELECT s.schema_version,b.payload,r.schema_version,r.owner,r.session,r.local,r.stopped
+            "SELECT s.schema_version,maka_content_bytes(b.payload,b.encoding),r.schema_version,r.owner,r.session,r.local,r.stopped
          FROM agent_run_specs s JOIN contents b ON b.id=s.spec_content_id
          JOIN agent_runs r ON r.run=s.run
          WHERE s.run=?1 AND s.owner=?2 AND s.session=?3",
@@ -548,7 +597,7 @@ fn previous(
     command: FactId,
     event: &Event,
 ) -> Result<Option<u64>, StoreError> {
-    let row: Option<(i64,Vec<u8>)> = c.query_row("SELECT e.revision,c.payload FROM agent_queue_events e JOIN contents c ON c.id=e.body_content_id WHERE e.session=? AND e.id=?", params![session,command.to_string()], |r| Ok((r.get(0)?,r.get(1)?))).optional()?;
+    let row: Option<(i64,Vec<u8>)> = c.query_row("SELECT e.revision,maka_content_bytes(c.payload,c.encoding) FROM agent_queue_events e JOIN contents c ON c.id=e.body_content_id WHERE e.session=? AND e.id=?", params![session,command.to_string()], |r| Ok((r.get(0)?,r.get(1)?))).optional()?;
     row.map(|(revision, body)| {
         if serde_json::from_slice::<Event>(&body)? != *event {
             return Err(StoreError::EventConflict);
@@ -666,7 +715,6 @@ pub(super) fn write(
 pub(crate) fn stop_queue(
     c: &Connection,
     session: &str,
-    run: RunId,
     stop: &Change,
     requester: &StopRequester,
 ) -> Result<(), StoreError> {
@@ -696,15 +744,13 @@ pub(crate) fn stop_queue(
             expected_revision = commit.revision;
             continue;
         }
-        // The stopped turn's own continuation is taken back with the Stop.
+        // Hold any pending worker completion across a user Stop (even if owned by an earlier
+        // finished turn); only the stopped turn's own recovery continuation is taken back.
         let keep = match entry.placement {
-            Placement::Completion { caller } => {
-                caller == run
-                    && matches!(
-                        source.message.origin,
-                        Some(MessageOrigin::SessionCompletion { .. })
-                    )
-            }
+            Placement::Completion { .. } => matches!(
+                source.message.origin,
+                Some(MessageOrigin::SessionCompletion { .. })
+            ),
             Placement::Held => false,
             Placement::Followup | Placement::Steering { .. } => true,
         };
@@ -771,6 +817,17 @@ fn project(
     at: UnixMillis,
     check: bool,
 ) -> Result<(), StoreError> {
+    project_with_encoding(c, session, next, event, at, check, true)
+}
+fn project_with_encoding(
+    c: &Connection,
+    session: &str,
+    next: u64,
+    event: &Event,
+    at: UnixMillis,
+    check: bool,
+    encoded: bool,
+) -> Result<(), StoreError> {
     match event {
         Event::Command {
             edit,
@@ -789,7 +846,7 @@ fn project(
             };
             match edit {
                 QueueEdit::Enqueue { request, placement } => {
-                    let source = validate_request(c, session, request)?;
+                    let source = validate_request_with_encoding(c, session, request, encoded)?;
                     if matches!(placement, Placement::Steering { .. })
                         && !is_interactive(request, &source)
                         && !matches!(&request.spec.trigger, Trigger::Schedule { .. })
@@ -799,7 +856,7 @@ fn project(
                     if matches!(placement, Placement::Held) && !held(request, &source) {
                         return Err(invalid("only messages others sent can wait after a Stop"));
                     }
-                    crate::artifacts::pin_request(c, request, &source)?;
+                    crate::artifacts::pin_request_with_encoding(c, request, &source, encoded)?;
                     let exists: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM agent_queue_items WHERE session=? AND (request=? OR message=?))",params![session,request.id.0,request.message_id],|r|r.get(0))?;
                     if exists {
                         return Err(StoreError::EventConflict);
@@ -808,7 +865,7 @@ fn project(
                         target(c, session, &request.spec.owner, *run, Some(*expected_head))?;
                     }
                     for reference in references(request) {
-                        pin(c, session, &request.id, reference)?;
+                        pin_with_encoding(c, session, &request.id, reference, encoded)?;
                     }
                     let entry = QueueEntry {
                         request: *request.clone(),
@@ -816,7 +873,8 @@ fn project(
                     };
                     let (lane, mut target) = placement_columns(placement);
                     if let Placement::Completion { caller } = placement {
-                        let (original, _, stopped, _) = run_head(c, *caller)?;
+                        let (original, _, stopped, _) =
+                            run_head_with_encoding(c, *caller, encoded)?;
                         use maka_agent_facts::message::MessageOrigin;
                         let valid_source = match &source.message.origin {
                             Some(MessageOrigin::SessionCompletion { .. }) => true,
@@ -850,19 +908,19 @@ fn project(
                 }
                 QueueEdit::Update { request } => {
                     let mut old = pending(c, session, &request.id)?;
-                    let before = source(c, &old.request)?;
+                    let before = source_with_encoding(c, &old.request, encoded)?;
                     if !is_interactive(&old.request, &before) {
                         return Err(invalid(
                             "only interactive queue messages can be steered or edited",
                         ));
                     }
-                    let after = validate_request(c, session, request)?;
+                    let after = validate_request_with_encoding(c, session, request, encoded)?;
                     if !is_interactive(request, &after) {
                         return Err(invalid(
                             "only interactive queue messages can be steered or edited",
                         ));
                     }
-                    crate::artifacts::pin_request(c, request, &after)?;
+                    crate::artifacts::pin_request_with_encoding(c, request, &after, encoded)?;
                     if old.request.message_id != request.message_id
                         || old.request.spec.owner != request.spec.owner
                         || old.request.spec.turn_id != request.spec.turn_id
@@ -881,7 +939,7 @@ fn project(
                         return Err(invalid("queue edit changed the completion workspace basis"));
                     }
                     for reference in references(request) {
-                        pin(c, session, &request.id, reference)?;
+                        pin_with_encoding(c, session, &request.id, reference, encoded)?;
                     }
                     old.request = *request.clone();
                     c.execute(
@@ -901,7 +959,7 @@ fn project(
                     target: steering,
                 } => {
                     let mut entry = pending(c, session, request)?;
-                    let source = source(c, &entry.request)?;
+                    let source = source_with_encoding(c, &entry.request, encoded)?;
                     if !is_interactive(&entry.request, &source) {
                         return Err(invalid(
                             "only interactive queue messages can be steered or edited",
@@ -1084,7 +1142,7 @@ pub(super) fn recover_undelivered_steering(
            AND (r.terminal IS NOT NULL OR EXISTS (
                SELECT 1 FROM agent_facts f JOIN contents b ON b.id=f.body_content_id
                WHERE f.id=r.stop_request AND f.run=r.run
-                 AND json_extract(b.payload,'$.fact.diagnostic')=?2
+                 AND json_extract(maka_content_text(b.payload,b.encoding),'$.fact.diagnostic')=?2
            ))",
         )?
         .query_map(
@@ -1208,7 +1266,7 @@ pub(super) fn resolve(
                     JOIN agent_continuation_successors x ON x.source_run = h.run
                     JOIN agent_run_specs s ON s.run = x.run
                     JOIN contents b ON b.id = s.spec_content_id
-                    WHERE json_extract(b.payload, '$.trigger.kind') = 'checkpoint_handoff'
+                    WHERE json_extract(maka_content_text(b.payload, b.encoding), '$.trigger.kind') = 'checkpoint_handoff'
                 )
                 SELECT run FROM handoff ORDER BY depth DESC LIMIT 1
             ), shared FROM agent_queue_items q WHERE session=? AND message=?",
@@ -1279,6 +1337,12 @@ pub(super) fn ready(
         .collect()
 }
 pub(crate) fn rebuild_queue_projections(c: &Connection) -> Result<(), StoreError> {
+    let encoded = content::has_encoding_column(c)?;
+    let body = if encoded {
+        "maka_content_bytes(b.payload,b.encoding)"
+    } else {
+        "b.payload"
+    };
     let mut after = String::new();
     loop {
         let sessions: Vec<String> = c.prepare_cached(
@@ -1288,7 +1352,7 @@ pub(crate) fn rebuild_queue_projections(c: &Connection) -> Result<(), StoreError
             break;
         }
         for session in sessions {
-            rebuild(c, &session)?;
+            replay_queue_events(c, &session, body, encoded)?;
             after = session;
         }
     }
@@ -1296,12 +1360,74 @@ pub(crate) fn rebuild_queue_projections(c: &Connection) -> Result<(), StoreError
 }
 
 pub(super) fn rebuild(c: &Connection, session: &str) -> Result<QueueCommit, StoreError> {
+    replay_queue_events(
+        c,
+        session,
+        "CASE WHEN e.memory_admission IS NULL THEN maka_content_bytes(b.payload,b.encoding)
+         ELSE CAST(json_set(maka_content_text(b.payload,b.encoding), '$.edit.request.spec.memoryAdmission', e.memory_admission) AS BLOB) END",
+        true,
+    )
+}
+
+/// Keep the original command body intact for idempotency and the queue revision intact for CAS.
+/// Only the last enqueue or update supplied the request that was pending at upgrade.
+pub(crate) fn migrate_memory_admissions(c: &Connection) -> Result<(), StoreError> {
+    let expected: i64 = c.query_row("SELECT count(*) FROM pinned_queue_admissions", [], |r| {
+        r.get(0)
+    })?;
+    let recorded = c.execute(
+        "WITH last_edit(session,revision,admission) AS MATERIALIZED (
+           SELECT e.session,max(e.revision),p.admission
+           FROM (SELECT DISTINCT session FROM pinned_queue_admissions) affected
+           CROSS JOIN agent_queue_events e ON e.session=affected.session
+           CROSS JOIN contents b ON b.id=e.body_content_id
+           CROSS JOIN pinned_queue_admissions p ON p.session=e.session
+             AND p.request=b.payload->>'$.edit.request.id'
+           WHERE b.payload->>'$.kind'='command' AND b.payload->>'$.edit.kind' IN ('enqueue','update')
+           GROUP BY p.session,p.request
+         )
+         UPDATE agent_queue_events AS e SET memory_admission=l.admission
+         FROM last_edit l WHERE e.session=l.session AND e.revision=l.revision",
+        [],
+    )?;
+    if i64::try_from(recorded).ok() != Some(expected) {
+        return Err(invalid(
+            "pending request is missing its canonical queue event",
+        ));
+    }
+    c.execute_batch(
+        "UPDATE agent_queue_items AS q
+         SET entry_json=json_set(q.entry_json,'$.request.spec.memoryAdmission',p.admission)
+         FROM pinned_queue_admissions p WHERE q.session=p.session AND q.request=p.request;",
+    )?;
+    Ok(())
+}
+
+fn replay_queue_events(
+    c: &Connection,
+    session: &str,
+    body: &str,
+    encoded: bool,
+) -> Result<QueueCommit, StoreError> {
     id(session)?;
     c.execute("DELETE FROM agent_queue_items WHERE session=?", [session])?;
     c.execute("DELETE FROM agent_queue_heads WHERE session=?", [session])?;
+    let mut page = c.prepare(&format!(
+        "SELECT e.revision,{body},e.at FROM agent_queue_events e
+        JOIN contents b ON b.id=e.body_content_id WHERE e.session=? AND e.revision>?
+        ORDER BY e.revision LIMIT 128"
+    ))?;
     let mut after = 0;
     loop {
-        let rows = c.prepare_cached("SELECT e.revision,c.payload,e.at FROM agent_queue_events e JOIN contents c ON c.id=e.body_content_id WHERE e.session=? AND e.revision>? ORDER BY e.revision LIMIT 128")?.query_map(params![session,to_sql_integer(after)?],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,Vec<u8>>(1)?,r.get::<_,i64>(2)?)))?.collect::<Result<Vec<_>,_>>()?;
+        let rows = page
+            .query_map(params![session, to_sql_integer(after)?], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, Vec<u8>>(1)?,
+                    r.get::<_, i64>(2)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
         if rows.is_empty() {
             break;
         }
@@ -1311,7 +1437,7 @@ pub(super) fn rebuild(c: &Connection, session: &str) -> Result<QueueCommit, Stor
                 return Err(invalid("noncontiguous queue canonical stream"));
             }
             let event: Event = serde_json::from_slice(&body)?;
-            project(c, session, revision, &event, UnixMillis(at), false)?;
+            project_with_encoding(c, session, revision, &event, UnixMillis(at), false, encoded)?;
             head(c, session, revision)?;
             after = revision;
         }
@@ -1343,7 +1469,22 @@ pub(crate) fn consume(
     }
     let next = cas(c, &cut.session, cut.expected_revision)?;
     let entry = pending(c, &cut.session, &cut.requests[0])?;
-    if !entry.placement.is_followup() || entry.request.spec != *spec {
+    use maka_agent_facts::memory::MemoryAdmission;
+    let original = &entry.request.spec;
+    let same_memory = original.memory_admission == spec.memory_admission
+        && original.memory_projection == spec.memory_projection;
+    let fresh_memory = matches!(
+        original.memory_admission,
+        MemoryAdmission::Enabled | MemoryAdmission::Disabled
+    ) && (spec.memory_admission == MemoryAdmission::Enabled
+        || (matches!(
+            spec.memory_admission,
+            MemoryAdmission::Disabled | MemoryAdmission::Excluded
+        ) && spec.memory_projection.is_none()));
+    if !entry.placement.is_followup()
+        || !(same_memory || fresh_memory)
+        || !entry.request.matches_run_input(spec.clone())
+    {
         return Err(invalid(
             "Run admission does not match frozen followup request",
         ));

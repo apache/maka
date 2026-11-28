@@ -278,6 +278,14 @@ mod imp {
             self.host.bind_list(list, binds);
         }
 
+        pub(crate) fn list_item_key(
+            &self,
+            list: NodeId,
+            index: u32,
+        ) -> nsh_core::selection::ListItemKey {
+            self.host.list_item_key(list, index)
+        }
+
         pub(crate) fn set_lazy_rows(&self, lazy: bool) {
             self.host.set_lazy_rows(lazy);
         }
@@ -470,6 +478,10 @@ mod stub {
         }
 
         pub(crate) fn bind_list(&self, _: NodeId, _: &[(u32, u32)]) {
+            match *self {}
+        }
+
+        pub(crate) fn list_item_key(&self, _: NodeId, _: u32) -> nsh_core::selection::ListItemKey {
             match *self {}
         }
 

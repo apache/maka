@@ -122,8 +122,8 @@ export function WorkspaceLocations(props: { close(roots: DirectoryRootSpec[] | n
     blocked: locked,
     recover,
   });
-  const button = {
-    style: controlStyle,
+  const button = () => ({
+    style: controlStyle(),
     get hoverStyle() {
       return controlHoverStyle();
     },
@@ -131,14 +131,14 @@ export function WorkspaceLocations(props: { close(roots: DirectoryRootSpec[] | n
       return controlFocusStyle();
     },
     disabledStyle: controlDisabledStyle,
-  };
+  });
   const inputStyle = () => ({
     height: 36,
     paddingHorizontal: 12,
     color: C.text,
     placeholderColor: C.muted,
     backgroundColor: C.background,
-    borderRadius: inputBorderRadius,
+    borderRadius: inputBorderRadius(),
     fontSize: 14,
   });
   void load();
@@ -187,7 +187,7 @@ export function WorkspaceLocations(props: { close(roots: DirectoryRootSpec[] | n
               </Text>
             </View>
             <Button
-              {...button}
+              {...button()}
               disabled={locked()}
               accessibilityLabel={tr('Remove location {name}', { name: root().label })}
               onPress={inputAction(remove, root().index)}
@@ -214,7 +214,7 @@ export function WorkspaceLocations(props: { close(roots: DirectoryRootSpec[] | n
         style={inputStyle()}
       />
       <Button
-        {...button}
+        {...button()}
         disabled={locked() || !snapshot() || !label().trim() || !path().trim()}
         accessibilityLabel={tr('Add workspace location')}
         onPress={inputAction(add, null)}
@@ -233,7 +233,7 @@ export function WorkspaceLocations(props: { close(roots: DirectoryRootSpec[] | n
       </If>
       <View style={{ flexDirection: 'row', justifyContent: 'flex-end', gap: 8 }}>
         <Button
-          {...button}
+          {...button()}
           disabled={locked()}
           accessibilityLabel={tr('Reload')}
           onPress={inputAction(() => void load(), null)}
@@ -241,7 +241,7 @@ export function WorkspaceLocations(props: { close(roots: DirectoryRootSpec[] | n
           <Text style={{ color: C.secondary, fontSize: 13 }}>{tr('Reload')}</Text>
         </Button>
         <Button
-          {...button}
+          {...button()}
           disabled={operations.busy()}
           accessibilityLabel={tr('Back')}
           onPress={inputAction(props.close, null)}
@@ -249,7 +249,7 @@ export function WorkspaceLocations(props: { close(roots: DirectoryRootSpec[] | n
           <Text style={{ color: C.secondary, fontSize: 13 }}>{tr('Back')}</Text>
         </Button>
         <Button
-          {...button}
+          {...button()}
           disabled={
             locked() ||
             !snapshot() ||

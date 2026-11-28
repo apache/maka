@@ -6,7 +6,7 @@ order: 2
 
 # nsh
 
-`nsh` 是核心模块：响应式 API（signal、computed、effect、context）、`mount`、`token`、`setTheme`、宿主元素 `View`、`Text`、`Scroll` 和 `Overlay`，[可选择的视图](#selectable-views)、[安全区域与键盘](#safe-area-and-keyboard)，[动画](#animation)、[设备与环境](#device)、[`PanResponder`](#panresponder)、[剪贴板](#clipboard)、[照片选择器](#picker)、[分享面板](#share)、[声音](#sound)、[存储](#storage)、[宿主通道](#host)、[键盘快捷键](#keymap)、[原生组件与模块](#nativecomponent-and-nativemodule)、[无障碍](#accessibility)，以及元素、样式和事件的 TypeScript 类型。响应式图本身以 Rust 原生运行；读取一个 signal 是一次对运行时的调用，只需几纳秒，只有你自己写的闭包会在 JavaScript 解释器中执行。
+`nsh` 是核心模块：响应式 API（signal、computed、effect、context）、`mount`、`token`、`setTheme`、宿主元素 `View`、`Text`、`Scroll` 和 `Overlay`，[可选择的视图](#selectable-views)、[安全区域与键盘](#safe-area-and-keyboard)，[动画](#animation)、[设备与环境](#device)、[`PanResponder`](#panresponder)、[剪贴板](#clipboard)、[照片选择器](#picker)、[分享面板](#share)、[声音](#sound)、[存储](#storage)、[宿主通道](#host)、[键盘快捷键](#keymap)、[原生组件与模块](#nativecomponent-and-nativemodule)、[GPU 视图](#gpuview)、[无障碍](#accessibility)，以及元素、样式和事件的 TypeScript 类型。响应式图本身以 Rust 原生运行；读取一个 signal 是一次对运行时的调用，只需几纳秒，只有你自己写的闭包会在 JavaScript 解释器中执行。
 
 ```ts
 import { batch, cleanup, computed, context, effect, ErrorBoundary, mount, Overlay, Scroll, signal, split, Text, token, untracked, View } from "nsh";
@@ -1181,10 +1181,11 @@ interface PerfStats {
   readonly fps: number;
   readonly refreshRate: number | null;
   readonly dropped: number;
+  readonly memory: number | null;
 }
 ```
 
-监视器最近一秒测得的数据：监视器测量时（`fpsEnabled()`）每秒读一次，不测量时以及测满第一秒之前为 `null`，应用可以按自己的样式显示它。`fps` 是每秒显示的帧数：空闲的应用读数偏低，这不代表慢（只有应用有变化的屏幕刷新才计数）。`refreshRate` 是屏幕的刷新率（Hz），监视器见到刷新之前为 `null`；`dropped` 是最近的帧里耗时超过一次刷新的比例，0 到 1（`0.05` 即 5%；Rust 中是 `Percentage`，同样是这个比例）。无头测试也会测量，但不绘制帧，读数为 0 fps。Rust：`perf_stats() -> Option<PerfStats>`。
+监视器最近一秒测得的数据：监视器测量时（`fpsEnabled()`）每秒读一次，不测量时以及测满第一秒之前为 `null`，应用可以按自己的样式显示它。`fps` 是每秒显示的帧数：空闲的应用读数偏低，这不代表慢（只有应用有变化的屏幕刷新才计数）。`refreshRate` 是屏幕的刷新率（Hz），监视器见到刷新之前为 `null`；`dropped` 是最近的帧里耗时超过一次刷新的比例，0 到 1（`0.05` 即 5%；Rust 中是 `Percentage`，同样是这个比例）。`memory` 是进程占用的内存（字节），与面板显示的一致：Apple 平台是物理内存占用（活动监视器的“内存”列），其他平台是常驻内存；平台不提供时以及无头测试中为 `null`。无头测试也会测量，但不绘制帧，读数为 0 fps。Rust：`perf_stats() -> Option<PerfStats>`。
 
 ```tsx
 <If when={perfStats()}>
@@ -2323,6 +2324,8 @@ async function signOut() {
 
 `press` 报告用户点击的通知的 `id`。点击可能启动应用：事件会等到第一个监听器注册后送达，所以请在应用启动时监听，并把点击后要打开的内容放在 `id` 里。Android 上，嵌入方的 Activity 要在 `onCreate` 和 `onNewIntent` 里把 Intent 传给 `NshView.handleNotificationIntent`；推送 SDK 等其他代码显示的通知的点击交给 Rust 代码用 `nsh::notifications::set_foreign_handler` 设置的处理者（见 [Android](../docs/android.md#来自其他代码的通知)），不会触发 `press`。Apple 平台上，已设置通知中心 delegate 的嵌入方保留自己的 delegate，点击也由它接收；否则远程通知和其他原生代码安排的通知交给 Rust 代码用 `nsh_platform_apple::notifications::set_foreign_handler` 设置的处理者（见 [iOS](../docs/ios.md#来自其他代码的通知)），不会触发 `press`。Linux 上点击只传给运行中的应用：应用退出后留下的通知点击后没有反应。
 
+在 Windows 上，点击通知会将可聚焦的应用窗口切到前台，优先选择未最小化的窗口，仅在没有可见的未最小化窗口时恢复已最小化的窗口。隐藏的窗口保持隐藏，即使没有可激活的窗口，应用仍会收到 `press` 事件。
+
 ### Notifications.permission
 
 `permission()` 只查询不询问，`requestPermission()` 首次会显示系统提示。两者的结果都是 `"default"`（尚未询问）、`"granted"`、`"denied"`（只能在系统设置里更改，`nsh/mobile` 的 [`AppSettings.open`](./nsh-mobile.md#appsettings) 可以把用户带过去）或 `"unavailable"`。在 Apple 平台上，`requestPermission()` 询问之后按系统设置里的权限返回：用户关掉了通知的应用得到 `"denied"`。
@@ -3058,14 +3061,14 @@ interface KeyBindingOptions {
   repeat?: boolean;
   passThrough?: boolean;
   forFocus?: boolean;
-  overFocused?: boolean;
+  overFocused?: boolean | "pointer";
 }
 ```
 
 | TS | Rust |
 |---|---|
 | `keymap.bind(keystroke, handler)` | `on_key(keystroke, handler)` |
-| `keymap.bind(keystroke, handler, { scope, when, repeat, passThrough, forFocus, overFocused })` | `on_key_with(keystroke, KeyOptions { scope, when, repeat, pass_through, for_focus, over_focused }, handler)`；`scope` 是 `KeyScope::Window`（默认）或 `KeyScope::App`；`when` 是 `nsh_core::keymap::When`（`Auto`、`Always`、`NotEditing`） |
+| `keymap.bind(keystroke, handler, { scope, when, repeat, passThrough, forFocus, overFocused })` | `on_key_with(keystroke, KeyOptions { scope, when, repeat, pass_through, for_focus, over_focused }, handler)`；`scope` 是 `KeyScope::Window`（默认）或 `KeyScope::App`；`when` 是 `nsh_core::keymap::When`（`Auto`、`Always`、`NotEditing`）；`over_focused` 是 `nsh_core::keymap::OverFocused`（默认 `Never`；`true` 对应 `Always`；`Pointer`） |
 | `keymap.bind({ … })` | 每个按键组合一次 `on_key` |
 | `keymap.label(keystroke)` | `key_label(keystroke)` |
 
@@ -3254,9 +3257,20 @@ on_key_with("tab", KeyOptions { pass_through: true, ..KeyOptions::default() }, m
 on_key_with("space", KeyOptions { for_focus: true, ..KeyOptions::default() }, move |_| flip());
 ```
 
+媒体播放器的空格这类单键快捷键，可以用 `overFocused: "pointer"` 从指针聚焦的控件那里拿到按键。在 Windows 上，点击会像原生按钮一样把焦点交给点中的按钮；除 macOS 和 iOS 外，由点击打开的 `Select`、`Menu`、`Popover` 或 `DatePicker` 关闭时会把焦点还给触发器。（在 macOS 和 iOS 上，点击不移动焦点，这个选项很少有按键可拿。）不带这个选项时，空格会再次按下这个控件：点了静音之后按空格会再静音一次，选完画质后按空格会再次打开列表。带上它，就由这个绑定处理。键盘聚焦的控件（Tab、方向键）仍然拿到回车和空格，键盘用户按下的就是他们移过去的控件；文本输入框按 `when` 的规则保留自己的按键：
+
+```tsx tabs
+keymap.bind("space", togglePlayback, { when: "notEditing", overFocused: "pointer" });
+```
+
+```rust tabs
+let options = KeyOptions { when: When::NotEditing, over_focused: OverFocused::Pointer, ..KeyOptions::default() };
+on_key_with("space", options, move |_| toggle_playback());
+```
+
 按键归最新的对话框：焦点留在被对话框盖住的视图上时（菜单项打开对话框，菜单关闭时把焦点还给触发器），回车和空格交给对话框的绑定，这个视图的 `forFocus` 绑定和按下都要等对话框关闭后才生效。
 
-拥有焦点的组件自己的绑定排在应用的绑定之前：`Editor` 有焦点时，无论应用把 Mod+Enter 绑给了什么，它都会在下方插入一行。带 `overFocused: true` 的绑定则排在它们之前，应用因此能拿到聚焦组件自己绑定的按键，例如查询编辑器用 Mod+Enter 执行其中的文本。在那个视图有焦点时绑定、焦点离开时撤销，组件在别的时候仍然保留这个键（Rust：`KeyOptions { over_focused: true, .. }`）。不带这个选项时顺序与以前相同，弹出层的 Escape 仍然先关闭弹出层。
+拥有焦点的组件自己的绑定排在应用的绑定之前：`Editor` 有焦点时，无论应用把 Mod+Enter 绑给了什么，它都会在下方插入一行。带 `overFocused: true` 的绑定则排在它们之前，应用因此能拿到聚焦组件自己绑定的按键，例如查询编辑器用 Mod+Enter 执行其中的文本。在那个视图有焦点时绑定、焦点离开时撤销，组件在别的时候仍然保留这个键（Rust：`KeyOptions { over_focused: OverFocused::Always, .. }`）。不带这个选项时顺序与以前相同，弹出层的 Escape 仍然先关闭弹出层。
 
 ```tsx
 const focused = signal(false);
@@ -3476,6 +3490,83 @@ nsh_platform_gpui::set_ui_sets(vec![nsh_base::registry(), trading]);
 
 > [!NOTE]
 > 属性、事件和命令参数都以 JSON 形式传到原生侧。注册的组件和函数是宿主应用自己的代码：NSH 的[沙箱限制与权限](../docs/sandbox-and-capabilities.md)不约束它们的行为。
+
+## gpuView
+
+`gpuView` 给你一个组件，它的区域由你自己的 Rust 代码用 [wgpu](https://wgpu.rs) 绘制，需要出帧时每帧绘制一次：几十万条线段的图纸、3D 模型、仿真，都能跟上显示器的刷新率。渲染器运行在渲染线程上，不经过 JS，也不占用主线程；它的帧像背景一样显示在视图的子元素下面，按圆角裁剪，像其他视图一样滚动和层叠。
+
+```ts
+function gpuView<P extends object = {}, E extends object = {}>(
+  name: string,
+  spec: NativeComponentSpec<P, E>,
+): (props: GpuViewProps<P, E>) => JSX.Element;
+
+type GpuViewProps<P, E> = ViewProps & P & NativeEventHandlers<E>;
+```
+
+`name` 是应用的 Rust crate 注册的渲染器；`spec` 列出它的属性和事件，与 [`nativeComponent`](#nativecomponent) 相同。每个属性在变化时发送给渲染器；绑定到动画值的属性每帧更新，不经过 JS。子元素绘制在渲染器的帧之上。
+
+渲染器实现 `nsh-gpu` crate 的 `GpuRenderer`（该 crate 再导出了 `wgpu`）：在 `prepare` 中一次性创建管线，在 `set_prop` 中接收属性，在 `render` 中把一帧编码到 `frame.target()`。属性、视图尺寸或缩放变化时会渲染一帧；`animating()` 返回 `true` 期间每个显示帧都渲染。`frame.emit(name, data)` 发送事件：`pick` 对应 `onPick`。
+
+```tsx tabs
+import { gpuView } from "nsh";
+
+const Spinner = gpuView<{ speed: number }, { pick: { x: number; y: number } }>("app/spinner", {
+  props: ["speed"],
+  events: ["pick"],
+});
+
+<Spinner speed={2} onPick={(e) => console.log(e.x, e.y)} style={{ height: 240, borderRadius: 12 }} />;
+```
+
+```rust tabs
+use nsh_core::{JsonValue, prelude::*};
+use nsh_gpu::{GpuFrame, GpuRegistry, GpuRenderer, wgpu};
+
+#[derive(Default)]
+struct Spinner {
+    speed: f64,
+}
+
+impl GpuRenderer for Spinner {
+    fn set_prop(&mut self, name: &str, value: Option<&JsonValue>) {
+        if name == "speed" {
+            self.speed = value.and_then(JsonValue::as_f64).unwrap_or(1.0);
+        }
+    }
+
+    fn animating(&self) -> bool {
+        true
+    }
+
+    fn render(&mut self, frame: &mut GpuFrame<'_>) {
+        let t = frame.time().as_secs_f64() * self.speed;
+        let target = frame.target().clone();
+        frame.encoder().begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: None,
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &target,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color { r: t.sin() * 0.5 + 0.5, g: 0.3, b: 0.6, a: 1.0 }),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            ..Default::default()
+        });
+    }
+}
+
+#[native_module("app/scenes")]
+fn scenes(registry: &mut Registry) {
+    registry.gpu_renderer("app/spinner", Spinner::default);
+}
+```
+
+Rust UI 用 `gpu_view().renderer(Spinner::default)`（或 `.renderer_named("app/spinner")`）放置 GPU 视图，用 `.prop(name, value)` 设置属性，用 `.bind_animated_prop(name, &value)` 绑定动画值，用 `.on_native_event(…)` 接收事件。
+
+帧的大小是 `frame.width()` × `frame.height()` 像素，格式为 `frame.format()`（8 位 RGBA 或 BGRA）：先清屏，颜色按 sRGB 编码并预乘 alpha，与 CSS 颜色一致。同一窗口的 GPU 视图共享一个设备：高性能 GPU，开启它的全部 features 和 limits。没有可用 GPU，或 `name` 下没有注册渲染器时，视图只绘制自身样式和子元素。目前 Linux、macOS 和 iOS 上已能绘制 GPU 视图；其他平台在支持到来之前显示视图的样式和子元素。
 
 ## Accessibility
 

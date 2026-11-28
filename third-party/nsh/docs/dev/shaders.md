@@ -144,7 +144,11 @@ milliseconds (opening the device about 60 ms on a Mac, a pipeline 7–16 ms):
   before. Tests that render right after setting a shader wait with `Renderer::wait_for_pipelines`.
 
 `nsh_engine::shader::ShaderView` is one view's state on the main thread: the layer, its uniforms, size and scale, the
-clock of `nsh.time` (kept while paused), and its frames.
+clock of `nsh.time` (kept while paused), and its frames. Where a frame goes and how it comes back is the engine's
+`FrameTarget` (`frames.rs`), which knows nothing of shaders: the format of the next frame (`surface_format`: a
+surface's, the read-back one's, or none while every surface is busy), its destination (`destination`), the view to render
+into, `submit` (a read-back frame is copied into a buffer and mapped) and `collect`. `ShaderView::render` encodes its
+pass between them.
 
 - **Rendering never waits for the GPU.** Frames are read back asynchronously; a slow GPU drops frames instead of
   stalling the main thread.
@@ -184,7 +188,7 @@ is. Views out of sight stop rendering until they show again.
 |---|---|---|---|
 | Linux (GTK 4) | each view's tick callback | a `GdkMemoryTexture` appended in the view's snapshot, after the background, under text, images and children | `reveal` on the frame clock's layout, for views outside a clipping ancestor or the window |
 | macOS (AppKit) | one frame callback of the surface's display link while frames change with time, pictures are due or anything else wants frames; a view that only changed renders after the batch and shows its frame when the GPU says it is done (`Renderer::when_done`), without the display link; at the view's device pixels per point (`view::backing_scale_of`) | an IOSurface (`show_on_surfaces`), the contents of a sublayer under the children (`decor.rs` shapes it); a `CGImage` without Metal | `shown`, from `Mounter::revisit` (rows scrolled away, screens under another) |
-| iOS | a `CADisplayLink` of its own, at the screen's scale | an IOSurface (`show_on_surfaces`), the contents of a sublayer under the children; a `CGImage` without Metal | views outside any window render once back in one |
+| iOS | a `CADisplayLink` of its own, at the screen's scale | an IOSurface (`show_on_surfaces`), the contents of a sublayer under the children; a `CGImage` without Metal | `sight::shown` on each tick (the macOS geometry, `nsh_platform_apple::sight`, read from UIKit's views): views outside any window, hidden, or clipped away by an ancestor (rows scrolled out of their list) skip their frames; a scroll and `revisit` wake the link for what fell due |
 | Android | the UI-thread animator's `Choreographer`, kept ticking by `UiAnimation::outputs` while a view wants a frame | a bitmap of `Box.java`, filled by `NshView.shaderFrame` | — |
 | Windows | the surface's frame ticker (`Surface::on_frame`), at the window's scale | a Direct2D bitmap drawn under the children: a texture shared with the renderer's device (`show_on_surfaces`), else the pixels read back (made again after a device loss) | `reveal`: hidden, concealed or detached views |
 | GPUI | a frame client of its surface | a GPUI image (BGRA, straight, the view's opacity multiplied in, as canvases' pixmaps), whose replaced image leaves GPUI's atlases | views not drawn in the last frame |

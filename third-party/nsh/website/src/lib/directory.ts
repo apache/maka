@@ -28,7 +28,7 @@ export const DIRECTORY_CATEGORIES: [id: string, en: string, zh: string][] = [
   ['tool', 'Tools', '工具'],
 ];
 
-/** Reads `directory/` at `root`: most GitHub Stars first, then by name. */
+/** Reads `directory/` at `root`: IDs in `directory-featured.json` first, in that order, then most GitHub Stars, then by name. */
 export async function loadDirectory(root: string): Promise<DirectoryEntry[]> {
   const dir = join(resolve(root), 'directory');
   if (!existsSync(dir)) return [];
@@ -50,7 +50,10 @@ export async function loadDirectory(root: string): Promise<DirectoryEntry[]> {
       stars: Number.isInteger(m.stars) ? m.stars : null,
     });
   }
-  return entries.sort((a, b) => (b.stars ?? -1) - (a.stars ?? -1) || a.name.localeCompare(b.name));
+  const featuredPath = join(resolve(root), 'directory-featured.json');
+  const featured: string[] = existsSync(featuredPath) ? JSON.parse(await readFile(featuredPath, 'utf8')) : [];
+  const rank = (id: string) => (featured.includes(id) ? featured.indexOf(id) : featured.length);
+  return entries.sort((a, b) => rank(a.id) - rank(b.id) || (b.stars ?? -1) - (a.stars ?? -1) || a.name.localeCompare(b.name));
 }
 
 let cached: Promise<DirectoryEntry[]> | undefined;

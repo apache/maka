@@ -30,7 +30,7 @@ use maka_agent_facts::{
     history_snapshot::{ImportedTurnOrdinal, SnapshotPosition},
     message::MessageOrigin,
 };
-use rusqlite::params;
+use rusqlite::{OptionalExtension, params};
 use tokio_util::sync::CancellationToken;
 #[derive(Clone)]
 pub struct SourceFind {
@@ -105,9 +105,10 @@ impl Query for ModelLandmarks {
         let mut stmt = c.prepare_cached(
             "SELECT k.value->>0,substr(d.body,1,96),d.fields_json->>'$[0].end'
              FROM json_each(?1) k CROSS JOIN agent_session_history h
+             CROSS JOIN agent_namespaces ns ON ns.id=h.namespace_id
              CROSS JOIN agent_recall_messages d
-             WHERE h.sequence=k.value->>1 AND h.fact_id=k.value->>2 AND h.owner=?2
-               AND d.owner=h.owner AND d.session=h.session AND d.sequence=h.sequence AND d.ordinal=k.value->>3
+             WHERE h.sequence=k.value->>1 AND h.fact_id=k.value->>2 AND ns.owner=?2
+               AND d.namespace_id=h.namespace_id AND d.sequence=h.sequence AND d.ordinal=k.value->>3
                AND d.role='\"user\"' AND d.fields_json->>'$[0].field'='body' AND d.fields_json->>'$[0].start'=0"
         )?;
         let mut rows = stmt.query(params![
@@ -363,7 +364,55 @@ fn live_row(
     if position.source_sequence > cut.through_sequence {
         return Err(invalid("history row exceeds original cut"));
     }
-    let (run,admission,fact,internal):(String,u64,String,bool)=c.query_row("SELECT d.run,h.admission_sequence,h.fact_id,d.internal FROM agent_recall_messages d JOIN agent_session_history h ON h.owner=d.owner AND h.session=d.session AND h.sequence=d.sequence WHERE d.owner=? AND d.session=? AND d.sequence=? AND d.ordinal=? AND h.admission_sequence>?",params![serde_json::to_string(&scope.owner)?,scope.session,bind_u64(position.source_sequence)?,bind_u64(position.item_index)?,bind_u64(min_admission)?],|r|Ok((r.get(0)?,read_u64(r,1)?,r.get(2)?,r.get(3)?)))?;
+    let Some(namespace_id) = crate::namespace::find_owner_id(c, &scope.owner, &scope.session)?
+    else {
+        return Err(rusqlite::Error::QueryReturnedNoRows.into());
+    };
+    let indexed: Option<(String, u64, String, bool)> = c
+        .query_row(
+            "SELECT d.run,h.admission_sequence,h.fact_id,d.internal FROM agent_recall_messages d JOIN agent_session_history h ON h.namespace_id=d.namespace_id AND h.sequence=d.sequence WHERE d.namespace_id=? AND d.sequence=? AND d.ordinal=? AND h.admission_sequence>?",
+            params![
+                namespace_id,
+                bind_u64(position.source_sequence)?,
+                bind_u64(position.item_index)?,
+                bind_u64(min_admission)?
+            ],
+            |r| Ok((r.get(0)?, read_u64(r, 1)?, r.get(2)?, r.get(3)?)),
+        )
+        .optional()?;
+    let (run, admission, fact, internal) = match indexed {
+        Some(found) => found,
+        None if position.item_index == 0 => {
+            let (run, admission, fact, bytes): (String, u64, String, Vec<u8>) = c.query_row(
+                "SELECT h.run,h.admission_sequence,h.fact_id,maka_content_bytes(b.payload,b.encoding)
+                 FROM agent_session_history h
+                 JOIN agent_facts f ON f.sequence=h.sequence
+                 JOIN contents b ON b.id=f.body_content_id
+                 WHERE h.namespace_id=? AND h.sequence=? AND h.admission_sequence>?
+                   AND h.kind='external_task_observed'",
+                params![
+                    namespace_id,
+                    bind_u64(position.source_sequence)?,
+                    bind_u64(min_admission)?
+                ],
+                |r| Ok((r.get(0)?, read_u64(r, 1)?, r.get(2)?, r.get(3)?)),
+            )?;
+            let recorded: maka_agent_facts::durable::RecordedFact = serde_json::from_slice(&bytes)?;
+            let internal = match recorded.fact {
+                maka_agent_facts::durable::Fact::ExternalTaskObserved {
+                    output: maka_agent_facts::executor::Output::ThinkingDelta { .. },
+                    ..
+                } => true,
+                maka_agent_facts::durable::Fact::ExternalTaskObserved {
+                    output: maka_agent_facts::executor::Output::OutputDelta { .. },
+                    ..
+                } => false,
+                _ => return Err(StoreError::EventConflict),
+            };
+            (run, admission, fact, internal)
+        }
+        None => return Err(StoreError::EventConflict),
+    };
     Ok(SnapshotPosition::Canonical {
         run: sql::identity(run)?,
         sequence: position.source_sequence,

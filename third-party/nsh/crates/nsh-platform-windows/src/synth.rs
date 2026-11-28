@@ -15,6 +15,37 @@ use crate::{
     view::NshView,
 };
 
+thread_local! {
+    /// The modifier keys the agent holds down (`keyboard.down`): the
+    /// pointer events it makes until they are let go carry them.
+    static HELD: std::cell::Cell<Modifiers> = std::cell::Cell::new(Modifiers::default());
+}
+
+/// Holds the modifier keys `keys` (`mod+shift`) down or lets go of them.
+pub(crate) fn hold(keys: Modifiers, down: bool) {
+    HELD.with(|held| {
+        let mut m = held.get();
+        if keys.shift {
+            m.shift = down;
+        }
+        if keys.ctrl {
+            m.ctrl = down;
+        }
+        if keys.alt {
+            m.alt = down;
+        }
+        if keys.meta {
+            m.meta = down;
+        }
+        held.set(m);
+    });
+}
+
+/// The modifier keys the agent holds.
+pub(crate) fn held_keys() -> Modifiers {
+    HELD.with(|held| held.get())
+}
+
 /// A pointer event of the mouse's `button` (0: primary, 3: back) at `x`,
 /// `y` (points, root coordinates), with the buttons `held` after it (bit
 /// `n` for button `n`, as a mouse message's `wparam` tells them).
@@ -38,7 +69,7 @@ pub(crate) fn pointer(
             touch: false,
             pen: false,
             time: surface.clock(),
-            modifiers: Modifiers::default(),
+            modifiers: held_keys(),
             clicks: 1,
         },
     );
@@ -101,6 +132,14 @@ fn press_in_child(surface: &Surface, vk: u16) -> bool {
 
 /// Presses and releases the virtual key `vk` with `modifiers`.
 pub(crate) fn press(surface: &Rc<Surface>, vk: u16, modifiers: Modifiers) {
+    // The keys the agent holds (`keyboard.down`) too.
+    let h = held_keys();
+    let modifiers = Modifiers {
+        shift: modifiers.shift || h.shift,
+        ctrl: modifiers.ctrl || h.ctrl,
+        alt: modifiers.alt || h.alt,
+        meta: modifiers.meta || h.meta,
+    };
     if modifiers == Modifiers::default() && press_in_child(surface, vk) {
         return;
     }

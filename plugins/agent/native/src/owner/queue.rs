@@ -404,7 +404,7 @@ impl Owner {
         let mut replacements: Vec<_> = replacement.into_iter().collect();
         if previous.is_none()
             && matches!(queued.spec.trigger, Trigger::Message { .. })
-            && let Some(seed) = current.configuration.dossier_seed
+            && let Some(seed) = current.configuration.dossier_seed.as_deref()
         {
             self.seed_dossier_input(session, &mut queued, seed, &mut replacements)
                 .await?;
@@ -419,7 +419,7 @@ impl Owner {
                 .map_err(|error| error.to_string())?;
             let state = self
                 .durable
-                .with_data_writer(writer)
+                .with_data_writer(writer.clone())
                 .map_err(|error| error.to_string())?;
             // Preserve submission identity when freezing the first thread context or refreshing an executor.
             let expected_revision = if !replacements.is_empty() {
@@ -453,7 +453,55 @@ impl Owner {
             } else {
                 queue.revision
             };
-            let mut admission = Admission::new(queued.spec, at, vec![]).with_queue(Consume {
+            let mut contents = Vec::new();
+            let mut guard = guard;
+            use maka_agent_facts::memory::MemoryAdmission;
+            if queued.spec.budget_basis.is_none()
+                && matches!(
+                    queued.spec.memory_admission,
+                    MemoryAdmission::Enabled | MemoryAdmission::Disabled
+                )
+            {
+                let policy = self
+                    .configuration
+                    .runtime_policy()
+                    .await
+                    .map_err(|error| error.to_string())?;
+                let eligible = matches!(queued.spec.backend, BackendSpec::Model { .. })
+                    && queued.spec.workspace == current.configuration.workspace.path
+                    && queued.spec.permission_basis == current.configuration.permission_basis();
+                let kind =
+                    self.memory_admission(session, &current.configuration, eligible, &policy);
+                queued.spec.memory_admission = kind;
+                queued.spec.memory_projection = None;
+                if kind == MemoryAdmission::Enabled {
+                    let capture = self
+                        .pin_capture(session, &current.configuration, policy.revision)
+                        .await?;
+                    let memory = writer
+                        .query(capture.clone())
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    if let Some(memory) = memory {
+                        let blob = ContentBlob::json(&memory).map_err(|error| error.to_string())?;
+                        queued.spec.memory_projection = Some(blob.reference().clone());
+                        contents.push(blob);
+                    }
+                    guard = Some(Arc::new(capture));
+                    if self
+                        .configuration
+                        .runtime_policy()
+                        .await
+                        .map_err(|error| error.to_string())?
+                        .revision
+                        != policy.revision
+                    {
+                        self.wake_notify.notify_one();
+                        return Ok(None);
+                    }
+                }
+            }
+            let mut admission = Admission::new(queued.spec, at, contents).with_queue(Consume {
                 session: session.into(),
                 requests: vec![request],
                 expected_revision,
@@ -471,6 +519,7 @@ impl Owner {
                             maka_event_log::StoreError::RevisionConflict { .. }
                         ) =>
                     {
+                        self.wake_notify.notify_one();
                         return Ok(None);
                     }
                     Err(error) => error,
@@ -782,6 +831,7 @@ impl Owner {
                 RunError::ContinuationChanged => "continuation_changed",
                 RunError::ReconciliationRequired(_) => "reconciliation_required",
                 RunError::InvalidInput(_) => "invalid_input",
+                RunError::FrozenMemoryDenied(_) => "frozen_memory_denied",
                 RunError::ModelUnavailable => "model_unavailable",
                 RunError::AuthenticationRequired => "authentication_required",
                 RunError::IsolationUnavailable(_) => "isolation_unavailable",

@@ -17,14 +17,16 @@
  * under the License.
  */
 
+import { type MessageKey, tr } from '../../locale';
 import type {
   DeploymentRef,
   ManagedInstance,
+  ManagementRejection,
   PackageRef,
   SettingField,
   InstanceSettingsPage,
 } from '../../../../../../packages/plugin-sdk/src/generated/runtime';
-import type { SettingsRpc } from './rpc';
+import { LocalizedSettingsError, type SettingsRpc } from './rpc';
 
 export async function readPlugins(rpc: SettingsRpc) {
   const first = await rpc.query('deploymentManager', 'instances', { kind: 'start' });
@@ -36,7 +38,8 @@ export async function readPlugins(rpc: SettingsRpc) {
       source: first.source,
       after,
     });
-    if (page.source.revision !== first.source.revision) throw new Error('Plugin inventory changed');
+    if (page.source.revision !== first.source.revision)
+      throw new Error(tr('Refresh and try again.'));
     rows.push(...page.instances);
     after = page.next;
   }
@@ -52,7 +55,7 @@ export async function readPlugin(rpc: SettingsRpc, instance: string[]) {
     (item) => JSON.stringify(item.instance) === JSON.stringify(instance),
   );
   if (!row || deployment.source.reference.revision !== inventory.source.revision)
-    throw new Error('Plugin inventory changed');
+    throw new Error(tr('Refresh and try again.'));
   const fields: Pick<SettingField, 'key' | 'label' | 'description' | 'present'>[] = [];
   let after: string | null | undefined = null;
   if (!row.structural)
@@ -71,15 +74,28 @@ export async function readPlugin(rpc: SettingsRpc, instance: string[]) {
   return { row, source: inventory.source, fields, bindings: row.path.length === 1 ? bindings : [] };
 }
 
+const REJECTION_LABELS = {
+  invalid_bundle: 'The plugin bundle is invalid.',
+  download_failed: 'The plugin bundle could not be downloaded.',
+  invalid_document: 'The deployment document is invalid.',
+  invalid_source: 'The selected deployment source is invalid.',
+  package_unavailable: 'The selected package is unavailable.',
+  instance_unavailable: 'The selected plugin instance is unavailable.',
+  parent_disabled: 'Enable the parent plugin first.',
+} satisfies Record<ManagementRejection, MessageKey>;
+
 export function committed<T>(
   result:
     | { status: 'committed'; value: T }
     | { status: 'conflict' }
-    | { status: 'rejected'; reason: string },
+    | { status: 'rejected'; reason: ManagementRejection },
 ) {
-  if (result.status !== 'committed')
-    throw new Error(result.status === 'rejected' ? result.reason : result.status);
-  return result.value;
+  if (result.status === 'committed') return result.value;
+  if (result.status === 'conflict')
+    throw new LocalizedSettingsError('Refresh and try again.', { cause: result });
+  if (Object.hasOwn(REJECTION_LABELS, result.reason))
+    throw new LocalizedSettingsError(REJECTION_LABELS[result.reason], { cause: result });
+  throw new Error(tr('Deployment change rejected'), { cause: result });
 }
 
 export async function downloadPlugin(rpc: SettingsRpc, source: DeploymentRef, url: string) {

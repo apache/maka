@@ -69,6 +69,7 @@ mount(() => (
 | 属性 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
 | `src` | `string` | （必填） | 视频的 URL。 |
+| `poster` | `string` | | 视频加载时显示的图片，直到第一帧就绪。 |
 | `paused` | `boolean` | `false` | 暂停播放。 |
 | `muted` | `boolean` | `false` | 静音。 |
 | `volume` | `number` | `1` | 0..1。 |

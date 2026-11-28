@@ -526,7 +526,7 @@ view()
 
 这时事件在插入任何内容之前到达，应用可以放行、取消或改写这次粘贴。ref 的 `insertText`（Rust 的 `insert_text`）以用户编辑的方式用放行的文本替换选区：遵守 `maxLength` 与单行规则，由 `onChange` 报告，在 Linux、Windows 和 Web 上是输入框撤销历史中的一步，Ctrl+Z 一次即可撤回。设置新的 `value` 则是替换整段文本。
 
-`insertText` 在 iOS、macOS、Linux、Windows、Web 和无头测试（`nsh test`）中插入文本；在 Android 和 GPUI 上目前不做任何事，只打印一条警告。请配合 `pasteBehavior="report"` 使用：`"insert"`（默认值）时输入框已经插入了这次粘贴，再调用 `insertText` 会插入第二遍。输入法正在组字时，`insertText` 不插入任何内容。
+`insertText` 在 iOS、macOS、Linux、Windows、Android、Web 和无头测试（`nsh test`）中插入文本；在 GPUI 上目前不做任何事，只打印一条警告。请配合 `pasteBehavior="report"` 使用：`"insert"`（默认值）时输入框已经插入了这次粘贴，再调用 `insertText` 会插入第二遍。输入法正在组字时，`insertText` 不插入任何内容。Android 键盘大多数时候会把正在输入的词标成组字，所以在 Android 上会先按原样提交这个词，再插入文本。
 
 ```tsx tabs
 import type { InputRef } from "nsh";

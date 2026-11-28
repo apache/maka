@@ -49,7 +49,7 @@ crypto = ["js", "nsh-engine/crypto"]
 
 # The native WebSocket client (tokio-tungstenite, rustls). Without it
 # `connect` of `websocket` rejects with ERR_FEATURE_UNAVAILABLE_ON_PLATFORM.
-websocket = ["nsh-core/websocket"]
+websocket = ["nsh-engine/websocket"]
 # App self-updates (`nsh/updater`). Without it a check finds no update.
 updater = ["nsh-core/updater"]
 
@@ -60,11 +60,12 @@ svg = ["nsh-core/svg"]
 # rejects and an `<Image>` shows only files, assets and inline data.
 net = ["nsh-core/loader", "nsh-engine/net"]
 # Sounds (`Sound`), decoded and mixed with GStreamer (its core and base
-# plug-ins: `libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev` to
-# build). Without it a sound's load fails as not supported, naming the
+# plug-ins), loaded at run time: nothing of GStreamer is needed to build,
+# and an app starts without it, a sound's load then failing naming the
+# library missing. Without the feature a sound's load fails as not supported, naming the
 # feature. `AudioPlayer` and `Video` play through GTK's media support and
 # need no GStreamer to build.
-sound = ["dep:gstreamer", "dep:gstreamer-app", "dep:gstreamer-audio"]
+sound = ["dep:libloading"]
 
 [dependencies]
 log.workspace = true
@@ -77,9 +78,8 @@ nsh-base.workspace = true
 gtk4.workspace = true
 gdk4-x11.workspace = true
 x11rb.workspace = true
-gstreamer = { workspace = true, optional = true }
-gstreamer-app = { workspace = true, optional = true }
-gstreamer-audio = { workspace = true, optional = true }
+# GStreamer, for sounds, loaded at run time (`src/gst.rs`).
+libloading = { workspace = true, optional = true }
 # GIF and WebP (first frame), which GDK cannot decode without gdk-pixbuf loaders;
 # JPEG (and PNG) shrunk to the size a view shows them at.
 image = { workspace = true, features = ["gif", "jpeg", "webp"] }
@@ -94,3 +94,6 @@ nsh-testing = { workspace = true, features = ["agent"], optional = true }
 # 2.42: downloads (`WebKitDownload`), which the web view's destination
 # decisions use.
 webkit6 = { workspace = true, optional = true, features = ["v2_42"] }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+nsh-gpu.workspace = true

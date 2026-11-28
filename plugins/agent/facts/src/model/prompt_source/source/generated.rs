@@ -154,6 +154,7 @@ fn message_with_mcp(value: &Message, mcp: &mut std::collections::HashSet<String>
             content: parts,
             provider_options,
         } => MessageRecipe::User {
+            is_pinned_memory: false,
             content: Arc::new(GeneratedRecipes::new(parts.iter().map(content).collect())),
             provider_options: options(provider_options),
         },
@@ -311,6 +312,7 @@ impl GeneratedMessages {
                     ),
                 };
                 MessageMetadata {
+                    is_pinned_memory: false,
                     message_index: index,
                     logical_identity: identity.into(),
                     role,

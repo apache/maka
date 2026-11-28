@@ -71,6 +71,8 @@ impl ExecutionRoute {
 pub(crate) struct AcceptedModel {
     pub binding: ModelBinding,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_limit: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub service_tier: Option<String>,
     pub thinking_level: Option<ThinkingLevel>,
     /// Execution policy is captured at message admission. Later model settings
@@ -271,6 +273,7 @@ impl Source {
                 configuration,
                 credentials,
                 accepted: AcceptedModel {
+                    input_limit: maka_agent_facts::context::effective_input_limit(model.info.context_window, model.info.input_limit),
                     public_model,
                     service_tier: selection.service_tier,
                     editing_tools: Some(editing_tools(row, &selection.model_id, &model.base_url)),
