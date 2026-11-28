@@ -100,6 +100,24 @@ impl Args {
             _ = stop.cancelled() => return Ok(ExitCode::SUCCESS),
         };
         let result = Self::launch(&root, &client, &stop).await;
+        #[cfg(target_os = "macos")]
+        let result = {
+            let mut result = result;
+            while matches!(result, Ok(code) if code == i32::from(maka_updater::RELAUNCH_DESKTOP)) {
+                if stop.is_cancelled() {
+                    result = Ok(0);
+                    break;
+                }
+                // Retain the lease until the old shell has exited and the new shell is admitted.
+                // If the UI reconnected to a replacement Host, follow the same Root.
+                if !runs(&root, client.epoch()).await {
+                    let _ = client.close().await;
+                    client = crate::deployment::connect_local(root.clone()).await?;
+                }
+                result = Self::launch(&root, &client, &stop).await;
+            }
+            result
+        };
         let mut cleanup = if matches!(&result, Ok(0)) {
             client.quit_ephemeral().await
         } else {
@@ -142,7 +160,12 @@ impl Args {
         let executable = desktop_shell_path(&launcher);
         let root = std::path::absolute(root)?;
         let epoch = registered.host_epoch.to_string();
-        let variables: [(&str, &std::ffi::OsStr); 4] = [
+        let variables: &[(&str, &std::ffi::OsStr)] = &[
+            #[cfg(target_os = "macos")]
+            (
+                maka_updater::RELAUNCH_SUPPORTED_ENV,
+                std::ffi::OsStr::new("1"),
+            ),
             ("MAKA_HOST_ROOT", root.as_ref()),
             ("MAKA_HOST_ENDPOINT", registered.endpoint.as_ref()),
             ("MAKA_HOST_EPOCH", epoch.as_ref()),
@@ -150,10 +173,10 @@ impl Args {
             ("MAKA_LAUNCHER", launcher.as_ref()),
         ];
         #[cfg(target_os = "macos")]
-        let child = disclaimed::Shell::spawn(&executable, &variables);
+        let child = disclaimed::Shell::spawn(&executable, variables);
         #[cfg(not(target_os = "macos"))]
         let child = Command::new(&executable)
-            .envs(variables)
+            .envs(variables.iter().copied())
             .kill_on_drop(true)
             .spawn();
         let mut child = child.map_err(|error| format!("{}: {error}", executable.display()))?;

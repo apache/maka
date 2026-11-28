@@ -101,7 +101,15 @@ export function ModelSettings(props: {
           sameValue(tool.instance.instance, item.instance.instance),
       );
   const pages = computed(() => {
-    const shown = runtime.settings().filter((item) => !quickTool(item));
+    const shown = runtime
+      .settings()
+      .filter(
+        (item) =>
+          !quickTool(item) &&
+          (item.id !== 'system-permissions' ||
+            !sameValue(item.instance.instance, props.context.instance) ||
+            (platform.os === 'macos' && platform.idiom !== 'terminal')),
+      );
     return [
       ...shown.filter((item) => item.id !== quickToolsSettings),
       ...shown.filter((item) => item.id === quickToolsSettings),

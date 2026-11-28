@@ -629,11 +629,15 @@ impl Client {
             _ => Err("Host configuration response mismatch".into()),
         }
     }
+    pub fn is_local_owner(&self) -> bool {
+        self.phase == Phase::Ready && self.peer.is_none() && !self.target.is_remote()
+    }
+
     pub fn local_owner_control(
         &self,
         request: Request,
     ) -> impl Future<Output = Result<Response>> + use<> {
-        let local = self.phase == Phase::Ready && self.peer.is_none() && !self.target.is_remote();
+        let local = self.is_local_owner();
         let target = self.target.clone();
         let epoch = self.connected.epoch;
         async move {

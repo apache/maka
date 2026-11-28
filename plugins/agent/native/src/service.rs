@@ -568,6 +568,45 @@ impl Handler for Agent {
                         .await?,
                 )
             }),
+            "hostPermissions" => json_rpc(&mut args, |owner, input, _context| async move {
+                let input: HostPermissionsRead = decode(input)?;
+                use maka_agent_facts::interaction::SystemPermissionGrant::{
+                    Accessibility, ScreenRecording,
+                };
+                use maka_computer_use::system_permission as os;
+                let state_domain = owner.data_source.state_domain.clone();
+                let snapshot = tokio::task::spawn_blocking(move || {
+                    let supported = os::supported();
+                    let (application, bundle) = os::application();
+                    let mut grants = Vec::new();
+                    if supported {
+                        let required = input.grant.as_slice();
+                        let all = [Accessibility, ScreenRecording];
+                        let required = if required.is_empty() {
+                            &all[..]
+                        } else {
+                            required
+                        };
+                        grants.extend(os::states(required)?.into_iter().map(|(grant, state)| {
+                            HostGrantState {
+                                grant,
+                                effective: state == os::PermissionState::Effective,
+                                pending_host: state == os::PermissionState::PendingHost,
+                            }
+                        }));
+                    }
+                    Ok::<_, String>(HostPermissions {
+                        state_domain,
+                        supported,
+                        application,
+                        bundle_path: bundle.and_then(|p| p.into_os_string().into_string().ok()),
+                        grants,
+                    })
+                })
+                .await
+                .map_err(|e| e.to_string())??;
+                encode(snapshot)
+            }),
             "systemPermissionStatus" => json_rpc(&mut args, |owner, input, context| async move {
                 let input: InteractionRead = decode(input)?;
                 owner

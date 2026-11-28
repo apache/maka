@@ -17,6 +17,7 @@
  * under the License.
  */
 
+#import <ApplicationServices/ApplicationServices.h>
 #import <AVFoundation/AVFoundation.h>
 #import <AppKit/AppKit.h>
 #import <AudioToolbox/AudioToolbox.h>
@@ -293,5 +294,30 @@ void maka_record_message(const char *path, const char *uid, bool modelConnection
             return;
         }
         done(context, NULL, "dictation.error.model_connection_required");
+    });
+}
+
+int maka_microphone_status(void) {
+    return (int)[AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeAudio];
+}
+
+// Called from a blocking worker. Wait for the decision before refreshing the UI.
+bool maka_request_microphone(void) {
+    if (![NSBundle.mainBundle objectForInfoDictionaryKey:@"NSMicrophoneUsageDescription"])
+        return false;
+    if (maka_microphone_status() != AVAuthorizationStatusNotDetermined)
+        return true;
+    dispatch_semaphore_t done = dispatch_semaphore_create(0);
+    [AVCaptureDevice requestAccessForMediaType:AVMediaTypeAudio completionHandler:^(BOOL allowed) {
+        (void)allowed;
+        dispatch_semaphore_signal(done);
+    }];
+    dispatch_semaphore_wait(done, DISPATCH_TIME_FOREVER);
+    return true;
+}
+
+void maka_request_accessibility(void) {
+    AXIsProcessTrustedWithOptions((__bridge CFDictionaryRef)@{
+        (__bridge NSString *)kAXTrustedCheckOptionPrompt: @YES
     });
 }

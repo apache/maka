@@ -123,6 +123,29 @@ impl Services {
         super::assets::scoped_uri(&self.instance, &self.definition_basis, uri)
     }
 
+    pub(super) fn require_settings_page(&self) -> Result<(), String> {
+        let (_, instance) = self.current_source()?;
+        if instance.package.id != "maka.agent.settings" {
+            return Err("System permission actions require the Settings page".into());
+        }
+        Ok(())
+    }
+
+    pub(super) fn guide_scope(
+        self: &Arc<Self>,
+    ) -> Result<Arc<dyn Fn() -> bool + Send + Sync>, String> {
+        let (source, instance) = self.current_source()?;
+        let basis = instance.binding_basis.clone();
+        let weak = Arc::downgrade(self);
+        Ok(Arc::new(move || {
+            weak.upgrade().is_some_and(|services| {
+                services.current_source().is_ok_and(|(current, metadata)| {
+                    current == source && metadata.binding_basis == basis
+                })
+            })
+        }))
+    }
+
     fn ensure_open(&self) -> Result<(), String> {
         if self.closed.load(Ordering::Acquire) {
             return Err("UI service scope is closed".into());
@@ -269,6 +292,9 @@ impl Services {
 
     pub(super) async fn close(&self) -> Result<(), String> {
         self.closed.store(true, Ordering::Release);
+        if let Some(guide) = self.owner.guide.lock().unwrap().as_ref() {
+            guide.active();
+        }
         self.cleanup
             .get_or_init(|| async {
                 let client = self

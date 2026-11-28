@@ -64,6 +64,8 @@ pub(crate) struct Snapshot {
 }
 
 struct State {
+    #[cfg(target_os = "macos")]
+    desktop_restarting: bool,
     snapshot: Snapshot,
     staged: Option<StagedUpdate>,
 }
@@ -193,6 +195,8 @@ impl Controller {
                 active: None,
             }),
             state: Mutex::new(State {
+                #[cfg(target_os = "macos")]
+                desktop_restarting: false,
                 snapshot,
                 staged: None,
             }),
@@ -573,9 +577,31 @@ impl Controller {
         });
     }
 
+    #[cfg(target_os = "macos")]
+    pub(crate) fn reserve_desktop_restart(&self) -> bool {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.desktop_restarting || state.snapshot.status == Status::Installing {
+            return false;
+        }
+        state.desktop_restarting = true;
+        true
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn cancel_desktop_restart(&self) {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .desktop_restarting = false;
+    }
+
     pub(crate) async fn install_and_restart(&self) -> Result<(), String> {
         let staged = {
             let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            #[cfg(target_os = "macos")]
+            if guard.desktop_restarting {
+                return Err("The desktop is restarting.".into());
+            }
             if guard.snapshot.status != Status::Ready {
                 return Err("No verified update is ready to install.".into());
             }
@@ -748,6 +774,8 @@ mod tests {
                 active: None,
             }),
             state: Mutex::new(State {
+                #[cfg(target_os = "macos")]
+                desktop_restarting: false,
                 snapshot: Snapshot {
                     channel,
                     current_version: "0.2.0-nightly.1".into(),
@@ -761,6 +789,25 @@ mod tests {
             }),
         });
         (rt, controller)
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn restart_reservation_excludes_install_and_allows_retry_after_cancellation() {
+        let (runtime, controller) = test_controller(Channel::Dev);
+        assert!(controller.reserve_desktop_restart());
+        assert!(!controller.reserve_desktop_restart());
+        assert!(
+            runtime
+                .block_on(controller.install_and_restart())
+                .unwrap_err()
+                .contains("restarting")
+        );
+        controller.cancel_desktop_restart();
+        controller.state.lock().unwrap().snapshot.status = Status::Installing;
+        assert!(!controller.reserve_desktop_restart());
+        controller.state.lock().unwrap().snapshot.status = Status::Idle;
+        assert!(controller.reserve_desktop_restart());
     }
 
     fn sample_update() -> AvailableUpdate {

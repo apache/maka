@@ -406,6 +406,10 @@ impl Client {
             .clone())
     }
 
+    pub async fn is_local_owner(&self) -> bool {
+        self.0.host.lock().await.is_local_owner()
+    }
+
     pub async fn local_owner_control(
         &self,
         request: maka_host_runtime::application::host::protocol::Request,

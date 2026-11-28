@@ -142,3 +142,29 @@ pub struct RequestSystemPermission {
     pub request_id: String,
     pub grant: maka_agent_facts::interaction::SystemPermissionGrant,
 }
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct HostPermissionsRead {
+    pub grant: Option<maka_agent_facts::interaction::SystemPermissionGrant>,
+}
+
+#[derive(Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HostPermissions {
+    pub state_domain: String,
+    pub supported: bool,
+    pub application: String,
+    #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<String>")]
+    pub bundle_path: Option<String>,
+    pub grants: Vec<HostGrantState>,
+}
+
+#[derive(Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HostGrantState {
+    pub grant: maka_agent_facts::interaction::SystemPermissionGrant,
+    pub effective: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pending_host: bool,
+}

@@ -44,6 +44,8 @@ mod permission_window;
 mod screenshot;
 #[cfg(windows)]
 mod screenshot_windows;
+#[cfg(target_os = "macos")]
+mod window_list;
 #[cfg(windows)]
 use direct2d as backend;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
@@ -178,6 +180,10 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
     match run() {
+        #[cfg(target_os = "macos")]
+        Ok(()) if appkit::relaunch::RESTARTING.load(std::sync::atomic::Ordering::Acquire) => {
+            ExitCode::from(maka_updater::RELAUNCH_DESKTOP)
+        }
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("maka-desktop-shell: {error}");
@@ -200,6 +206,10 @@ fn run() -> Result<(), String> {
         return launch();
     }
     let target = Target::from(|name| std::env::var_os(name))?;
+    #[cfg(target_os = "macos")]
+    if let Ok(shell) = std::env::current_exe().and_then(|path| path.canonicalize()) {
+        reopen_root(&shell, Some(&target.root));
+    }
     backend::start(target)
 }
 
@@ -254,6 +264,26 @@ fn launcher_path(shell: &std::path::Path) -> Result<PathBuf, String> {
         .map(|dir| dir.join(binary))
 }
 
+/// LaunchServices reopens the bundle without the CLI environment. Remember only the
+/// Root for this installation. The CLI discovers and verifies its current Host.
+#[cfg(target_os = "macos")]
+fn reopen_root(shell: &std::path::Path, save: Option<&std::path::Path>) -> Option<PathBuf> {
+    use objc2_foundation::{NSString, NSURL, NSUserDefaults};
+
+    let installation = NSURL::from_file_path(shell)?.absoluteString()?;
+    let key = NSString::from_str(&format!("MakaDesktopRoot/{installation}"));
+    let defaults = NSUserDefaults::standardUserDefaults();
+    if let Some(root) = save {
+        let url = NSURL::from_directory_path(root)?;
+        defaults.setURL_forKey(Some(&url), &key);
+        return Some(root.to_owned());
+    }
+    defaults
+        .URLForKey(&key)?
+        .to_file_path()
+        .filter(|path| path.is_absolute())
+}
+
 /// Runs `maka desktop` from the directory the launcher stages the shell in,
 /// forwarding Windows shortcut arguments or defaulting to the restarted Root.
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
@@ -266,9 +296,11 @@ fn launch() -> Result<(), String> {
     command.arg("desktop");
     #[cfg(windows)]
     command.args(std::env::args_os().skip(1));
+    let root = std::env::var_os(maka_updater::RESTART_ROOT_ENV).filter(|root| !root.is_empty());
+    #[cfg(target_os = "macos")]
+    let root = root.or_else(|| reopen_root(&shell, None).map(PathBuf::into_os_string));
     if command.get_args().len() == 1
-        && let Some(root) =
-            std::env::var_os(maka_updater::RESTART_ROOT_ENV).filter(|root| !root.is_empty())
+        && let Some(root) = root
     {
         command.arg("--root").arg(root);
     }
@@ -312,6 +344,31 @@ mod tests {
         assert!(help.starts_with(&format!("{version}\n\n")), "{help}");
         assert!(help.contains("maka desktop --root PATH"), "{help}");
         assert_eq!(answer(&[]), None);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn launchservices_reopen_restores_only_this_installations_root() {
+        use objc2_foundation::{NSString, NSURL, NSUserDefaults};
+        let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        let shell = dir.join("Maka Preview.app/Contents/MacOS/maka-desktop-shell");
+        let root = dir.join("isolated host");
+        assert_eq!(reopen_root(&shell, None), None);
+        reopen_root(&shell, Some(&root));
+        assert_eq!(reopen_root(&shell, None), Some(root));
+        assert_eq!(
+            reopen_root(
+                &dir.join("other/Maka Preview.app/Contents/MacOS/maka-desktop-shell"),
+                None
+            ),
+            None
+        );
+        let url = NSURL::from_file_path(&shell)
+            .unwrap()
+            .absoluteString()
+            .unwrap();
+        NSUserDefaults::standardUserDefaults()
+            .removeObjectForKey(&NSString::from_str(&format!("MakaDesktopRoot/{url}")));
     }
 
     #[cfg(target_os = "macos")]

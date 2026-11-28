@@ -92,7 +92,7 @@ pub use crate::app::set_root;
 pub use crate::{
     app::{
         ActivationPolicy, AppOptions, AppSource, AppView, WindowDisplay, quit_app, run_app,
-        run_app_with_config, set_components, set_ui_sets, with_running_view,
+        run_app_with_config, set_components, set_ui_sets, try_quit_for_relaunch, with_running_view,
     },
     image::AssetBase,
     native::{ComponentContext, ComponentFactory, Components, NativeComponent},

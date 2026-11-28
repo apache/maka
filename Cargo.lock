@@ -9584,6 +9584,7 @@ dependencies = [
  "libc",
  "maka-agent-facts",
  "maka-capabilities",
+ "maka-computer-use",
  "maka-config",
  "maka-event-log",
  "maka-fs-tools",

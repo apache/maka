@@ -47,7 +47,7 @@ import { errorText, renderText } from './text';
 import { bodyTextStyle, captionTextStyle, C, Disclosure } from './ui';
 
 // The native factory owns the trusted application URL; no path crosses from the UI.
-const PermissionApplication = nativeComponent<
+export const PermissionApplication = nativeComponent<
   {},
   {
     dragError: { message: string };

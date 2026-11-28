@@ -584,6 +584,12 @@ export type AgentHistoryRequestsOutput_AgentHistoryRequestRetry =
       kind: 'cancelled';
       [k: string]: unknown | undefined;
     };
+/**
+ * A macOS privacy grant (TCC) that the Host process itself needs before native
+ * Computer Use can run. This is operating-system state the user changes in
+ * System Settings, not a Maka grant; the Host observes it and commits the outcome.
+ */
+export type AgentHostPermissionsOutput_SystemPermissionGrant = 'accessibility' | 'screen_recording';
 export type AgentLoadHistoryCheckpointOutput_AgentCheckpointLoadState =
   | {
       kind: 'preparing';
@@ -3686,6 +3692,19 @@ export interface ServiceMethods {
         [k: string]: unknown | undefined;
       };
     };
+    hostPermissions: {
+      mode: 'query';
+      input: {
+        grant?: Runtime.SystemPermissionGrant | null;
+      };
+      output: {
+        stateDomain: string;
+        supported: boolean;
+        application: string;
+        bundlePath: string | null;
+        grants: AgentHostPermissionsOutput_HostGrantState[];
+      };
+    };
     import: {
       mode: 'mutation';
       input: Runtime.AgentImportChange;
@@ -6415,6 +6434,11 @@ export interface AgentHistoryRequestsOutput_ModelUsage {
   cache_write_tokens?: number | null;
   reasoning_tokens?: number | null;
   [k: string]: unknown | undefined;
+}
+export interface AgentHostPermissionsOutput_HostGrantState {
+  grant: AgentHostPermissionsOutput_SystemPermissionGrant;
+  effective: boolean;
+  pendingHost?: boolean;
 }
 export interface AgentLoadHistoryCheckpointOutput_AgentHistoryCheckpointHead {
   revision: string;

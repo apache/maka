@@ -272,6 +272,10 @@ test('CLI builds use the requested target and artifact path', async (t) => {
     ).binary,
     executable,
   );
+  if (process.platform === 'darwin') {
+    const plist = await readFile(join(development, 'Maka.app/Contents/Info.plist'), 'utf8');
+    assert.match(plist, /<string>org\.apache\.maka\.desktop\.dev<\/string>/u);
+  }
   assert.deepEqual(invocation.args, [
     'build',
     '--locked',
@@ -425,6 +429,20 @@ test('the Host app has a valid stable bundle signature', {
   };
   await stageDesktopBundle(root, shell, destination);
   const first = identity();
+  const plist = join(destination, 'Contents', 'Info.plist');
+  assert.match(await readFile(plist, 'utf8'), /<string>org\.apache\.maka\.desktop<\/string>/u);
+  await stageDesktopBundle(root, shell, destination, [], { development: true });
+  assert.match(await readFile(plist, 'utf8'), /<string>Maka Preview<\/string>/u);
+  assert.equal(
+    childProcess.spawnSync('/usr/bin/codesign', [
+      '--verify',
+      '--strict',
+      '-R=identifier "org.apache.maka.desktop.dev"',
+      destination,
+    ]).status,
+    0,
+  );
+  assert.equal(identity(), first);
   await writeFile(join(root, 'Cargo.toml'), manifest.replace('1.2.3-beta.1', '1.2.4'));
   await stageDesktopBundle(root, shell, destination);
   assert.equal(

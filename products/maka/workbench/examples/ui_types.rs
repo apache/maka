@@ -46,6 +46,8 @@ const SOURCES: &[&str] = &[
     "products/maka/workbench/tests/fixtures/discovery.tsx",
     "products/maka/workbench/tests/fixtures/stage-quotes.tsx",
     "products/maka/workbench/tests/fixtures/model-select.tsx",
+    "products/maka/workbench/tests/fixtures/permission-settings.tsx",
+    "products/maka/workbench/tests/fixtures/permission-settings-unsupported.tsx",
     "products/maka/workbench/tests/fixtures/models-settings.tsx",
     "products/maka/workbench/tests/fixtures/terminal-sidebar.tsx",
     "products/maka/workbench/tests/fixtures/skill-input.tsx",

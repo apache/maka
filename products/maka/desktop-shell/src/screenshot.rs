@@ -62,8 +62,7 @@ use nsh_platform_macos::{
 use objc2_core_foundation::{CFRetained, CGPoint, CGRect, CGSize};
 use objc2_core_graphics::{
     CGDirectDisplayID, CGDisplayBounds, CGImage, CGPreflightScreenCaptureAccess,
-    CGRequestScreenCaptureAccess, CGWarpMouseCursorPosition, CGWindowListCopyWindowInfo,
-    CGWindowListOption,
+    CGRequestScreenCaptureAccess, CGWarpMouseCursorPosition,
 };
 use objc2_screen_capture_kit::{
     SCCaptureResolutionType, SCContentFilter, SCScreenshotManager, SCShareableContent,
@@ -399,7 +398,7 @@ impl Stage {
         };
         let scale = screen.backingScaleFactor();
         let origin = CGDisplayBounds(display).origin;
-        let sources = windows_on();
+        let sources = crate::window_list::on_screen(None);
         let stage = Arc::new(MainThreadBound::new(self.retain(), self.mtm()));
         let found = RcBlock::new(
             move |content: *mut SCShareableContent, error: *mut NSError| {
@@ -452,13 +451,13 @@ impl Stage {
         }
     }
 
-    fn freeze(&self, mut shot: Shot, sources: Vec<elements::Source>) {
+    fn freeze(&self, mut shot: Shot, sources: Vec<crate::window_list::Window>) {
         if !matches!(*self.ivars().phase.borrow(), Phase::Capturing) {
             return;
         }
         let whole = shot.whole;
         let smallest = (SMALLEST_WINDOW * shot.scale) as i64;
-        let (windows, sources): (Vec<Window>, Vec<elements::Source>) = sources
+        let (windows, sources): (Vec<Window>, Vec<crate::window_list::Window>) = sources
             .into_iter()
             .filter_map(|source| {
                 let area = shot.area(source.bounds)?;
@@ -1197,7 +1196,7 @@ impl NativeComponent for StageComponent {
 
 fn deliver(
     stage: Arc<MainThreadBound<Retained<Stage>>>,
-    shot: Result<(Shot, Vec<elements::Source>), String>,
+    shot: Result<(Shot, Vec<crate::window_list::Window>), String>,
 ) {
     DispatchQueue::main().exec_async(move || {
         let mtm = MainThreadMarker::new().expect("the main queue runs on the main thread");
@@ -1263,47 +1262,6 @@ fn display_of(screen: &NSScreen) -> Option<CGDirectDisplayID> {
         .downcast::<NSNumber>()
         .ok()?;
     Some(number.unsignedIntValue())
-}
-
-/// The on-screen windows of the normal level, front to back.
-fn windows_on() -> Vec<elements::Source> {
-    let Some(list) = CGWindowListCopyWindowInfo(
-        CGWindowListOption::OptionOnScreenOnly | CGWindowListOption::ExcludeDesktopElements,
-        0,
-    ) else {
-        return Vec::new();
-    };
-    // SAFETY: CFArray is toll-free bridged to NSArray, and the window server's entries are
-    // dictionaries with string keys; `list` outlives the borrow.
-    let list: &NSArray<NSDictionary<NSString, AnyObject>> =
-        unsafe { &*CFRetained::as_ptr(&list).as_ptr().cast() };
-    let number = |info: &NSDictionary<NSString, AnyObject>, key: &str| {
-        info.objectForKey(&NSString::from_str(key))?
-            .downcast::<NSNumber>()
-            .ok()
-            .map(|number| number.doubleValue())
-    };
-    list.iter()
-        .filter_map(|info| {
-            if number(&info, "kCGWindowLayer")? != 0.0 || number(&info, "kCGWindowAlpha")? == 0.0 {
-                return None;
-            }
-            let bounds = info
-                .objectForKey(&NSString::from_str("kCGWindowBounds"))?
-                .downcast::<NSDictionary>()
-                .ok()?;
-            // SAFETY: the window server keys a window's bounds by string.
-            let bounds: Retained<NSDictionary<NSString, AnyObject>> =
-                unsafe { Retained::cast_unchecked(bounds) };
-            Some(elements::Source {
-                pid: number(&info, "kCGWindowOwnerPID")? as i32,
-                bounds: CGRect::new(
-                    CGPoint::new(number(&bounds, "X")?, number(&bounds, "Y")?),
-                    CGSize::new(number(&bounds, "Width")?, number(&bounds, "Height")?),
-                ),
-            })
-        })
-        .collect()
 }
 
 /// `rect`, in global points, in pixels of the display at `origin`.

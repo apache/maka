@@ -27,6 +27,7 @@ publish.workspace = true
 cap-std.workspace = true
 rusqlite.workspace = true
 hex.workspace = true
+maka-computer-use.workspace = true
 maka-agent-facts.workspace = true
 maka-packages.workspace = true
 maka-capabilities.workspace = true

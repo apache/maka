@@ -32,6 +32,8 @@ import { SettingsSkeleton } from '../../../products/maka/workbench/app/Loading';
 import { SettingsProblem } from '../../../products/maka/workbench/app/SettingsPage';
 import { ConnectionSettings } from '../../../products/maka/workbench/app/ConnectionSettings';
 import { GeneralSettings } from '../../../products/maka/workbench/app/GeneralSettings';
+import { SystemPermissionSettings } from '../../../products/maka/workbench/app/SystemPermissionSettings';
+import { createPermissionSettings } from '../../../products/maka/workbench/app/permissionSettingsState';
 import { RemoteAccessSettings } from '../../../products/maka/workbench/app/RemoteAccessSettings';
 import { createRemoteAccessSettings } from '../../../products/maka/workbench/app/remoteAccessSettingsState';
 import { NetworkSettings } from '../../../products/maka/workbench/app/NetworkSettings';
@@ -150,6 +152,7 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
     (locale) => runtime.setLocale(locale),
   );
   const webSearch = createWebSearchSettings(host, operations, active('web-search'));
+  const permissions = createPermissionSettings(host);
   const remoteAccess = createRemoteAccessSettings();
   const network = createNetworkSettings(host, operations, active('network'), restored?.network);
   const plugins = createPluginSettings(
@@ -578,6 +581,28 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
               busy: operations.navigationBusy,
             },
             () => <NetworkSettings owner={network} />,
+          ),
+      },
+      'system-permissions': {
+        kind: 'settings',
+        render: (props) =>
+          mountPage(
+            'system-permissions',
+            permissions,
+            props,
+            {
+              title: () => tr('System permissions'),
+              navigation: permissions.navigation,
+              nested: () => false,
+              back: permissions.back,
+              ownsError: () => true,
+              action: () => ({
+                label: tr('Refresh'),
+                run: permissions.refresh,
+                disabled: permissions.busy(),
+              }),
+            },
+            () => <SystemPermissionSettings owner={permissions} />,
           ),
       },
       'remote-access': {

@@ -73,6 +73,7 @@ fn system_permission_bundle() -> Bundle {
     let mut capabilities = Capabilities::all();
     capabilities.host = vec![
         "computerPermissions.close".into(),
+        "permissionGuide.reveal".into(),
         "appearance.textSize".into(),
     ];
     Bundle::source(bundle_source(include_bytes!(concat!(
@@ -119,6 +120,13 @@ mod tests {
         pub fn system_locale(&self) -> String {
             "en".into()
         }
+    }
+
+    #[test]
+    fn permission_guide_may_reveal_its_application() {
+        let access = super::system_permission_bundle().policy.access();
+        assert!(nsh_core::host_channel::check_call(&access, "permissionGuide.reveal").is_ok());
+        assert!(nsh_core::host_channel::check_call(&access, "workspace.chooseFolder").is_err());
     }
 
     fn fixture(entry: &str) -> nsh_testing::Headless {
@@ -506,6 +514,91 @@ mod tests {
             native_focus_scopes,
             Environment::default().idiom,
         )
+    }
+
+    #[test]
+    fn permission_settings_hide_file_access_for_unsupported_desktops() {
+        let mut app = headless_fixture(
+            "tests/fixtures/permission-settings-unsupported.tsx",
+            Size::new(px(760.0), px(1200.0)),
+            false,
+        );
+        app.wait_for("text:Remote Host").unwrap();
+        app.wait_for("text:Allowed").unwrap();
+        for selector in [
+            "text:File access",
+            "role:button[Open Files and folders settings…]",
+            "role:button[Open Full disk access settings…]",
+        ] {
+            assert_eq!(app.screen().count(selector).unwrap(), 0, "{selector}");
+        }
+    }
+
+    #[test]
+    fn permission_settings_show_only_local_actions_for_a_remote_host() {
+        let mut app = headless_fixture(
+            "tests/fixtures/permission-settings.tsx",
+            Size::new(px(760.0), px(1200.0)),
+            false,
+        );
+        app.wait_for("text:Connected to a remote device.").unwrap();
+        app.wait_for("text:Maka Dev").unwrap();
+        assert_eq!(
+            app.screen().count("role:button[Show in Finder]").unwrap(),
+            1
+        );
+        app.wait_for("role:button[Allow · Microphone]").unwrap();
+        app.wait_for("text:Remote Host").unwrap();
+        app.wait_for("text:Allowed").unwrap();
+        let screen = app.screen();
+        let bounds = |selector| screen.layout(selector).unwrap().unwrap().bounds;
+        let allow = bounds("role:button[Allow · Microphone]");
+        let allowed = bounds("text:Allowed");
+        let microphone_settings = bounds("role:button[Open Microphone settings…]");
+        let accessibility_settings = bounds("role:button[Open Accessibility settings…]");
+        assert!((allow.right().0 - allowed.right().0).abs() <= 1.0);
+        assert!((allow.center().y.0 - microphone_settings.center().y.0).abs() <= 1.0);
+        assert!((allowed.center().y.0 - accessibility_settings.center().y.0).abs() <= 1.0);
+        assert!((0.0..=8.0).contains(&(microphone_settings.origin.x.0 - allow.right().0)));
+        assert_eq!(
+            microphone_settings.origin.x,
+            accessibility_settings.origin.x
+        );
+
+        assert_eq!(app.screen().count("text:Not enabled yet").unwrap(), 1);
+        app.wait_for("text:Permission granted. It hasn’t taken effect in Remote Host yet.")
+            .unwrap();
+        app.wait_for("role:button[Check again]").unwrap();
+        assert_eq!(
+            app.screen().count("text:Check in System Settings").unwrap(),
+            0
+        );
+        assert_eq!(
+            app.screen()
+                .count("role:button[Open Accessibility settings…]")
+                .unwrap(),
+            1
+        );
+        app.press("role:button[Allow · Microphone]").unwrap();
+        app.wait_for("text:Denied").unwrap();
+        assert_eq!(
+            app.screen()
+                .count("role:button[Allow · Microphone]")
+                .unwrap(),
+            0
+        );
+        app.press("role:button[Open Screen & System Audio Recording settings…]")
+            .unwrap();
+        app.wait_for("role:button[Restart Maka]").unwrap();
+        app.press("role:button[Restart Maka]").unwrap();
+        app.wait_for(
+            "text:Maka could not restart. Finish any pending quit or update, then try again.",
+        )
+        .unwrap();
+        app.press("role:button[Open Full disk access settings…]")
+            .unwrap();
+        app.wait_for("text:Open System Settings → Privacy & Security → Full disk access.")
+            .unwrap();
     }
 
     #[test]

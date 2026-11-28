@@ -82,15 +82,8 @@ fn command(
     }
     let mut command = tokio::process::Command::new("/usr/bin/open");
     match action {
-        "accessibility" => {
-            command.arg(
-                "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
-            );
-        }
-        "screen_recording" => {
-            command.arg(
-                "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
-            );
+        "accessibility" | "screen_recording" => {
+            command.arg(super::permission_settings::panel_url(action)?);
         }
         "reveal_application" => {
             let InteractionRequest::SystemPermission {

@@ -2867,6 +2867,7 @@ pub fn contract() -> Contract {
                         MethodMode::Query,
                     ),
                 ),
+                ("hostPermissions".into(), method::<HostPermissionsRead, HostPermissions>(MethodMode::Query)),
                 (
                     "systemPermissionStatus".into(),
                     method::<InteractionRead, SystemPermissionStatus>(MethodMode::Query),

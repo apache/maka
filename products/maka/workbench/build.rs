@@ -26,6 +26,7 @@ fn main() {
             .flag("-fobjc-arc")
             .compile("maka_dictation");
         for framework in [
+            "ApplicationServices",
             "AVFoundation",
             "AppKit",
             "AudioToolbox",

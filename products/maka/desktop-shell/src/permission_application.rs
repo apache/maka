@@ -34,22 +34,14 @@ use nsh_platform_macos::{
         NSArray, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString, NSURL,
     },
 };
-use std::{
-    cell::Cell,
-    path::Path,
-    rc::Rc,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-};
+use std::{cell::Cell, path::Path, rc::Rc};
 
 /// The caller supplies the verified Host application; UI props cannot choose it.
 pub(crate) fn register(
     components: &Components,
     mtm: MainThreadMarker,
     application: &Path,
-    alive: Arc<AtomicBool>,
+    alive: Rc<dyn Fn() -> bool>,
 ) -> Result<(), String> {
     let path = application
         .to_str()
@@ -114,10 +106,18 @@ impl DragGesture {
     }
 }
 
+fn file_drag_operations(context: NSDraggingContext, active: bool) -> NSDragOperation {
+    if active && context == NSDraggingContext::OutsideApplication {
+        NSDragOperation::Copy | NSDragOperation::Link | NSDragOperation::Generic
+    } else {
+        NSDragOperation::None
+    }
+}
+
 struct IconState {
     icon: Retained<NSImage>,
     url: Retained<NSURL>,
-    alive: Arc<AtomicBool>,
+    alive: Rc<dyn Fn() -> bool>,
     gesture: DragGesture,
     context: ComponentContext,
 }
@@ -131,8 +131,8 @@ define_class!(
     unsafe impl NSObjectProtocol for ApplicationIcon {}
     unsafe impl NSDraggingSource for ApplicationIcon {
         #[unsafe(method(draggingSession:sourceOperationMaskForDraggingContext:))]
-        fn drag_operations(&self, _session: &NSDraggingSession, _context: NSDraggingContext) -> NSDragOperation {
-            if self.ivars().alive.load(Ordering::Acquire) { NSDragOperation::Copy } else { NSDragOperation::None }
+        fn drag_operations(&self, _session: &NSDraggingSession, context: NSDraggingContext) -> NSDragOperation {
+            file_drag_operations(context, (self.ivars().alive)())
         }
         #[unsafe(method(draggingSession:endedAtPoint:operation:))]
         fn drag_ended(&self, _session: &NSDraggingSession, _point: NSPoint, _operation: NSDragOperation) {
@@ -149,17 +149,17 @@ define_class!(
         fn mouse_down_can_move_window(&self) -> bool { false }
         #[unsafe(method(acceptsFirstMouse:))]
         fn accepts_first_mouse(&self, _event: Option<&NSEvent>) -> bool {
-            self.ivars().alive.load(Ordering::Acquire)
+            (self.ivars().alive)()
         }
         #[unsafe(method(mouseDown:))]
         fn mouse_down(&self, _event: &NSEvent) {
-            if self.ivars().alive.load(Ordering::Acquire) { self.ivars().gesture.press(); }
+            if (self.ivars().alive)() { self.ivars().gesture.press(); }
         }
         #[unsafe(method(mouseUp:))]
         fn mouse_up(&self, _event: &NSEvent) { self.ivars().gesture.release(); }
         #[unsafe(method(mouseDragged:))]
         fn mouse_dragged(&self, event: &NSEvent) {
-            if !self.ivars().alive.load(Ordering::Acquire) || !self.ivars().gesture.begin() { return; }
+            if !(self.ivars().alive)() || !self.ivars().gesture.begin() { return; }
             let writer = ProtocolObject::from_ref(&*self.ivars().url);
             let item = NSDraggingItem::initWithPasteboardWriter(NSDraggingItem::alloc(), writer);
             // SAFETY: contents is an NSImage, one of AppKit's supported drag images.
@@ -189,7 +189,7 @@ impl ApplicationIcon {
         mtm: MainThreadMarker,
         icon: Retained<NSImage>,
         url: Retained<NSURL>,
-        alive: Arc<AtomicBool>,
+        alive: Rc<dyn Fn() -> bool>,
         context: ComponentContext,
     ) -> Retained<Self> {
         let allocated = Self::alloc(mtm).set_ivars(IconState {
@@ -228,7 +228,21 @@ impl NativeComponent for ApplicationComponent {
 
 #[cfg(test)]
 mod tests {
-    use super::DragGesture;
+    use super::*;
+
+    #[test]
+    fn external_settings_list_can_negotiate_a_file_drop() {
+        let external = NSDraggingContext::OutsideApplication;
+        let mask = file_drag_operations(external, true);
+        assert!(
+            mask.contains(NSDragOperation::Copy | NSDragOperation::Generic | NSDragOperation::Link)
+        );
+        assert_eq!(file_drag_operations(external, false), NSDragOperation::None);
+        assert_eq!(
+            file_drag_operations(NSDraggingContext::WithinApplication, true),
+            NSDragOperation::None
+        );
+    }
 
     #[test]
     fn a_gesture_starts_only_one_session_even_with_reentrant_mouse_events() {

@@ -101,10 +101,12 @@ struct Grants {
 }
 
 impl Grants {
-    fn read() -> Self {
+    fn read(only: Option<SystemPermissionGrant>) -> Self {
         Self {
-            accessibility: tcc::raw_present(Grant::Accessibility),
-            screen_recording: tcc::raw_present(Grant::ScreenRecording),
+            accessibility: only != Some(SystemPermissionGrant::ScreenRecording)
+                && tcc::raw_present(Grant::Accessibility),
+            screen_recording: only != Some(SystemPermissionGrant::Accessibility)
+                && tcc::raw_present(Grant::ScreenRecording),
         }
     }
 
@@ -145,23 +147,58 @@ pub(super) fn missing(
     if required.is_empty() {
         return Ok(Vec::new());
     }
-    let expected = Subject::current()?;
-    let value =
-        macos_finite(MacRole::PermissionStatus, &|| false).map_err(|error| error.to_string())?;
-    let observed = decode(value, &expected)?;
-    missing_from_snapshot(required, &observed, |grant| tcc::raw_present(grant.into()))
+    missing_from_states(states(required)?)
 }
 
-fn missing_from_snapshot(
+pub(super) fn states(
+    required: &[SystemPermissionGrant],
+) -> Result<Vec<(SystemPermissionGrant, super::PermissionState)>, String> {
+    let expected = Subject::current()?;
+    let value = macos_finite(
+        MacRole::PermissionStatus(match required {
+            [grant] => Some(*grant),
+            _ => None,
+        }),
+        &|| false,
+    )
+    .map_err(|error| error.to_string())?;
+    let observed = decode(value, &expected)?;
+    Ok(classify(required, &observed, |grant| {
+        tcc::raw_present(grant.into())
+    }))
+}
+
+fn classify(
     required: &[SystemPermissionGrant],
     observed: &Snapshot,
     mut main_present: impl FnMut(SystemPermissionGrant) -> bool,
+) -> Vec<(SystemPermissionGrant, super::PermissionState)> {
+    use super::PermissionState::*;
+    required
+        .iter()
+        .map(|&grant| {
+            (
+                grant,
+                if !observed.grants.present(grant) {
+                    Missing
+                } else if main_present(grant) {
+                    Effective
+                } else {
+                    PendingHost
+                },
+            )
+        })
+        .collect()
+}
+
+fn missing_from_states(
+    states: Vec<(SystemPermissionGrant, super::PermissionState)>,
 ) -> Result<Vec<SystemPermissionGrant>, String> {
     let mut missing = Vec::new();
-    for &grant in required {
-        if !observed.grants.present(grant) {
+    for (grant, state) in states {
+        if state == super::PermissionState::Missing {
             missing.push(grant);
-        } else if !main_present(grant) {
+        } else if state == super::PermissionState::PendingHost {
             return Err(format!(
                 "system_permission_state_disagreement: {} is granted to a fresh process but not effective in Host PID {}",
                 Grant::from(grant).code(),
@@ -183,11 +220,11 @@ pub(crate) fn request(
     Ok(())
 }
 
-pub(crate) fn finite_status() -> Result<Value, String> {
+pub(crate) fn finite_status(only: Option<SystemPermissionGrant>) -> Result<Value, String> {
     let subject = Subject::finite_child()?;
     serde_json::to_value(Snapshot {
         subject,
-        grants: Grants::read(),
+        grants: Grants::read(only),
     })
     .map_err(|error| error.to_string())
 }
@@ -200,7 +237,7 @@ pub(crate) fn finite_request(grant: SystemPermissionGrant) -> Result<Value, Stri
     }
     serde_json::to_value(Snapshot {
         subject,
-        grants: Grants::read(),
+        grants: Grants::read(None),
     })
     .map_err(|error| error.to_string())
 }
@@ -210,6 +247,13 @@ mod tests {
     use super::*;
     use SystemPermissionGrant::{Accessibility, ScreenRecording};
 
+    fn missing_from_snapshot(
+        required: &[SystemPermissionGrant],
+        observed: &Snapshot,
+        main: impl FnMut(SystemPermissionGrant) -> bool,
+    ) -> Result<Vec<SystemPermissionGrant>, String> {
+        missing_from_states(classify(required, observed, main))
+    }
     #[test]
     fn fresh_grants_require_host_confirmation_without_probing_denied_grants() {
         let directory = tempfile::tempdir().unwrap();
@@ -246,6 +290,13 @@ mod tests {
             })
             .unwrap();
         assert_eq!(missing, [ScreenRecording]);
+        assert_eq!(
+            classify(&[Accessibility, ScreenRecording], &observed, |_| false),
+            [
+                (Accessibility, super::super::PermissionState::PendingHost),
+                (ScreenRecording, super::super::PermissionState::Missing)
+            ]
+        );
         let error = missing_from_snapshot(&[Accessibility], &observed, |_| false).unwrap_err();
         assert!(error.contains("system_permission_state_disagreement: accessibility"));
     }

@@ -34,7 +34,7 @@ use std::{
 
 #[derive(Clone, Copy)]
 pub(crate) enum MacRole {
-    PermissionStatus,
+    PermissionStatus(Option<SystemPermissionGrant>),
     PermissionRequest(SystemPermissionGrant),
     ListApps,
     ListWindows { pid: Option<u32> },
@@ -43,7 +43,13 @@ pub(crate) enum MacRole {
 impl MacRole {
     fn arguments(self) -> Vec<OsString> {
         let arguments = match self {
-            Self::PermissionStatus => vec!["--macos-permission-status"],
+            Self::PermissionStatus(None) => vec!["--macos-permission-status"],
+            Self::PermissionStatus(Some(SystemPermissionGrant::Accessibility)) => {
+                vec!["--macos-permission-status", "accessibility"]
+            }
+            Self::PermissionStatus(Some(SystemPermissionGrant::ScreenRecording)) => {
+                vec!["--macos-permission-status", "screen_recording"]
+            }
             Self::PermissionRequest(SystemPermissionGrant::Accessibility) => {
                 vec!["--macos-permission-request", "accessibility"]
             }
@@ -63,7 +69,14 @@ impl MacRole {
     fn parse(arguments: &[OsString]) -> Option<Result<Self, String>> {
         let first = arguments.first()?.to_str()?;
         let role = match first {
-            "--macos-permission-status" if arguments.len() == 1 => Self::PermissionStatus,
+            "--macos-permission-status" if arguments.len() == 1 => Self::PermissionStatus(None),
+            "--macos-permission-status" if arguments.len() == 2 => {
+                Self::PermissionStatus(Some(match arguments[1].to_str() {
+                    Some("accessibility") => SystemPermissionGrant::Accessibility,
+                    Some("screen_recording") => SystemPermissionGrant::ScreenRecording,
+                    _ => return Some(Err("Unsupported status grant".into())),
+                }))
+            }
             "--macos-list-apps" if arguments.len() == 1 => Self::ListApps,
             "--macos-list-windows" if arguments.len() == 1 => Self::ListWindows { pid: None },
             "--macos-list-windows" if arguments.len() == 2 => {
@@ -213,7 +226,7 @@ fn read_output(mut input: impl Read, limit: usize) -> io::Result<Vec<u8>> {
 pub(super) fn bootstrap(arguments: &[OsString]) -> Option<ExitCode> {
     let role = MacRole::parse(arguments)?;
     let result = role.and_then(|role| match role {
-        MacRole::PermissionStatus => crate::system_permission::process::finite_status(),
+        MacRole::PermissionStatus(only) => crate::system_permission::process::finite_status(only),
         MacRole::PermissionRequest(grant) => {
             watch_request_owner()?;
             crate::system_permission::process::finite_request(grant)
