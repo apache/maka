@@ -2635,6 +2635,125 @@ mod tests {
         assert!(!app.screen().selected("role:tab[Time]").unwrap());
         assert!(!app.screen().matches("text:Today").unwrap());
     }
+
+    #[test]
+    fn connection_models_stage_batches_and_bound_large_catalogs() {
+        let viewport = Size::new(px(1040.0), px(900.0));
+        let mut app = fixture("connection-models.tsx");
+        app.set_viewport(viewport).unwrap();
+        app.wait_for("label:Edit connection OpenRouter").unwrap();
+        app.press("label:Edit connection OpenRouter").unwrap();
+        app.wait_for("text:3 of 15 enabled").unwrap();
+        app.wait_for("label:Search models").unwrap();
+        app.wait_for("label:Advanced connection settings").unwrap();
+        app.wait_for("text:Delete connection").unwrap();
+
+        let bounds_of = |app: &nsh_testing::Headless, selector: &str| {
+            let id = app.screen().id(selector).unwrap();
+            app.screen()
+                .layout_nodes()
+                .into_iter()
+                .find(|node| node.id == id)
+                .unwrap()
+                .bounds
+        };
+        let search = bounds_of(&app, "label:Search models");
+        let models_list = bounds_of(&app, "label:Models");
+        let advanced = bounds_of(&app, "label:Advanced connection settings");
+        let delete = bounds_of(&app, "text:Delete connection");
+        assert!(search.origin.y + search.size.height <= models_list.origin.y);
+        assert!(models_list.origin.y + models_list.size.height <= advanced.origin.y);
+        assert!(delete.origin.y + delete.size.height <= viewport.height);
+
+        // Filtering to zero matches shows Clear search, resets cleanly, and restores search focus.
+        app.type_text("label:Search models", "no-such-model")
+            .unwrap();
+        app.wait_for("text:No matching models.").unwrap();
+        let search_id = app.screen().id("label:Search models").unwrap();
+        let focus_count = |app: &nsh_testing::Headless| {
+            app.screen()
+                .commands()
+                .iter()
+                .filter(|(id, cmd)| *id == search_id && matches!(cmd, nsh_core::Command::Focus))
+                .count()
+        };
+        let focus_before = focus_count(&app);
+        app.press("label:Clear search").unwrap();
+        app.wait_for("text:3 of 15 enabled").unwrap();
+        app.wait_for("role:switch[openai/model-01]").unwrap();
+        assert!(focus_count(&app) > focus_before);
+
+        // Multi-model toggles stage locally with zero mutations; Cancel reverts immediately.
+        app.press("role:switch[openai/model-01]").unwrap();
+        app.press("role:switch[openai/model-03]").unwrap();
+        app.wait_for("text:Unsaved model selection changes.")
+            .unwrap();
+        assert!(app.screen().matches("text:updates:0").unwrap());
+        app.press("label:Discard model selection changes").unwrap();
+        assert!(app.settle());
+        assert!(
+            !app.screen()
+                .matches("text:Unsaved model selection changes.")
+                .unwrap()
+        );
+        assert_eq!(
+            app.screen()
+                .accessibility_state("role:switch[openai/model-01]")
+                .unwrap()
+                .checked,
+            Some(nsh_core::Checked::True)
+        );
+
+        // Batch Disable all + Back/Escape discard guard keeps edits when cancelled.
+        app.press("label:Disable all").unwrap();
+        app.wait_for("text:0 of 15 enabled").unwrap();
+        app.press("label:Back from connection settings").unwrap();
+        app.wait_for("text:Discard unsaved changes?").unwrap();
+        app.press("text:Keep editing").unwrap();
+        app.wait_for("text:0 of 15 enabled").unwrap();
+        // Escape also prompts discard once no text input is focused, and a second Escape keeps editing.
+        app.press_key("escape").unwrap();
+        app.wait_for("text:Discard unsaved changes?").unwrap();
+        app.press_key("escape").unwrap();
+        app.wait_for("text:0 of 15 enabled").unwrap();
+
+        // Enable all, uncheck a discovered model and the manual model, commit in 1 update.
+        app.press("label:Enable all").unwrap();
+        app.wait_for("text:15 of 15 enabled").unwrap();
+        app.press("role:switch[openai/model-01]").unwrap();
+        app.wait_for("text:14 of 15 enabled").unwrap();
+        app.type_text("label:Search models", "custom/local-model")
+            .unwrap();
+        app.wait_for("text:14 of 15 enabled · 1 matching").unwrap();
+        app.press("label:Disable matching").unwrap();
+        app.wait_for("text:13 of 15 enabled · 1 matching").unwrap();
+        assert!(app.screen().matches("text:updates:0").unwrap());
+
+        app.press("label:Save connection").unwrap();
+        app.wait_for("text:updates:1;enabled:13;manualKept:true")
+            .unwrap();
+        assert!(
+            !app.screen()
+                .matches("text:Unsaved model selection changes.")
+                .unwrap()
+        );
+
+        // Terminal idiom stays usable and supports search + batch staging.
+        let mut tui = headless_fixture_in(
+            "tests/fixtures/connection-models.tsx",
+            Size::new(px(640.0), px(480.0)),
+            true,
+            nsh_core::platform::Idiom::Terminal,
+        );
+        tui.wait_for("label:Edit connection OpenRouter").unwrap();
+        tui.press("label:Edit connection OpenRouter").unwrap();
+        tui.wait_for("text:3 of 15 enabled").unwrap();
+        tui.press("label:Disable all").unwrap();
+        tui.wait_for("text:0 of 15 enabled").unwrap();
+        tui.press("label:Save connection").unwrap();
+        tui.wait_for("text:updates:1;enabled:0;manualKept:true")
+            .unwrap();
+    }
 }
 
 #[cfg(test)]
