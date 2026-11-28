@@ -702,8 +702,11 @@ impl RequestClassifier {
             .or_else(|| self.model_aliases.get(&request.model).cloned());
 
         let system = request.system_text.as_deref().unwrap_or("");
-        let is_opencode = harness == Some("opencode");
-        let is_claude = harness == Some("claude-code") && route.endpoint == AnthropicMessages;
+        let is_opencode = harness.is_some_and(|h| h == "opencode" || h.starts_with("opencode-"));
+        let is_claude = harness
+            .is_some_and(|h| h == "claude" || h == "claude-code" || h.starts_with("claude-"))
+            && route.endpoint == AnthropicMessages;
+        let is_codex = harness.is_some_and(|h| h == "codex" || h.starts_with("codex-"));
         let last_user = request
             .messages
             .last()
@@ -726,7 +729,7 @@ impl RequestClassifier {
             && last_user.contains("Your task is to create a detailed summary of the conversation")
             && last_user.contains("<analysis>")
             && last_user.contains("<summary>");
-        let codex_summary = harness == Some("codex")
+        let codex_summary = is_codex
             && matches!(route.endpoint, ResponsesCreate | ResponsesWs)
             && request.tools.is_empty()
             && request.last_user_text().is_some_and(|text| {

@@ -18,6 +18,8 @@
  */
 
 import { execFile, spawn } from 'node:child_process';
+import { lstat, readdir } from 'node:fs/promises';
+import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { finished } from 'node:stream/promises';
 import { promisify } from 'node:util';
@@ -25,42 +27,174 @@ import { promisify } from 'node:util';
 const execFileAsync = promisify(execFile);
 const logLimit = 256 * 1024;
 
-function killGroup(pid) {
+function sendSignal(pid, signal) {
   try {
-    process.kill(-pid, 'SIGKILL');
+    process.kill(pid, signal);
   } catch (error) {
     if (error.code !== 'ESRCH') throw error;
   }
 }
 
-async function sampleTree(rootPid, signal) {
-  const { stdout } = await execFileAsync('ps', ['-axo', 'pid=,ppid=,rss=,pcpu='], {
-    signal,
-    env: { ...process.env, LC_ALL: 'C' },
+export function killProcessGroup(pid, signal = 'SIGKILL') {
+  if (pid) sendSignal(-pid, signal);
+}
+
+async function processTable() {
+  const { stdout } = await execFileAsync('/bin/ps', ['-axo', 'pid=,ppid=,pgid=,state=,rss=,pcpu='], {
+    env: { LC_ALL: 'C' },
     maxBuffer: 8 * 1024 * 1024,
   });
-  const children = new Map();
-  let root;
-  for (const line of stdout.trim().split('\n')) {
-    const [pid, parent, rssKib, cpuPercent] = line.trim().split(/\s+/).map(Number);
-    const entry = { pid, rssKib, cpuPercent };
-    if (pid === rootPid) root = entry;
-    const siblings = children.get(parent);
-    if (siblings) siblings.push(entry);
-    else children.set(parent, [entry]);
-  }
-  if (!root) return null;
+  return stdout.trim().split('\n').map(line => {
+    const [pid, parent, group, state, rssKib, cpuPercent] = line.trim().split(/\s+/);
+    return { pid: Number(pid), parent: Number(parent), group: Number(group),
+      live: !state.startsWith('Z'), rssKib: Number(rssKib), cpuPercent: Number(cpuPercent) };
+  });
+}
 
-  let rssKib = 0;
-  let cpuPercent = 0;
-  const tree = [root];
-  for (const entry of tree) {
-    rssKib += entry.rssKib;
-    cpuPercent += entry.cpuPercent;
-    const descendants = children.get(entry.pid);
-    if (descendants) tree.push(...descendants);
+async function stateBytes(path) {
+  try {
+    const entry = await lstat(path);
+    if (entry.isFile()) return entry.size;
+    if (!entry.isDirectory()) return 0;
+    let total = 0;
+    for (const name of await readdir(path)) total += await stateBytes(join(path, name));
+    return total;
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+    return 0;
   }
-  return { rssKib, cpuPercent, processCount: tree.length };
+}
+
+export class ClusterMonitor {
+  #roots = new Map();
+  #timer;
+  #sample;
+  #diskSample;
+  #peakRssKib = 0;
+  #peakProcessCount = 0;
+  #diskPeaks = new Map();
+  #controller = new AbortController();
+  #closed = false;
+  #error;
+  #cleanupErrors = [];
+
+  constructor({ signal, maxClusterRssGib = Infinity, sampleIntervalMs = 100, stateDirs = new Map() } = {}) {
+    this.signal = signal ? AbortSignal.any([signal, this.#controller.signal]) : this.#controller.signal;
+    this.limitKib = maxClusterRssGib * 1024 ** 2;
+    this.stateDirs = stateDirs;
+    this.abort = () => {
+      for (const root of this.#roots.values()) this.terminate(root);
+    };
+    this.signal.addEventListener('abort', this.abort, { once: true });
+    this.#timer = setInterval(() => this.#tick(), sampleIntervalMs);
+  }
+
+  terminate(root) {
+    if (!root || root.killed) return;
+    root.killed = true;
+    const targets = [-root.pid, ...root.escaped];
+    for (const target of targets) {
+      try {
+        sendSignal(target, 'SIGKILL');
+      } catch (error) {
+        this.#cleanupErrors.push(error);
+      }
+    }
+  }
+
+  watch(pid) {
+    if (!pid) return;
+    const root = { pid, escaped: [], samples: [], peakRssKib: 0, peakProcessCount: 0, killed: false };
+    this.#roots.set(pid, root);
+    if (this.signal.aborted) this.terminate(root);
+    else this.#tick();
+    return root;
+  }
+
+  release(root) {
+    if (!root) return;
+    this.terminate(root);
+    this.#roots.delete(root.pid);
+  }
+
+  #tick() {
+    if (this.#closed || this.signal.aborted) return;
+    if (!this.#sample && this.#roots.size) {
+      this.#sample = this.#sampleProcesses().catch(error => this.#fail(error))
+        .finally(() => { this.#sample = undefined; });
+    }
+    if (!this.#diskSample && this.stateDirs.size) {
+      this.#diskSample = this.#sampleDisk().catch(error => this.#fail(error))
+        .finally(() => { this.#diskSample = undefined; });
+    }
+  }
+
+  #fail(error) {
+    this.#error ??= error;
+    this.#controller.abort(new Error('cluster_monitor_failed', { cause: error }));
+  }
+
+  async #sampleProcesses() {
+    const atNs = process.hrtime.bigint().toString();
+    const table = await processTable();
+    const children = Map.groupBy(table, row => row.parent);
+    const groups = Map.groupBy(table, row => row.group);
+    const byPid = new Map(table.map(row => [row.pid, row]));
+    const cluster = new Map();
+    for (const root of this.#roots.values()) {
+      const tree = new Map();
+      const queue = [...(groups.get(root.pid) ?? []), ...root.escaped.map(pid => byPid.get(pid)).filter(Boolean)];
+      for (const row of queue) {
+        if (tree.has(row.pid)) continue;
+        tree.set(row.pid, row);
+        for (const child of children.get(row.pid) ?? []) queue.push(child);
+      }
+      root.escaped = [];
+      let rssKib = 0;
+      let cpuPercent = 0;
+      let processCount = 0;
+      for (const row of tree.values()) {
+        if (!row.live) continue;
+        cluster.set(row.pid, row);
+        if (row.group !== root.pid) root.escaped.push(row.pid);
+        rssKib += row.rssKib;
+        cpuPercent += row.cpuPercent;
+        processCount++;
+      }
+      root.samples.push({ atNs, rssKib, cpuPercent, processCount });
+      root.peakRssKib = Math.max(root.peakRssKib, rssKib);
+      root.peakProcessCount = Math.max(root.peakProcessCount, processCount);
+    }
+    const rssKib = [...cluster.values()].reduce((total, row) => total + row.rssKib, 0);
+    this.#peakRssKib = Math.max(this.#peakRssKib, rssKib);
+    this.#peakProcessCount = Math.max(this.#peakProcessCount, cluster.size);
+    if (rssKib > this.limitKib) this.#controller.abort(new Error('cluster_rss_limit_exceeded'));
+  }
+
+  async #sampleDisk() {
+    await Promise.all([...this.stateDirs].map(async ([name, path]) => {
+      const bytes = await stateBytes(path);
+      this.#diskPeaks.set(name, Math.max(bytes, this.#diskPeaks.get(name) ?? 0));
+    }));
+  }
+
+  async close() {
+    this.#closed = true;
+    clearInterval(this.#timer);
+    this.signal.removeEventListener('abort', this.abort);
+    this.abort();
+    await Promise.all([this.#sample, this.#diskSample]);
+    await this.#sampleDisk();
+    if (this.#cleanupErrors.length) {
+      throw new Error('Could not kill benchmark processes: ' + this.#cleanupErrors.map(error => error.message).join(', '));
+    }
+    if (this.#error) throw this.#error;
+    return {
+      peakClusterRssMib: this.#peakRssKib / 1024,
+      peakClusterProcessCount: this.#peakProcessCount,
+      diskStateMib: Object.fromEntries([...this.#diskPeaks].map(([name, bytes]) => [name, bytes / 1024 ** 2])),
+    };
+  }
 }
 
 async function collectOutput(stream, onLine) {
@@ -92,7 +226,7 @@ async function collectOutput(stream, onLine) {
 
 export async function runMonitoredProcess({
   command, args = [], cwd, env, stdinText, timeoutMs, sampleIntervalMs = 100, sigkillAfterMs,
-  onStdoutLine, onStderrLine, signal,
+  onStdoutLine, onStderrLine, signal, monitor, onTimeout,
 }) {
   for (const [name, value, minimum] of [
     ['sampleIntervalMs', sampleIntervalMs, 1],
@@ -107,6 +241,7 @@ export async function runMonitoredProcess({
     throw new TypeError('stdinText must be a string');
   }
   signal?.throwIfAborted();
+  monitor?.signal.throwIfAborted();
   const startNs = process.hrtime.bigint();
   const child = spawn(command, args, {
     cwd,
@@ -114,68 +249,39 @@ export async function runMonitoredProcess({
     detached: true,
     stdio: [stdinText === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
   });
-
-  const samples = [];
-  const sampling = new AbortController();
-  let peakRssKib = 0;
-  let peakProcessCount = 0;
+  const ownedMonitor = monitor ? undefined : new ClusterMonitor({ signal, sampleIntervalMs });
+  monitor ??= ownedMonitor;
+  signal = monitor.signal;
   let endNs;
   let failure;
   let stdinError = null;
   let termination = null;
-  let sampleTimer;
-  let sampleInFlight;
   let timeout;
   let injection;
 
-  function kill() {
-    if (!child.pid) return;
-    try {
-      killGroup(child.pid);
-    } catch (error) {
-      failure ??= error;
-    }
-  }
-
   function fail(error) {
     failure ??= error;
-    if (endNs === undefined) kill();
+    monitor.terminate(observation);
   }
 
   function terminate(reason) {
     if (endNs !== undefined || termination || !child.pid) return;
     termination = reason;
-    kill();
+    monitor.terminate(observation);
   }
 
   function abort() {
-    terminate('aborted');
-  }
-
-  function sample() {
-    const atNs = process.hrtime.bigint().toString();
-    sampleInFlight = sampleTree(child.pid, sampling.signal).then(tree => {
-      if (!tree) return;
-      samples.push({ atNs, ...tree });
-      peakRssKib = Math.max(peakRssKib, tree.rssKib);
-      peakProcessCount = Math.max(peakProcessCount, tree.processCount);
-    }).catch(error => {
-      if (!sampling.signal.aborted) fail(new Error('Could not sample child process tree', { cause: error }));
-    }).finally(() => {
-      if (!sampling.signal.aborted) sampleTimer = setTimeout(sample, sampleIntervalMs);
-    });
+    const reason = signal.reason?.message;
+    terminate(['cluster_rss_limit_exceeded', 'timeout'].includes(reason) ? reason : 'aborted');
   }
 
   child.on('error', fail);
-  child.once('spawn', sample);
+  const observation = monitor.watch(child.pid);
   child.once('exit', () => {
     endNs = process.hrtime.bigint();
     clearTimeout(timeout);
     clearTimeout(injection);
-    clearTimeout(sampleTimer);
-    sampling.abort();
-    // Descendants may still own the stdio pipes after the group leader exits.
-    kill();
+    monitor.release(observation);
   });
   const closed = new Promise(resolveClose => {
     child.once('close', (code, signal) => resolveClose({ code, signal }));
@@ -195,14 +301,16 @@ export async function runMonitoredProcess({
     });
     child.stdin.end(stdinText);
   }
-  if (timeoutMs !== undefined) timeout = setTimeout(() => terminate('timeout'), timeoutMs);
+  if (timeoutMs !== undefined) timeout = setTimeout(() => {
+    terminate('timeout');
+    onTimeout?.();
+  }, timeoutMs);
   if (sigkillAfterMs !== undefined) injection = setTimeout(() => terminate('sigkill'), sigkillAfterMs);
   signal?.addEventListener('abort', abort, { once: true });
   if (signal?.aborted) abort();
 
   try {
     const [exit, stdout, stderr] = await Promise.all([closed, ...outputs]);
-    await sampleInFlight;
     if (failure) throw failure;
     return {
       ...exit,
@@ -211,9 +319,9 @@ export async function runMonitoredProcess({
       startNs: startNs.toString(),
       endNs: endNs.toString(),
       wallMs: Number(endNs - startNs) / 1e6,
-      peakRssKib,
-      peakProcessCount,
-      samples,
+      peakRssKib: observation?.peakRssKib ?? 0,
+      peakProcessCount: observation?.peakProcessCount ?? 0,
+      samples: observation?.samples ?? [],
       stdout: stdout.text,
       stderr: stderr.text,
       stdoutTruncated: stdout.truncated,
@@ -222,6 +330,7 @@ export async function runMonitoredProcess({
   } finally {
     clearTimeout(timeout);
     clearTimeout(injection);
-    signal?.removeEventListener('abort', abort);
+    signal.removeEventListener('abort', abort);
+    await ownedMonitor?.close();
   }
 }

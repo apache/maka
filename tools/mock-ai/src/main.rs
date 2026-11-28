@@ -22,7 +22,7 @@ use maka_mock_ai::{
     ControlPlaneConfig, LatencyProfile, MockAiBuilder, MockServerConfig, ProviderDialectProfile,
     ProxyRecordConfig, RateLimitConfig, RateLimitScope, RecorderMode, ReplayConfig,
     ReplayMatchMode, ScenarioSchedule, ScenarioSpec, ServerTuning, TlsServerConfig, WatchdogConfig,
-    WorkloadConfig, builder_from_config,
+    WirePoisonConfig, WorkloadConfig, builder_from_config,
 };
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -89,6 +89,14 @@ struct Cli {
     /// Benchmark scenario file (JSON or YAML).
     #[arg(long, conflicts_with_all = ["preset", "proxy_record", "replay"])]
     scenario: Option<PathBuf>,
+
+    /// Unicode scalars per scenario text or tool-argument delta (0 sends one delta).
+    #[arg(long, default_value_t = 0)]
+    chunk_chars: usize,
+
+    /// Enable scenario stream framing stress (SSE comments, CRLF and split UTF-8).
+    #[arg(long)]
+    wire_poison: bool,
 
     /// Require requests to resolve to a registered benchmark session.
     #[arg(long)]
@@ -269,6 +277,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Preset::ChaosFuzz => b.workload(WorkloadConfig::chaos_fuzz_preset(cli.seed)),
         }
     };
+    builder = builder.scenario_streaming(
+        cli.chunk_chars,
+        WirePoisonConfig {
+            split_utf8_boundaries: cli.wire_poison,
+            crlf_line_endings: cli.wire_poison,
+            inject_sse_comments: cli.wire_poison,
+        },
+    );
 
     match cli.latency_profile {
         LatencyPreset::Instant => {}

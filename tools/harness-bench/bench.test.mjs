@@ -20,12 +20,14 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { ClusterMonitor, runMonitoredProcess } from './proc-monitor.mjs';
 import { access, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { before, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import { generateStressScenario } from './stress.mjs';
 import { resolveMockAiBinary } from './mock-client.mjs';
 
 const cli = fileURLToPath(new URL('run.mjs', import.meta.url));
@@ -118,6 +120,7 @@ test('preflight reports all adapters and runs the version probe in isolated HOME
     'ref-agent', 'maka-direct', 'maka-codemode', 'claude', 'codex-ws', 'codex-http',
     'opencode-cold', 'opencode-attach', 'pi', 'pi-durable', 'dim', 'dsh', 'zcode',
     'kimi-openai', 'kimi-responses', 'kimi-anthropic',
+    'maka-host-direct', 'maka-host-codemode', 'opencode-serve', 'pi-durable-shared',
   ]);
   const claude = probes.find(probe => probe.id === 'claude');
   assert.equal(claude.binaryPath, join(bin, 'claude'));
@@ -274,4 +277,140 @@ test('SIGKILL restarts the reference client with one workspace, session and MCP 
   assert.deepEqual(detail.items.filter(item => item.faultId).map(item => item.faultId),
     ['edit/1:Http429', 'edit/2:Http429', 'edit/3:Http429', 'edit/4:Http429']);
   await assertCleanServer(results);
+});
+
+
+async function runStress(t, suite, args, { harnesses = 'ref-agent', ...options } = {}) {
+  const output = join(await scratch(t), 'output');
+  const result = await invoke([
+    'stress', '--suite', suite, '--harnesses', harnesses,
+    '--mock-bin', mockBinary, '--output', output, ...args,
+  ], options);
+  return { output: join(output, suite), result };
+}
+
+test('deep-grind generates real filesystem work and measures history growth', async t => {
+  const { output } = await runStress(t, 'deep-grind', ['--turns', '10', '--output-bytes', '16384']);
+  const { version, fixture, steps } = await readJson(join(output, 'scenario.json'));
+  assert.equal(version, 1);
+  assert.equal(fixture, 'deep-grind-v1');
+  assert.deepEqual(steps.filter(step => step.largeOutput).map(step => step.id), ['turn-5', 'turn-10']);
+  assert.deepEqual(generateStressScenario('deep-grind', { turns: 10 }),
+    await readJson(join(output, 'scenario.json')));
+  const results = await readJson(join(output, 'results.json'));
+  const [lane] = results.lanes;
+  const { dir } = await laneEvidence(output, lane, ['DEEP_GRIND_OK']);
+  assert.equal(await readFile(join(dir, 'workspace', 'state-6.txt'), 'utf8'), 'state=edited-8\n');
+  assert.equal(lane.completedToolRounds, 10);
+  assert.ok(lane.promptBytesFinal > 32_768);
+  const { intervalsMs, headMedianMs, tailMedianMs, degradationRatio } = lane.turnLatencyCurve;
+  assert.equal(intervalsMs.length, 10);
+  assert.equal(degradationRatio, tailMedianMs / headMedianMs);
+  await assertCleanServer(results);
+});
+
+test('burst-flood runs independent calls with UTF-8 output and samples the live cluster', async t => {
+  const { output } = await runStress(t, 'burst-flood', ['--turns', '2', '--parallel', '8', '--lanes', '2']);
+  const results = await readJson(join(output, 'results.json'));
+  const [batch] = results.batches;
+  assert.equal(batch.completedToolRounds, 4);
+  assert.equal(batch.throughputTurnsPerSec, 4_000 / batch.wallMs);
+  assert.ok(batch.peakClusterRssMib > 0);
+  assert.ok(batch.peakClusterProcessCount >= 2);
+  assert.deepEqual(Object.keys(batch.diskStateMib).sort(), ['lane-1', 'lane-2']);
+  for (const lane of results.lanes) {
+    const { dir, detail } = await laneEvidence(output, lane, ['BURST_FLOOD_OK']);
+    assert.equal(new Set(detail.items.flatMap(item => item.confirmedCallIds)).size, 16);
+    assert.ok(lane.promptBytesFinal >= 2 * 262_144);
+    assert.ok(lane.turnLatencyCurve.intervalsMs.every(ms => ms >= 95));
+    assert.equal(await readFile(join(dir, 'workspace', 'burst-output-2-6.txt'), 'utf8'), 'burst-result=2-6\n');
+  }
+  await assertCleanServer(results);
+});
+
+test('firehose reassembles fragmented multibyte JSON and final SSE text', async t => {
+  const { output } = await runStress(t, 'firehose', [
+    '--turns', '2', '--lanes', '2', '--chunk-chars', '16', '--wire-poison', '--latency-profile', 'frontier',
+  ]);
+  const results = await readJson(join(output, 'results.json'));
+  const spec = await readJson(join(output, 'scenario.json'));
+  for (const lane of results.lanes) {
+    const { dir, detail } = await laneEvidence(output, lane, ['FIREHOSE_OK']);
+    const { path, content } = spec.steps[0].writeFile;
+    assert.equal(await readFile(join(dir, 'workspace', path), 'utf8'), content);
+    assert.ok(detail.items[0].responseWireBytes > 4 * Buffer.byteLength(content));
+    assert.ok(detail.items.every(item => item.simulatedDelayNs === 0));
+  }
+  await assertCleanServer(results);
+});
+
+test('cliff-ramp continues passing harnesses and stops at the first failed stage', async t => {
+  const bin = await scratch(t);
+  const { output } = await runStress(t, 'cliff-ramp', ['--steps', '1,2'], {
+    harnesses: 'pi,ref-agent', env: { ...process.env, PATH: bin }, expectedCode: 1,
+  });
+  const [ref, pi] = await readJson(join(output, 'leaderboard.json'));
+  assert.equal(ref.harness, 'ref-agent');
+  assert.equal(ref.maxPassedLanes, 2);
+  assert.equal(ref.breakingPoint, null);
+  assert.equal(ref.stages[1].completedToolRounds, 24);
+  assert.equal(pi.harness, 'pi');
+  assert.equal(pi.breakingPoint.lanes, 1);
+  assert.deepEqual(pi.stages.map(stage => stage.lanes), [1]);
+  assert.deepEqual(await readdir(join(output, 'lanes-2')), ['ref-agent']);
+  assert.match(await readFile(join(output, 'leaderboard.md'), 'utf8'), /Breaking-Point Cliff Leaderboard/);
+  await assertCleanServer(await readJson(join(output, 'lanes-2', 'ref-agent', 'results.json')));
+});
+
+test('cliff-ramp records RSS termination and cleans all registered sessions', async t => {
+  const { output } = await runStress(t, 'cliff-ramp', [
+    '--steps', '2,4', '--latency-profile', 'frontier', '--max-cluster-rss-gib', '0.01',
+  ], { expectedCode: 1 });
+  const [row] = await readJson(join(output, 'leaderboard.json'));
+  assert.equal(row.breakingPoint.lanes, 2);
+  assert.equal(row.breakingPoint.termination, 'cluster_rss_limit_exceeded');
+  assert.ok(row.breakingPoint.peakClusterRssMib > 10.24);
+  assert.deepEqual(row.stages.map(stage => stage.lanes), [2]);
+  const results = await readJson(join(output, 'lanes-2', 'ref-agent', 'results.json'));
+  assert.ok(results.lanes.every(lane => lane.sessionDeleted && !lane.success));
+  await assertCleanServer(results);
+});
+
+
+test('chaos-storm routes scheduled failures through poisoned streaming and verifies recovery', async t => {
+  const { output } = await runStress(t, 'chaos-storm', ['--lanes', '2']);
+  const results = await readJson(join(output, 'results.json'));
+  for (const lane of results.lanes) {
+    const { detail } = await laneEvidence(output, lane, ['CHAOS_STORM_OK']);
+    assert.deepEqual(detail.items.filter(item => item.faultId).map(item => item.faultId), [
+      'turn-1/1:Http429', 'turn-2/1:Http503', 'turn-3/1:Disconnect',
+    ]);
+    assert.equal(lane.completedToolRounds, 10);
+  }
+  await assertCleanServer(results);
+});
+
+test('one cluster abort kills both process groups and their inherited children', async () => {
+  const controller = new AbortController();
+  const monitor = new ClusterMonitor({ signal: controller.signal });
+  const descendants = [];
+  try {
+    const processes = [1, 2].map(() => runMonitoredProcess({
+      command: '/bin/sh', args: ['-c', '/bin/sleep 30 & printf "%s\n" "$!"; wait'],
+      monitor, timeoutMs: 2000,
+      onStdoutLine(line) {
+        descendants.push(Number(line));
+        if (descendants.length === 2) controller.abort(new Error('test interruption'));
+      },
+    }));
+    const results = await Promise.all(processes);
+    assert.deepEqual(results.map(result => result.termination), ['aborted', 'aborted']);
+    for (const pid of descendants) {
+      const { stdout } = await exec('/bin/ps', ['-axo', 'pid=,stat=']);
+      const row = stdout.split('\n').map(line => line.trim().split(/\s+/)).find(([id]) => Number(id) === pid);
+      assert.ok(!row || row[1].startsWith('Z'), `Descendant still active: ${row}`);
+    }
+  } finally {
+    await monitor.close();
+  }
 });

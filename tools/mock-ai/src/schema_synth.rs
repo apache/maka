@@ -843,31 +843,37 @@ pub fn poison_sse_frame(frame: String, cfg: &WirePoisonConfig, frame_index: usiz
     chunks
 }
 
-/// Build an HTTP 400 `context_length_exceeded` response recognized by Maka's `error/overflow.rs`.
+/// Build an HTTP 400 using the provider's context overflow error shape.
 pub fn context_overflow_error(
     protocol: Protocol,
     actual_bytes: usize,
     limit_bytes: usize,
 ) -> HttpErrorSpec {
-    let actual_tokens = (actual_bytes / 4).max(1);
-    let max_tokens = (limit_bytes / 4).max(1);
+    let limit_tokens = (limit_bytes / 4).max(1);
+    let actual_tokens = (actual_bytes / 4).max(limit_tokens + 1024);
     let body = match protocol {
         Protocol::AnthropicMessages => json!({
             "type": "error",
             "error": {
                 "type": "invalid_request_error",
-                "message": format!("prompt is too long: {actual_tokens} tokens > {max_tokens} maximum")
+                "message": format!("prompt is too long: {actual_tokens} tokens > {limit_tokens} maximum")
             }
         }),
-        Protocol::OpenaiChatCompletions
-        | Protocol::OpenaiResponsesHttp
-        | Protocol::OpenaiResponsesWs => json!({
+        Protocol::OpenaiChatCompletions => json!({
             "error": {
                 "type": "invalid_request_error",
                 "code": "context_length_exceeded",
+                "param": "messages",
                 "message": format!(
-                    "This model's maximum context length is {max_tokens} tokens. However, your messages resulted in {actual_tokens} tokens."
+                    "This model's maximum context length is {limit_tokens} tokens. However, your messages resulted in {actual_tokens} tokens. Please reduce the length of the messages."
                 )
+            }
+        }),
+        Protocol::OpenaiResponsesHttp | Protocol::OpenaiResponsesWs => json!({
+            "error": {
+                "type": "invalid_request_error",
+                "code": "context_length_exceeded",
+                "message": "Your input exceeds the context window of this model. Please adjust your input and try again."
             }
         }),
     };
@@ -1057,23 +1063,66 @@ mod tests {
     }
 
     #[test]
+    fn context_overflow_uses_the_provider_error_body() {
+        for (protocol, expected) in [
+            (
+                Protocol::AnthropicMessages,
+                json!({
+                    "type": "error",
+                    "error": {
+                        "type": "invalid_request_error",
+                        "message": "prompt is too long: 201024 tokens > 200000 maximum"
+                    }
+                }),
+            ),
+            (
+                Protocol::OpenaiChatCompletions,
+                json!({
+                    "error": {
+                        "type": "invalid_request_error",
+                        "code": "context_length_exceeded",
+                        "param": "messages",
+                        "message": "This model's maximum context length is 200000 tokens. However, your messages resulted in 201024 tokens. Please reduce the length of the messages."
+                    }
+                }),
+            ),
+            (
+                Protocol::OpenaiResponsesHttp,
+                json!({
+                    "error": {
+                        "type": "invalid_request_error",
+                        "code": "context_length_exceeded",
+                        "message": "Your input exceeds the context window of this model. Please adjust your input and try again."
+                    }
+                }),
+            ),
+            (
+                Protocol::OpenaiResponsesWs,
+                json!({
+                    "error": {
+                        "type": "invalid_request_error",
+                        "code": "context_length_exceeded",
+                        "message": "Your input exceeds the context window of this model. Please adjust your input and try again."
+                    }
+                }),
+            ),
+        ] {
+            let overflow = context_overflow_error(protocol, 800_004, 800_000);
+            assert_eq!(overflow.status, 400);
+            assert_eq!(overflow.raw_body.unwrap(), expected);
+        }
+        let overflow = context_overflow_error(Protocol::AnthropicMessages, 1_000_000, 800_000);
+        assert_eq!(
+            overflow.raw_body.unwrap()["error"]["message"],
+            "prompt is too long: 250000 tokens > 200000 maximum"
+        );
+    }
+
+    #[test]
     fn transport_size_rejection_is_distinct_from_model_context_overflow() {
         let openai = Protocol::OpenaiResponsesHttp;
         let anthropic = Protocol::AnthropicMessages;
         for protocol in [openai, anthropic] {
-            let overflow = context_overflow_error(protocol, 4096, 2048);
-            assert_eq!(overflow.status, 400);
-            let body = overflow.raw_body.unwrap();
-            assert_eq!(body["error"]["type"], "invalid_request_error");
-            if protocol == openai {
-                assert_eq!(body["error"]["code"], "context_length_exceeded");
-            } else {
-                assert_eq!(body["type"], "error");
-                assert_eq!(
-                    body["error"]["message"],
-                    "prompt is too long: 1024 tokens > 512 maximum"
-                );
-            }
             let too_large = payload_too_large_error(protocol);
             assert_eq!(too_large.status, 413);
             assert_eq!(

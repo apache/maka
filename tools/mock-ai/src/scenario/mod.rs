@@ -38,7 +38,7 @@ use crate::plan::{
 };
 use crate::protocol::{NormalizedMessageKind, NormalizedRequest, NormalizedRole, Protocol};
 use crate::schema_synth::{
-    context_overflow_error, overloaded_error, payload_too_large_error,
+    WirePoisonConfig, context_overflow_error, overloaded_error, payload_too_large_error,
     previous_response_not_found_error, rate_limit_error,
 };
 
@@ -743,7 +743,7 @@ struct SessionData {
     by_response: HashMap<String, Revision>,
     by_call: HashMap<String, (Revision, usize)>,
     accepted: HashMap<String, u64>,
-    checkpoints: HashMap<String, (Revision, String, CheckpointEvidenceKind)>,
+    checkpoints: HashMap<String, (Revision, String, CompactionMode)>,
 }
 
 struct Publication {
@@ -776,6 +776,8 @@ pub struct ScenarioEngine {
     sessions: Mutex<HashMap<String, Arc<Session>>>,
     registrations: AtomicU64,
     validators: ValidatorCache,
+    chunk_chars: usize,
+    wire_poison: WirePoisonConfig,
 }
 
 impl ScenarioEngine {
@@ -792,7 +794,33 @@ impl ScenarioEngine {
             sessions: Mutex::new(HashMap::new()),
             registrations: AtomicU64::new(0),
             validators: ValidatorCache::default(),
+            chunk_chars: 0,
+            wire_poison: WirePoisonConfig::default(),
         })
+    }
+
+    pub(crate) fn with_streaming(
+        mut self,
+        chunk_chars: usize,
+        wire_poison: WirePoisonConfig,
+    ) -> Self {
+        self.chunk_chars = chunk_chars;
+        self.wire_poison = wire_poison;
+        self
+    }
+
+    pub(crate) fn configure_streaming(&self, plan: &mut TurnPlan) {
+        plan.wire_poison = self.wire_poison.clone();
+        if self.chunk_chars != 0 {
+            for event in &mut plan.events {
+                match event {
+                    TurnEvent::Text { chunk_chars, .. }
+                    | TurnEvent::Reasoning { chunk_chars, .. } => *chunk_chars = self.chunk_chars,
+                    TurnEvent::ToolCall(call) => call.chunk_chars = self.chunk_chars,
+                    _ => {}
+                }
+            }
+        }
     }
 
     pub fn register_session(
@@ -936,15 +964,21 @@ impl ScenarioEngine {
         request: ScenarioRequest<'_>,
     ) -> Result<ScenarioEvaluation, ScenarioError> {
         let session = self.session(session_id)?;
-        self.evaluate(&session, request)
+        let receipts = request.receipts.iter().map(|receipt| ReceiptInput {
+            call_id: receipt.call_id,
+            result: receipt.result,
+            evidence: ReceiptEvidence::Declared(receipt.outcome),
+        });
+        self.evaluate(&session, request, receipts)
     }
 
-    fn evaluate(
+    fn evaluate<'a>(
         &self,
         session: &Session,
         request: ScenarioRequest<'_>,
+        receipts: impl IntoIterator<Item = ReceiptInput<'a>>,
     ) -> Result<ScenarioEvaluation, ScenarioError> {
-        let receipts = prepare_receipts(request.receipts)?;
+        let receipts = prepare_receipts(receipts)?;
         let constraint_digest = digest(&(
             request.catalog.constraint_digest(request.tool_choice),
             request.allow_parallel_tools,
@@ -1041,6 +1075,7 @@ impl ScenarioEngine {
                 plan
             };
             plan.response_id = Some(committed.decision.response_id.clone());
+            self.configure_streaming(&mut plan);
             return Ok(ScenarioEvaluation {
                 decision: committed.decision,
                 attempt: committed.attempt,
@@ -1346,7 +1381,7 @@ impl ScenarioEngine {
         &self,
         decision: &IssuedDecision,
         index: usize,
-        receipt: ToolReceipt<'_>,
+        receipt: ReceiptInput<'_>,
     ) -> Result<(), ScenarioError> {
         use CanonicalAction as Action;
         let step = decision.recipe.step;
@@ -1356,35 +1391,54 @@ impl ScenarioEngine {
             call_id: call.call_id.clone(),
             reason,
         };
-        let mut code_results = None;
+        let expected = match &self.spec.steps[step].action {
+            Action::BadToolCall {
+                expect_handling, ..
+            }
+            | Action::UnknownTool {
+                expect_handling, ..
+            } => {
+                if expect_handling.runner_observation().is_some() {
+                    return Err(fail("expected a runner observation".into()));
+                }
+                ReceiptOutcome::ToolError
+            }
+            _ => ReceiptOutcome::Success,
+        };
+        let outcome = match receipt.evidence {
+            ReceiptEvidence::Declared(outcome) => outcome,
+            ReceiptEvidence::Wire(is_error) => {
+                // Plain text can be file contents or stdout for successful actions.
+                let infer_diagnostics = is_error.is_none() && expected == ReceiptOutcome::ToolError;
+                if is_error == Some(true) || tool_content_failed(receipt.result, infer_diagnostics)
+                {
+                    ReceiptOutcome::ToolError
+                } else {
+                    ReceiptOutcome::Success
+                }
+            }
+        };
+        if outcome != expected {
+            return Err(fail(format!("expected {expected:?}, got {outcome:?}")));
+        }
+        if expected == ReceiptOutcome::ToolError {
+            return Ok(());
+        }
+
         let code_mode = matches!(&decision.recipe.kind, PlanKind::Tools(bindings) if bindings[index].is_code_mode());
+        let code_results = if code_mode {
+            Some(
+                code_results_from(receipt.result)
+                    .ok_or_else(|| fail("missing Code Mode results".into()))?,
+            )
+        } else {
+            None
+        };
         for (index, &slot) in call.slots.iter().enumerate() {
             let action = &actions[slot];
-            let expected = match action {
-                Action::BadToolCall {
-                    expect_handling, ..
-                }
-                | Action::UnknownTool {
-                    expect_handling, ..
-                } => {
-                    if expect_handling.runner_observation().is_some() {
-                        return Err(fail(format!("slot {slot}: expected a runner observation")));
-                    }
-                    ReceiptOutcome::ToolError
-                }
-                _ => ReceiptOutcome::Success,
-            };
-            if receipt.outcome != expected {
-                return Err(fail(format!(
-                    "slot {slot}: expected {expected:?}, got {:?}",
-                    receipt.outcome
-                )));
-            }
-            let result = if code_mode {
-                let results = code_results.get_or_insert_with(|| code_results_from(receipt.result));
+            let result = if let Some(results) = &code_results {
                 let result = results
-                    .as_ref()
-                    .and_then(|results| results.get(index))
+                    .get(index)
                     .ok_or_else(|| fail(format!("slot {slot}: missing Code Mode result")))?;
                 if result["slot"].as_u64() != Some(slot as u64) || result.get("result").is_none() {
                     return Err(fail(format!("slot {slot}: invalid Code Mode result")));
@@ -1393,7 +1447,9 @@ impl ScenarioEngine {
             } else {
                 receipt.result
             };
-            if expected == ReceiptOutcome::Success && result_failed(result) {
+            if (code_mode || matches!(receipt.evidence, ReceiptEvidence::Declared(_)))
+                && tool_content_failed(result, false)
+            {
                 return Err(fail(format!("slot {slot}: tool reported failure")));
             }
             if let Action::ReadFile { expect_marker, .. } = action
@@ -1411,6 +1467,16 @@ impl ScenarioEngine {
 fn result_failed(result: &Value) -> bool {
     result["kind"] == "failed"
         || result["is_error"] == true
+        || result["handling"] == "tool_error"
+        || result["status"] == "error"
+        || result["ok"] == false
+        || result["state"] == "interrupted"
+        || result["error"]
+            .as_object()
+            .is_some_and(|error| !error.is_empty())
+        || result["error"]
+            .as_str()
+            .is_some_and(|error| !error.trim().is_empty())
         || [
             &result["exit_code"],
             &result["exitCode"],
@@ -1418,6 +1484,48 @@ fn result_failed(result: &Value) -> bool {
         ]
         .iter()
         .any(|code| code.as_i64().is_some_and(|exit| exit != 0))
+}
+
+fn tool_content_failed(result: &Value, infer_diagnostics: bool) -> bool {
+    let text_failed = |text: &str| {
+        let text = text.trim();
+        if text.starts_with('{')
+            && let Ok(parsed) = serde_json::from_str(text)
+        {
+            return result_failed(&parsed);
+        }
+        if !infer_diagnostics {
+            return false;
+        }
+        let text = text.to_ascii_lowercase();
+        [
+            "error:",
+            "invalid",
+            "unknown tool",
+            "not found",
+            "validation",
+            "schema",
+            "expected ",
+            "missing required",
+            "tool failed",
+            "type error",
+            "cannot ",
+            "rejected",
+            "failed to",
+        ]
+        .iter()
+        .any(|diagnostic| text.contains(diagnostic))
+    };
+    match result {
+        Value::String(text) => text_failed(text),
+        Value::Array(items) => items.iter().any(|item| {
+            matches!(
+                item["type"].as_str(),
+                Some("text" | "input_text" | "output_text")
+            ) && item["text"].as_str().is_some_and(text_failed)
+        }),
+        _ => result_failed(result),
+    }
 }
 
 fn code_results_from(result: &Value) -> Option<Cow<'_, [Value]>> {
@@ -1544,18 +1652,31 @@ fn after_first_call(mut plan: TurnPlan, fault: FaultKind) -> TurnPlan {
 }
 
 #[derive(Clone, Copy)]
+struct ReceiptInput<'a> {
+    call_id: &'a str,
+    result: &'a Value,
+    evidence: ReceiptEvidence,
+}
+
+#[derive(Clone, Copy, Hash)]
+enum ReceiptEvidence {
+    Declared(ReceiptOutcome),
+    Wire(Option<bool>),
+}
+
+#[derive(Clone, Copy)]
 struct PreparedReceipt<'a> {
-    receipt: ToolReceipt<'a>,
+    receipt: ReceiptInput<'a>,
     digest: u64,
 }
 
 fn prepare_receipts<'a>(
-    receipts: &[ToolReceipt<'a>],
+    receipts: impl IntoIterator<Item = ReceiptInput<'a>>,
 ) -> Result<Vec<PreparedReceipt<'a>>, ScenarioError> {
     let mut entries = HashMap::new();
     let mut unique = Vec::new();
-    for &receipt in receipts {
-        let digest = digest(&(receipt.result, receipt.outcome));
+    for receipt in receipts {
+        let digest = digest(&(receipt.result, receipt.evidence));
         if let Some(previous) = entries.insert(receipt.call_id, digest) {
             if previous != digest {
                 return Err(ScenarioError::ChangedReceipt(receipt.call_id.into()));
@@ -1570,7 +1691,7 @@ fn prepare_receipts<'a>(
 struct NewReceipt<'a> {
     decision: Arc<IssuedDecision>,
     slot: usize,
-    receipt: ToolReceipt<'a>,
+    receipt: ReceiptInput<'a>,
     digest: u64,
 }
 
@@ -1672,11 +1793,14 @@ impl SessionData {
 
         let mut checkpoint_accepted = false;
         if let Some(checkpoint) = request.checkpoint {
-            let (revision, marker, kind) = self
+            let (revision, marker, mode) = self
                 .checkpoints
                 .get(checkpoint.checkpoint_id)
                 .ok_or(ScenarioError::InvalidCheckpoint)?;
-            if marker != checkpoint.proof_marker || *kind != checkpoint.kind {
+            let accepts_kind = CheckpointEvidenceKind::from(*mode) == checkpoint.kind
+                || (matches!(mode, CompactionMode::ContextOverflow { .. })
+                    && checkpoint.kind == CheckpointEvidenceKind::NativeCompaction);
+            if marker != checkpoint.proof_marker || !accepts_kind {
                 return Err(ScenarioError::InvalidCheckpoint);
             }
             if request.parent_response_id.is_none() {
@@ -1803,7 +1927,7 @@ impl SessionData {
                         let evidence_kind = (*mode).into();
                         self.checkpoints.insert(
                             checkpoint_id.clone(),
-                            (revision, proof_marker.clone(), evidence_kind),
+                            (revision, proof_marker.clone(), *mode),
                         );
                         ScenarioSessionState::AwaitingCheckpoint(PendingCheckpoint {
                             revision,
@@ -1975,7 +2099,6 @@ impl ScenarioEngine {
                 _ => None,
             }
         };
-        input.receipts = &receipts;
         input.checkpoint = pending_summary
             .as_ref()
             .and_then(|pending| client_summary_receipt(request, pending))
@@ -1997,7 +2120,7 @@ impl ScenarioEngine {
         input.allow_parallel_tools = request.options.parallel_tool_calls.unwrap_or(true);
         input.native_compaction =
             request.protocol.is_responses() || request.anthropic_compaction_enabled;
-        self.evaluate(session, input)
+        self.evaluate(session, input, receipts)
     }
 }
 
@@ -2038,26 +2161,21 @@ fn client_summary_receipt<'a>(
         })
 }
 
-type WireEvidence<'a> = (Vec<ToolReceipt<'a>>, Option<CheckpointReceipt<'a>>);
+type WireEvidence<'a> = (Vec<ReceiptInput<'a>>, Option<CheckpointReceipt<'a>>);
 
 fn wire_evidence<'a>(request: &'a NormalizedRequest) -> Result<WireEvidence<'a>, ScenarioError> {
     let mut receipts = Vec::new();
     let mut checkpoint = None;
     let items = |key: &str| request.raw_body[key].as_array().into_iter().flatten();
-    let mut receipt = |id: &'a Value, result: &'a Value, is_error: bool| {
+    let mut receipt = |id: &'a Value, result: &'a Value, is_error: &Value| {
         let id = id
             .as_str()
             .filter(|id| !id.is_empty())
             .ok_or_else(|| ScenarioError::UnknownCall(String::new()))?;
-        let outcome = if is_error || result_failed(result) || result["handling"] == "tool_error" {
-            ReceiptOutcome::ToolError
-        } else {
-            ReceiptOutcome::Success
-        };
-        receipts.push(ToolReceipt {
+        receipts.push(ReceiptInput {
             call_id: id,
             result,
-            outcome,
+            evidence: ReceiptEvidence::Wire(is_error.as_bool()),
         });
         Ok::<_, ScenarioError>(())
     };
@@ -2067,11 +2185,9 @@ fn wire_evidence<'a>(request: &'a NormalizedRequest) -> Result<WireEvidence<'a>,
                 .flat_map(|message| message["content"].as_array().into_iter().flatten())
             {
                 match block["type"].as_str() {
-                    Some("tool_result") => receipt(
-                        &block["tool_use_id"],
-                        &block["content"],
-                        block["is_error"] == true,
-                    )?,
+                    Some("tool_result") => {
+                        receipt(&block["tool_use_id"], &block["content"], &block["is_error"])?
+                    }
                     Some("compaction") => {
                         if let Some((id, marker)) =
                             block["content"].as_str().and_then(|s| s.split_once(' '))
@@ -2090,18 +2206,14 @@ fn wire_evidence<'a>(request: &'a NormalizedRequest) -> Result<WireEvidence<'a>,
         }
         Protocol::OpenaiChatCompletions => {
             for item in items("messages").filter(|item| item["role"] == "tool") {
-                receipt(
-                    &item["tool_call_id"],
-                    &item["content"],
-                    item["is_error"] == true,
-                )?;
+                receipt(&item["tool_call_id"], &item["content"], &item["is_error"])?;
             }
         }
         Protocol::OpenaiResponsesHttp | Protocol::OpenaiResponsesWs => {
             for item in items("input") {
                 match item["type"].as_str() {
                     Some("function_call_output" | "custom_tool_call_output") => {
-                        receipt(&item["call_id"], &item["output"], item["is_error"] == true)?;
+                        receipt(&item["call_id"], &item["output"], &item["is_error"])?;
                     }
                     Some("compaction") => {
                         if let (Some(id), Some(marker)) = (
@@ -2913,6 +3025,208 @@ mod tests {
             .record_runner_observation("session-a", observation)
             .unwrap();
         let done = engine.evaluate_request("session-a", request()).unwrap();
+        assert!(
+            matches!(&done.plan.events[0], TurnEvent::Text { text, .. } if text == "proof: files complete")
+        );
+    }
+
+    #[test]
+    fn wire_tool_errors_advance_bad_arguments_and_unknown_tools() {
+        use Protocol::*;
+        let cases = [
+            (
+                OpenaiChatCompletions,
+                json!(r#"{"kind":"failed","message":"bad input"}"#),
+                false,
+            ),
+            (
+                OpenaiChatCompletions,
+                json!(r#"{"error":{"message":"bad input"}}"#),
+                false,
+            ),
+            (
+                OpenaiChatCompletions,
+                json!(r#"{"error":"bad input"}"#),
+                false,
+            ),
+            (OpenaiChatCompletions, json!(r#"{"status":"error"}"#), false),
+            (OpenaiChatCompletions, json!(r#"{"ok":false}"#), false),
+            (OpenaiChatCompletions, json!(r#"{"is_error":true}"#), false),
+            (
+                OpenaiChatCompletions,
+                json!("Invalid arguments: Expected string, received number"),
+                false,
+            ),
+            (
+                OpenaiChatCompletions,
+                json!(r#"{"state":"interrupted","diagnostic":"cell aborted"}"#),
+                false,
+            ),
+            (
+                OpenaiResponsesHttp,
+                json!([{"type":"input_text","text":"Tool Read not found"}]),
+                false,
+            ),
+            (
+                AnthropicMessages,
+                json!([{"type":"text","text":"execution stopped"}]),
+                true,
+            ),
+        ];
+        for (protocol, output, explicit_error) in cases {
+            let engine = engine(
+                spec()
+                    .with_step(
+                        "bad",
+                        CanonicalAction::BadToolCall {
+                            mode: BadToolMode::MissingRequired,
+                            expect_handling: FailureHandling::ToolError,
+                        },
+                    )
+                    .with_step(
+                        "unknown",
+                        CanonicalAction::UnknownTool {
+                            name: "unlisted_tool".into(),
+                            expect_handling: FailureHandling::ToolError,
+                        },
+                    )
+                    .with_step("done", final_answer()),
+            );
+            let parameters = json!({
+                "type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]
+            });
+            let body = match protocol {
+                OpenaiChatCompletions => json!({"tools": [{"type": "function",
+                    "function": {"name": "exec", "parameters": parameters}}]}),
+                AnthropicMessages => {
+                    json!({"tools": [{"name": "exec", "input_schema": parameters}]})
+                }
+                _ => {
+                    json!({"tools": [{"type": "function", "name": "exec", "parameters": parameters}]})
+                }
+            };
+            let evaluate = |body| {
+                let request = normalize(protocol, Transport::Http, body);
+                engine.evaluate_normalized("session-a", &request)
+            };
+            let first = evaluate(body).unwrap_or_else(|e| panic!("{protocol:?}: {e}"));
+            let continuation = |id: &str, result: &Value, is_error: Option<bool>| {
+                let with_flag = |mut item: Value| {
+                    if let Some(is_error) = is_error {
+                        item["is_error"] = json!(is_error);
+                    }
+                    item
+                };
+                match protocol {
+                    OpenaiChatCompletions => json!({"messages": [with_flag(json!({
+                        "role": "tool", "tool_call_id": id, "content": result
+                    }))]}),
+                    AnthropicMessages => {
+                        json!({"messages": [{"role": "user", "content": [with_flag(json!({
+                            "type": "tool_result", "tool_use_id": id, "content": result
+                        }))]}]})
+                    }
+                    _ => json!({"input": [with_flag(json!({
+                        "type": "function_call_output", "call_id": id, "output": result
+                    }))]}),
+                }
+            };
+            let first_id = &first.decision.calls[0].call_id;
+            assert!(matches!(
+                evaluate(continuation(first_id, &json!("all good"), None)),
+                Err(ScenarioError::UnexpectedReceipt { .. })
+            ));
+            assert!(matches!(
+                evaluate(continuation(
+                    first_id,
+                    &json!("Error: missing required argument"),
+                    Some(false)
+                )),
+                Err(ScenarioError::UnexpectedReceipt { .. })
+            ));
+            let flag = explicit_error.then_some(true);
+            let second = evaluate(continuation(first_id, &output, flag))
+                .unwrap_or_else(|e| panic!("{protocol:?} {output}: {e}"));
+            assert_eq!(calls(&second.plan)[0].name, "unlisted_tool");
+            let done = evaluate(continuation(
+                &second.decision.calls[0].call_id,
+                &output,
+                flag,
+            ))
+            .unwrap();
+            assert!(
+                matches!(&done.plan.events[0], TurnEvent::Text { text, .. } if text == "proof: files complete")
+            );
+        }
+    }
+
+    #[test]
+    fn wire_read_receipts_require_the_marker_and_allow_diagnostics_in_file_contents() {
+        let engine = engine(
+            spec()
+                .with_step("read", read("a.txt", "alpha"))
+                .with_step("done", final_answer()),
+        );
+        let evaluate = |body| {
+            let request = normalize(Protocol::OpenaiChatCompletions, Transport::Http, body);
+            engine.evaluate_normalized("session-a", &request)
+        };
+        let issued =
+            evaluate(json!({"tools": [{"type": "function", "function": read_decl()}]})).unwrap();
+        let follow = |content| {
+            evaluate(json!({"messages": [{
+                "role": "tool", "tool_call_id": issued.decision.calls[0].call_id, "content": content
+            }]}))
+        };
+        for bad in [r#"{"error":"alpha file not found"}"#, "another file"] {
+            assert!(matches!(
+                follow(bad),
+                Err(ScenarioError::UnexpectedReceipt { .. })
+            ));
+        }
+        let done = follow("Error: schema validation example for alpha\n").unwrap();
+        assert!(
+            matches!(&done.plan.events[0], TurnEvent::Text { text, .. } if text == "proof: files complete")
+        );
+    }
+
+    #[test]
+    fn overflow_accepts_returned_responses_compaction_items() {
+        let engine = engine(
+            spec()
+                .with_step(
+                    "compact",
+                    CanonicalAction::TriggerCompaction {
+                        mode: CompactionMode::ContextOverflow {
+                            actual_bytes: 900_000,
+                            limit_bytes: 800_000,
+                        },
+                        proof_marker: "overflow-proof".into(),
+                    },
+                )
+                .with_step("done", final_answer()),
+        );
+        let evaluate = |body| {
+            let request = normalize(Protocol::OpenaiResponsesHttp, Transport::Http, body);
+            engine.evaluate_normalized("session-a", &request)
+        };
+        let overflow = evaluate(json!({"input": "start"})).unwrap();
+        assert!(
+            matches!(&overflow.plan.events[..], [TurnEvent::HttpError(error)] if error.status == 400)
+        );
+        let (_, checkpoint) = engine.compaction_output("session-a").unwrap();
+        let follow = |encrypted_content| {
+            evaluate(json!({"input": [
+                {"type": "compaction", "id": checkpoint.id, "encrypted_content": encrypted_content},
+                {"role": "user", "content": "continue"}
+            ]}))
+        };
+        assert!(matches!(
+            follow("mock:other"),
+            Err(ScenarioError::InvalidCheckpoint)
+        ));
+        let done = follow(&checkpoint.encrypted_content).unwrap();
+        assert_eq!(done.adopted_checkpoint_id, Some(checkpoint.id));
         assert!(
             matches!(&done.plan.events[0], TurnEvent::Text { text, .. } if text == "proof: files complete")
         );

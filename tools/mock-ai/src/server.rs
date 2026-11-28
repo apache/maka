@@ -50,6 +50,7 @@ use crate::routing::{
 #[cfg(feature = "rules")]
 use crate::rules::{ConfigError, RuleEngine, RuleSpec};
 use crate::scenario::{ScenarioEngine, ScenarioSpec};
+use crate::schema_synth::WirePoisonConfig;
 #[cfg(feature = "tls")]
 use crate::tls::TlsServerConfig;
 use crate::watchdog::{
@@ -550,7 +551,7 @@ impl ServerState {
         }
         if let RequestUse::Compact(kind) = purpose {
             let output = self.compaction(req, Some(attempt));
-            let plan = match kind {
+            let mut plan = match kind {
                 CompactKind::ClientSummary => {
                     attempt.0.data.lock().unwrap().summary_checkpoint = Some(output.id);
                     attempt.buffering(output.summary.len());
@@ -558,6 +559,9 @@ impl ServerState {
                 }
                 _ => TurnPlan::new().push_compaction(output),
             };
+            if let Some(scenario) = &self.scenario {
+                scenario.configure_streaming(&mut plan);
+            }
             return Ok(TurnDecision::Plan(plan));
         }
         if let Some(scenario) = &self.scenario {
@@ -1571,6 +1575,7 @@ pub struct MockAiBuilder {
     custom_route: Option<CustomRouteFn>,
     interactive_rx: Option<mpsc::Receiver<TurnHandle>>,
     scenario: Option<ScenarioSpec>,
+    scenario_streaming: (usize, WirePoisonConfig),
     strict_benchmark: bool,
     dialect: Option<ProviderDialectProfile>,
     classifier: RequestClassifier,
@@ -1607,6 +1612,7 @@ impl MockAiBuilder {
             custom_route: None,
             interactive_rx: None,
             scenario: None,
+            scenario_streaming: (0, WirePoisonConfig::default()),
             strict_benchmark: false,
             dialect: None,
             classifier: RequestClassifier::default(),
@@ -1688,6 +1694,12 @@ impl MockAiBuilder {
 
     pub fn scenario(mut self, spec: ScenarioSpec) -> Self {
         self.scenario = Some(spec);
+        self
+    }
+
+    /// Configure chunking and wire framing for scenario responses.
+    pub fn scenario_streaming(mut self, chunk_chars: usize, poison: WirePoisonConfig) -> Self {
+        self.scenario_streaming = (chunk_chars, poison);
         self
     }
 
@@ -1805,9 +1817,13 @@ impl MockAiBuilder {
             ));
         }
         let strict_benchmark = self.strict_benchmark || self.scenario.is_some();
+        let (chunk_chars, wire_poison) = self.scenario_streaming;
         let scenario = self
             .scenario
-            .map(|spec| ScenarioEngine::new(spec, "mock-ai"))
+            .map(|spec| {
+                ScenarioEngine::new(spec, "mock-ai")
+                    .map(|engine| engine.with_streaming(chunk_chars, wire_poison))
+            })
             .transpose()
             .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
         if strict_benchmark {

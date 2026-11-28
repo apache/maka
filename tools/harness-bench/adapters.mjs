@@ -18,6 +18,8 @@
  */
 
 import { execFile, spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { createServer, request } from 'node:http';
 import { randomBytes } from 'node:crypto';
 import { text as consumeText } from 'node:stream/consumers';
 import { constants } from 'node:fs';
@@ -28,6 +30,7 @@ import { createInterface } from 'node:readline';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import { killProcessGroup, runMonitoredProcess } from './proc-monitor.mjs';
 import { parseBenchmarkCommand, replaceUnique, resolveWorkspaceFile } from './fixtures.mjs';
 
 const exec = promisify(execFile);
@@ -59,14 +62,15 @@ function jsonFile(path, value) {
   return privateFile(path, JSON.stringify(value, null, 2) + '\n');
 }
 
-async function isolatedEnv(directory, source) {
+async function isolatedEnv(directory, source, tempDirs) {
   const dirs = Object.fromEntries([
     ['HOME', 'home'], ['XDG_CONFIG_HOME', 'config'], ['XDG_DATA_HOME', 'data'],
     ['XDG_CACHE_HOME', 'cache'], ['XDG_STATE_HOME', 'state'], ['XDG_RUNTIME_DIR', 'runtime'],
     ['TMPDIR', 'tmp'], ['APPDATA', 'app-data'], ['LOCALAPPDATA', 'local-app-data'],
   ].map(([name, leaf]) => [name, join(directory, leaf)]));
-  if (process.platform === 'darwin' && dirs.TMPDIR.length > 48) {
-    dirs.TMPDIR = join('/tmp', 'hb-' + randomBytes(4).toString('hex'));
+  if (tempDirs && process.platform === 'darwin' && dirs.TMPDIR.length > 48) {
+    dirs.TMPDIR = await mkdtemp('/tmp/hb-');
+    tempDirs.add(dirs.TMPDIR);
   }
   await Promise.all(Object.values(dirs).map(dir => mkdir(dir, { recursive: true, mode: 0o700 })));
   const path = (source.PATH ?? source.Path ?? '/usr/bin:/bin').split(delimiter)
@@ -136,9 +140,9 @@ function mcpServer({ mcpServerCmd, mcpAuditPath, workspace, resumeAfterKill }) {
 }
 
 function adapter({ id, harness = id, binary = harness, protocol = chat, supportedTracks = native,
-  defaultModel = 'gpt-4.1', installHint, versionArgs = ['--version'], prepare, start, locate, version }) {
+  defaultModel = 'gpt-4.1', installHint, versionArgs = ['--version'], prepare, start, shared, batch, locate, version }) {
   const commandPath = locate ?? ((env, repoRoot) => findBinary(binary, env, repoRoot));
-  const launchMode = start ? 'warm-daemon' : 'cold';
+  const launchMode = shared || batch ? 'shared-daemon' : start ? 'warm-daemon' : 'cold';
   const requireCommand = async (env, repoRoot) => {
     const command = await commandPath(env, repoRoot);
     if (!command) throw new Error(`${id}: could not locate ${binary}. ${installHint}`);
@@ -160,12 +164,12 @@ function adapter({ id, harness = id, binary = harness, protocol = chat, supporte
     if (harness === 'maka' && source.HARNESS_BENCH_MAKA_ACCOUNT_HOME !== userInfo().homedir) {
       throw new Error(makaIsolation);
     }
-    const env = await isolatedEnv(isolatedDir, source);
+    const env = await isolatedEnv(isolatedDir, source, options.tempDirs);
     const mcp = track === 'sharedMcp' ? mcpServer({ ...options, workspace }) : undefined;
     return { ...options, model, base, v1: base + '/v1', isolatedDir, workspace, repoRoot, source, command, env, mcp };
   }
   return Object.freeze({
-    id, harness, protocol, launchMode, supportedTracks, defaultModel,
+    id, harness, protocol, launchMode, supportedTracks, defaultModel, shared: shared ?? (batch ? supportedTracks : []),
     async probe({ env = process.env, repoRoot = defaultRepoRoot } = {}) {
       const result = { id, available: false, installHint };
       let scratch;
@@ -188,109 +192,280 @@ function adapter({ id, harness = id, binary = harness, protocol = chat, supporte
         if (scratch) await rm(scratch, { recursive: true, force: true });
       }
     },
-    async prepareInvocation(options) {
+    ...(prepare ? { async prepareInvocation(options) {
       const ctx = await context(options);
       return { command: ctx.command, cwd: ctx.workspace, env: ctx.env, ...await prepare(ctx) };
-    },
+    } } : {}),
     ...(start ? {
-      async startDaemon(options) {
-        return start(await context(options));
+      async startDaemon(options, lanes) {
+        return start(await context(options), lanes?.map(lane => ({
+          ...lane, model: lane.model ?? defaultModel,
+          v1: scopedUrl(lane.scopedOrigin, lane.runId, lane.sessionId) + '/v1',
+        })));
       },
       stopDaemon,
     } : {}),
+    ...(batch ? { async prepareBatch(options, lanes) {
+      const ctx = await context(options);
+      return { command: ctx.command, cwd: ctx.workspace, env: ctx.env, ...await batch(ctx, lanes) };
+    } } : {}),
   });
 }
 
-function startChild(command, args, { env, workspace }, ready) {
+async function startChild(command, args, { env, workspace, monitor, abortBatch }, ready) {
+  monitor?.signal.throwIfAborted();
   const child = spawn(command, args, {
-    env, cwd: workspace, detached: process.platform !== 'win32',
-    stdio: ['ignore', 'pipe', 'pipe'],
+    env, cwd: workspace, detached: true, stdio: ['ignore', 'pipe', 'pipe'],
   });
+  const observation = monitor?.watch(child.pid);
   let stderr = '';
   child.stderr.setEncoding('utf8').on('data', chunk => { stderr = (stderr + chunk).slice(-8192); });
-  const state = { child, exited: new Promise(resolveExit => {
-    child.once('error', error => resolveExit({ error }));
-    child.once('exit', (code, signal) => resolveExit({ code, signal }));
-  }) };
-  const lines = createInterface({ input: child.stdout, crlfDelay: Infinity });
-  const timeout = AbortSignal.timeout(30_000);
-  const started = new Promise((resolveReady, reject) => {
-    timeout.addEventListener('abort', () => reject(new Error('Daemon readiness timed out')), { once: true });
-    lines.on('line', line => {
-      const value = ready(line);
-      if (value) resolveReady(value);
-    });
+  let spawnError;
+  child.once('error', error => { spawnError = error; });
+  child.once('exit', () => {
+    if (monitor) monitor.release(observation);
+    else killProcessGroup(child.pid);
   });
-  return Promise.race([started, state.exited.then(({ error, code, signal }) => {
-    throw error ?? new Error(`Daemon exited before ready (${signal ?? code}): ${stderr}`);
-  })]).then(value => ({ ...state, value }), async error => {
+  const exited = new Promise(resolve => child.once('close', (code, signal) => resolve({ code, signal })));
+  const state = { child, exited, monitor, observation };
+  const lines = createInterface({ input: child.stdout, crlfDelay: Infinity });
+  const signal = monitor?.signal;
+  let timer;
+  let abort;
+  try {
+    const started = new Promise((resolve, reject) => {
+      abort = () => reject(signal.reason);
+      signal?.addEventListener('abort', abort, { once: true });
+      if (signal?.aborted) abort();
+      timer = setTimeout(() => {
+        reject(new Error('Daemon readiness timed out: ' + stderr));
+        abortBatch?.();
+      }, 30_000);
+      lines.on('line', line => {
+        const value = ready(line);
+        if (value) resolve(value);
+      });
+    });
+    const value = await Promise.race([started, exited.then(({ code, signal }) => {
+      throw spawnError ?? new Error(`Daemon exited before ready (${signal ?? code}): ${stderr}`);
+    })]);
+    return { ...state, value };
+  } catch (error) {
     await stopDaemon(state);
     throw error;
-  });
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', abort);
+  }
 }
 
-async function stopDaemon({ child, exited }) {
-  if (child.pid && child.exitCode === null && child.signalCode === null) {
-    const target = process.platform === 'win32' ? child.pid : -child.pid;
-    const sending = signal => {
-      try {
-        process.kill(target, signal);
-      } catch (error) {
-        if (error.code !== 'ESRCH') throw error;
-      }
-    };
-    sending('SIGTERM');
+async function stopDaemon({ child, exited, monitor, observation }) {
+  if (child.pid && !observation?.killed && child.exitCode === null && child.signalCode === null) {
+    killProcessGroup(child.pid, 'SIGTERM');
     if (!await Promise.race([exited.then(() => true), delay(3000, false, { ref: false })])) {
-      sending('SIGKILL');
+      if (monitor) monitor.terminate(observation);
+      else killProcessGroup(child.pid);
     }
   }
   await exited;
 }
 
 async function runSetup(ctx, args, stdinText) {
-  if (stdinText === undefined) {
-    await exec(ctx.command, args, { env: ctx.env, cwd: ctx.workspace, timeout: 30_000 });
-    return;
-  }
-  await new Promise((resolveRun, reject) => {
-    const child = execFile(ctx.command, args, {
-      env: ctx.env, cwd: ctx.workspace, timeout: 30_000,
-    }, error => error ? reject(error) : resolveRun());
-    child.stdin.on('error', reject);
-    child.stdin.end(stdinText);
+  const result = await runMonitoredProcess({
+    command: ctx.command, args, env: ctx.env, cwd: ctx.workspace, stdinText,
+    timeoutMs: 30_000, monitor: ctx.monitor, onTimeout: ctx.abortBatch,
   });
+  if (result.code !== 0 || result.termination || result.stdinError) {
+    throw new Error(`Setup ${args.slice(0, 2).join(' ')} failed (${result.termination ?? result.signal ?? result.code}): ${result.stderr}`);
+  }
+}
+
+function mcpDiscovery(body, path) {
+  const callId = 'bench-discovery-' + path.split('/')[3];
+  const tools = body.tools ?? [];
+  const ready = tools.some(tool => tool.function?.name.startsWith('mcp__bench__'));
+  const isDiscoveryCall = call => call.id === callId && call.function?.name === 'tool_search';
+  const hasReceipt = body.messages.some(message => message.role === 'tool' && message.tool_call_id === callId);
+  if (ready) {
+    // This adapter-owned call never entered the canonical scenario or its receipt journal.
+    body.messages = body.messages.filter(message =>
+      !(message.role === 'tool' && message.tool_call_id === callId)
+      && !(message.role === 'assistant' && message.tool_calls?.length === 1 && isDiscoveryCall(message.tool_calls[0])));
+    return { forwarded: JSON.stringify(body) };
+  }
+  if (hasReceipt || !tools.some(tool => tool.function?.name === 'tool_search')) {
+    throw new Error('Maka did not expose the benchmark MCP tools after discovery');
+  }
+  const call = {
+    id: callId, type: 'function',
+    function: { name: 'tool_search', arguments: JSON.stringify({ query: 'bench', limit: 20 }) },
+  };
+  const response = { id: 'resp_' + callId, model: body.model, created: 0 };
+  return body.stream ? {
+    contentType: 'text/event-stream',
+    reply: [
+      { delta: { role: 'assistant', tool_calls: [{ index: 0, ...call }] }, finish_reason: null },
+      { delta: {}, finish_reason: 'tool_calls' },
+    ].map(choice => 'data: ' + JSON.stringify({
+      ...response, object: 'chat.completion.chunk', choices: [{ index: 0, ...choice }],
+    }) + '\n\n').join('') + 'data: [DONE]\n\n',
+  } : {
+    contentType: 'application/json',
+    reply: JSON.stringify({ ...response, object: 'chat.completion',
+      choices: [{ index: 0, message: { role: 'assistant', tool_calls: [call] }, finish_reason: 'tool_calls' }],
+    }),
+  };
+}
+
+export async function startProviderProxy(origin, { discoverMcp, retryAfterMs } = {}) {
+  const upstreamUrl = new URL(origin);
+  const server = createServer(async (incoming, outgoing) => {
+    if (!incoming.url.startsWith('/s/')) {
+      outgoing.writeHead(404).end();
+      return;
+    }
+    const headers = { ...incoming.headers, host: upstreamUrl.host };
+    let forwarded;
+    if (discoverMcp && incoming.method === 'POST' && incoming.url.endsWith('/chat/completions')) {
+      try {
+        const result = mcpDiscovery(JSON.parse(await consumeText(incoming)), incoming.url);
+        if (result.reply) {
+          outgoing.writeHead(200, { 'content-type': result.contentType }).end(result.reply);
+          return;
+        }
+        forwarded = result.forwarded;
+        delete headers['transfer-encoding'];
+        headers['content-length'] = Buffer.byteLength(forwarded);
+      } catch (error) {
+        outgoing.writeHead(422, { 'content-type': 'application/json' }).end(JSON.stringify({
+          error: { message: error.message },
+        }));
+        return;
+      }
+    }
+    const upstream = request(upstreamUrl, { path: incoming.url, method: incoming.method, headers }, reply => {
+      const replyHeaders = { ...reply.headers };
+      if (reply.statusCode === 429 && retryAfterMs !== undefined) {
+        replyHeaders['retry-after-ms'] = String(retryAfterMs);
+        replyHeaders['retry-after'] = String(Math.ceil(retryAfterMs / 1000));
+      }
+      outgoing.writeHead(reply.statusCode, replyHeaders);
+      outgoing.flushHeaders();
+      reply.on('error', error => outgoing.destroy(error));
+      reply.pipe(outgoing);
+    });
+    outgoing.once('close', () => upstream.destroy());
+    upstream.on('error', error => outgoing.destroy(error));
+    incoming.on('error', error => upstream.destroy(error));
+    if (forwarded !== undefined) upstream.end(forwarded);
+    else incoming.pipe(upstream);
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  return {
+    origin: 'http://127.0.0.1:' + server.address().port,
+    async stop() {
+      const closed = once(server, 'close');
+      server.close();
+      server.closeAllConnections();
+      await closed;
+    },
+  };
 }
 
 function makaAdapter(id, codeMode) {
-  const rootPath = ctx => join(ctx.isolatedDir, 'maka-root');
+  const tracks = codeMode ? native : both;
   return adapter({
-    id, harness: 'maka', supportedTracks: codeMode ? native : both,
+    id, harness: 'maka', supportedTracks: tracks, shared: tracks,
     installHint: 'cargo build --release -p maka-cli',
-    async start(ctx) {
-      const root = rootPath(ctx);
-      if (ctx.mcp) await jsonFile(join(ctx.env.HOME, '.maka/mcp.json'), {
-        mcpServers: { bench: { ...ctx.mcp, cwd: ctx.workspace } },
-      });
-      await runSetup(ctx, ['host', 'init', '--root', root, '--settings-stdin'], JSON.stringify({
-        connections: [{
-          slug: 'benchmark', provider: 'openai-compatible',
-          configuration: { baseUrl: ctx.v1 }, apiKey: ctx.apiKey, enabledModelIds: [ctx.model],
-          modelOverrides: {
-            [ctx.model]: { codeMode, apiProtocol: chat, ...(codeMode ? { codeModeLanguage: 'javascript' } : {}) },
-          },
-        }],
-        defaultTarget: { slug: 'benchmark', modelId: ctx.model },
-        projectDirectoryRoots: [{ label: 'Benchmark workspace', path: ctx.workspace }],
+    async start(ctx, lanes = [ctx]) {
+      const root = join(ctx.isolatedDir, 'maka-root');
+      const connections = lanes.map(lane => ({
+        slug: lane.logicalLane, name: lane.logicalLane, provider: 'openai-compatible',
+        configuration: { baseUrl: lane.v1 }, apiKey: lane.apiKey, enabledModelIds: [lane.model],
+        modelOverrides: {
+          [lane.model]: { codeMode, apiProtocol: chat, ...(codeMode ? { codeModeLanguage: 'javascript' } : {}) },
+        },
       }));
-      return startChild(ctx.command, ['host', 'serve', '--root', root], ctx,
+      await runSetup(ctx, ['host', 'init', '--root', root, '--settings-stdin'], JSON.stringify({
+        connections,
+        defaultTarget: { slug: connections[0].slug, modelId: lanes[0].model },
+        chatDefaults: { sandboxMode: 'danger-full-access' },
+        projectDirectoryRoots: lanes.map(lane => ({ label: lane.logicalLane, path: lane.workspace })),
+      }));
+      const host = await startChild(ctx.command, ['host', 'serve', '--root', root], ctx,
         line => line.startsWith('{"kind":"ready",') && root);
+      return { ...host, tempDir: ctx.env.TMPDIR };
     },
     prepare(ctx) {
-      const root = rootPath(ctx);
-      if (ctx.daemonState?.value !== root) throw new Error(`${id} requires its isolated Host`);
-      return { args: ['run', '--root', root, '--workspace', ctx.workspace], stdinText: ctx.prompt };
+      const host = ctx.daemonState;
+      if (!host) throw new Error(`${id} requires a shared Host`);
+      return {
+        command: process.execPath, args: [script, '--maka-acp'],
+        env: { ...ctx.env, TMPDIR: host.tempDir },
+        stdinText: JSON.stringify({
+          command: ctx.command, root: host.value, lane: ctx.logicalLane, prompt: ctx.prompt, mcp: ctx.mcp,
+        }),
+      };
     },
   });
+}
+
+async function runMakaAcp() {
+  const { command, root, lane, prompt, mcp } = JSON.parse(await consumeText(process.stdin));
+  const child = spawn(command, ['acp', '--root', root], { stdio: ['pipe', 'pipe', 'inherit'] });
+  let failure;
+  child.once('error', error => { failure = error; });
+  child.stdin.on('error', error => { failure ??= error; });
+  const closed = new Promise(resolve => child.once('close', (code, signal) => resolve({ code, signal })));
+  const lines = createInterface({ input: child.stdout, crlfDelay: Infinity });
+  const messages = lines[Symbol.asyncIterator]();
+  let id = 0;
+  let answer = '';
+  async function rpc(method, params) {
+    child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: ++id, method, params }) + '\n');
+    for (;;) {
+      const { done, value } = await messages.next();
+      if (done) throw failure ?? new Error('Maka ACP closed while awaiting ' + method);
+      const message = JSON.parse(value);
+      if (message.id === id && !message.method) {
+        if (message.error) throw new Error(method + ': ' + JSON.stringify(message.error));
+        return message.result;
+      }
+      if (message.method === 'session/update') {
+        const { update } = message.params;
+        if (update.sessionUpdate === 'agent_message_chunk' && update.content.type === 'text') {
+          answer += update.content.text;
+        }
+      } else if (message.method && message.id !== undefined) {
+        child.stdin.write(JSON.stringify({
+          jsonrpc: '2.0', id: message.id, error: { code: -32601, message: 'Unsupported benchmark ACP client method' },
+        }) + '\n');
+      }
+    }
+  }
+  try {
+    await rpc('initialize', { protocolVersion: 1, clientCapabilities: {} });
+    const { sessionId, configOptions } = await rpc('session/new', {
+      cwd: process.cwd(), mcpServers: mcp ? [{ name: 'bench', ...mcp, env: [] }] : [],
+    });
+    const selected = configOptions.find(option => option.id === 'model')?.options
+      .find(option => option.name.endsWith(' (' + lane + ')'));
+    if (!selected) throw new Error('Maka ACP did not advertise the provider for ' + lane);
+    await rpc('session/set_config_option', { sessionId, configId: 'model', type: 'id', value: selected.value });
+    const result = await rpc('session/prompt', { sessionId, prompt: [{ type: 'text', text: prompt }] });
+    if (result.stopReason !== 'end_turn' || !answer.trim()) {
+      throw new Error('Maka ACP prompt did not return an answer: ' + JSON.stringify(result));
+    }
+    process.stdout.write(answer + '\n');
+  } finally {
+    child.stdin.end();
+    lines.close();
+    child.stdout.resume();
+    const { code, signal } = await closed;
+    if (failure) throw failure;
+    if (code !== 0) throw new Error('Maka ACP exited: ' + (signal ?? code));
+  }
 }
 
 const claude = adapter({
@@ -343,52 +518,55 @@ function codexAdapter(ws) {
   });
 }
 
-async function configureOpencode(ctx) {
+async function configureOpencode(ctx, lanes) {
   const config = join(ctx.isolatedDir, 'opencode.json');
   Object.assign(ctx.env, {
     OPENCODE_CONFIG: config, OPENCODE_DISABLE_AUTOUPDATE: '1', OPENCODE_DISABLE_MODELS_FETCH: '1',
-    OPENCODE_DISABLE_PROJECT_CONFIG: '1', OPENAI_API_KEY: ctx.apiKey,
+    OPENCODE_DISABLE_PROJECT_CONFIG: '1',
   });
+  const providers = lanes ?? [{ ...ctx, logicalLane: 'mock' }];
   await jsonFile(config, {
-    model: `mock/${ctx.model}`,
-    providers: { mock: {
-      name: 'Benchmark mock', package: '@opencode/ai/providers/openai-compatible',
-      settings: { baseURL: ctx.v1, apiKey: '{env:OPENAI_API_KEY}' },
-      models: { [ctx.model]: { name: ctx.model } },
-    } },
+    model: `${providers[0].logicalLane}/${providers[0].model}`,
+    providers: Object.fromEntries(providers.map(lane => [lane.logicalLane, {
+      name: 'Benchmark ' + lane.logicalLane, package: '@opencode/ai/providers/openai-compatible',
+      settings: { baseURL: lane.v1, apiKey: lane.apiKey },
+      models: { [lane.model]: { name: lane.model } },
+    }])),
     permissions: [{ action: '*', resource: '*', effect: 'allow' }],
-    ...(ctx.mcp ? { mcp: { servers: { bench: {
+    ...(!lanes && ctx.mcp ? { mcp: { servers: { bench: {
       type: 'local', codemode: false, command: [ctx.mcp.command, ...ctx.mcp.args],
     } } } } : {}),
   });
 }
 
-function opencodeAdapter(attach) {
+function opencodeAdapter(id, tracks) {
+  const attach = id !== 'opencode-cold';
   return adapter({
-    id: attach ? 'opencode-attach' : 'opencode-cold', harness: 'opencode', supportedTracks: both,
+    id, harness: 'opencode', supportedTracks: tracks,
     installHint: 'Install OpenCode v2 (opencode on PATH).',
     ...(attach ? {
-      async start(ctx) {
-        await configureOpencode(ctx);
+      shared: native,
+      async start(ctx, lanes) {
+        await configureOpencode(ctx, lanes);
         const password = randomBytes(24).toString('hex');
         ctx.env.OPENCODE_PASSWORD = password;
         const state = await startChild(ctx.command, ['serve', '--hostname', '127.0.0.1', '--port', '0'], ctx,
           line => /https?:\/\/127\.0\.0\.1:[1-9][0-9]*/.exec(line)?.[0]);
-        return { ...state, isolatedDir: ctx.isolatedDir, password };
+        return { ...state, shared: Boolean(lanes), password };
       },
     } : {}),
     async prepare(ctx) {
       let server = ['--standalone'];
+      let provider = 'mock';
       if (attach) {
-        if (ctx.daemonState?.isolatedDir !== ctx.isolatedDir) {
-          throw new Error('opencode-attach requires its isolated daemon');
-        }
+        if (!ctx.daemonState) throw new Error(id + ' requires its daemon');
         ctx.env.OPENCODE_PASSWORD = ctx.daemonState.password;
         server = ['--server', ctx.daemonState.value];
+        if (ctx.daemonState.shared) provider = ctx.logicalLane;
       } else {
         await configureOpencode(ctx);
       }
-      return { args: ['run', ...server, '--model', `mock/${ctx.model}`, '--format', 'json', '--', ctx.prompt] };
+      return { args: ['run', ...server, '--model', `${provider}/${ctx.model}`, '--format', 'json', '--', ctx.prompt] };
     },
   });
 }
@@ -432,22 +610,17 @@ async function durableEntries(env, repoRoot, invocation) {
   return JSON.parse(stdout);
 }
 
-const piDurable = adapter({
-  id: 'pi-durable', locate: () => process.execPath,
-  installHint: `Install ${durablePackages.join(' ')} in a directory and set HARNESS_BENCH_PI_DURABLE_DIR to it.`,
-  async version(env, repoRoot, invocation) {
-    const entries = await durableEntries(env, repoRoot, invocation);
-    const path = join(dirname(fileURLToPath(entries.Harness)), '../package.json');
-    return JSON.parse(await readFile(path, 'utf8')).version;
-  },
-  async prepare(ctx) {
-    const entries = await durableEntries(ctx.source, ctx.repoRoot, {
-      env: ctx.env, timeout: 8_000,
-    });
-    const path = join(ctx.isolatedDir, 'pi-durable-driver.mjs');
-    ctx.env.OPENAI_API_KEY = ctx.apiKey;
-    const { model, v1, sessionId, workspace, isolatedDir } = ctx;
-    await privateFile(path, `import { readFileSync } from 'node:fs';
+async function prepareDurable(ctx, batchLanes) {
+  const lanes = batchLanes ?? [ctx];
+  const entries = await durableEntries(ctx.source, ctx.repoRoot, { env: ctx.env, timeout: 8_000 });
+  const path = join(ctx.isolatedDir, 'pi-durable-driver.mjs');
+  const configs = lanes.map(({ model, sessionId, workspace, logicalLane, v1, runId, scopedOrigin, apiKey }, index) => {
+    const keyEnv = 'HARNESS_BENCH_PI_KEY_' + index;
+    ctx.env[keyEnv] = apiKey;
+    return { model: model ?? ctx.model, sessionId, workspace, logicalLane, keyEnv,
+      baseUrl: v1 ?? scopedUrl(scopedOrigin, runId, sessionId) + '/v1' };
+  });
+  await privateFile(path, `import { readFileSync } from 'node:fs';
 import { Harness, AssistantEntry, createRegistry } from ${toml(entries.Harness)};
 import { openNodeSqliteStorage } from ${toml(entries.sqlite)};
 import { createCodingTools } from ${toml(entries.tools)};
@@ -456,47 +629,75 @@ import { createModels, createProvider, envApiKeyAuth } from ${toml(entries.ai)};
 import { openAICompletionsApi } from ${toml(entries.completions)};
 import { BACKGROUND_CONTEXT as context } from ${toml(entries.context)};
 
-const modelId = ${toml(model)};
-const baseUrl = ${toml(v1)};
+const lanes = ${toml(configs)};
+const emit = ${Boolean(batchLanes)}
+  ? row => console.log(JSON.stringify(row))
+  : row => {
+    if (row.error) throw new Error(row.error);
+    console.log(row.answer);
+  };
 const models = createModels();
-models.setProvider(createProvider({
-  id: 'mock', name: 'Benchmark mock', baseUrl,
-  auth: { apiKey: envApiKeyAuth('Benchmark mock', ['OPENAI_API_KEY']) },
-  api: openAICompletionsApi(),
-  models: [{
-    id: modelId, name: modelId, api: 'openai-completions', provider: 'mock', baseUrl,
-    reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: 128000, maxTokens: 8192,
-  }],
-}));
+for (const { logicalLane: id, model, baseUrl, keyEnv } of lanes) {
+  models.setProvider(createProvider({
+    id, name: id, baseUrl,
+    auth: { apiKey: envApiKeyAuth(id, [keyEnv]) },
+    api: openAICompletionsApi(),
+    models: [{
+      id: model, name: model, api: 'openai-completions', provider: id, baseUrl,
+      reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 128000, maxTokens: 8192,
+    }],
+  }));
+}
 const registry = createRegistry();
 registry.install(createCodingTools());
-const cwd = ${toml(workspace)};
-const harness = await Harness.open(await openNodeSqliteStorage(${toml(join(isolatedDir, 'pi-durable.sqlite'))}), {
-  models, registry, env: () => new NodeExecutionEnv({ cwd }),
+const storage = await openNodeSqliteStorage(${toml(join(ctx.isolatedDir, 'pi-durable.sqlite'))});
+const harness = await Harness.open(storage, { models, registry,
+  env: ({ cwd }) => new NodeExecutionEnv({ cwd }),
 }, context);
 try {
-  const root = await harness.root(context, { agent: { model: { provider: 'mock', modelId }, cwd } });
-  const submission = await root.submit({
-    type: 'input', content: readFileSync(0, 'utf8'), requestId: ${toml(sessionId)},
-  }, context);
+  const prompt = readFileSync(0, 'utf8');
   harness.resume();
-  const settled = await submission.wait(context);
-  if (settled.status !== 'done' || settled.type !== 'input') {
-    throw new Error('pi-durable did not produce an answer: ' + JSON.stringify(settled));
-  }
-  const answer = await root.commit(tx => tx.entry(AssistantEntry, settled.answer), context);
-  const text = answer?.model?.flatMap(message => message.content ?? [])
-    .filter(block => block.type === 'text').map(block => block.text).join('');
-  if (!text) throw new Error('pi-durable returned an empty answer');
-  console.log(text);
+  await Promise.all(lanes.map(async ({ logicalLane, model, sessionId, workspace }) => {
+    const startNs = process.hrtime.bigint();
+    let result;
+    try {
+      const options = { agent: { model: { provider: logicalLane, modelId: model }, cwd: workspace } };
+      const root = await harness.createConversation({ ...options, ownership: { kind: 'ownerless' } }, context);
+      const submission = await root.submit({ type: 'input', content: prompt, requestId: sessionId }, context);
+      const settled = await submission.wait(context);
+      if (settled.status !== 'done' || settled.type !== 'input') {
+        throw new Error('pi-durable did not produce an answer: ' + JSON.stringify(settled));
+      }
+      const answer = await root.commit(tx => tx.entry(AssistantEntry, settled.answer), context);
+      const text = answer?.model?.flatMap(message => message.content ?? [])
+        .filter(block => block.type === 'text').map(block => block.text).join('');
+      if (!text) throw new Error('pi-durable returned an empty answer');
+      result = { answer: text };
+    } catch (error) {
+      result = { error: error.message };
+    }
+    emit({ logicalLane, ...result, wallMs: Number(process.hrtime.bigint() - startNs) / 1e6 });
+  }));
 } finally {
   await harness.close(context);
 }
 `);
-    return { args: [path], stdinText: ctx.prompt };
-  },
-});
+  return { args: [path], stdinText: ctx.prompt };
+}
+
+function piDurableAdapter(shared) {
+  return adapter({
+    id: shared ? 'pi-durable-shared' : 'pi-durable', locate: () => process.execPath,
+    installHint: `Install ${durablePackages.join(' ')} in a directory and set HARNESS_BENCH_PI_DURABLE_DIR to it.`,
+    async version(env, repoRoot, invocation) {
+      const entries = await durableEntries(env, repoRoot, invocation);
+      const path = join(dirname(fileURLToPath(entries.Harness)), '../package.json');
+      return JSON.parse(await readFile(path, 'utf8')).version;
+    },
+    ...(shared ? { batch: prepareDurable } : { prepare: prepareDurable }),
+  });
+}
 
 const dim = adapter({
   id: 'dim', binary: 'dimcode', supportedTracks: both, versionArgs: ['version'],
@@ -618,11 +819,13 @@ const refAgent = adapter({
 
 const adapters = [
   refAgent, makaAdapter('maka-direct', false), makaAdapter('maka-codemode', true), claude,
-  codexAdapter(true), codexAdapter(false), opencodeAdapter(false), opencodeAdapter(true),
-  pi, piDurable, dim, dsh, zcode,
+  codexAdapter(true), codexAdapter(false), opencodeAdapter('opencode-cold', both), opencodeAdapter('opencode-attach', both),
+  pi, piDurableAdapter(false), dim, dsh, zcode,
   kimiAdapter('kimi-openai', chat, 'openai'),
   kimiAdapter('kimi-responses', responses, 'openai_responses'),
   kimiAdapter('kimi-anthropic', anthropic, 'anthropic'),
+  makaAdapter('maka-host-direct', false), makaAdapter('maka-host-codemode', true),
+  opencodeAdapter('opencode-serve', native), piDurableAdapter(true),
 ];
 
 export function getAdapter(id) {
@@ -673,6 +876,13 @@ async function referenceNative(workspace, name, args) {
         env: {
           LC_ALL: 'C', BENCH_PATTERN: pattern.replaceAll("'\\''", "'"), BENCH_TAIL: tail.replaceAll("'\\''", "'"),
         },
+      });
+      return { text: stdout };
+    }
+    const sleep = /^sleep 0\.1 && printf '(burst-probe-[0-9]+-[0-9]+)'$/.exec(args.command);
+    if (sleep) {
+      const { stdout } = await exec('/bin/sh', ['-c', 'sleep 0.1 && printf "%s" "$1"', 'bench', sleep[1]], {
+        cwd: workspace, env: { PATH: '/usr/bin:/bin', LC_ALL: 'C' }, timeout: 10_000,
       });
       return { text: stdout };
     }
@@ -771,11 +981,12 @@ async function connectReferenceMcp(mcp, workspace) {
 }
 
 class RefRequestError extends Error {
-  constructor(message, { status, provider, retryAfter, cause, disconnected } = {}) {
+  constructor(message, { status, provider, retryAfter, retryAfterMs, cause, disconnected } = {}) {
     super(message, { cause });
     this.status = status;
     this.provider = provider;
     this.retryAfter = retryAfter;
+    this.retryAfterMs = retryAfterMs;
     this.disconnected = disconnected;
   }
 
@@ -918,6 +1129,7 @@ async function refRequest(config, messages, tools, summary = false) {
         if (response.headers.get('content-type')?.includes('json')) provider = JSON.parse(raw).error;
         throw new RefRequestError(provider?.message ?? raw, {
           status: response.status, provider, retryAfter: response.headers.get('retry-after'),
+          retryAfterMs: response.headers.get('retry-after-ms'),
         });
       }
       if (response.headers.get('content-type')?.includes('text/event-stream')) {
@@ -932,8 +1144,10 @@ async function refRequest(config, messages, tools, summary = false) {
     } catch (error) {
       if (!error.retryable || attempt >= 4) throw error;
       const seconds = Number(error.retryAfter);
-      const retryAfter = !error.retryAfter ? 0 : Number.isFinite(seconds)
-        ? seconds * 1000 : Date.parse(error.retryAfter) - Date.now();
+      const retryAfter = error.retryAfterMs !== null && error.retryAfterMs !== undefined
+        ? Number(error.retryAfterMs)
+        : !error.retryAfter ? 0 : Number.isFinite(seconds)
+          ? seconds * 1000 : Date.parse(error.retryAfter) - Date.now();
       await delay(Math.max(50 * 2 ** attempt, Number.isFinite(retryAfter) ? retryAfter : 0));
     }
   }
@@ -995,7 +1209,7 @@ export async function runRefAgentCli() {
   const invoke = shared?.call ?? ((name, args) => referenceNative(workspace, name, args));
   const isAnthropic = config.protocol === anthropic;
   try {
-    for (let round = 0; round < 100; round++) {
+    for (let round = 0; round < 1024; round++) {
       let message;
       try {
         message = await refRequest(config, history, tools);
@@ -1041,15 +1255,15 @@ export async function runRefAgentCli() {
       process.stdout.write(text + '\n');
       return;
     }
-    throw new Error('Reference agent exceeded its 100-turn budget');
+    throw new Error('Reference agent exceeded its 1024-turn budget');
   } finally {
     await shared?.close();
   }
 }
 
-if (process.argv[2] === '--ref-agent' && process.argv[1] && resolve(process.argv[1]) === script) {
+if (['--ref-agent', '--maka-acp'].includes(process.argv[2]) && process.argv[1] && resolve(process.argv[1]) === script) {
   try {
-    await runRefAgentCli();
+    await (process.argv[2] === '--maka-acp' ? runMakaAcp() : runRefAgentCli());
   } catch (error) {
     console.error(error);
     process.exitCode = 1;
