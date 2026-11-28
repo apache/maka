@@ -1235,6 +1235,10 @@ impl JsHost for CallHost<'_> {
         crate::web::blob::resolve_image_url(self.cx, url)
     }
 
+    fn blob_bytes(&self, url: &str) -> Option<nsh_core::ImageData> {
+        crate::web::blob::resolve_blob_bytes(self.cx, url)
+    }
+
     fn start_task(&self, task: nsh_core::element::TaskStart) {
         // Past the op limit the app is stopped: the task goes with it.
         let op = nsh_core::Op::Rust(RustOp {

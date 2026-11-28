@@ -67,6 +67,8 @@ terminal surfaces. Desktop window operations take explicit `WindowRef` values.
 
 ## Retained local capabilities
 
+- **Picker uploads:** `JsHost::blob_bytes` shares bytes from a live object URL
+  in the calling VM without deriving an image cache key on the VM thread.
 - **Terminal transport:** `crates/nsh-terminal` and `third-party/icy_sixel`
   provide Kitty, Sixel and iTerm2 pixel transport, shared with the AppKit and
   Direct2D offscreen terminal surfaces and the TUI image store. GPUI and its

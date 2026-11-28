@@ -64,6 +64,16 @@ import {
 } from './settings/models';
 import { settingsRpc } from './settings/rpc';
 import { tr } from '../locale';
+import {
+  consumeAttachments,
+  conversationKey,
+  draftAttachments,
+  mergeAttachments,
+  takeAttachmentSnapshot,
+  type ReadyAttachment,
+} from './attachments';
+
+export { conversationKey };
 
 export const backendKey = (backend: AgentBackendPreference) =>
   JSON.stringify(
@@ -97,10 +107,6 @@ export function compareHistoryRows(
     if (order) return order;
   }
   return a.order.path.length - b.order.path.length || a.order.itemIndex - b.order.itemIndex;
-}
-
-export function conversationKey(rootId: string, sessionId: string): string {
-  return rootId + '::' + sessionId;
 }
 
 export interface HistoryRow {
@@ -573,7 +579,14 @@ export async function fetchGitWorkspaceDiff(
 
 export type SendDelivery = 'steer' | 'queue';
 
-type DraftContent = Pick<Draft, 'input' | 'quotes' | 'links'>;
+type DraftContent = Pick<Draft, 'input' | 'quotes' | 'links'> & {
+  readonly attachments: readonly ReadyAttachment[];
+};
+
+function captureDraft(rootId: string, sessionId: string): DraftContent | null {
+  const attachments = takeAttachmentSnapshot(conversationKey(rootId, sessionId));
+  return attachments && { ...getDraft(rootId, sessionId), attachments };
+}
 type SendTarget = {
   backend: AgentBackendPreference | null;
   expectedRunId: AgentRun['runId'] | null;
@@ -585,8 +598,13 @@ function sendText(snapshot: DraftContent) {
     .join(' ');
 }
 
+function hasContent(draft: DraftContent) {
+  return Boolean(sendText(draft) || draft.quotes.length || draft.attachments.length);
+}
+
 function consumeDraft(rootId: string, sessionId: string, snapshot: DraftContent) {
   const sentQuoteIds = new Set(snapshot.quotes.map((quote) => quote.id));
+  consumeAttachments(conversationKey(rootId, sessionId), snapshot.attachments);
   updateDraft(rootId, sessionId, (draft) => ({
     ...draft,
     input: draft.input === snapshot.input ? emptyDraft.input : draft.input,
@@ -626,10 +644,9 @@ function deliverDraft(
       mentions: [],
       replyTo: null,
       onComplete: null,
-      ...(!room && { quotes: draft.quotes.map((quote) => quote.reference) }),
+      ...(!room && { quotes: draft.quotes.map((quote) => quote.reference), ...target }),
       delivery,
-      ...target,
-      attachments: [],
+      attachments: draft.attachments.map(({ id }) => id),
       sessionId,
       message: sendText(draft),
     },
@@ -681,8 +698,8 @@ export async function sendDraft(
   backend: AgentBackendPreference | null,
   delivery: SendDelivery = 'steer',
 ): Promise<boolean> {
-  const snapshot = getDraft(rootId, sessionId);
-  if (snapshot.sending || (!sendText(snapshot) && !snapshot.quotes.length)) return false;
+  const snapshot = captureDraft(rootId, sessionId);
+  if (!snapshot || getDraft(rootId, sessionId).sending || !hasContent(snapshot)) return false;
   updateDraft(rootId, sessionId, (draft) => ({ ...draft, sending: true }));
   const fail = (message: string) => {
     hapticNotification('error');
@@ -761,6 +778,7 @@ export function sendPreview(draft: DraftContent) {
     trimHostWhitespace(draft.input.text) ||
     draft.quotes[0]?.reference.text ||
     draft.links[0]?.title ||
+    draft.attachments[0]?.name ||
     ''
   );
 }
@@ -1553,13 +1571,20 @@ export function createConversationController(
   const hasDraftContent = () =>
     Boolean(
       trimHostWhitespace(draft().input.text) ||
+        draftAttachments(key).length ||
         (!isRoom() && (draft().quotes.length || draft().links.length)),
     );
 
+  const canDeliver = () =>
+    hasDraftContent() &&
+    !sending() &&
+    !!activeHostInfo(rootId) &&
+    draftAttachments(key).every((attachment) => attachment.kind === 'ready');
+
   const submit = async (snapshot: DraftContent, delivery: SendDelivery, retryId?: number) => {
     const room = isRoom();
-    const content = room ? { input: snapshot.input, quotes: [], links: [] } : snapshot;
-    if (sending() || (!sendText(content) && !content.quotes.length)) return false;
+    const content = room ? { ...snapshot, quotes: [], links: [] } : snapshot;
+    if (sending() || !hasContent(content)) return false;
     error.set(null);
     const failPreflight = (message: string) => {
       hapticNotification('error');
@@ -1579,7 +1604,7 @@ export function createConversationController(
         if (error() || !observation()) return failPreflight(error() ?? tr('Select model'));
       }
       const run = observation()?.run;
-      const expectedRunId = room ? null : (run?.runId ?? null);
+      const expectedRunId = run?.runId ?? null;
       const startsRun = run == null;
       const send = {
         id: retryId ?? ++nextSendId,
@@ -1699,7 +1724,11 @@ export function createConversationController(
     }
   };
 
-  const sendMessage = (delivery: SendDelivery = 'steer') => submit(draft(), delivery);
+  const sendMessage = async (delivery: SendDelivery = 'steer') => {
+    if (!canDeliver()) return false;
+    const snapshot = captureDraft(rootId, sessionId);
+    return snapshot ? submit(snapshot, delivery) : false;
+  };
   const failedSend = (id: number) =>
     composerSends().find(
       (send) => send.id === id && (send.state === 'failed' || send.state === 'unknown'),
@@ -1739,11 +1768,12 @@ export function createConversationController(
       current.input.text === send.draft.input.text
         ? current.input.text
         : [current.input.text, send.draft.input.text].filter(Boolean).join('\n\n');
-    batch(() => {
+    return batch(() => {
+      if (!mergeAttachments(key, send.draft.attachments)) return false;
       updateDraft(rootId, sessionId, (draft) => ({ ...draft, input: { text }, quotes, links }));
       dismissPendingSend(id);
+      return true;
     });
-    return true;
   };
   const retryPendingSend = (id: number) => {
     const send = failedSend(id);
@@ -2043,6 +2073,7 @@ export function createConversationController(
     earlierFailed,
     sending,
     hasDraftContent,
+    canDeliver,
     error,
     queue,
     queuedMessages,

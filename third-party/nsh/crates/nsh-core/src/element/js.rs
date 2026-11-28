@@ -347,6 +347,13 @@ pub trait JsHost {
         None
     }
 
+    /// Shares the bytes of a live `blob:` URL in this VM without deriving
+    /// an image cache key.
+    fn blob_bytes(&self, url: &str) -> Option<crate::ImageData> {
+        let _ = url;
+        None
+    }
+
     /// Runs `f` when what owns the call in JS goes (`CallCx::on_cleanup`);
     /// a host without owners keeps it until it goes itself. Returns what
     /// unregisters `f` without running it.
