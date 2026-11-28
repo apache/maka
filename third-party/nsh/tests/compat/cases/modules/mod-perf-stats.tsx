@@ -7,6 +7,7 @@ function App() {
   return (
     <View style={{ flex: 1, paddingTop: 64 }}>
       <Text>{`Fps: ${perfStats()?.fps ?? "none"}`}</Text>
+      <Text>{`Memory: ${perfStats()?.memory ?? "none"}`}</Text>
     </View>
   );
 }

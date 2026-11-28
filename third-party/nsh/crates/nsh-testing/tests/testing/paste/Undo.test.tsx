@@ -1,6 +1,6 @@
 import { expect, open, test } from "nsh/test";
 
-// On a platform whose inputs keep an undo history (Linux, iOS, the web):
+// On a platform whose inputs keep an undo history (Linux, iOS, Android, the web):
 // text the app inserts with `insertText` is one step of it, undone and
 // redone with the platform's keys (`mod` is Command on Apple platforms).
 // `nsh test crates/nsh-testing/tests/testing/paste/Undo.test.tsx --target linux`

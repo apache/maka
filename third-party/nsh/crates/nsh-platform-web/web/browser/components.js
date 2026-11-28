@@ -78,7 +78,8 @@ export function createComponents(invoke, values, reactive, dom) {
     children(id, wanted) { state(id)?.lazy.set(wanted); },
     // `func`: a function the component holds itself, called once per key
     // with props reading the latest value, which later renders set in place.
-    render(id, prop, key, value, func) {
+    // `spread`: the value (an array) is the function's arguments (an `InContext`'s).
+    render(id, prop, key, value, spread, func) {
       const current = state(id);
       if (!current) return;
       const held = typeof func === "function" ? current.renders.get(prop)?.get(key) : undefined;
@@ -91,7 +92,7 @@ export function createComponents(invoke, values, reactive, dom) {
           const signal = typeof func === "function" ? reactive.signal(value) : undefined;
           const holder = dom.rt.element("view");
           dom.rt.prop(holder, "componentRender", `${prop}\x1f${key}`);
-          try { dom.rt.insert(holder, reactive.untracked(() => render(signal ? propsOf(signal) : value))); dom.rt.append(current.node, holder); }
+          try { dom.rt.insert(holder, reactive.untracked(() => signal ? render(propsOf(signal)) : spread ? render(...value) : render(value))); dom.rt.append(current.node, holder); }
           catch (error) { dispose(); throw error; }
           let entries = current.renders.get(prop);
           if (!entries) current.renders.set(prop, entries = new Map());

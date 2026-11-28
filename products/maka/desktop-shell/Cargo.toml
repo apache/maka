@@ -37,6 +37,9 @@ uuid.workspace = true
 [build-dependencies]
 embed-resource = "3.0"
 
+[target.'cfg(windows)'.dev-dependencies]
+tempfile.workspace = true
+
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
 

@@ -28,6 +28,7 @@ import {
   floatingStyle,
   quietFocusStyle,
   quietHoverStyle,
+  radius,
   textTooltip,
 } from './ui';
 import { formatCompactCount, formatDecimal } from './numberFormat';
@@ -83,7 +84,7 @@ export function ContextGauge(props: { usage: () => ComposerContextUsage }) {
               alignItems: 'center',
               justifyContent: 'center',
               flexShrink: 0,
-              borderRadius: 6,
+              borderRadius: radius(6),
               cursor: 'pointer',
             }}
           >
@@ -93,7 +94,7 @@ export function ContextGauge(props: { usage: () => ComposerContextUsage }) {
               draw={(cx) => {
                 cx.lineWidth = 1.5;
                 cx.lineCap = 'round';
-                cx.strokeStyle = C.line;
+                cx.strokeStyle = C.pressed;
                 cx.beginPath();
                 cx.arc(7, 7, 5.5, 0, Math.PI * 2);
                 cx.stroke();

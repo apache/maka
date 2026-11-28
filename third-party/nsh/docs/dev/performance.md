@@ -4,6 +4,35 @@ Performance is the project's first priority; the rules are in `AGENTS.md`. Chang
 after `nsh test --trace` timings and item counts (`nsh trace` before it, in the records below). Current baselines
 (Apple Silicon except where noted):
 
+Resolved class styles cached and style records shared (`core/classes.rs`, `core/mod.rs`, `core/layout_tree.rs`,
+`core/components.rs`, `tailwind/mod.rs`, `tailwind/utilities.rs`, 2026-11-25, macOS arm64, Apple M5, release against
+`main` at `b729299a0`): every restyle unconditionally cloned `Style` (~900 B) for TUI resting fills, zero-initialized
+a ~700 B `Parts` builder and ran three rule passes in `ClassList::apply_with`, scanned rules redundantly for
+`currentColor`, missed layout/style sharing across repeated `Rc<ClassList>`s once `LayoutTree`'s 4-entry window
+overflowed, and cloned `unstyled_layout()` on every node creation. `ClassList` now records `rule_flags` (`add`) to
+skip empty passes and `Parts` allocation, `Core::resolved_styles` (4,096-entry per-`Core` cache normalized to
+`ClassList::deps()`, including inherited `currentColor`) caches resolved outputs sharing `Rc<taffy::Style>`,
+`Rc<ViewStyle>`, `Rc<TextStyle>`, `Rc<PaintStyle>`, and `Rc<ClassProps>`, `Core::create` shares `LayoutTree::default_style`,
+and `Components::apply_styles` reuses `merge_user`. `resolved_class_style_cache_matches_uncached_resolution` and
+`repeated_classes_share_resolved_styles_and_layout_records` pin exact mount-item/style equivalence and sharing; every
+workload below keeps identical ops, mount items, and nodes (five alternating rounds except `bench_large_document` and
+headless `PositionalClasses`, three alternating rounds):
+
+| Benchmark | Metric | Before | After |
+|---|---|---:|---:|
+| `nsh-core` `bench_restyle_colors` | 900 boxes min / median | 364–367 / 371–383 µs | 128–133 / 137–140 µs |
+| `nsh-core` `bench_tailwind_class_mount` | Repeated 10,000 views median | 13.31 ms (12.79–23.66) | 7.42 ms (7.17–7.52) |
+| `nsh-core` `bench_tailwind_class_mount` | Dark toggle 5,000 views median | 0.39 ms/toggle | 0.09 ms/toggle |
+| `nsh-core` `bench_tailwind_class_mount` (0% hit control) | Unique 10,000 views median | 31.27 ms (30.69–44.23) | 28.18 ms (27.99–38.89) |
+| `nsh-core` `bench_row_relayout` (control) | Median per commit | 803 ns | 797 ns |
+| `nsh-engine` `GridTs.tsx` | First frame core min | 612.6–618.3 µs | 455.6–461.5 µs |
+| `nsh-engine` `GridRust.tsx` | First frame core min | 934.3–956.0 µs | 801.8–836.0 µs |
+| `nsh-engine` `RowsTs.tsx` / `RowsRust.tsx` | First frame core min | 117.0–118.5 / 138.2–140.2 µs | 102.6–109.8 / 125.3–127.4 µs |
+| `nsh-base` `bench_large_document` (1.9 MB, 34,326 blocks) | Mount culling off / on | 789.1–800.7 / 735.9–767.4 ms | 637.4–644.9 / 653.3–670.2 ms |
+| `examples/bench/PositionalClasses.tsx` (release `--trace`) | First commit median (range) | 1,918 µs (1,563–2,314) | 954 µs (823–1,225) |
+
+The debug `examples/counter/App.tsx --trace` control keeps 56 ops, 50 mount items, and 15 nodes with every mount item identical (`Node` record stays at 600 B).
+
 Sibling position classes looked at once per parent (`core/classes.rs`, 2026-11-23, macOS arm64, release, the change on
 `cc19b8b38` against `main` at `2c17143e7`): every child inserted or removed ran `positions_changed` over all of its
 siblings at once (cloning the list and counting them), so mounting N rows with `odd:` or `last:` classes looked at
@@ -872,6 +901,105 @@ sends 2631 mount items instead of 2885 (no `ViewProps` set and set back in one c
   median ~5µs vs ~14µs in JS, commit ~15µs vs ~22µs. Scrolling a 1000-row `List` (avatar, two texts, a bound color)
   6000 pt: ~77µs vs ~150µs of JS per rebinding frame, commit ~205µs vs ~276µs.
 
+## Keyed children reordered (all platforms)
+
+Measured on an Apple silicon Mac (jason-macmini-lb) on 2026-11-26, debug, `main` at `d04027d7c` against the change.
+Reordering n keyed rows was O(n²) in the engine, in two places:
+
+- `Core::match_children` looked up each kept row (`NewChild::Kept`) and each keyed element in the old elements with
+  `Iterator::position`, comparing keys (`SharedString`). Rows still in order were found where the last one was, but
+  a reversed list searched them all for each row. The old elements are now indexed by key the first time one is not
+  where it was (`OldKeys`; up to 16 old elements are still searched in order).
+- `LayoutTree::remove_child` ran `Vec::retain` over the parent's layout children for each child moved or removed.
+  It now stops at the child and removes it.
+
+`cargo test -p nsh-core --lib bench_each_reverse -- --ignored --nocapture` (`FakeEngine`, no content culling): n
+rows of an `each` set to their reverse, then to the first row moved last, from the signal write to the finished
+`MountBatch`. Milliseconds a commit, median of 5; the mount items are the same before and after:
+
+| Rows | Row | Update | Before | After | Mount items |
+|---:|---|---|---:|---:|---:|
+| 1,000 | text | reverse | 16.61 | 6.50 | 2,999 |
+| 4,000 | text | reverse | 201.34 | 34.16 | 11,999 |
+| 8,000 | text | reverse | 772.06 | 92.25 | 23,999 |
+| 1,000 | text + view | reverse | 43.54 | 10.50 | 4,998 |
+| 4,000 | text + view | reverse | 610.30 | 79.42 | 19,998 |
+| 8,000 | text + view | reverse | 2,425.50 | 272.95 | 39,998 |
+| 8,000 | text | control: first row moved last | 37.05 | 38.68 | 16,001 |
+| 8,000 | text + view | control: first row moved last | 53.18 | 55.96 | 24,002 |
+
+The control builds the index once (its last row is not where it was), about 4% more in debug.
+
+On macOS, with the leaf list change (#3377) applied, `NSH_LEAF_BENCH_ONLY=1` (`tests/native/mount.rs`,
+`leaf_bench`: n keyed texts in one plain view, each step timed until the leaf layers show it), three runs per size,
+medians, run at normal priority. Wall time in milliseconds, main thread CPU in brackets:
+
+| Leaves | Step | Before | After |
+|---:|---|---:|---:|
+| 1,000 | reverse | 51.3 (37.5) | 41.3 (37.4) |
+| 4,000 | reverse | 338.0 (158.2) | 171.5 (149.6) |
+| 8,000 | reverse | 1,056.5 (373.3) | 375.1 (311.1) |
+| 4,000 | clear | 83.1 (29.7) | 33.6 (26.9) |
+| 8,000 | clear | 270.1 (75.2) | 71.5 (57.1) |
+| 8,000 | mount (control) | 765.5 (621.3) | 765.6 (622.5) |
+| 8,000 | prepend (control) | 96.7 (79.7) | 99.6 (80.6) |
+
+Reverse now grows linearly. Clear is faster too: each removed leaf no longer ran `retain` over its parent's layout
+children.
+
+## End-to-end jank: startup and frame gaps (all desktops)
+
+The micro-benchmarks above time the work of a commit. They cannot see a frame that waits without working, as in
+#3365 (a new window waited out a 250 ms timeout on every launch), or a long frame in the middle of a scroll.
+`examples/bench/jank/` measures those from the outside, on the platform's development host:
+
+```sh
+python3 examples/bench/jank/jank.py              # against baseline.json; exits 1 over budget
+python3 examples/bench/jank/jank.py --stall 150  # the app blocks 150 ms before it mounts: must fail
+python3 examples/bench/jank/jank.py --runs 5 --write  # record this platform's baseline
+```
+
+What it measures, and when it fails:
+
+| Metric | What | Fails when |
+|---|---|---|
+| `startup_ms` | `open()` of a TSX app to its window on screen with the first rows (median of the runs) | baseline + 100 ms |
+| `frame_p95_ms` / `frame_max_ms` | main-thread time per drawn frame, the worst second's p95 and the max | p95 > 8.3 ms |
+| `gap_p50_ms` / `gap_p95_ms` / `gap_max_ms` | time between drawn frames while three loops animate, then while a 10,000-row List scrolls | p50 > one refresh + 1 ms, max > 50 ms |
+
+The frame cost budget is 8.3 ms, one refresh at 120 Hz, whatever the display's rate. Gaps follow the display: they
+are one refresh when nothing is dropped. Run it from a terminal (or `tools/interactive.sh` on an agent host): at
+background priority macOS stretches the main thread's timers, and the gaps measured are the scheduler's, not NSH's.
+
+Baseline, macOS (2026-11-26, Apple M6, `nsh 0.6.0` nightly 2026-11-24, debug development host, 800×600 window, 5
+runs; the screen was locked, so the display link ran at about 45 Hz, not the display's 60):
+
+| Scenario | Startup | Frame p95 / max | Gap p50 / p95 / max | Over one refresh |
+|---|---:|---:|---:|---:|
+| Launch | 576 ms (564–596) | | | |
+| Animation (3 loops) | | 0.60 / 0.65 ms | 22.3 / 26.0 / 28.4 ms | 0% |
+| List scroll (10,000 rows) | | 3.37 / 4.01 ms | 21.4 / 27.5 / 29.5 ms | 0% |
+
+The gate, checked: with `--stall 150` startup is 744 ms (730–779) and the run fails with
+`FAIL startup 744 ms > baseline 576 ms + 100 ms`; without it, 584 ms passes.
+
+Baseline, Linux (2026-11-26, Intel Core Ultra 7 270K Plus, Hyprland on Wayland, 60 Hz display, `nsh 0.7.1` (f78eace),
+5 runs at nice 0 on an idle machine):
+
+| Scenario | Startup | Frame p95 / max | Gap p50 / p95 / max | Over one refresh |
+|---|---:|---:|---:|---:|
+| Launch | 575 ms (563–595) | | | |
+| Animation (3 loops) | | 1.62 / 2.57 ms | 16.7 / 17.1 / 19.2 ms | 0% |
+| List scroll (10,000 rows) | | 2.24 / 3.71 ms | 16.7 / 17.4 / 18.4 ms | 0% |
+
+The gate, checked: with `--stall 150` startup is 732 ms and the run fails with `FAIL startup ... > baseline + 100 ms`.
+Run it on an idle machine: a first Linux run taken while parallel cargo builds kept the load at 18–20 measured the
+scroll's p95 frame cost at about 10 ms and failed the 8.3 ms budget, against 2.24 ms idle.
+
+Not covered yet: the Rust app's startup (the #3365 probe, a Rust app whose window content is in the commit that
+opens it, timed 783 ms median after the fix against 962 ms before it on the same host, debug), and p99: the monitor's
+line gives each second's p50 / p95 / max, so the worst p95 and the max stand in for it.
+
 ## Views made over frames (all platforms)
 
 A list row bound in the overscan, or a long reply staged into a chat, used to make its whole subtree in one batch:
@@ -1453,6 +1581,34 @@ native hierarchy. At 8,600 rows it showed no improvement: release 3903.0 → 396
 18103.7 → 17985.3 ms (three-run medians). Most initial insertions specify a sibling and do not
 use the append path. These are not first-paint timings. GPU/power and engine trace item counts
 were not measured; interactive-priority execution was unavailable in this session.
+
+## macOS leaf list clear and reorder
+
+Measured on an Apple silicon Mac (jason-macmini-lb) on 2026-11-26, debug, `7f72e2385`
+against the change that compacts a parent's leaf list once per batch and orders it from its
+layers when read. `NSH_LEAF_BENCH_ONLY=1` (`tests/native/mount.rs`, `leaf_bench`) mounts n texts
+with no listener (#2066 leaves: layers in their parent's leaf layer, no `NSView` in the
+hierarchy) in one plain view, then reverses them, adds one in front and clears them; each step
+is timed until the leaf layers show it. Three runs per size, medians, run through the hub's
+interactive launcher (normal priority). Main thread CPU in milliseconds, wall time in brackets.
+
+| Leaves | Step | Before main CPU (wall) | After main CPU (wall) |
+| --- | --- | --- | --- |
+| 1,000 | clear | 9.5 (14.8) | 6.5 (11.8) |
+| 4,000 | clear | 79.3 (133.3) | 29.5 (83.1) |
+| 8,000 | clear | 275.6 (471.2) | 75.3 (272.6) |
+| 1,000 | reverse | 44.2 (58.7) | 37.4 (51.3) |
+| 4,000 | reverse | 273.2 (457.6) | 158.0 (340.5) |
+| 8,000 | reverse | 842.4 (1538.3) | 372.8 (1064.5) |
+| 8,000 | mount | 627.7 (773.9) | 620.9 (764.1) |
+| 8,000 | prepend | 80.0 (97.2) | 79.5 (97.1) |
+
+Before, each leaf that left scanned and shifted its parent's list (`retain`) and each insert
+searched it for `before`: clearing or reordering n leaves was O(n²) on the main thread. Clear is
+now linear on the main thread. What remains of reverse grows with n² outside the platform: a
+`sample` of the 8,000-leaf reverse shows the engine's keyed `match_children` (`Iterator::position`
+over the old children per key). Only the platform changed, so the mount batches and their item
+counts are the same before and after.
 
 ## Windows painter culling
 

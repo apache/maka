@@ -181,7 +181,7 @@ view()
 | `onContextMenu` | `.on_context_menu` | `ContextMenuEvent` | A context menu was asked for over the view: the secondary button, the keyboard in the browser or a screen reader on macOS and Windows ([context menus](./index.md#context-menus)). |
 | `onFileDragEnter` | `.on_file_drag_enter` | `{ uris: string[], mimeTypes: string[] }` (`FileDragEvent`) | A local-file drag entered the active desktop destination with its offered file list and their types. |
 | `onFileDragLeave` | `.on_file_drag_leave` | none | A local-file drag left the active desktop destination. |
-| `onFileDrop` | `.on_file_drop` | `{ uris: string[], mimeTypes: string[] }` (`FileDropEvent`) | Local files or directories were dropped on the destination (desktops, iOS and Android). |
+| `onFileDrop` | `.on_file_drop` | `{ uris: string[], mimeTypes: string[], pagePosition? }` (`FileDropEvent`) | Local files or directories were dropped on the destination (desktops, iOS, Android and the Web). |
 | `onLayout` | `.on_layout` | `{ bounds }` (`Bounds<Points>`) | The frame relative to the parent changed. |
 | `onPanStart` / `onPanEnd` | `.on_pan_start` / `.on_pan_end` | `PanEvent` | A drag bound with `pan` started / ended; `cancelled` is true when the system cancels it. |
 | `onPinchStart` / `onPinchEnd` | `.on_pinch_start` / `.on_pinch_end` | `{ scale, velocity }` | A pinch bound with `pinch` started / ended. |
@@ -199,6 +199,11 @@ non-ASCII characters. Parse the URL to obtain a filesystem path rather than remo
 names none, a directory for instance, as the DOM's `File.type`. It is the same on every platform, and no file is read
 to give it.
 
+`onFileDrop` also gives `pagePosition`: where the files were let go, in the same coordinates as a mouse event's
+`pagePosition` (the window's root view, in points), so an editor can put what it makes of them at the drop point
+rather than at its caret. AppKit, GTK, Win32, iOS, Android and the Web give it; on the GPUI backend it is absent
+(`None` in Rust).
+
 Use the entry list to preview filenames, counts or kinds before release ("Release to add 2 images"). It contains metadata only; validate the files
 again at drop time. AppKit resolves Finder file references to path URLs. GTK reports entry when its asynchronous
 file-list preload finishes, including when the pointer stays still, and ignores completion after leave or reset.
@@ -211,6 +216,16 @@ gives `uris: []` with the promised files' `mimeTypes`, and `onFileDrop` gives `u
 `files` (the same `{ file, name, type, size, status }` entries as on the Web and `Picker.pickFiles`), in the drag's
 order, with `pagePosition`. NSH writes them to a temporary folder and removes it once they are read. A drag that also
 carries file URLs, such as the screenshot thumbnail, drops its `uris` as above.
+
+On AppKit, a drag that carries a picture as image data is taken too. Chat apps and other apps drag pictures this way,
+either alone or next to the URL of a file in their own container that your app cannot read. Such a drag often
+offers only the generic drag operation, not a copy, and NSH accepts it. It drops like promised files:
+`onFileDragEnter` gives `uris: []` with the pictures' `mimeTypes`, and `onFileDrop` gives `uris: []` and `files`, in
+the drag's order, with `pagePosition`. Each picture keeps its type, except TIFF and BMP, which become PNG. It is
+named after the file next to it, or `image-<n>` when there is none. Readable files in the same drag are read into
+`files` as well, and directories are left out. When every item is a file your app can read, or a file with no
+picture next to it, the drag drops its `uris` as above. A drag that promises files drops those files instead of its
+pictures.
 
 On iOS (and iPadOS), a view with `onFileDrop` takes the files of a drag, such as images and documents dragged from Photos,
 Files, Safari or the app's own web views. The closest view
@@ -273,8 +288,8 @@ view()
 
 The closest enabled ancestor listening to `onFileDrop` receives the drop. A modal root bounds that search. `disabled`
 removes file-drag/drop listeners; leaving, cancellation, completion and destination removal clear the active state.
-Acceptance uses the Copy operation and mounted native state. The app decides whether to read, open or transfer the
-received files.
+Acceptance uses the Copy operation (on AppKit, the generic operation when the source offers no copy) and mounted
+native state. The app decides whether to read, open or transfer the received files.
 
 Text inputs belong to the destination around them: files dropped on an input's text reach that destination as
 anywhere else in it, with the same enter and leave events, and the input keeps its text as it was. Text dragged

@@ -72,6 +72,12 @@ pub(crate) struct Surfaces {
     shown: Option<usize>,
 }
 
+// SAFETY: IOSurfaces are kernel objects any thread may use (Core Video and
+// Metal hand them between threads); a view's surfaces move to the render
+// thread of its GPU views (`crate::gpu`) whole, behind a mutex, and are
+// used by one thread at a time.
+unsafe impl Send for Surfaces {}
+
 /// No surface can be made: the device is not Metal's, or IOSurface refused
 /// (the view reads its frames back then).
 #[derive(Debug)]

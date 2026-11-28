@@ -359,6 +359,7 @@ async fn source_fixture(f: &Fixture) -> super::super::Source {
         session: "session".into(),
         revision: revision(),
         accepted: AcceptedModel {
+            input_limit: None,
             service_tier: None,
             binding: f.binding.clone(),
             thinking_level: None,

@@ -86,7 +86,8 @@ fn nested_borders_own_distinct_cells_and_clip_descendant_canvas() {
     assert!(!banded(buffer, 3, 3), "the band stays inside the border");
     assert!(banded(buffer, 4, 4), "the inner box's band");
     assert_eq!(buffer[(4, 4)].bg, Color::Reset);
-    assert_eq!(buffer[(5, 5)].symbol(), "⣿");
+    assert_eq!(buffer[(5, 5)].symbol(), " ");
+    assert_ne!(buffer[(5, 5)].bg, Color::Reset);
     for y in 3..7 {
         assert_eq!(buffer[(2, y)].symbol(), "│");
         assert_eq!(buffer[(13, y)].symbol(), "│");

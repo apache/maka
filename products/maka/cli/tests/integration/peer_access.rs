@@ -18,6 +18,7 @@
  */
 
 use crate::host_support as fixture;
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 
 use iroh::{Endpoint, EndpointAddr, EndpointId, RelayMode, RelayUrl, SecretKey, endpoint::presets};
 use iroh_relay::server::{RelayConfig, Server, ServerConfig};
@@ -37,10 +38,12 @@ use maka_host_runtime::{
     ipc::LocalListener,
 };
 use maka_packages::Package;
+use maka_remote_client::{PendingPairing, SavedHosts};
 use maka_remote_pairing::{
     DeviceIdentity, HOST_IDENTITY_FILE, RelayEndpoint, SAS_EXPORTER_LABEL, SignedPairingTicket,
-    derive_handshake_sas, parse_peer_id,
+    default_host_name, derive_handshake_sas, parse_peer_id,
 };
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
@@ -53,6 +56,33 @@ use tokio::{io::join, sync::mpsc, time::timeout};
 use tokio_util::sync::CancellationToken;
 
 const ALPN: &[u8] = b"maka/host/v1";
+
+// The published iOS v1 decoder rejects extra fields before checking the signature.
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct LegacyTicket {
+    version: u8,
+    root_id: String,
+    host_name: String,
+    host_peer_id: String,
+    relays: Vec<RelayEndpoint>,
+    #[serde(default)]
+    direct_endpoints: Vec<String>,
+    invite_id: String,
+    invite_secret: String,
+    expires_at_ms: u64,
+}
+
+fn legacy_ticket_payload(uri: &str) -> LegacyTicket {
+    let envelope = URL_SAFE_NO_PAD
+        .decode(uri.strip_prefix("maka://pair/v1?payload=").unwrap())
+        .unwrap();
+    let envelope: Value = serde_json::from_slice(&envelope).unwrap();
+    let signed_bytes = URL_SAFE_NO_PAD
+        .decode(envelope["payload"].as_str().unwrap())
+        .unwrap();
+    serde_json::from_slice(&signed_bytes).expect("new invitations must decode on a v1-only iPhone")
+}
 
 pub(super) async fn open_host(sandbox: &fixture::Sandbox) -> Arc<Host> {
     let path = sandbox.root.clone();
@@ -240,6 +270,39 @@ async fn host_access_invite_redeems_over_the_running_hosts_advertised_relay() {
             SignedPairingTicket::parse_and_verify_uri(invite["uri"].as_str().unwrap(), now)
                 .unwrap();
         let payload = ticket.payload();
+        assert_eq!(payload.host_name, "Live Host");
+        let legacy = legacy_ticket_payload(invite["uri"].as_str().unwrap());
+        assert_eq!(legacy.version, 1);
+        assert_eq!(
+            serde_json::to_value(legacy).unwrap(),
+            serde_json::to_value(payload).unwrap()
+        );
+        let default = json_output(access("invite").output().await.unwrap());
+        let default_ticket =
+            SignedPairingTicket::parse_and_verify_uri(default["uri"].as_str().unwrap(), now)
+                .unwrap();
+        assert_eq!(default_ticket.payload().host_name, default_host_name());
+
+        // A newer phone can also pair against a v1-only Host endpoint. It must
+        // not send a metadata query on this connection.
+        let new_phone = DeviceIdentity::generate().unwrap();
+        let saved = SavedHosts::load(sandbox.directory.path().join("hosts.json")).unwrap();
+        let (pending, old_host_connection) = tokio::join!(
+            PendingPairing::begin(
+                &new_phone,
+                default["uri"].as_str().unwrap(),
+                now,
+                None,
+                &saved
+            ),
+            async { endpoint.accept().await.unwrap().await.unwrap() },
+        );
+        let pending = pending.unwrap();
+        assert_eq!(pending.platform(), None);
+        assert_eq!(old_host_connection.alpn(), ALPN);
+        drop(pending);
+        drop(old_host_connection);
+
         let host_key = parse_peer_id(&payload.host_peer_id).unwrap();
         assert_eq!(host_key, host.device_identity().public_key());
         assert_ne!(host_key, backup_id);

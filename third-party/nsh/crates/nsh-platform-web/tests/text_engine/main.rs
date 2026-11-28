@@ -57,4 +57,5 @@ mod ffi {
 
 mod clamp;
 mod edits;
+mod line_box;
 mod register_font;

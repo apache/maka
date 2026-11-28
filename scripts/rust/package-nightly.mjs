@@ -18,6 +18,7 @@
  */
 
 import { execFile, execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { constants, existsSync } from 'node:fs';
 import {
   appendFile,
@@ -70,9 +71,35 @@ export const NIGHTLY_TARGETS = {
   },
 };
 
+const STABLE_SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/u;
+
+export function assertChannel(channel, version) {
+  if (channel !== 'nightly' && channel !== 'release') {
+    throw new Error('Unsupported distribution channel: ' + channel);
+  }
+  if (channel === 'release' && !STABLE_SEMVER.test(version ?? '')) {
+    throw new Error('Release channel requires a stable X.Y.Z SemVer version; got ' + version);
+  }
+}
+
+export function artifactNames(target, channel = 'nightly', version = null) {
+  const info = NIGHTLY_TARGETS[target];
+  if (!info) throw new Error('Unsupported target: ' + target);
+  assertChannel(channel, version);
+  if (channel === 'nightly') {
+    return { archiveName: info.archiveName, installerName: info.installerName };
+  }
+  const replace = (name) => name?.replace(/^Maka-nightly-/, 'Maka-' + version + '-');
+  return {
+    archiveName: replace(info.archiveName),
+    installerName: replace(info.installerName),
+  };
+}
+
 const LEGAL_FILES = ['DISCLAIMER', 'LICENSE', 'NOTICE'];
 
-function localLinuxInstallScript() {
+export function localLinuxInstallScript(channel = 'nightly') {
+  const isRelease = channel === 'release';
   return [
     '#!/usr/bin/env sh',
     'set -eu',
@@ -92,30 +119,47 @@ function localLinuxInstallScript() {
     '[Desktop Entry]',
     'Type=Application',
     'Name=Maka',
-    'Comment=Apache Maka (incubating) Nightly developer build',
+    isRelease
+      ? 'Comment=Apache Maka (incubating)'
+      : 'Comment=Apache Maka (incubating) Nightly developer build',
     'Exec=$INSTALL_DIR/maka-desktop-shell',
     'Icon=org.apache.maka.desktop',
     'Terminal=false',
     'Categories=Development;Utility;',
     'StartupWMClass=org.apache.maka.desktop',
     'EOF',
-    'echo "Installed Maka (unofficial nightly build) to $INSTALL_DIR"',
+    isRelease
+      ? 'echo "Installed Apache Maka (incubating) to $INSTALL_DIR"'
+      : 'echo "Installed Maka (unofficial nightly build) to $INSTALL_DIR"',
     'echo "CLI symlink: $BIN_DIR/maka"',
     '',
   ].join('\n');
 }
 
-export function renderInnoSetupScript({ sourceDir, outputDir, setupBaseName, version, iconPath }) {
+export function renderInnoSetupScript({
+  sourceDir,
+  outputDir,
+  setupBaseName,
+  version,
+  iconPath,
+  channel = 'nightly',
+}) {
+  assertChannel(channel, version);
+  const isRelease = channel === 'release';
   const esc = (value) => String(value).replaceAll('{', '{{').replaceAll('"', '""');
   const numericVersion = /^[0-9]+\.[0-9]+\.[0-9]+/u.exec(version)?.[0] ?? '0.0.0';
   return [
-    '; Apache Maka (incubating) Nightly per-user installer (Inno Setup 6).',
+    isRelease
+      ? '; Apache Maka (incubating) per-user installer (Inno Setup 6).'
+      : '; Apache Maka (incubating) Nightly per-user installer (Inno Setup 6).',
     '[Setup]',
     'AppId=org.apache.maka.desktop',
     'AppName=Maka',
     'AppVersion=' + esc(version),
     'VersionInfoVersion=' + numericVersion,
-    'AppVerName=Maka ' + esc(version) + ' (Nightly - Unofficial Developer Build)',
+    isRelease
+      ? 'AppVerName=Maka ' + esc(version) + ' (incubating)'
+      : 'AppVerName=Maka ' + esc(version) + ' (Nightly - Unofficial Developer Build)',
     'DefaultDirName={localappdata}\\Programs\\Maka',
     'UninstallFilesDir={localappdata}\\Programs\\Maka-Uninstall',
     'DefaultGroupName=Maka',
@@ -133,7 +177,7 @@ export function renderInnoSetupScript({ sourceDir, outputDir, setupBaseName, ver
     'CloseApplications=force',
     'ChangesEnvironment=yes',
     'UninstallDisplayIcon={app}\\maka-desktop-shell.exe',
-    'UninstallDisplayName=Maka (Nightly)',
+    isRelease ? 'UninstallDisplayName=Maka' : 'UninstallDisplayName=Maka (Nightly)',
     ...(iconPath ? ['SetupIconFile=' + esc(iconPath)] : []),
     '',
     '[Tasks]',
@@ -220,7 +264,7 @@ async function copyLegal(repositoryRoot, noticesPath, destDir) {
   await copyFile(resolve(noticesPath), join(destDir, 'THIRD_PARTY_NOTICES.txt'));
 }
 
-async function createMacDmg(appBundlePath, dmgPath) {
+async function createMacDmg(appBundlePath, dmgPath, volumeName = 'Maka Nightly') {
   const staging = await mkdtemp(join(tmpdir(), 'maka-dmg-'));
   try {
     execFileSync('/usr/bin/ditto', [appBundlePath, join(staging, 'Maka.app')], {
@@ -230,17 +274,7 @@ async function createMacDmg(appBundlePath, dmgPath) {
     await rm(dmgPath, { force: true });
     execFileSync(
       '/usr/bin/hdiutil',
-      [
-        'create',
-        '-volname',
-        'Maka Nightly',
-        '-srcfolder',
-        staging,
-        '-ov',
-        '-format',
-        'UDZO',
-        dmgPath,
-      ],
+      ['create', '-volname', volumeName, '-srcfolder', staging, '-ov', '-format', 'UDZO', dmgPath],
       {
         stdio: 'inherit',
       },
@@ -289,12 +323,14 @@ export async function packageNightly({
   binary,
   notices,
   output,
+  channel = 'nightly',
   repositoryRoot = repositoryRootDefault,
   skipDmg = false,
   smoke = false,
 }) {
   const info = NIGHTLY_TARGETS[target];
-  if (!info) throw new Error('Unsupported nightly target: ' + target);
+  if (!info) throw new Error('Unsupported target: ' + target);
+  const { archiveName, installerName } = artifactNames(target, channel, version);
   const binDir = dirname(resolve(binary));
   const outDir = resolve(output);
   await mkdir(outDir, { recursive: true });
@@ -328,12 +364,13 @@ export async function packageNightly({
         });
       }
       if (!skipDmg) {
-        const dmgPath = join(outDir, info.installerName);
-        await createMacDmg(appPath, dmgPath);
+        const dmgPath = join(outDir, installerName);
+        const volumeName = channel === 'release' ? 'Maka ' + version : 'Maka Nightly';
+        await createMacDmg(appPath, dmgPath, volumeName);
         notarizeAndStapleMac(dmgPath, appPath);
         produced.push(dmgPath);
       }
-      const tarPath = join(outDir, info.archiveName);
+      const tarPath = join(outDir, archiveName);
       execFileSync('/usr/bin/tar', ['-czf', tarPath, '-C', stage, 'Maka.app'], {
         env: { ...process.env, COPYFILE_DISABLE: '1' },
         stdio: 'inherit',
@@ -358,9 +395,9 @@ export async function packageNightly({
         });
       }
       const installScript = join(dir, 'install.sh');
-      await writeFile(installScript, localLinuxInstallScript(), 'utf8');
+      await writeFile(installScript, localLinuxInstallScript(channel), 'utf8');
       await chmod(installScript, 0o755);
-      const tarPath = join(outDir, info.archiveName);
+      const tarPath = join(outDir, archiveName);
       execFileSync('tar', ['-czf', tarPath, '-C', stage, 'maka'], { stdio: 'inherit' });
       produced.push(tarPath);
     } else if (info.os === 'win32') {
@@ -383,7 +420,7 @@ export async function packageNightly({
           worker: join(dir, 'maka-python-worker.exe'),
         });
       }
-      const zipPath = join(outDir, info.archiveName);
+      const zipPath = join(outDir, archiveName);
       if (process.platform === 'win32') {
         execFileSync(windowsTarExecutable(), ['-a', '-cf', zipPath, '-C', stage, 'Maka'], {
           stdio: 'inherit',
@@ -395,7 +432,7 @@ export async function packageNightly({
 
       const issPath = join(stage, 'Maka.iss');
       const iconPath = join(repositoryRoot, 'products/maka/desktop-shell/maka.ico');
-      const setupBaseName = info.installerName.replace(/\.exe$/iu, '');
+      const setupBaseName = installerName.replace(/\.exe$/iu, '');
       await writeFile(
         issPath,
         renderInnoSetupScript({
@@ -404,6 +441,7 @@ export async function packageNightly({
           setupBaseName,
           version,
           iconPath: existsSync(iconPath) ? iconPath : null,
+          channel,
         }),
         'utf8',
       );
@@ -413,7 +451,7 @@ export async function packageNightly({
           throw new Error('Inno Setup compiler (ISCC.exe) not found on Windows build host');
         }
         execFileSync(iscc, ['/Qp', issPath], { stdio: 'inherit' });
-        produced.push(join(outDir, info.installerName));
+        produced.push(join(outDir, installerName));
       }
     }
     const releaseNoticesPath = join(outDir, `THIRD_PARTY_NOTICES-${target}.txt`);
@@ -431,11 +469,14 @@ export async function packNightlyNpmPlatform({
   binary,
   notices,
   output,
-  tag = 'nightly',
+  channel = 'nightly',
+  tag,
   repositoryRoot = repositoryRootDefault,
 }) {
   const info = NIGHTLY_TARGETS[target];
   if (!info) throw new Error('Unsupported npm target: ' + target);
+  assertChannel(channel, version);
+  const distTag = tag ?? (channel === 'release' ? 'latest' : 'nightly');
   const binDir = dirname(resolve(binary));
   const outDir = resolve(output);
   await mkdir(outDir, { recursive: true });
@@ -458,15 +499,26 @@ export async function packNightlyNpmPlatform({
 
     await copyLegal(repositoryRoot, notices, pkgDir);
     const disclaimer = await readFile(join(pkgDir, 'DISCLAIMER'), 'utf8');
-    const readme = [
-      '# `@maka-agent/cli-' + target + '`',
-      '',
-      '> **Unofficial Developer Nightly Build — Not an Apache Software Foundation Release.**',
-      '> Provided strictly for developer testing. Not approved by an ASF release vote.',
-      '',
-      disclaimer.trim(),
-      '',
-    ].join('\n');
+    const readme =
+      channel === 'release'
+        ? [
+            '# `@maka-agent/cli-' + target + '`',
+            '',
+            'Pre-built convenience native binary for Apache Maka (incubating) (' + target + ').',
+            'The official ASF release is the signed source archive at https://maka.apache.org/en/downloads/.',
+            '',
+            disclaimer.trim(),
+            '',
+          ].join('\n')
+        : [
+            '# `@maka-agent/cli-' + target + '`',
+            '',
+            '> **Unofficial Developer Nightly Build — Not an Apache Software Foundation Release.**',
+            '> Provided strictly for developer testing. Not approved by an ASF release vote.',
+            '',
+            disclaimer.trim(),
+            '',
+          ].join('\n');
     await writeFile(join(pkgDir, 'README.md'), readme, 'utf8');
 
     if (info.os === 'darwin') {
@@ -494,9 +546,11 @@ export async function packNightlyNpmPlatform({
           name,
           version,
           description:
-            'Unofficial developer nightly build of Apache Maka (incubating) for ' +
-            target +
-            '; NOT an ASF release',
+            channel === 'release'
+              ? 'Native CLI convenience binary for Apache Maka (incubating) (' + target + ')'
+              : 'Unofficial developer nightly build of Apache Maka (incubating) for ' +
+                target +
+                '; NOT an ASF release',
           license: 'Apache-2.0',
           repository: { type: 'git', url: 'https://github.com/apache/maka.git' },
           os: [info.os],
@@ -507,7 +561,7 @@ export async function packNightlyNpmPlatform({
           publishConfig: {
             access: 'public',
             registry: 'https://registry.npmjs.org/',
-            tag,
+            tag: distTag,
           },
         },
         null,
@@ -534,9 +588,12 @@ export async function packNightlyNpmLaunchers({
   version,
   output,
   targets = Object.keys(NIGHTLY_TARGETS),
-  tag = 'nightly',
+  channel = 'nightly',
+  tag,
   repositoryRoot = repositoryRootDefault,
 }) {
+  assertChannel(channel, version);
+  const distTag = tag ?? (channel === 'release' ? 'latest' : 'nightly');
   const outDir = resolve(output);
   await mkdir(outDir, { recursive: true });
   const disclaimer = await readFile(join(repositoryRoot, 'DISCLAIMER'), 'utf8');
@@ -570,7 +627,9 @@ export async function packNightlyNpmLaunchers({
             name: '@maka-agent/cli',
             version,
             description:
-              'Unofficial developer nightly build of Apache Maka (incubating); NOT an ASF release',
+              channel === 'release'
+                ? 'Platform launcher for Apache Maka (incubating) CLI'
+                : 'Unofficial developer nightly build of Apache Maka (incubating); NOT an ASF release',
             license: 'Apache-2.0',
             type: 'module',
             engines: { node: '>=24.0.0' },
@@ -581,7 +640,7 @@ export async function packNightlyNpmLaunchers({
             publishConfig: {
               access: 'public',
               registry: 'https://registry.npmjs.org/',
-              tag,
+              tag: distTag,
             },
           },
           null,
@@ -634,7 +693,9 @@ export async function packNightlyNpmLaunchers({
             name: 'maka-agent',
             version,
             description:
-              'Alias for @maka-agent/cli (unofficial developer nightly build; NOT an ASF release)',
+              channel === 'release'
+                ? 'CLI alias for @maka-agent/cli (Apache Maka, incubating)'
+                : 'Alias for @maka-agent/cli (unofficial developer nightly build; NOT an ASF release)',
             license: 'Apache-2.0',
             type: 'module',
             engines: { node: '>=24.0.0' },
@@ -645,7 +706,7 @@ export async function packNightlyNpmLaunchers({
             publishConfig: {
               access: 'public',
               registry: 'https://registry.npmjs.org/',
-              tag,
+              tag: distTag,
             },
           },
           null,
@@ -726,16 +787,38 @@ async function assembleNotices(repositoryRoot, v8NoticesText, outPath) {
   await writeFile(outPath, [baseNotices, v8NoticesText, rustNotices].join('\n\n'), 'utf8');
 }
 
+export function releaseBuildEnv({
+  baseEnv = process.env,
+  v8Env = {},
+  channel = 'nightly',
+  version,
+}) {
+  assertChannel(channel, version);
+  return {
+    ...baseEnv,
+    ...v8Env,
+    MAKA_UPDATE_CHANNEL: channel,
+    MAKA_BUILD_VERSION: version,
+    MAKA_NATIVE_PACKAGE_VERSION: version,
+    ...(baseEnv.MAKA_UPDATE_PUBLIC_KEY
+      ? { MAKA_UPDATE_PUBLIC_KEY: baseEnv.MAKA_UPDATE_PUBLIC_KEY }
+      : {}),
+    ...(baseEnv.MAKA_UPDATE_REPO ? { MAKA_UPDATE_REPO: baseEnv.MAKA_UPDATE_REPO } : {}),
+  };
+}
+
 export async function buildAndPackageNightly({
   target,
   version,
   output,
+  channel = 'nightly',
   npmOutput,
   v8Output,
   repositoryRoot = repositoryRootDefault,
 }) {
   const info = NIGHTLY_TARGETS[target];
-  if (!info) throw new Error('Unsupported nightly target: ' + target);
+  if (!info) throw new Error('Unsupported distribution target: ' + target);
+  assertChannel(channel, version);
   const triple = rustTarget(info.os, info.cpu);
   const stage = await mkdtemp(join(tmpdir(), 'maka-nightly-build-'));
   try {
@@ -758,16 +841,12 @@ export async function buildAndPackageNightly({
       metadata,
     });
 
-    const buildEnv = {
-      ...process.env,
-      ...v8.environment,
-      MAKA_UPDATE_CHANNEL: 'nightly',
-      MAKA_BUILD_VERSION: version,
-      ...(process.env.MAKA_UPDATE_PUBLIC_KEY
-        ? { MAKA_UPDATE_PUBLIC_KEY: process.env.MAKA_UPDATE_PUBLIC_KEY }
-        : {}),
-      ...(process.env.MAKA_UPDATE_REPO ? { MAKA_UPDATE_REPO: process.env.MAKA_UPDATE_REPO } : {}),
-    };
+    const buildEnv = releaseBuildEnv({
+      baseEnv: process.env,
+      v8Env: v8.environment,
+      channel,
+      version,
+    });
 
     const { binary } = await buildCli({
       profile: 'dist',
@@ -785,6 +864,7 @@ export async function buildAndPackageNightly({
       binary,
       notices: noticesPath,
       output,
+      channel,
       repositoryRoot,
       smoke: true,
     });
@@ -797,6 +877,7 @@ export async function buildAndPackageNightly({
         binary,
         notices: noticesPath,
         output: npmOutput,
+        channel,
         repositoryRoot,
       });
     }
@@ -831,12 +912,43 @@ export async function buildAndPackageNightly({
   }
 }
 
+export async function tarballIntegrity(filePath) {
+  const bytes = await readFile(filePath);
+  return 'sha512-' + createHash('sha512').update(bytes).digest('base64');
+}
+
+function isNpmNotFoundError(error) {
+  const combined = [error?.stdout, error?.stderr, error?.message]
+    .filter(Boolean)
+    .map((part) => String(part))
+    .join('\n');
+  return /\bE404\b/u.test(combined);
+}
+
+// npm 12 wraps `npm view ... --json` output in a single-element array while
+// npm 11 returns the bare scalar/object. Unwrap single-element arrays strictly
+// and reject unexpected multi-entry responses.
+function parseSingleNpmViewJson(raw, label) {
+  const parsed = JSON.parse(raw);
+  if (Array.isArray(parsed)) {
+    if (parsed.length === 0) return null;
+    if (parsed.length !== 1) {
+      throw new Error('Unexpected multi-entry npm view response for ' + label + ': ' + raw);
+    }
+    return parsed[0];
+  }
+  return parsed;
+}
+
 export async function publishNightlyNpm({
   directory,
   version,
   tag = 'nightly',
   provenance = false,
+  runNpm,
 }) {
+  const execNpm =
+    runNpm ?? ((args, options) => execFileSync('npm', args, npmSpawnOptions(options)));
   const dir = resolve(directory);
   const files = (await readdir(dir)).filter((f) => f.endsWith('.tgz'));
   const platformPackages = Object.keys(NIGHTLY_TARGETS)
@@ -852,22 +964,85 @@ export async function publishNightlyNpm({
     const pkgName = file.startsWith('maka-agent-cli-')
       ? '@maka-agent/cli' + file.slice('maka-agent-cli'.length, -('-' + version + '.tgz').length)
       : 'maka-agent';
+    const tarballPath = join(dir, file);
+    const localIntegrity = await tarballIntegrity(tarballPath);
+    let publishedIntegrity = null;
     try {
-      const existing = execFileSync(
-        'npm',
-        ['view', pkgName + '@' + version, 'version'],
-        npmSpawnOptions({ encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }),
+      const raw = String(
+        execNpm(['view', pkgName + '@' + version, 'dist.integrity', '--json'], {
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'pipe'],
+        }) ?? '',
       ).trim();
-      if (existing === version) {
-        console.log('Skipping already published ' + pkgName + '@' + version);
-        continue;
+      if (raw) {
+        const value = parseSingleNpmViewJson(raw, pkgName + '@' + version + ' dist.integrity');
+        if (value !== null) {
+          if (typeof value !== 'string' || !value) {
+            throw new Error(
+              'Unexpected npm dist.integrity response for ' + pkgName + '@' + version + ': ' + raw,
+            );
+          }
+          publishedIntegrity = value;
+        }
       }
-    } catch {
-      // Not published yet.
+    } catch (error) {
+      if (!isNpmNotFoundError(error)) {
+        throw error;
+      }
     }
-    const args = ['publish', join(dir, file), '--access', 'public', '--tag', tag];
+    if (publishedIntegrity !== null) {
+      if (publishedIntegrity !== localIntegrity) {
+        throw new Error(
+          'Already published ' +
+            pkgName +
+            '@' +
+            version +
+            ' has integrity ' +
+            publishedIntegrity +
+            ', expected ' +
+            localIntegrity +
+            '; refusing to skip mismatched artifact',
+        );
+      }
+      const rawTags = String(
+        execNpm(['view', pkgName, 'dist-tags', '--json'], {
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'pipe'],
+        }) ?? '',
+      ).trim();
+      const parsedTags = rawTags ? parseSingleNpmViewJson(rawTags, pkgName + ' dist-tags') : {};
+      if (!parsedTags || typeof parsedTags !== 'object' || Array.isArray(parsedTags)) {
+        throw new Error('Unexpected npm dist-tags response for ' + pkgName + ': ' + rawTags);
+      }
+      if (parsedTags[tag] !== version) {
+        throw new Error(
+          'Already published ' +
+            pkgName +
+            '@' +
+            version +
+            ' matches integrity, but dist-tag "' +
+            tag +
+            '" points to "' +
+            (parsedTags[tag] ?? '<unset>') +
+            '" instead of "' +
+            version +
+            '"',
+        );
+      }
+      console.log(
+        'Skipping already published ' +
+          pkgName +
+          '@' +
+          version +
+          ' (verified integrity and dist-tag ' +
+          tag +
+          ')',
+      );
+      continue;
+    }
+    const args = ['publish', tarballPath, '--access', 'public', '--tag', tag];
     if (provenance) args.push('--provenance');
-    execFileSync('npm', args, npmSpawnOptions({ stdio: 'inherit' }));
+    execNpm(args, { stdio: 'inherit' });
   }
   return ordered;
 }
@@ -881,6 +1056,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
         target: { type: 'string' },
         version: { type: 'string' },
         output: { type: 'string' },
+        channel: { type: 'string' },
         'npm-output': { type: 'string' },
         'v8-output': { type: 'string' },
       },
@@ -892,6 +1068,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
       target: values.target,
       version: values.version,
       output: values.output,
+      channel: values.channel ?? 'nightly',
       npmOutput: values['npm-output'],
       v8Output: values['v8-output'],
     });
@@ -902,6 +1079,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
       options: {
         version: { type: 'string' },
         output: { type: 'string' },
+        channel: { type: 'string' },
         tag: { type: 'string' },
       },
     });
@@ -915,11 +1093,13 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     if (presentTargets.length === 0) {
       throw new Error('No platform npm tarballs found for version ' + values.version);
     }
+    const channel = values.channel ?? 'nightly';
     const result = await packNightlyNpmLaunchers({
       version: values.version,
       output: values.output,
       targets: presentTargets,
-      tag: values.tag ?? 'nightly',
+      channel,
+      tag: values.tag,
     });
     console.log(JSON.stringify(result, null, 2));
   } else if (command === 'publish-npm') {

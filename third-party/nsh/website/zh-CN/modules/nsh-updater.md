@@ -44,7 +44,7 @@ interface UpdatePromptOptions {
 
 ```tsx
 promptForUpdate({ quiet: true }); // 启动时
-<Button onPress={() => promptForUpdate()}>Check for Updates…</Button>;
+<Button onPress={() => promptForUpdate()}><Text>Check for Updates…</Text></Button>;
 ```
 
 提示文字为英文。应用名称来自 `nsh.json` 的 `"name"`。
@@ -144,7 +144,10 @@ OTA（over-the-air，空中下发）更新把打包应用的 TSX 作为签名包
 ### checkForPackage
 
 ```ts
-function checkForPackage(options?: { locale?: string | null }): Promise<PackageUpdate | null>;
+function checkForPackage(options?: {
+  locale?: string | null;
+  url?: string | null;
+}): Promise<PackageUpdate | null>;
 
 interface PackageUpdate {
   version: string;
@@ -155,6 +158,8 @@ interface PackageUpdate {
 ```
 
 像 `checkForUpdate` 一样获取清单，当其中的包构建号比当前运行的更新（正在运行的包的构建号，否则是应用自带的构建号），并且当前运行时能运行它时，返回这个包。没有新包、应用没有信任任何包根密钥，或运行在不更新的环境（Web、`nsh run`）时返回 `null`。出错时与 `checkForUpdate` 一样拒绝。
+
+传入 `url` 时改为检查这个清单，前提是应用构建时配了 `"packages": { "source": "runtime" }`（见[运行时指定的更新源](../docs/ota-updates.md#运行时指定的更新源)）。签名仍按 `nsh.json` 里的密钥校验，和其他来源一样；`downloadPackage` 下载的是这次检查找到的包。应用没有 `"source": "runtime"`、URL 不是 HTTPS（配了 `"allowHttp": true` 时可以是明文 HTTP），或 URL 带用户名或密码时拒绝。配了 `"source": "runtime"` 又没有 `github` 或 `url` 的应用必须传 `url`。
 
 ### downloadPackage
 
@@ -270,6 +275,8 @@ export const install = () =>
 | `channels` | object | 频道名（字母、数字、`-`、`_`、`.`）到它的清单 HTTPS URL，供 `checkForUpdate({ channel })` 使用。需要 `publicKey` |
 | `publicKey` | string | 给清单签名（`latest.json.sig`）的 Ed25519 公钥。使用 `url` 或 `channels` 时必填 |
 | `packages.roots` | string[] | 根公钥（`nsh keygen` 的 `root.pub`），由它们认证的发布密钥为应用的 [OTA 包](#ota-更新)签名。没有它时应用不运行任何包 |
+| `packages.source` | `"runtime"` | 应用代码在每次检查时指定包清单：`checkForPackage({ url })`。需要 `publicKey`；`github` 和 `url` 可以不写 |
+| `packages.allowHttp` | boolean | 配合 `source: "runtime"`：更新源可以是明文 HTTP。它的签名、说明、包和重定向都限制在它的 origin 内 |
 
 `nsh package` 会校验这些键，并把它们连同应用的 `build` 放进包里，所以来源在构建应用时就已确定。`version` 必须是 semver。`nsh update-manifest` 为一个版本的压缩包和包生成 `latest.json` 和签名（[CLI](../docs/cli.md#nsh-update-manifest)）。
 

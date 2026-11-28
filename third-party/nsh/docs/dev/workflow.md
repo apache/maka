@@ -37,6 +37,21 @@ Details and examples: "Commits and pull requests" in `CONTRIBUTING.md`.
   "Scope: what NSH accepts"). A PR adding a new feature without a maintainer's agreement on an issue is flagged before its
   code is reviewed, and its review recommends closing it rather than polishing it.
 
+## Patch releases
+
+After publishing a patch release from `release/x.y`, check the workspace
+versions on `main`. If either is older than the release, raise it to at least
+the released version through a PR to `main` in the same release run. Update the
+workspace versions and local NSH dependency requirements in `Cargo.toml` and
+`crates/gpui/Cargo.toml`, keeping any newer version on `main`. Refresh the
+lockfiles at the root, in `crates/gpui`, and in `examples/embed-gpui` with
+`cargo update --workspace` in each directory.
+
+Wait for the PR checks and confirm that the version update has landed on
+`main` before closing out the release. Nightly builds use these versions,
+and Cargo only applies a nightly crate override if it satisfies the app's
+dependency requirement. The version sync needs no new tag or publication.
+
 ## CI
 
 The checks run on pull requests and on `main` every three hours when it moved (and on manual runs), not on every push to `main`: the

@@ -153,6 +153,21 @@ fn tab_layout() -> AnyElement {
 
 Each backend lists what it does its own way: [macOS](./macos.md#what-differs-on-macos), [Windows](./windows.md#what-differs-on-windows), [Linux](./linux.md#what-differs-on-linux), [GPUI](./gpui.md#differences), [TUI](./tui.md).
 
+## Calls a platform does not support
+
+A few calls have no desktop or browser counterpart yet. On those platforms the call does nothing, and the app logs one warning per kind of call, such as `linux: Share is not supported on this platform and is ignored`, so you see the gap during development instead of a silent no-op.
+
+| Call | macOS | Windows | Linux | GPUI | Web |
+|---|---|---|---|---|---|
+| Share sheet | yes | no | no | no | yes |
+| WebView `evaluate` | yes | no | no | no | no |
+| Pick a color from the screen | yes | no | no | no | yes |
+| Auth session (system sign-in sheet) | no | no | no | no | no |
+| Open the app's system settings | no | no | no | no | no |
+| Haptics, orientation lock, the edit menu | no | no | no | no | no |
+
+The table covers desktops and the web; the mobile-only calls in its last three rows are for [iOS](./ios.md) and [Android](./android.md). Check `platform.os` (TSX) or `os()` (Rust) before offering a feature the platform lacks, for example hide a Share button on Linux.
+
 ## See also
 
 - [Getting started](./getting-started.md): a first app, run on each platform.

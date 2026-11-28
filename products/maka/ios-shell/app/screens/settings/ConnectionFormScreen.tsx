@@ -30,10 +30,12 @@ import { tr } from '../../locale';
 import { GroupRow, InsetGroup } from '../../ui';
 import {
   connectionBasis,
+  type ConnectionCatalog,
   deleteCredential,
   readConnection,
   readCredential,
   saveCredential,
+  suggestConnection,
 } from '../../state/settings/models';
 import { credentialBasis, settingsRpc, settingsWork } from '../../state/settings/rpc';
 import { type } from '../../theme/tokens';
@@ -47,7 +49,7 @@ import {
 
 export type ConnectionTarget =
   | { connectionId: string }
-  | { provider: Identity; catalogRevision: number };
+  | { provider: Identity; catalog: ConnectionCatalog };
 
 export function ConnectionFormScreen(
   props: SettingsPageProps & {
@@ -99,6 +101,7 @@ export function ConnectionFormScreen(
       ? JSON.stringify(detail()!.editing.requestBodyOverlay, null, 2)
       : '';
   const load = async () => {
+    if (!connectionId && provider()) return;
     const facts = connectionId ? await readConnection(rpc, connectionId) : null;
     const identity = facts?.target.provider ?? ('provider' in target ? target.provider : undefined);
     if (!identity) throw new Error(tr('Connection is unavailable'));
@@ -112,8 +115,14 @@ export function ConnectionFormScreen(
     detail.set(facts);
     credential.set(stored);
     usage.set(storedUsage);
-    name.set(facts?.name ?? descriptor.descriptor.label);
-    slug.set(facts?.target.slug ?? identity.name);
+    const initial = facts
+      ? { name: facts.name, slug: facts.target.slug }
+      : suggestConnection(
+          descriptor,
+          (target as Extract<ConnectionTarget, { provider: Identity }>).catalog,
+        );
+    name.set(initial.name);
+    slug.set(initial.slug);
     baseUrl.set(String(configuration().baseUrl ?? ''));
     enabled.set(facts?.enabled ?? true);
     compaction.set(configuration().serverSideCompaction === true);
@@ -132,7 +141,15 @@ export function ConnectionFormScreen(
       overlay() !== initialOverlay());
   const save = () =>
     void work.run(async () => {
-      const body: unknown = overlay().trim() ? JSON.parse(overlay()) : null;
+      const source = overlay().trim();
+      let body: unknown = null;
+      if (source) {
+        try {
+          body = JSON.parse(source);
+        } catch (cause) {
+          throw new Error(tr('Enter a JSON object.'), { cause });
+        }
+      }
       if (body !== null && (typeof body !== 'object' || Array.isArray(body)))
         throw new Error(tr('Enter a JSON object.'));
       if (!name().trim()) throw new Error(tr('Enter a connection name.'));
@@ -153,7 +170,7 @@ export function ConnectionFormScreen(
           })
         : await rpc.mutate('settings', 'create', {
             expectedCatalogRevision: (target as Extract<ConnectionTarget, { provider: Identity }>)
-              .catalogRevision,
+              .catalog.revision,
             connection: {
               slug: slug().trim(),
               name: name().trim(),
@@ -164,7 +181,8 @@ export function ConnectionFormScreen(
               ...(body ? { requestBodyOverlay: body as Record<string, unknown> } : {}),
             },
           });
-      if (result.kind !== 'committed' || !result.connection) throw new Error(result.kind);
+      if (result.kind !== 'committed' || !result.connection)
+        throw new Error(tr('Could not read or update settings.'), { cause: result.kind });
       connectionId = result.connection.connectionId;
       props.onChanged();
       await load();
@@ -183,7 +201,8 @@ export function ConnectionFormScreen(
       const result = await rpc.mutate('settings', 'remove', {
         expected: connectionBasis(detail()!.target),
       });
-      if (result.kind !== 'committed') throw new Error(result.kind);
+      if (result.kind !== 'committed')
+        throw new Error(tr('Could not read or update settings.'), { cause: result.kind });
       props.onChanged();
       if (work.canWrite()) props.onBack();
     });
@@ -222,7 +241,8 @@ export function ConnectionFormScreen(
       progress.set(tr('Discovering models…'));
       try {
         const result = await rpc.mutate('settingsSetup', 'discoverModels', detail()!.target);
-        if (result.kind !== 'ready') throw new Error(result.kind);
+        if (result.kind !== 'ready')
+          throw new Error(tr('Could not load models.'), { cause: result.kind });
         props.onChanged();
         await load();
       } finally {
@@ -255,7 +275,13 @@ export function ConnectionFormScreen(
             },
           },
         );
-        if (result.kind !== 'saved') throw new Error(result.reason);
+        if (result.kind !== 'saved')
+          throw new Error(tr('Could not save the credential.'), {
+            cause:
+              result.kind === 'failed'
+                ? new Error(result.message, { cause: result.reason })
+                : result.reason,
+          });
         await load();
       } finally {
         login.set(null);

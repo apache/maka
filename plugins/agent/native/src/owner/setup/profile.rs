@@ -651,7 +651,7 @@ fn copy_content(
     reference.validate().map_err(invalid)?;
     let row: Option<(i64, i64)> = connection
         .query_row(
-            "SELECT id,length(payload) FROM contents WHERE content_sha256=?1",
+            "SELECT id,COALESCE(logical_bytes, length(payload)) FROM contents WHERE content_sha256=?1",
             [&reference.digest],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
@@ -661,7 +661,7 @@ fn copy_content(
     if u64::try_from(length).ok() != Some(reference.bytes) {
         return Err(invalid("current profile content length differs"));
     }
-    let mut blob = connection.blob_open("main", "contents", "payload", id, true)?;
+    let mut blob = maka_event_log::content::open_by_id(connection, id)?;
     let result = (|| {
         let mut buffer = [0; BUFFER];
         let mut digest = Sha256::new();

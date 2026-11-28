@@ -24,7 +24,8 @@ import type { JSX, Signal } from 'nsh';
 import { platform, reduceMotion } from 'nsh';
 import { ContextMenu, MenuItem, TextView } from 'nsh/base';
 import { createMessageMenu, type MessageMenu } from './messageMenu';
-import { selectedPassage, type SideMark } from './sideQuestions';
+import { createMessageSelection, type MessageSelection } from './messageSelection';
+import type { SideMark } from './sideQuestions';
 import type { MessageSenders } from './messageSenders';
 import { Icon } from './Icon';
 import {
@@ -35,7 +36,7 @@ import {
   senderSession,
   type Row,
 } from './history';
-import type { MessageOrigin } from '../../../../packages/plugin-sdk/src/index.js';
+import type { MessageOrigin, QuoteRef } from '../../../../packages/plugin-sdk/src/index.js';
 import type { InlineCitation } from './answerCitations';
 import { MarkdownBody } from './MarkdownBody';
 import type { BindTextViewToc } from './turnToc';
@@ -44,26 +45,29 @@ import { compactCopyInset, CompactReplyFooter, LocalMessageCopy } from './Compac
 import { replyDetails, replyMetrics } from './replyDetails';
 import { SkillMessage, userMessagePresentation } from './SkillMessage';
 import {
-  C,
   bodyTextStyle,
+  C,
   captionTextStyle,
-  textTooltip,
   controlDisabledStyle,
   controlStyle,
-  secondaryTextStyle,
   Disclosure,
   disclosureContentInset,
   disclosureTitleStyle,
-  IconButton,
   floatingStyle,
+  IconButton,
   menuRowHoverStyle,
   menuRowStyle,
+  radius,
+  secondaryTextStyle,
+  textTooltip,
+  raisedShadow,
 } from './ui';
 import { HistoryAttachments } from './Attachments';
 import type { ToolActivity } from './toolActivity';
 import { ToolCard } from './ToolCard';
 import { MessageQuotes } from './MessageQuotes';
 import { MessageCopy, readOriginal, type OriginalMessage } from './MessageCopy';
+import { MessageQuote } from './MessageQuote';
 import type { ImagePreview } from './ImageThumbnail';
 import type { InlineEdit } from './MessageEdit';
 import { LoadingIndicator, ThinkingPeek } from './Loading';
@@ -196,6 +200,7 @@ export function MessageRow({
   replyNotes,
   sideMarks,
   openSide,
+  quoteMessage,
   editMessage,
   messageEditor,
   failureActions,
@@ -226,12 +231,19 @@ export function MessageRow({
   toolProgress?(id: string): ToolActivity['phase'] | null;
   onToolReading?(key: string): void;
   inspectTool?(key: string): void;
-  finalActions?(row: () => Row, ownerKey: () => string, menu?: MessageMenu): JSX.Element;
+  finalActions?(
+    row: () => Row,
+    ownerKey: () => string,
+    menu?: MessageMenu,
+    selection?: MessageSelection,
+  ): JSX.Element;
   /** What stays under a reply whether or not its actions show. */
   replyNotes?(row: () => Row, marked: () => ReadonlySet<string>): JSX.Element;
   /** The side questions asked beside a reply, to underline what they quote. */
   sideMarks?(row: Row): readonly SideMark[];
   openSide?(sessionId: string): void;
+  /** Quotes a user message or its selected passage into the current draft. */
+  quoteMessage?(quote: QuoteRef): boolean;
   /** An action on a user message, beside its copy button. */
   editMessage?(row: () => Row, ownerKey: () => string, menu?: MessageMenu): JSX.Element;
   /** What takes a user message's place while `viewState.edit` holds an edit of it. */
@@ -378,7 +390,7 @@ export function MessageRow({
                 tooltip={title()}
                 icon={automation() ? 'activity' : 'split'}
                 open={expanded()}
-                terminalInset={controlStyle.paddingHorizontal}
+                terminalInset={controlStyle().paddingHorizontal}
                 onPress={inputAction(setExpanded, {
                   sessionId,
                   key: rowKey(row()),
@@ -533,6 +545,7 @@ export function MessageRow({
         // On the desktop a message's actions show while the pointer is on it or
         // the keyboard focus is in them; its context menu has the same commands.
         const menu = platform.idiom === 'terminal' || compact() ? undefined : createMessageMenu();
+        const selection = createMessageSelection();
         const revealed = menu && 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100';
         const toggleSource = () =>
           inputAction(setSourceMode, { sessionId, key: rowKey(row()), value: !sourceMode() });
@@ -551,14 +564,20 @@ export function MessageRow({
         );
         // The passage selected as the menu opened; the selection may go as it opens.
         const copySelection = () => {
-          const passage = selectedPassage(sessionId, row().turnId);
+          const passage = selection.current();
           return passage ? () => void Clipboard.writeText(passage) : null;
         };
         const marks = () => (sideMarks && !user() ? sideMarks(row()) : []);
         // The side questions whose passage TextView underlined in the reply.
         const marked = signal<ReadonlySet<string>>(new Set());
         const withMenu = (trigger: JSX.Element) => (
-          <ContextMenu offset={4} margin={8} popupStyle={floatingStyle()} trigger={trigger}>
+          <ContextMenu
+            offset={4}
+            margin={8}
+            popupStyle={floatingStyle()}
+            onOpenChange={({ open }) => selection.holdForMenu(open)}
+            trigger={trigger}
+          >
             <If when={copySelection() !== null}>
               <Item label={tr('Copy selection')} select={() => copySelection()?.()} />
             </If>
@@ -615,16 +634,21 @@ export function MessageRow({
                         else={
                           <If
                             when={row().role === 'assistant' && row().field === 'body'}
-                            else={
-                              <Text
-                                style={[
-                                  { color: C.text, ...bodyTextStyle },
-                                  { userSelect: 'text' },
-                                ]}
-                              >
-                                <SourceText row={row} sourceId={sourceId()} />
-                              </Text>
-                            }
+                            else={(() => {
+                              const plain = (
+                                <View
+                                  selectable
+                                  onSelectionChange={(event: { text: string }) =>
+                                    selection.set(event.text, 'plain')
+                                  }
+                                >
+                                  <Text style={{ color: C.text, ...bodyTextStyle }}>
+                                    <SourceText row={row} sourceId={sourceId()} />
+                                  </Text>
+                                </View>
+                              );
+                              return menu ? withMenu(plain) : plain;
+                            })()}
                           >
                             <MarkdownBody
                               citations={citations}
@@ -635,6 +659,7 @@ export function MessageRow({
                               openLink={openLink}
                               userScroll={userScroll}
                               menu={menu ? withMenu : undefined}
+                              selection={selection}
                               marks={marks}
                               openSide={openSide}
                               onMarksMatch={(ids) => marked.set(ids)}
@@ -642,9 +667,21 @@ export function MessageRow({
                           </If>
                         }
                       >
-                        <Text style={[{ color: C.text, ...bodyTextStyle }, { userSelect: 'text' }]}>
-                          <SourceText row={row} sourceId={sourceId()} />
-                        </Text>
+                        {(() => {
+                          const sourceBody = (
+                            <View
+                              selectable
+                              onSelectionChange={(event: { text: string }) =>
+                                selection.set(event.text, 'source')
+                              }
+                            >
+                              <Text style={{ color: C.text, ...bodyTextStyle }}>
+                                <SourceText row={row} sourceId={sourceId()} />
+                              </Text>
+                            </View>
+                          );
+                          return menu ? withMenu(sourceBody) : sourceBody;
+                        })()}
                       </If>
                       <If when={replyNotes !== undefined && replyActions()}>
                         {replyNotes?.(row, marked)}
@@ -687,7 +724,7 @@ export function MessageRow({
                                     />
                                   }
                                 >
-                                  {finalActions?.(row, () => rowKey(row()), menu)}
+                                  {finalActions?.(row, () => rowKey(row()), menu, selection)}
                                 </If>
                               </If>
                               <If when={hasSources?.() && !(compactChat && replyActions())}>
@@ -867,9 +904,10 @@ export function MessageRow({
                         width: userPresentation().kind === 'markdown' ? '78%' : undefined,
                         paddingHorizontal: 16,
                         paddingVertical: compactChat ? 10 : 16,
-                        borderRadius: compactChat ? 17 : 20,
+                        borderRadius: compactChat ? radius(17) : radius(20),
                         backgroundColor: highlighted?.() ? C.cardRaised : beside ? C.panel : C.card,
                         gap: 8,
+                        ...raisedShadow(),
                       }}
                     >
                       <MessageQuotes quotes={() => row().quotes ?? []} />
@@ -881,6 +919,8 @@ export function MessageRow({
                         openSession={openSession}
                         openLink={openLink}
                         userScroll={userScroll}
+                        menu={menu ? withMenu : undefined}
+                        selection={selection}
                       />
                       <If when={(row().attachments?.length ?? 0) > 0}>
                         <HistoryAttachments
@@ -937,14 +977,29 @@ export function MessageRow({
                       <If
                         when={localQuickReply}
                         else={
-                          <MessageCopy
-                            compact={compactChat}
-                            row={row}
-                            ownerKey={() => rowKey(row())}
-                            sessionId={sessionId}
-                            through={through}
-                            menu={menu}
-                          />
+                          <>
+                            <MessageCopy
+                              compact={compactChat}
+                              row={row}
+                              ownerKey={() => rowKey(row())}
+                              sessionId={sessionId}
+                              through={through}
+                              menu={menu}
+                            />
+                            <If when={quoteMessage !== undefined}>
+                              <MessageQuote
+                                compact={compactChat}
+                                menuOnly={compactChat}
+                                row={row}
+                                ownerKey={() => rowKey(row())}
+                                sessionId={sessionId}
+                                through={through}
+                                menu={menu}
+                                selection={selection}
+                                quote={quoteMessage!}
+                              />
+                            </If>
+                          </>
                         }
                       >
                         <LocalMessageCopy user text={() => row().text} />

@@ -18,6 +18,7 @@
  */
 
 import { Scroll, Text, View, token } from 'nsh';
+import { formatCount } from '../locale';
 import { spacing, type } from '../theme/tokens';
 import { StatusDot, type StatusKind } from './StatusDot';
 
@@ -88,7 +89,7 @@ export function ScopePills(props: {
                       color: active() ? token('primary') : token('muted-foreground'),
                     }}
                   >
-                    {String(item().count)}
+                    {formatCount(item().count!)}
                   </Text>
                 </If>
               </View>

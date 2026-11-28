@@ -20,8 +20,9 @@ pub struct FileDropEvent {
     /// (TS: `mimeTypes`): `""` when the name says none (a directory, no
     /// extension), as the DOM's `File.type`.
     pub mime_types: Vec<String>,
-    /// Where the files were let go, in the window's coordinates (TS:
-    /// `pagePosition`), on backends that know it (Linux).
+    /// Where the files were let go, in the window's coordinates, as a
+    /// mouse event's `page_position` (TS: `pagePosition`): on AppKit, GTK,
+    /// Win32, iOS, Android and the Web; `None` on the GPUI backend.
     pub page_position: Option<Point<Points>>,
     /// The dropped regular files with their contents, on backends that hand
     /// over contents instead of paths (the Web, and on macOS files a drag
@@ -155,6 +156,33 @@ pub struct TextSelectionEvent {
     /// [`crate::overlay::OverlayAnchor::Bounds`] places an overlay against
     /// it.
     pub page_bounds: Option<Bounds<Points>>,
+    /// Where the selection started (the press, or the end a key extends
+    /// it from), when that is in a list item, as of the event: the
+    /// innermost item of a TSX `List`, else of a Rust component's list.
+    /// `None` outside list items, and in a row its TSX `List` has no key
+    /// for (its `keyExtractor` threw or gave neither a string nor a
+    /// number).
+    pub anchor: Option<TextSelectionEndpoint>,
+    /// Where the selection goes (the end a drag or a key moves), when that
+    /// is in a list item, as of the event. Before [`Self::anchor`] in the
+    /// list when the user selected backward.
+    pub focus: Option<TextSelectionEndpoint>,
+}
+
+/// One end of a selection across a list's items
+/// ([`TextSelectionEvent::anchor`], [`TextSelectionEvent::focus`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct TextSelectionEndpoint {
+    /// The item's key, as the list names it: a TSX `List`'s
+    /// `keyExtractor`, else the item's `key` or `id`, else its index. A
+    /// Rust component's list (`virtual_list`) in a TSX `List`'s item leaves
+    /// the key to that item; with no TSX list around, its row goes by its
+    /// index. The index is written in decimal.
+    pub key: String,
+    /// Where the end is in the item's text, as a copy of the whole item
+    /// gives it, in UTF-16 code units.
+    pub offset: u32,
 }
 
 /// Where an input's caret is (`on_caret_move`): what opens at it (an `@`
@@ -573,11 +601,23 @@ pub(crate) fn selected_text(p: &EventPayload) -> Option<Cow<'_, TextSelectionEve
         Some(PayloadValue::Bounds(b)) => Some(*b),
         _ => None,
     };
+    let endpoint = |(key, offset): (&str, &str)| {
+        Some(TextSelectionEndpoint {
+            key: string(p, key)?.to_owned(),
+            offset: match field(p, offset) {
+                Some(PayloadValue::Number(n)) if *n >= 0.0 => *n as u32,
+                _ => return None,
+            },
+        })
+    };
+    let [anchor, focus] = crate::selection::ITEM_FIELDS;
     Some(Cow::Owned(TextSelectionEvent {
         text: string(p, "text").unwrap_or_default().to_owned(),
         start,
         bounds: optional_bounds("bounds"),
         page_bounds: optional_bounds("pageBounds"),
+        anchor: endpoint(anchor),
+        focus: endpoint(focus),
     }))
 }
 

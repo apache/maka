@@ -404,6 +404,41 @@ function ClipPath() {
   );
 }
 
+/**
+ * `maskImage` transitioned by name: a fade that grows in from the bottom
+ * edge, each gradient stop moving on its own.
+ */
+function MaskFade() {
+  const faded = signal(false);
+  const mask = () =>
+    faded() ? "linear-gradient(to bottom, black 40%, transparent 100%)" : "linear-gradient(to bottom, black 100%, transparent 100%)";
+  return (
+    <Card icon="styles" title="Mask" subtitle="maskImage · transition">
+      <Grid>
+        <Tile label={faded() ? "Faded" : "Whole"} code={faded() ? "black 40%, transparent 100%" : "black 100%, transparent 100%"} note={hint("Tap to fade", "Click to fade")} onPress={() => faded.set(!faded())}>
+          <View
+            testID="fade"
+            style={{
+              width: 132,
+              height: 84,
+              borderRadius: 14,
+              borderCurve: "continuous",
+              overflow: "hidden",
+              backgroundColor: colors.surface,
+              maskImage: mask(),
+              transitionProperty: "mask-image",
+              transitionDuration: 600,
+              transitionTimingFunction: "cubic-bezier(0.32, 0.72, 0, 1)",
+            }}
+          >
+            <Image src={photoUrl("day", "small")} style={{ position: "absolute", left: 0, top: 0, right: 0, bottom: 0, objectFit: "cover" }} />
+          </View>
+        </Tile>
+      </Grid>
+    </Card>
+  );
+}
+
 /** Two faces back to back: each hides while turned away. */
 function FlipCard() {
   const angle = createAnimatedValue(0);
@@ -637,6 +672,6 @@ export function Styles() {
   // cards its Cells hold (borders, clipping and layers, numerals, the
   // writing direction) and leaves the others out.
   const sections =
-    platform.idiom === "terminal" ? [Borders, Layers, Numerals, RightToLeft] : [Corners, ProgressiveBlur, Borders, Shadows, Layers, ClipPath, Transforms, Numerals, RightToLeft];
+    platform.idiom === "terminal" ? [Borders, Layers, Numerals, RightToLeft] : [Corners, ProgressiveBlur, Borders, Shadows, Layers, ClipPath, MaskFade, Transforms, Numerals, RightToLeft];
   return <DemoPage cards={sections} />;
 }

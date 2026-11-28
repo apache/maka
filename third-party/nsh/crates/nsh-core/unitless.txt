@@ -99,6 +99,10 @@ canvas::hit::point_in_path(slot)                                 # a generic num
 canvas::hit::point_in_stroke(slot)                               # a generic number (a JS value, a recorded slot)
 canvas::render::RenderRequest.scale                              # pixels per point, a ratio
 canvas::render::RenderOptions.scale                              # pixels per point, a ratio
+ops::CoalescedSample.pressure                                    # a pressure, 0..1 as the DOM PointerEvent's
+ops::CoalescedSample.tilt_x                                      # a pen tilt in degrees, as the DOM PointerEvent's tiltX / tiltY
+ops::CoalescedSample.tilt_y                                      # a pen tilt in degrees, as the DOM PointerEvent's tiltX / tiltY
+ops::CoalescedSample.timestamp                                   # time
 ops::Command::RenderCanvas.scale                                 # pixels per point, a ratio
 core::Core::scroll_listener ->                                   # time and a zoom scale factor (the offset and sizes it gives are typed)
 core::Core::set_font_scale(scale)                                # a font scale factor
@@ -110,6 +114,7 @@ desktop::window_state::Display.refresh_rate                     # a refresh rate
 desktop::window_state::Display.scale_factor                     # device pixels per point, a ratio
 desktop::window_state::WindowState.scale_factor                 # device pixels per point, a ratio
 effects::ClipInset::lerp(t)                                      # transition progress (easing curve coordinates, unit square)
+effects::Gradient::lerp(t)                                       # transition progress (easing curve coordinates, unit square)
 effects::Filter::Brightness.0                                    # a filter amount (1 leaves the image as it is)
 effects::Filter::Contrast.0                                      # a filter amount (1 leaves the image as it is)
 effects::Filter::Grayscale.0                                     # a filter amount (1 leaves the image as it is)
@@ -218,6 +223,10 @@ ops::TouchPoint.pressure                                         # a pressure, 0
 ops::TouchPoint.tilt_x                                           # a pen tilt in degrees, as the DOM PointerEvent's tiltX / tiltY
 ops::TouchPoint.tilt_y                                           # a pen tilt in degrees, as the DOM PointerEvent's tiltX / tiltY
 ops::TouchPoint::default_pressure ->                             # a pressure, 0..1 as the DOM PointerEvent's
+ops::TouchPoint::push_coalesced(pressure)                        # a pressure, 0..1 as the DOM PointerEvent's
+ops::TouchPoint::push_coalesced(tilt_x)                          # a pen tilt in degrees, as the DOM PointerEvent's tiltX / tiltY
+ops::TouchPoint::push_coalesced(tilt_y)                          # a pen tilt in degrees, as the DOM PointerEvent's tiltX / tiltY
+ops::TouchPoint::push_coalesced(timestamp)                       # time
 platform::Environment.font_scale                                 # a font scale factor
 platform::Environment.keyboard_duration                          # time
 platform::Environment.pixel_ratio                                # device pixels per point
@@ -245,6 +254,7 @@ scroll::Live.alpha                                               # an opacity, 0
 scroll::ScrollHost::report_zoom(scale)                           # a zoom scale factor
 scroll::ScrollHost::now ->                                       # time
 scroll::ScrollState.zoom                                         # a zoom scale factor
+scroll::ScrollState::spinner_opacity ->                          # an opacity, 0..1
 scroll::drag_end(vx)                                             # a velocity, points per second
 scroll::drag_end(vy)                                             # a velocity, points per second
 scroll::ease_out ->                                              # easing curve coordinates (unit square)
@@ -268,6 +278,8 @@ scroll::wheel_glide::Glide::end ->                               # time
 scroll::wheel_glide::Glide::new(now)                             # time
 scroll::wheel_glide::Glide::retargeted(now)                      # time
 scroll::wheel_glide::Glide::value(now)                           # time
+selection::ListedText.zoom                                       # a zoom scale factor
+selection::TextTree::content_offset ->                           # a zoom scale factor (the offset it gives is typed)
 shader::UniformValue::Number.0                                  # a uniform's value, whatever the app's program makes of it
 shader::TransitionKey::number(n)                                 # a transition's value: a key compared for equality, no quantity
 ops::Prop::TransitionDuration.0                                  # time (milliseconds, as JS gives it)

@@ -204,7 +204,7 @@ fn related_diagnostics(
             WHERE o.kind='model_source_failure_captured'
          )
          SELECT r.fact_id FROM related r JOIN agent_facts f ON f.sequence=r.sequence
-         JOIN contents b ON b.id=f.body_content_id WHERE CAST(b.payload AS TEXT)->>'$.fact.diagnostic'=?2",
+         JOIN contents b ON b.id=f.body_content_id WHERE maka_content_text(b.payload,b.encoding)->>'$.fact.diagnostic'=?2",
     )?;
     let mut sources = vec![fact];
     for row in stmt.query_map(params![fact.to_string(), text], |r| r.get::<_, String>(0))? {
@@ -271,6 +271,7 @@ impl DiagnosticEvidence {
 
 fn mask_request_diagnostics(
     c: &Connection,
+    snapshot: Option<maka_agent_facts::history_snapshot::SnapshotId>,
     owner: &RunOwner,
     traces: &mut [ModelRequestTrace],
 ) -> Result<(), StoreError> {
@@ -278,7 +279,7 @@ fn mask_request_diagnostics(
         .iter()
         .enumerate()
         .filter_map(|(i, t)| t.finished.as_ref().map(|f| (i, f)))
-        .flat_map(|(i, f)| f.evidence.facts.iter().map(move |id| (i, *id, 0)))
+        .flat_map(|(i, f)| f.evidence.facts.iter().map(move |id| (i, *id, 0, snapshot)))
         .collect();
     if keys.is_empty() {
         return Ok(());
@@ -359,23 +360,27 @@ impl Query for ReadMainModelUsage {
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
         let Self(history, cut, run) = self;
         sql::validate_cut(c, &history.owner, &history.session, &cut)?;
+        let Some(namespace_id) =
+            crate::namespace::find_owner_id(c, &history.owner, &history.session)?
+        else {
+            return Ok((None, None));
+        };
         let mut statement = c.prepare_cached(
             "SELECT r.input,r.cache_read,
-                json_extract(CAST(b.payload AS TEXT),'$.fact.protocol.cacheReadReported'), r.output
+                json_extract(maka_content_text(b.payload,b.encoding),'$.fact.protocol.cacheReadReported'), r.output
              FROM agent_session_history h INDEXED BY agent_session_history_run
              JOIN agent_usage_calls u ON u.request='model:'||h.run||':'||h.attempt
                   AND u.admission_sequence=h.sequence
              LEFT JOIN agent_usage_results r ON r.request=u.request AND r.sequence=(
                   SELECT v.sequence FROM agent_usage_results v
-                  WHERE v.request=u.request AND v.sequence<=?4 ORDER BY v.sequence DESC LIMIT 1)
+                  WHERE v.request=u.request AND v.sequence<=?3 ORDER BY v.sequence DESC LIMIT 1)
              LEFT JOIN agent_facts f ON r.cache_read=0 AND f.sequence=r.sequence
              LEFT JOIN contents b ON b.id=f.body_content_id
-             WHERE h.owner=?1 AND h.session=?2 AND h.run=?3 AND h.sequence<=?4
-               AND h.kind='model_attempt_prepared' AND u.purpose=?5",
+             WHERE h.namespace_id=?1 AND h.run=?2 AND h.sequence<=?3
+               AND h.kind='model_attempt_prepared' AND u.purpose=?4",
         )?;
         let mut rows = statement.query(params![
-            serde_json::to_string(&history.owner)?,
-            history.session,
+            namespace_id,
             run.to_string(),
             sql::bind_u64(cut.through_sequence)?,
             serde_json::to_string(&ModelPurpose::Main)?,
@@ -435,74 +440,83 @@ impl Query for ReadRequestTraces {
         let end = request_outcome::run_end(c, &source, run, through)?;
         match &source {
             HistoryDataSource::Live { history, cut } => {
-                let mut statement = c.prepare_cached(
-                    "SELECT h.sequence,h.step,h.attempt,u.request,u.model_id,u.purpose
+                if let Some(namespace_id) = crate::namespace::find_owner_id(
+                    c,
+                    &history.namespace.owner,
+                    &history.namespace.session,
+                )? {
+                    let mut statement = c.prepare_cached(
+                        "SELECT h.sequence,h.step,h.attempt,u.request,u.model_id,u.purpose
                      FROM agent_session_history h INDEXED BY agent_session_history_run
                      JOIN agent_usage_calls u ON u.request='model:'||h.run||':'||h.attempt
-                          AND u.source='fact' AND u.owner=h.owner AND u.session=h.session
+                          AND u.source='fact' AND u.namespace_id=h.namespace_id
                           AND u.run=h.run AND u.admission_sequence=h.sequence
-                     WHERE h.owner=? AND h.session=? AND h.run=?
+                     WHERE h.namespace_id=?1 AND h.run=?2
                        AND h.kind IN ('model_attempt_prepared','proactive_summary_prepared')
-                       AND h.sequence>? AND h.sequence<=? ORDER BY h.sequence LIMIT ?",
-                )?;
-                let mut rows = statement.query(params![
-                    serde_json::to_string(&history.namespace.owner)?,
-                    history.namespace.session,
-                    run.to_string(),
-                    sql::bind_u64(after)?,
-                    sql::bind_u64(cut.through_sequence)?,
-                    limit,
-                ])?;
-                while let Some(row) = rows.next()? {
-                    let step = sql::identity(row.get(1)?)?;
-                    let attempt = sql::identity(row.get(2)?)?;
-                    let request: String = row.get(3)?;
-                    if let std::collections::btree_map::Entry::Vacant(entry) = contexts.entry(step)
-                    {
-                        let (spec, _) =
-                            sql::request_preparation(c, &history.namespace, cut, run, step)?;
-                        entry.insert(metadata(c, &source, run, &spec.provenance)?);
-                    }
-                    let finished = live_closed(c, history, cut, run, step, attempt, &request)?
-                        .map(|closed| {
-                            let (diagnostic, evidence) = if closed.outcome == Outcome::Success {
-                                (None, DiagnosticEvidence::default())
-                            } else {
-                                let item = sql::item(c, &history.namespace, cut, closed.sequence)?
-                                    .ok_or_else(|| invalid("request trace closure is absent"))?;
-                                trace_diagnostic(c, item.recorded, attempt)?
-                            };
-                            Ok::<_, StoreError>(ModelRequestTraceFinished {
-                                evidence,
-                                at: closed.at,
-                                outcome: closed.outcome,
-                                usage: closed.usage,
-                                diagnostic,
+                       AND h.sequence>?3 AND h.sequence<=?4 ORDER BY h.sequence LIMIT ?5",
+                    )?;
+                    let mut rows = statement.query(params![
+                        namespace_id,
+                        run.to_string(),
+                        sql::bind_u64(after)?,
+                        sql::bind_u64(cut.through_sequence)?,
+                        limit,
+                    ])?;
+                    while let Some(row) = rows.next()? {
+                        let step = sql::identity(row.get(1)?)?;
+                        let attempt = sql::identity(row.get(2)?)?;
+                        let request: String = row.get(3)?;
+                        if let std::collections::btree_map::Entry::Vacant(entry) =
+                            contexts.entry(step)
+                        {
+                            let (spec, _) =
+                                sql::request_preparation(c, &history.namespace, cut, run, step)?;
+                            entry.insert(metadata(c, &source, run, &spec.provenance)?);
+                        }
+                        let finished = live_closed(c, history, cut, run, step, attempt, &request)?
+                            .map(|closed| {
+                                let (diagnostic, evidence) = if closed.outcome == Outcome::Success {
+                                    (None, DiagnosticEvidence::default())
+                                } else {
+                                    let item =
+                                        sql::item(c, &history.namespace, cut, closed.sequence)?
+                                            .ok_or_else(|| {
+                                                invalid("request trace closure is absent")
+                                            })?;
+                                    trace_diagnostic(c, item.recorded, attempt)?
+                                };
+                                Ok::<_, StoreError>(ModelRequestTraceFinished {
+                                    evidence,
+                                    at: closed.at,
+                                    outcome: closed.outcome,
+                                    usage: closed.usage,
+                                    diagnostic,
+                                })
                             })
-                        })
-                        .transpose()?;
-                    let (finished, retry) =
-                        request_outcome::read(c, &source, run, step, attempt, finished, &end)?;
-                    traces.push(ModelRequestTrace {
-                        sequence: sql::read_u64(row, 0)?,
-                        step,
-                        attempt,
-                        model_id: row.get(4)?,
-                        purpose: serde_json::from_str(&row.get::<_, String>(5)?)?,
-                        started_at: live_time(c, history, cut, run, step, attempt)?,
-                        first_token_at: live_model_time(
-                            c,
-                            history,
-                            cut,
-                            run,
+                            .transpose()?;
+                        let (finished, retry) =
+                            request_outcome::read(c, &source, run, step, attempt, finished, &end)?;
+                        traces.push(ModelRequestTrace {
+                            sequence: sql::read_u64(row, 0)?,
                             step,
                             attempt,
-                            "model_first_token_observed",
-                        )?,
-                        finished,
-                        retry,
-                        context: contexts[&step].clone(),
-                    });
+                            model_id: row.get(4)?,
+                            purpose: serde_json::from_str(&row.get::<_, String>(5)?)?,
+                            started_at: live_time(c, history, cut, run, step, attempt)?,
+                            first_token_at: live_model_time(
+                                c,
+                                history,
+                                cut,
+                                run,
+                                step,
+                                attempt,
+                                "model_first_token_observed",
+                            )?,
+                            finished,
+                            retry,
+                            context: contexts[&step].clone(),
+                        });
+                    }
                 }
             }
             HistoryDataSource::Snapshot(snapshot) => {
@@ -605,11 +619,11 @@ impl Query for ReadRequestTraces {
             }
         }
         if mask_evidence {
-            let owner = match &source {
-                HistoryDataSource::Live { history, .. } => &history.namespace.owner,
-                HistoryDataSource::Snapshot(snapshot) => snapshot.owner(),
+            let (owner, snapshot) = match &source {
+                HistoryDataSource::Live { history, .. } => (&history.namespace.owner, None),
+                HistoryDataSource::Snapshot(snapshot) => (snapshot.owner(), Some(snapshot.id())),
             };
-            mask_request_diagnostics(c, owner, &mut traces)?;
+            mask_request_diagnostics(c, snapshot, owner, &mut traces)?;
         }
         Ok(IndexedRead::Ready(ModelRequestTracePage {
             requests: traces,
@@ -829,15 +843,18 @@ fn live(
     selection: Selection,
 ) -> Result<Option<Sample>, StoreError> {
     sql::validate_cut(c, &history.namespace.owner, &history.namespace.session, cut)?;
-    let owner = serde_json::to_string(&history.namespace.owner)?;
+    let Some(namespace_id) =
+        crate::namespace::find_owner_id(c, &history.namespace.owner, &history.namespace.session)?
+    else {
+        return Ok(None);
+    };
     let kind = match selection {
         Selection::LatestSuccess => "model_closed",
         Selection::LatestRequest => "model_attempt_prepared",
     };
-    let mut statement = c.prepare_cached("SELECT c.admission_sequence,h.run,h.step,h.attempt,(SELECT p.fact_id FROM agent_session_history p WHERE p.owner=h.owner AND p.session=h.session AND p.sequence=c.admission_sequence AND p.run=h.run AND p.step=h.step AND p.attempt=h.attempt AND p.kind IN ('model_attempt_prepared','proactive_summary_prepared')),c.request,c.source,c.kind,c.owner,c.session,c.run,c.purpose,c.origin_json FROM agent_session_history h INDEXED BY agent_session_history_kind LEFT JOIN agent_usage_calls c ON c.request='model:'||h.run||':'||h.attempt WHERE h.owner=? AND h.session=? AND h.kind=? AND h.sequence<=? AND h.admission_sequence>? ORDER BY h.sequence DESC")?;
+    let mut statement = c.prepare_cached("SELECT c.admission_sequence,h.run,h.step,h.attempt,(SELECT p.fact_id FROM agent_session_history p WHERE p.namespace_id=h.namespace_id AND p.sequence=c.admission_sequence AND p.run=h.run AND p.step=h.step AND p.attempt=h.attempt AND p.kind IN ('model_attempt_prepared','proactive_summary_prepared')),c.request,c.source,c.kind,c.namespace_id,c.run,c.purpose,c.origin_json FROM agent_session_history h INDEXED BY agent_session_history_kind LEFT JOIN agent_usage_calls c ON c.request='model:'||h.run||':'||h.attempt WHERE h.namespace_id=? AND h.kind=? AND h.sequence<=? AND h.admission_sequence>? ORDER BY h.sequence DESC")?;
     let mut rows = statement.query(params![
-        owner,
-        history.namespace.session,
+        namespace_id,
         kind,
         sql::bind_u64(cut.through_sequence)?,
         sql::bind_u64(floor)?
@@ -850,16 +867,14 @@ fn live(
         let fact: FactId = sql::identity(row.get(4)?)?;
         if row.get::<_, Option<String>>(6)?.as_deref() != Some("fact")
             || row.get::<_, Option<String>>(7)?.as_deref() != Some("model")
-            || row.get::<_, Option<String>>(8)?.as_deref() != Some(owner.as_str())
-            || row.get::<_, Option<String>>(9)?.as_deref()
-                != Some(history.namespace.session.as_str())
-            || row.get::<_, Option<String>>(10)?.as_deref() != Some(run.to_string().as_str())
+            || row.get::<_, Option<crate::namespace::NamespaceId>>(8)? != Some(namespace_id)
+            || row.get::<_, Option<String>>(9)?.as_deref() != Some(run.to_string().as_str())
         {
             return Err(invalid(
                 "metrics model request has no exact original accounting source",
             ));
         }
-        let origin: Origin = serde_json::from_str(&row.get::<_, String>(12)?)?;
+        let origin: Origin = serde_json::from_str(&row.get::<_, String>(11)?)?;
         let Origin::Agent {
             execution,
             link,
@@ -876,7 +891,7 @@ fn live(
         {
             return Err(invalid("metrics model request identity differs"));
         }
-        let indexed_purpose: ModelPurpose = serde_json::from_str(&row.get::<_, String>(11)?)?;
+        let indexed_purpose: ModelPurpose = serde_json::from_str(&row.get::<_, String>(10)?)?;
         if purpose != indexed_purpose {
             return Err(invalid("metrics model request purpose differs"));
         }
@@ -913,7 +928,7 @@ fn live(
         if !accepted(selection, &closed) {
             continue;
         }
-        let step_sequence: u64 = c.query_row("SELECT sequence FROM agent_session_history INDEXED BY agent_session_history_run WHERE owner=? AND session=? AND run=? AND step=? AND kind='step_prepared' AND sequence<=? ORDER BY sequence LIMIT 1",params![owner,history.namespace.session,run.to_string(),step.to_string(),sql::bind_u64(prepared)?],|r|sql::read_u64(r,0))?;
+        let step_sequence: u64 = c.query_row("SELECT sequence FROM agent_session_history INDEXED BY agent_session_history_run WHERE namespace_id=? AND run=? AND step=? AND kind='step_prepared' AND sequence<=? ORDER BY sequence LIMIT 1",params![namespace_id,run.to_string(),step.to_string(),sql::bind_u64(prepared)?],|r|sql::read_u64(r,0))?;
         let item = sql::item(c, &history.namespace, cut, step_sequence)?
             .ok_or_else(|| invalid("metrics original StepPrepared is missing"))?;
         let Fact::StepPrepared {
@@ -984,22 +999,26 @@ fn live_closed(
         Option<i64>,
         Option<i64>,
     );
+    let Some(namespace_id) =
+        crate::namespace::find_owner_id(c, &history.namespace.owner, &history.namespace.session)?
+    else {
+        return Ok(None);
+    };
     let row: Option<ClosedModelRow> = c
         .query_row(
             "SELECT h.sequence, f.id, f.schema_version, f.at, f.run, r.completed_at, r.outcome,
                 r.input, r.output, r.cache_read, r.cache_write, r.reasoning,
-                json_extract(CAST(b.payload AS TEXT), '$.fact.protocol.modelTimeMs')
+                json_extract(maka_content_text(b.payload, b.encoding), '$.fact.protocol.modelTimeMs')
          FROM agent_session_history h INDEXED BY agent_session_history_run
          LEFT JOIN agent_facts f ON f.sequence=h.sequence AND f.id=h.fact_id
          LEFT JOIN contents b ON b.id=f.body_content_id
          LEFT JOIN agent_usage_results r ON r.request=?1 AND r.sequence=h.sequence
-         WHERE h.owner=?2 AND h.session=?3 AND h.run=?4 AND h.step=?5
-           AND h.kind='model_closed' AND h.attempt=?6 AND h.sequence<=?7
+         WHERE h.namespace_id=?2 AND h.run=?3 AND h.step=?4
+           AND h.kind='model_closed' AND h.attempt=?5 AND h.sequence<=?6
          ORDER BY h.sequence DESC LIMIT 1",
             params![
                 request,
-                serde_json::to_string(&history.namespace.owner)?,
-                history.namespace.session,
+                namespace_id,
                 run.to_string(),
                 step.to_string(),
                 attempt.to_string(),
@@ -1094,7 +1113,12 @@ fn live_model_time(
     attempt: ModelAttemptId,
     kind: &str,
 ) -> Result<Option<UnixMillis>, StoreError> {
-    let row:Option<(String,u32,i64)>=c.query_row("SELECT f.id,f.schema_version,f.at FROM agent_session_history h INDEXED BY agent_session_history_run LEFT JOIN agent_facts f ON f.sequence=h.sequence AND f.id=h.fact_id AND f.run=h.run WHERE h.owner=? AND h.session=? AND h.run=? AND h.step=? AND h.kind=? AND h.attempt=? AND h.sequence<=? ORDER BY h.sequence LIMIT 1",params![serde_json::to_string(&history.namespace.owner)?,history.namespace.session,run.to_string(),step.to_string(),kind,attempt.to_string(),sql::bind_u64(cut.through_sequence)?],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
+    let Some(namespace_id) =
+        crate::namespace::find_owner_id(c, &history.namespace.owner, &history.namespace.session)?
+    else {
+        return Ok(None);
+    };
+    let row:Option<(String,u32,i64)>=c.query_row("SELECT f.id,f.schema_version,f.at FROM agent_session_history h INDEXED BY agent_session_history_run LEFT JOIN agent_facts f ON f.sequence=h.sequence AND f.id=h.fact_id AND f.run=h.run WHERE h.namespace_id=? AND h.run=? AND h.step=? AND h.kind=? AND h.attempt=? AND h.sequence<=? ORDER BY h.sequence LIMIT 1",params![namespace_id,run.to_string(),step.to_string(),kind,attempt.to_string(),sql::bind_u64(cut.through_sequence)?],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
     row.map(|(id, schema, at)| {
         let _: FactId = sql::identity(id)?;
         if schema != SCHEMA_VERSION || at < 0 {
@@ -1163,7 +1187,7 @@ fn copied_fact(
             "metrics snapshot fact is outside its actual source cut",
         ));
     }
-    let pinned:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM agent_history_snapshot_entries e JOIN agent_history_snapshot_run_refs r ON r.snapshot=e.snapshot AND r.run=e.run JOIN agent_history_snapshot_pins p ON p.snapshot=r.snapshot AND p.content_id=r.content_id JOIN contents b ON b.id=p.content_id WHERE e.snapshot=? AND e.kind='fact' AND e.run=? AND e.sequence=? AND json_extract(e.entry_json,'$.id')=? AND b.content_sha256=? AND length(b.payload)=?)",params![snapshot.id().to_string(),run.to_string(),sql::bind_u64(sequence)?,id.to_string(),body.digest,sql::bind_u64(body.bytes)?],|r|r.get(0))?;
+    let pinned:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM agent_history_snapshot_entries e JOIN agent_history_snapshot_run_refs r ON r.snapshot=e.snapshot AND r.run=e.run JOIN agent_history_snapshot_pins p ON p.snapshot=r.snapshot AND p.content_id=r.content_id JOIN contents b ON b.id=p.content_id WHERE e.snapshot=? AND e.kind='fact' AND e.run=? AND e.sequence=? AND json_extract(e.entry_json,'$.id')=? AND b.content_sha256=? AND COALESCE(b.logical_bytes,length(b.payload))=?)",params![snapshot.id().to_string(),run.to_string(),sql::bind_u64(sequence)?,id.to_string(),body.digest,sql::bind_u64(body.bytes)?],|r|r.get(0))?;
     if !pinned {
         return Err(invalid(
             "metrics snapshot fact lost its original PK/pinned body proof",
@@ -1364,11 +1388,14 @@ fn changes(
     let step = sample.map(|sample| sample.step.to_string());
     let attempt = sample.map(|sample| sample.attempt.to_string());
     let (changed,reset):(bool,bool)=match &segment.source {
-        HistoryDataSource::Live{history,cut}=>c.query_row("SELECT coalesce(max(CASE WHEN h.kind='context_compacted' OR (h.kind='run_admitted' AND h.run IS NOT ?6) OR (h.kind='step_prepared' AND h.step IS NOT ?7) OR (h.kind IN ('model_attempt_prepared','model_attempt_admitted','model_observed') AND h.attempt IS NOT ?8
+        HistoryDataSource::Live{history,cut}=>match crate::namespace::find_owner_id(c, &history.namespace.owner, &history.namespace.session)? {
+            Some(namespace_id) => c.query_row("SELECT coalesce(max(CASE WHEN h.kind='context_compacted' OR (h.kind='run_admitted' AND h.run IS NOT ?5) OR (h.kind='step_prepared' AND h.step IS NOT ?6) OR (h.kind IN ('model_attempt_prepared','model_attempt_admitted','model_observed') AND h.attempt IS NOT ?7
        AND NOT (h.kind='model_attempt_admitted' AND EXISTS(
            SELECT 1 FROM agent_session_history p INDEXED BY agent_session_history_run
-           WHERE p.owner=h.owner AND p.session=h.session AND p.run=h.run AND p.step=h.step
-             AND p.attempt=h.attempt AND p.kind='proactive_summary_prepared'))) OR h.kind IN ('tool_result_accepted','local_tool_returned','host_tool_result_recorded','external_task_observed','external_effect','cell','tools_loaded') THEN 1 ELSE 0 END),0),coalesce(max(h.kind='context_compacted'),0) FROM agent_session_history h WHERE h.owner=?1 AND h.session=?2 AND h.sequence>?3 AND h.sequence<=?4 AND h.admission_sequence>?5",params![serde_json::to_string(&history.namespace.owner)?,history.namespace.session,sql::bind_u64(after)?,sql::bind_u64(cut.through_sequence)?,sql::bind_u64(segment.after_admission)?,run,step,attempt],|r|Ok((r.get(0)?,r.get(1)?)))?,
+           WHERE p.namespace_id=h.namespace_id AND p.run=h.run AND p.step=h.step
+             AND p.attempt=h.attempt AND p.kind='proactive_summary_prepared'))) OR h.kind IN ('tool_result_accepted','local_tool_returned','host_tool_result_recorded','external_task_observed','external_effect','cell','tools_loaded') THEN 1 ELSE 0 END),0),coalesce(max(h.kind='context_compacted'),0) FROM agent_session_history h WHERE h.namespace_id=?1 AND h.sequence>?2 AND h.sequence<=?3 AND h.admission_sequence>?4",params![namespace_id,sql::bind_u64(after)?,sql::bind_u64(cut.through_sequence)?,sql::bind_u64(segment.after_admission)?,run,step,attempt],|r|Ok((r.get(0)?,r.get(1)?)))?,
+            None => (false, false),
+        },
         HistoryDataSource::Snapshot(snapshot)=>{
             let bound=snapshot_bound(c,snapshot)?;
             c.query_row("SELECT coalesce(max(CASE WHEN fact_kind='context_compacted' OR (fact_kind='run_admitted' AND run IS NOT ?5) OR (fact_kind='step_prepared' AND json_extract(entry_json,'$.step') IS NOT ?6) OR (e.fact_kind IN ('model_attempt_prepared','model_attempt_admitted','model_observed') AND json_extract(e.entry_json,'$.attempt') IS NOT ?7
@@ -1468,7 +1495,15 @@ fn latest_checkpoint(
 ) -> Result<Option<HistoryItem>, IndexedReadError> {
     match &segment.source {
         HistoryDataSource::Live { history, cut } => {
-            let sequence: Option<u64> = c.query_row("SELECT sequence FROM agent_session_history INDEXED BY agent_session_history_kind WHERE owner=? AND session=? AND kind='context_compacted' AND sequence<=? AND admission_sequence>? ORDER BY sequence DESC LIMIT 1", params![serde_json::to_string(&history.namespace.owner)?, history.namespace.session, sql::bind_u64(cut.through_sequence)?, sql::bind_u64(segment.after_admission)?], |row| sql::read_u64(row, 0)).optional()?;
+            let Some(namespace_id) = crate::namespace::find_owner_id(
+                c,
+                &history.namespace.owner,
+                &history.namespace.session,
+            )?
+            else {
+                return Ok(None);
+            };
+            let sequence: Option<u64> = c.query_row("SELECT sequence FROM agent_session_history INDEXED BY agent_session_history_kind WHERE namespace_id=? AND kind='context_compacted' AND sequence<=? AND admission_sequence>? ORDER BY sequence DESC LIMIT 1", params![namespace_id, sql::bind_u64(cut.through_sequence)?, sql::bind_u64(segment.after_admission)?], |row| sql::read_u64(row, 0)).optional()?;
             sequence
                 .map(|sequence| sql::item(c, &history.namespace, cut, sequence))
                 .transpose()

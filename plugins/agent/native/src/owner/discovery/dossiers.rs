@@ -708,7 +708,7 @@ impl Owner {
         &self,
         session: &str,
         request: &mut maka_agent_state::queue::PreparedRequest,
-        summary: String,
+        summary: &str,
         contents: &mut Vec<maka_agent_state::ContentBlob>,
     ) -> Result<(), String> {
         use maka_agent_facts::input::{QuoteRef, RunInput};
@@ -736,7 +736,7 @@ impl Owner {
             return Err("discovery_thread_source_missing".into());
         };
         let quote = QuoteRef {
-            text: summary,
+            text: summary.to_owned(),
             label: None,
             source_message_id: None,
             source_turn_id: None,

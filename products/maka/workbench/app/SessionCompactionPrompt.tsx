@@ -185,7 +185,7 @@ export function SessionCompactionPrompt(props: {
               selected={value().choice.kind === 'inherited'}
               accessibilityLabel={tr('Use global compaction prompt')}
               onPress={inputAction(inherit, null)}
-              style={controlStyle}
+              style={controlStyle()}
               selectedStyle={{ backgroundColor: C.raised }}
               hoverStyle={controlHoverStyle()}
               focusStyle={controlFocusStyle()}

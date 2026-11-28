@@ -577,6 +577,7 @@ export type AgentHistoryCheckpointLoadReceiptOutput_AgentCheckpointWorkspaceCons
   | 'unverified';
 export type AgentHistoryCheckpointLoadReceiptOutput_AgentCheckpointWorkspaceWarning =
   'external_writers_not_fenced';
+export type AgentHistoryImagesInput_HistoryRowAddress = Runtime.HistoryRowAddress;
 export type AgentHistoryRequestsInput_HistoryRowAddress = Runtime.HistoryRowAddress;
 export type AgentHistoryRequestsOutput_StepId = string;
 export type AgentHistoryRequestsOutput_ModelAttemptId = string;
@@ -3394,6 +3395,7 @@ export interface ServiceMethods {
       mode: 'query';
       input: {
         runtime: Runtime.AgentNativeRuntime;
+        refresh?: boolean;
       };
       output:
         | {
@@ -3685,6 +3687,26 @@ export interface ServiceMethods {
         load?: AgentHistoryCheckpointLoadReceiptOutput_AgentCheckpointLoad | null;
       };
     };
+    historyImages: {
+      mode: 'query';
+      input: {
+        sessionId: string;
+        through: number;
+        /**
+         * Any original row in the Run whose images are listed.
+         */
+        position: AgentHistoryImagesInput_HistoryRowAddress;
+        after?: number | null;
+      };
+      /**
+       * The Run's tool results that produced images, oldest first, each with its call.
+       */
+      output: {
+        tools: Runtime.HistoryTool[];
+        next?: number | null;
+        [k: string]: unknown | undefined;
+      };
+    };
     historyLandmarks: {
       mode: 'query';
       input: Runtime.AgentHistoryLandmarksRead;
@@ -3848,6 +3870,14 @@ export interface ServiceMethods {
         digest: string;
         data: string;
       };
+    };
+    loadedMemories: {
+      mode: 'query';
+      input: {
+        sessionId: string;
+        runId: Runtime.RunId;
+      };
+      output: AgentLoadedMemoriesOutput_LoadedMemory[];
     };
     lookupSubmission: {
       mode: 'query';
@@ -4921,6 +4951,11 @@ export interface ServiceMethods {
       mode: 'subscription';
       input: Runtime.AgentScheduleRead;
       output: Runtime.AgentSchedules;
+    };
+    watchWorkerProgress: {
+      mode: 'subscription';
+      input: Runtime.AgentWorkerProgressRead;
+      output: Runtime.AgentWorkerProgressFrame;
     };
     withdrawSubmission: {
       mode: 'mutation';
@@ -6633,6 +6668,15 @@ export interface AgentLoadedHistoryCheckpointSourceInput_AgentCheckpointInspecti
 export interface AgentLoadedHistoryCheckpointToolImageInput_AgentCheckpointInspection {
   sourceSessionId: string;
   operationId: string;
+}
+/**
+ * The exact assertion and management revision admitted to a Run, in projection order.
+ */
+export interface AgentLoadedMemoriesOutput_LoadedMemory {
+  scope: string;
+  id: string;
+  revision: number;
+  assertion: number;
 }
 /**
  * Most recent discovery association added after a Bot message was published.

@@ -26,15 +26,15 @@ import { dirname, join } from 'node:path';
 import test from 'node:test';
 import {
   cargoLicenseRecord,
+  distributionTargets,
   generateNotices,
   verifyNotices,
   verifyReviewedNotices,
 } from './notices.mjs';
 import { buildCli, rustTarget } from './build-cli.mjs';
-import { nativeCliTargets } from './pack-cli.mjs';
 
 const text = 'Fixture license text. '.repeat(8);
-const targets = Object.values(nativeCliTargets).map(({ os, cpu }) => rustTarget(os, cpu));
+const targets = distributionTargets;
 const registry = 'registry+https://github.com/rust-lang/crates.io-index';
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), 'maka-notice-components-'));

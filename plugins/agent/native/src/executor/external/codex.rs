@@ -460,6 +460,16 @@ impl Turn {
             return Ok(None);
         }
         match method {
+            "turn/plan/updated" => {
+                if let Some(steps) = p["plan"].as_array() {
+                    output.current_plan_item(
+                        steps
+                            .iter()
+                            .find(|s| s["status"] == "inProgress")
+                            .and_then(|s| s["step"].as_str()),
+                    );
+                }
+            }
             "item/agentMessage/delta"
             | "item/reasoning/summaryTextDelta"
             | "item/reasoning/textDelta" => {
@@ -620,6 +630,12 @@ impl Turn {
                                 message_id: id.clone(),
                             })
                             .await?;
+                        if kind == "agentMessage"
+                            && item["phase"] == "commentary"
+                            && let Some(text) = item["text"].as_str()
+                        {
+                            output.commentary(text);
+                        }
                         let message = self.messages.get_mut(&id).expect("started native message");
                         *message = Message {
                             ended: true,
@@ -991,4 +1007,64 @@ pub(super) async fn replay(
         return Err(Error::Unknown);
     }
     outcome.ok_or(Error::Unknown)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn worker_progress_uses_the_bound_turns_plan_tools_and_explicit_commentary() {
+        let (sink, rows) = crate::owner::worker_progress::tests::worker();
+        let mut turn = Turn {
+            thread: "t".into(),
+            turn: "r".into(),
+            messages: Default::default(),
+            final_message_id: None,
+            presentation: true,
+            context: false,
+            clock: None,
+            model: None,
+            fresh_thread: true,
+            usage_baseline: None,
+            usage: None,
+        };
+        for (method, fields, expected) in [
+            (
+                "item/completed",
+                json!({"item":{"id":"m0","type":"agentMessage","phase":"final_answer","text":"Final."}}),
+                "",
+            ),
+            (
+                "item/completed",
+                json!({"item":{"id":"m1","type":"agentMessage","phase":"commentary","text":"Checking tests. More text."}}),
+                "Checking tests.",
+            ),
+            (
+                "turn/plan/updated",
+                json!({"plan":[{"status":"inProgress","step":"Test workspace"}]}),
+                "Test workspace",
+            ),
+            (
+                "item/started",
+                json!({"item":{"id":"tool","type":"commandExecution","command":"cargo test"}}),
+                "cargo test",
+            ),
+            (
+                "item/completed",
+                json!({"item":{"id":"tool","type":"commandExecution","status":"completed","exitCode":0}}),
+                "Test workspace",
+            ),
+            ("turn/plan/updated", json!({"plan":[]}), "Checking tests."),
+        ] {
+            let mut params = fields;
+            params["threadId"] = json!("t");
+            params["turnId"] = json!("r");
+            turn.event(json!({"method":method,"params":params}), sink.as_ref())
+                .await
+                .unwrap();
+            assert_eq!(rows.borrow()["child"].detail, expected);
+        }
+    }
 }

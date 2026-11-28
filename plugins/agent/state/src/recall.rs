@@ -33,17 +33,20 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use tokio_util::sync::CancellationToken;
-use unicode_normalization::UnicodeNormalization;
+use unicode_normalization::{IsNormalized, UnicodeNormalization, is_nfc_quick};
 pub(crate) mod document;
 mod find;
 pub(crate) use find::{
     FindWork, find_index, landmark_ranks, landmarks_count_index, landmarks_selected_index,
 };
-mod index;
+pub(crate) mod index;
+pub(crate) mod migrate_v58;
 mod query;
 pub(crate) use query::checked_source_cut;
 pub(crate) mod terms;
 pub use find::{Find, FindPage, Found, Landmark};
+#[cfg(test)]
+pub(crate) use index::index_fact_v55;
 pub(crate) use index::{index_fact, index_sources, migrate_external_effect_observations};
 
 pub(crate) fn number(n: u64) -> Result<i64, StoreError> {
@@ -60,6 +63,12 @@ fn check(stop: &CancellationToken) -> Result<(), StoreError> {
     }
 }
 fn fold(s: &str) -> String {
+    if s.is_ascii() {
+        return s.to_ascii_lowercase();
+    }
+    if is_nfc_quick(s.chars()) == IsNormalized::Yes {
+        return s.to_lowercase();
+    }
     s.nfc().collect::<String>().to_lowercase()
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -127,6 +136,8 @@ pub struct SearchQuery {
     pub until: Option<u64>,
     pub exclude: Option<ExcludedTail>,
     pub limit: Option<usize>,
+    /// Restrict hits to transcript-visible rows and resolve their display anchors.
+    pub transcript_only: bool,
 }
 impl SearchQuery {
     fn normalize(&mut self) -> Result<(), StoreError> {
@@ -413,5 +424,27 @@ impl Statement for Rebuild {
             e,
             StoreError::InvalidTransition(_) | StoreError::EventConflict | StoreError::Json(_)
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fold;
+    use unicode_normalization::UnicodeNormalization;
+
+    #[test]
+    fn fold_matches_nfc_lowercase_across_ascii_unicode_and_cjk() {
+        for sample in [
+            "",
+            "Hello, World! 0123_SQLite",
+            "Café CAFÉ",
+            "é é É",
+            "Σσς ß İ Å",
+            "数据库迁移 Incremental_Vacuum 2026🚀",
+            "ậ Ậ",
+        ] {
+            let reference = sample.nfc().collect::<String>().to_lowercase();
+            assert_eq!(fold(sample), reference, "mismatch for {sample:?}");
+        }
     }
 }

@@ -39,7 +39,7 @@
   "pkg.maka.agent.workspace-web.displayName": "Ferramentas web",
   "pkg.maka.application.host-logs.description": "Leia e acompanhe os logs capturados do Host conectado.",
   "pkg.maka.application.host-logs.displayName": "Logs do Host",
-  "pkg.maka.applications.description": "Encontre, abra e gerencie aplicativos instalados pelo iniciador rápido no macOS.",
+  "pkg.maka.applications.description": "Encontre, abra e gerencie aplicativos instalados pelo iniciador rápido no Windows e no macOS.",
   "pkg.maka.applications.displayName": "Aplicativos",
   "pkg.maka.calculator.description": "Calcule e converta unidades no iniciador rápido e copie o resultado.",
   "pkg.maka.calculator.displayName": "Calculadora",

@@ -1048,8 +1048,9 @@ async fn scenario(
             db,
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
         ).map_err(|e|e.to_string())?;
+        maka_event_log::content::register_sql_functions(&connection).map_err(|e| e.to_string())?;
         let (record, bytes, provenance): (String, Vec<u8>, Vec<u8>) = connection.query_row(
-            "SELECT a.record_json,c.payload,p.payload FROM agent_artifacts a JOIN agent_session_artifact_registrations r ON r.session=a.session AND r.artifact=a.artifact AND r.owner=a.owner JOIN agent_run_specs s ON s.run=?1 AND s.session=a.session AND s.owner=a.owner JOIN contents c ON c.id=a.content_id JOIN contents p ON p.id=r.provenance_content_id WHERE a.session=?2 AND a.artifact=?3",
+            "SELECT a.record_json,maka_content_bytes(c.payload,c.encoding),maka_content_bytes(p.payload,p.encoding) FROM agent_artifacts a JOIN agent_session_artifact_registrations r ON r.session=a.session AND r.artifact=a.artifact AND r.owner=a.owner JOIN agent_run_specs s ON s.run=?1 AND s.session=a.session AND s.owner=a.owner JOIN contents c ON c.id=a.content_id JOIN contents p ON p.id=r.provenance_content_id WHERE a.session=?2 AND a.artifact=?3",
             rusqlite::params![run_id, session_id, artifact],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         ).map_err(|e|e.to_string())?;

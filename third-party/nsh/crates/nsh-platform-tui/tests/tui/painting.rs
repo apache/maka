@@ -711,7 +711,7 @@ fn CrowdedIcons() -> impl IntoElement {
 }
 
 #[test]
-fn an_icon_button_short_of_room_cuts_its_label_with_an_ellipsis() {
+fn an_icon_button_short_of_room_keeps_its_first_word() {
     let (mut view, rx) = surface();
     let mut terminal = Terminal::new(TestBackend::new(16, 3)).unwrap();
     view.load(App::Rust(Root::new::<CrowdedIcons>(|| ())))
@@ -720,13 +720,99 @@ fn an_icon_button_short_of_room_cuts_its_label_with_an_ellipsis() {
     let buffer = terminal.backend().buffer();
     let first = row(buffer, 0, 0..16);
     assert!(first.starts_with("Title"), "{first:?}");
+    // Three columns hold `Add` of `Add item` whole: a word, not `Ad…`.
+    assert!(first.starts_with("TitleAdd "), "{first:?}");
+}
+
+#[component]
+fn ToolbarIcons() -> impl IntoElement {
+    let icon = |label: &'static str| {
+        view().label(label).on_press(|_: &()| {}).child(
+            canvas(Painter::new().fill_rect(0.0, 0.0, 16.0, 16.0))
+                .w(px(16.0))
+                .h(px(16.0)),
+        )
+    };
+    view()
+        .flex_1()
+        .child(
+            view()
+                .flex_row()
+                .gap(px(8.0))
+                .child(icon("Edit folder"))
+                .child(icon("Scan folder"))
+                .child(icon("Parent folder")),
+        )
+        .child(text("ready"))
+}
+
+#[test]
+fn icon_buttons_short_of_room_keep_their_first_words() {
+    for (cols, words) in [
+        (30, ["Edit", "Scan", "Parent"]),
+        (18, ["Edit", "Scan", "Parent"]),
+    ] {
+        let (mut view, rx) = surface();
+        let mut terminal = Terminal::new(TestBackend::new(cols, 3)).unwrap();
+        view.load(App::Rust(Root::new::<ToolbarIcons>(|| ())))
+            .unwrap();
+        draw_until(&mut view, &mut terminal, &rx, "ready");
+        let first = row(terminal.backend().buffer(), 0, 0..cols);
+        for word in words {
+            assert!(
+                first
+                    .split(|c: char| !c.is_alphanumeric())
+                    .any(|w| w == word),
+                "{cols} columns: {word} whole in {first:?}"
+            );
+        }
+    }
+}
+
+#[component]
+fn WideIcons() -> impl IntoElement {
+    let icon = |label: &'static str| {
+        view().label(label).w(px(16.0)).on_press(|_: &()| {}).child(
+            canvas(Painter::new().fill_rect(0.0, 0.0, 16.0, 16.0))
+                .w(px(16.0))
+                .h(px(16.0)),
+        )
+    };
+    view()
+        .flex_1()
+        .child(
+            view()
+                .flex_row()
+                .gap(px(16.0))
+                .child(icon("菜单"))
+                .child(icon("设置")),
+        )
+        .child(
+            view()
+                .w(px(80.0))
+                .flex_row()
+                .child(text("标题"))
+                .child(icon("打开最近的会话")),
+        )
+        .child(text("ready"))
+}
+
+#[test]
+fn an_icon_button_lays_out_its_wide_label_whole_or_cuts_it_with_an_ellipsis() {
+    let (mut view, rx) = surface();
+    let mut terminal = Terminal::new(TestBackend::new(20, 4)).unwrap();
+    view.load(App::Rust(Root::new::<WideIcons>(|| ()))).unwrap();
+    draw_until(&mut view, &mut terminal, &rx, "ready");
+    let buffer = terminal.backend().buffer();
+    // A wide glyph's trailing cell reads back as a space, so compare without them.
+    let first = row(buffer, 0, 0..20).replace(' ', "");
+    assert!(first.starts_with("菜单"), "{first:?}");
+    assert!(first.contains("设置"), "{first:?}");
+    let second = row(buffer, 1, 0..20).replace(' ', "");
+    assert!(second.starts_with("标题"), "{second:?}");
     assert!(
-        first.contains('…'),
-        "a cut label ends in an ellipsis: {first:?}"
-    );
-    assert!(
-        !first[..first.find('…').unwrap()].ends_with(' '),
-        "{first:?}"
+        second.contains('…'),
+        "a cut wide label keeps its ellipsis: {second:?}"
     );
 }
 

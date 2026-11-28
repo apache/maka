@@ -17,7 +17,11 @@
  * under the License.
  */
 
-use crate::{ContentBlob, sql::with_owned_content, store::invalid};
+use crate::{
+    ContentBlob,
+    sql::{with_owned_content, with_owned_content_legacy},
+    store::invalid,
+};
 use maka_agent_facts::{
     durable::RunId,
     operation::{RecordedOperationReply, RecordedOperationResult, resolve_reply, result_reference},
@@ -50,16 +54,20 @@ pub async fn prepare_reply(
         .map_err(|error| invalid(format!("operation receipt preparation failed: {error}")))?
 }
 
-pub(crate) fn read_reply(
+pub(crate) fn read_reply_with_encoding(
     c: &Connection,
     run: RunId,
     reply: &RecordedOperationReply,
+    has_encoding: bool,
 ) -> Result<OperationReply, StoreError> {
     let result = result_reference(reply)
         .map(|reference| {
-            with_owned_content(c, run, reference, |bytes| {
-                Ok(serde_json::from_slice::<OperationResult>(bytes)?)
-            })
+            let decode = |bytes: &[u8]| Ok(serde_json::from_slice::<OperationResult>(bytes)?);
+            if has_encoding {
+                with_owned_content(c, run, reference, decode)
+            } else {
+                with_owned_content_legacy(c, run, reference, decode)
+            }
         })
         .transpose()?;
     resolve_reply(reply.clone(), result).map_err(invalid)

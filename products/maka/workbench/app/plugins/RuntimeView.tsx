@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { ErrorBoundary, View } from 'nsh';
+import { ErrorBoundary, View, type JSX } from 'nsh';
 import { RegionEmptyError } from '../Feedback';
 import { LoadingState } from '../Loading';
 import { errorText, renderText } from '../text';
@@ -76,7 +76,7 @@ type ViewProps = {
   plugins: Plugins;
   contribution: Contribution;
   input: UiContributionProps;
-  options?: UiViewRenderOptions;
+  options?: UiViewRenderOptions<JSX.Element>;
 };
 
 function PluginError(props: { reason: unknown; retry(): void }) {
@@ -112,13 +112,13 @@ function RuntimeView(props: ViewProps) {
       </If>
       <If
         when={
-          (props.options?.loading ?? true) &&
+          props.options?.loading !== false &&
           (entry.state().kind === 'idle' ||
             entry.state().kind === 'loading' ||
             entry.state().kind === 'loaded')
         }
       >
-        <LoadingState />
+        {typeof props.options?.loading === 'function' ? props.options.loading() : <LoadingState />}
       </If>
       <Each
         of={(() => {
@@ -203,7 +203,7 @@ export function renderEmbeddedView(
   target: UiTarget,
   contract: string,
   input: unknown,
-  options?: UiViewRenderOptions,
+  options?: UiViewRenderOptions<JSX.Element>,
 ) {
   return (
     <ContributionView
@@ -219,7 +219,7 @@ function ContributionView(props: {
   plugins: Plugins;
   contribution(): Contribution | undefined;
   input: UiContributionProps;
-  options?: UiViewRenderOptions;
+  options?: UiViewRenderOptions<JSX.Element>;
 }) {
   return (
     <ErrorBoundary fallback={(reason, reset) => <PluginError reason={reason} retry={reset} />}>

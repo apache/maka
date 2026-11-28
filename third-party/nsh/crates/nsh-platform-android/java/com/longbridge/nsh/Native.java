@@ -458,11 +458,15 @@ final class Native {
      * Touches for the JS responder system. phase: 0 start, 1 move, 2 end,
      * 3 cancel. Per finger: id, target node, path length (in {@code paths},
      * innermost first), pageX, pageY, locationX, locationY (dp), pressure,
-     * tiltX, tiltY (degrees) and kind (0 touch, 1 pen, 2 mouse) (8 floats
-     * in {@code coords}) and whether it changed. {@code time}: ms.
+     * tiltX, tiltY (degrees), kind (0 touch, 1 pen, 2 mouse), eraser and
+     * barrel (1 or 0: a pen's eraser end, its primary button held) (10
+     * floats in {@code coords}) and whether it changed. {@code samples}: the
+     * samples a move merged before its own, oldest first, 7 doubles each:
+     * the finger's index, pageX, pageY (dp), pressure, tiltX, tiltY and
+     * time. {@code time} and the samples' times: uptime ms.
      */
     static native void touch(long handle, int phase, int[] ids, int[] targets, int[] pathLengths, int[] paths,
-            float[] coords, boolean[] changed, long time, int activated);
+            float[] coords, double[] samples, boolean[] changed, long time, int activated);
 
     static native boolean hasPan(long handle, int id);
 

@@ -116,7 +116,7 @@ impl Query for Batch {
     type Output = Written;
     fn execute(mut self, c: &Connection) -> Result<Written, StoreError> {
         read::authorize(c, &self.0)?;
-        let mut rows:Vec<(i64,String,u64)>=c.prepare_cached("SELECT b.id,b.content_sha256,length(b.payload) FROM agent_history_snapshot_pins p JOIN contents b ON b.id=p.content_id WHERE p.snapshot=? AND b.id>? ORDER BY b.id LIMIT 129")?.query_map(params![self.0.id.to_string(),bind_u64(self.2)?],|r|Ok((r.get(0)?,r.get(1)?,read_u64(r,2)?)))?.collect::<Result<_,_>>()?;
+        let mut rows:Vec<(i64,String,u64)>=c.prepare_cached("SELECT b.id,b.content_sha256,COALESCE(b.logical_bytes,length(b.payload)) FROM agent_history_snapshot_pins p JOIN contents b ON b.id=p.content_id WHERE p.snapshot=? AND b.id>? ORDER BY b.id LIMIT 129")?.query_map(params![self.0.id.to_string(),bind_u64(self.2)?],|r|Ok((r.get(0)?,r.get(1)?,read_u64(r,2)?)))?.collect::<Result<_,_>>()?;
         let more = rows.len() > 128;
         rows.truncate(128);
         let next = if more {

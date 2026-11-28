@@ -138,6 +138,7 @@ pub fn command(sandbox: &Sandbox) -> Result<Command> {
 pub struct Host {
     child: Child,
     stdout: BufReader<ChildStdout>,
+    root: Option<PathBuf>,
     status: Option<ExitStatus>,
 }
 impl Host {
@@ -159,7 +160,9 @@ impl Host {
 
     fn spawn_command(mut command: Command, root: &std::path::Path) -> Result<Self> {
         command.args(["host", "serve", "--root"]).arg(root);
-        Self::spawn_service(command)
+        let mut host = Self::spawn_service(command)?;
+        host.root = Some(root.to_path_buf());
+        Ok(host)
     }
 
     pub fn spawn_service(mut command: Command) -> Result<Self> {
@@ -174,6 +177,7 @@ impl Host {
         Ok(Self {
             child,
             stdout,
+            root: None,
             status: None,
         })
     }
@@ -192,7 +196,19 @@ impl Host {
             .map_err(|error| error.to_string())?
             == 0
         {
-            return Err("original Host exited before ready".into());
+            let status = self.child.wait().await.map_err(|error| {
+                format!("original Host exited before ready (wait failed: {error})")
+            })?;
+            self.status = Some(status);
+            let diagnostics = self
+                .root
+                .as_deref()
+                .and_then(read_host_diagnostics_tail)
+                .map(|tail| format!("\nHost diagnostics:\n{tail}"))
+                .unwrap_or_default();
+            return Err(format!(
+                "original Host exited before ready ({status}){diagnostics}"
+            ));
         }
         let ready: Value = serde_json::from_str(&line).map_err(|error| error.to_string())?;
         if ready["kind"] != "ready" {
@@ -284,4 +300,15 @@ impl Host {
         self.wait_and_eof().await?;
         Ok(())
     }
+}
+
+fn read_host_diagnostics_tail(root: &std::path::Path) -> Option<String> {
+    const MAX_BYTES: usize = 4096;
+    let resolved = maka_event_log::root::resolve(root).ok()?;
+    let namespaces = maka_event_log::root::RootNamespaces::for_current_account().ok()?;
+    let source = maka_host_runtime::logs::Source::for_root(resolved.root_id(), &namespaces).ok()?;
+    let bytes = std::fs::read(source.path()).ok()?;
+    let start = bytes.len().saturating_sub(MAX_BYTES);
+    let tail = String::from_utf8_lossy(&bytes[start..]).trim().to_owned();
+    (!tail.is_empty()).then_some(tail)
 }

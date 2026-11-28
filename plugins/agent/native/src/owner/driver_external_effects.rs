@@ -26,6 +26,7 @@ use maka_agent_facts::{
     durable::*,
     external_effects::{
         ExternalEffectDescriptor, ExternalEffectEvent, ExternalEffectKey, ExternalReturn,
+        StoredExternalEffectDescriptor, StoredToolDefinition,
     },
     tool_call::{ToolOrigin, ToolSettlement},
     tool_output::{DurableToolProjection, ReturnedToolResult, ToolOutput, ToolSuccess},
@@ -252,13 +253,9 @@ impl NativeExternalEffects {
             if let Some(active) = &self.active {
                 active.lock().await.observing_prior = true;
             }
-            let bytes = self
-                .state
-                .content(self.claim.run(), effect.descriptor.clone())
-                .await
-                .map_err(persistence)?;
-            let descriptor: ExternalEffectDescriptor =
-                serde_json::from_slice(&bytes).map_err(persistence)?;
+            let descriptor = self
+                .load_descriptor(self.claim.run(), effect.descriptor.clone())
+                .await?;
             if descriptor.schema_version != SCHEMA_VERSION || descriptor.protocol != PROTOCOL {
                 self.block(key).await?;
                 return Err(ToolError::OutcomeUnknown(
@@ -311,32 +308,17 @@ impl NativeExternalEffects {
                 "Original prepared Host effect is unavailable".into(),
             ));
         }
-        let descriptor = ExternalEffectDescriptor {
-            schema_version: SCHEMA_VERSION,
-            protocol: PROTOCOL.into(),
-            execution: context.execution.clone(),
-            origin: context.call.origin.clone(),
-            key,
-            operation_id: context.operation_id.clone(),
-            name: name.clone(),
-            input: input.clone(),
-            definition,
-            catalog_digest: catalog.digest(),
-            // Tool calls have no attached Host resource slots.
-            resources: vec![],
-        };
-        let blob = ContentBlob::json(&descriptor).map_err(persistence)?;
-        let prepared = change(ExternalEffectEvent::Prepared {
-            key,
-            descriptor: blob.reference().clone(),
-        });
-        self.append(
+        let progress_hint = self
+            .access
+            .worker_progress()
+            .map(|_| super::worker_progress::tool(&name, &input));
+        self.prepare_descriptor(
             &context,
             key,
-            &name,
+            &catalog,
+            definition,
+            input.clone(),
             &cancellation,
-            vec![prepared],
-            vec![blob],
         )
         .await?;
         let prepared = if let Some(cells) = &self.cells
@@ -437,6 +419,11 @@ impl NativeExternalEffects {
                 .settle_owned(key, &name, Err(error), ToolSettlement::Rejected, running)
                 .await;
         }
+        let _progress = self
+            .access
+            .worker_progress()
+            .zip(progress_hint)
+            .map(|(run, hint)| run.track(context.operation_id.clone(), hint));
         let (custody, execution) = running.execute();
         let result = AssertUnwindSafe(execution)
             .catch_unwind()
@@ -793,7 +780,92 @@ impl NativeExternalEffects {
         Ok(owned)
     }
 
-    async fn read_return(
+    pub(super) async fn prepare_descriptor(
+        &self,
+        context: &ToolCallContext,
+        key: ExternalEffectKey,
+        catalog: &ToolCatalog,
+        definition: ToolDefinition,
+        input: Value,
+        cancellation: &CancellationToken,
+    ) -> Result<ContentRef, ToolError> {
+        let name = definition.name.clone();
+        let descriptor = ExternalEffectDescriptor {
+            schema_version: SCHEMA_VERSION,
+            protocol: PROTOCOL.into(),
+            execution: context.execution.clone(),
+            origin: context.call.origin.clone(),
+            key,
+            operation_id: context.operation_id.clone(),
+            name: name.clone(),
+            input,
+            definition,
+            catalog_digest: catalog.digest(),
+            // Tool calls have no attached Host resource slots.
+            resources: vec![],
+        };
+        let definition_blob = ContentBlob::json(&descriptor.definition).map_err(persistence)?;
+        let stored = StoredExternalEffectDescriptor::with_definition_ref(
+            &descriptor,
+            definition_blob.reference().clone(),
+        );
+        let blob = ContentBlob::json(&stored).map_err(persistence)?;
+        let reference = blob.reference().clone();
+        let prepared = change(ExternalEffectEvent::Prepared {
+            key,
+            descriptor: reference.clone(),
+        });
+        self.append(
+            context,
+            key,
+            &name,
+            cancellation,
+            vec![prepared],
+            vec![blob, definition_blob],
+        )
+        .await?;
+        Ok(reference)
+    }
+
+    async fn load_descriptor(
+        &self,
+        run: RunId,
+        reference: ContentRef,
+    ) -> Result<ExternalEffectDescriptor, ToolError> {
+        let bytes = self
+            .state
+            .content(run, reference)
+            .await
+            .map_err(persistence)?;
+        let stored: StoredExternalEffectDescriptor =
+            serde_json::from_slice(&bytes).map_err(persistence)?;
+        let definition = match stored.definition {
+            StoredToolDefinition::Inline(definition) => *definition,
+            StoredToolDefinition::Ref(definition_ref) => {
+                let definition_bytes = self
+                    .state
+                    .content(run, definition_ref)
+                    .await
+                    .map_err(persistence)?;
+                serde_json::from_slice(&definition_bytes).map_err(persistence)?
+            }
+        };
+        Ok(ExternalEffectDescriptor {
+            schema_version: stored.schema_version,
+            protocol: stored.protocol,
+            execution: stored.execution,
+            key: stored.key,
+            origin: stored.origin,
+            operation_id: stored.operation_id,
+            name: stored.name,
+            input: stored.input,
+            definition,
+            catalog_digest: stored.catalog_digest,
+            resources: stored.resources,
+        })
+    }
+
+    pub(super) async fn read_return(
         &self,
         key: ExternalEffectKey,
         name: &str,
@@ -820,20 +892,17 @@ impl NativeExternalEffects {
         {
             return Err(persistence(StoreError::EventConflict));
         }
-        let bytes = self
+        let returned = self
             .state
-            .content(run, reference)
+            .read_external_return(run, reference)
             .await
             .map_err(persistence)?;
         let name = name.to_owned();
-        tokio::task::spawn_blocking(move || {
-            let returned = serde_json::from_slice::<ExternalReturn>(&bytes).map_err(persistence)?;
-            render_return(id, key, &name, returned)
-        })
-        .await
-        .map_err(|error| {
-            ToolError::Persistence(format!("Original return reader failed: {error}"))
-        })?
+        tokio::task::spawn_blocking(move || render_return(id, key, &name, returned))
+            .await
+            .map_err(|error| {
+                ToolError::Persistence(format!("Original return reader failed: {error}"))
+            })?
     }
 
     async fn append(
@@ -1036,13 +1105,7 @@ impl NativeExternalEffects {
                 "Original external effect has no admission".into(),
             ));
         }
-        let bytes = self
-            .state
-            .content(view.run, effect.descriptor)
-            .await
-            .map_err(persistence)?;
-        let descriptor: ExternalEffectDescriptor =
-            serde_json::from_slice(&bytes).map_err(persistence)?;
+        let descriptor = self.load_descriptor(view.run, effect.descriptor).await?;
         let operation_id = format!("external:{}:{}", key.task, key.operation);
         if descriptor.schema_version != SCHEMA_VERSION
             || descriptor.protocol != PROTOCOL
@@ -1322,7 +1385,7 @@ impl NativeExternalEffects {
         Ok(())
     }
 
-    async fn settle(
+    pub(super) async fn settle(
         &self,
         key: ExternalEffectKey,
         name: &str,
@@ -1344,45 +1407,45 @@ impl NativeExternalEffects {
                                 &execution,
                             )
                             .map_err(|message| ToolError::OutcomeUnknown(message.into()))?;
-                        let returned = ExternalReturn::Output {
-                            output: normalized.output,
-                            is_error: normalized.is_error,
-                            projection: normalized.projection,
-                            artifacts: normalized
-                                .artifacts
-                                .iter()
-                                .map(|write| {
-                                    let evidence = write.evidence();
-                                    maka_agent_facts::artifact::PublishedArtifact {
-                                        artifact: write.artifact().clone(),
-                                        payload: ContentRef {
-                                            digest: evidence.digest,
-                                            bytes: evidence.bytes,
-                                        },
-                                    }
-                                })
-                                .collect(),
-                            display_budget_chars: normalized.display_budget_chars,
-                        };
-                        let blob = ContentBlob::json(&returned).map_err(persistence)?;
-                        let ExternalReturn::Output {
-                            output,
-                            is_error,
-                            projection,
-                            display_budget_chars,
-                            ..
-                        } = returned
-                        else {
-                            unreachable!()
-                        };
-                        let projection =
-                            display_projection(id, key, &name, projection, display_budget_chars);
+                        // Strip inline observation and duplicate text projection only in the
+                        // persisted wire copy for Completed cells; return the full unstripped
+                        // output to live HostEffects::invoke callers.
+                        let published_artifacts: Vec<_> = normalized
+                            .artifacts
+                            .iter()
+                            .map(|write| {
+                                let evidence = write.evidence();
+                                maka_agent_facts::artifact::PublishedArtifact {
+                                    artifact: write.artifact().clone(),
+                                    payload: ContentRef {
+                                        digest: evidence.digest,
+                                        bytes: evidence.bytes,
+                                    },
+                                }
+                            })
+                            .collect();
+                        let stored =
+                            maka_agent_facts::external_effects::StoredExternalReturn::from_output(
+                                &normalized.output,
+                                normalized.is_error,
+                                &normalized.projection,
+                                published_artifacts,
+                                normalized.display_budget_chars,
+                            );
+                        let blob = ContentBlob::json(&stored).map_err(persistence)?;
+                        let projection = display_projection(
+                            id,
+                            key,
+                            &name,
+                            normalized.projection,
+                            normalized.display_budget_chars,
+                        );
                         Ok::<_, ToolError>((
                             blob,
                             normalized.artifacts,
-                            output,
-                            is_error,
-                            display_budget_chars,
+                            normalized.output,
+                            normalized.is_error,
+                            normalized.display_budget_chars,
                             projection,
                         ))
                     })

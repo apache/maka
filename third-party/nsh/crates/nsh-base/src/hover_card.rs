@@ -8,7 +8,9 @@
 //! the pointer only: the keyboard focus opens and holds nothing (a click
 //! that focuses the trigger would otherwise keep the card open after the
 //! pointer left). Put what a keyboard user needs where the focus can reach
-//! it, not only in the card.
+//! it, not only in the card. A terminal, driven from the keyboard, is the
+//! exception: there the focus on the trigger shows the card at once and
+//! moving the focus away hides it.
 
 use std::time::Duration;
 
@@ -211,6 +213,7 @@ pub fn HoverCard(props: HoverCardProps, cx: Scope<HoverCardEvent>) -> impl IntoE
     );
     let anchor = element_ref();
     let desktop = is_desktop();
+    let terminal = crate::terminal::is_terminal();
     view()
         .child(props.trigger.place(move |trigger| {
             let trigger = trigger.element_ref(&anchor);
@@ -228,6 +231,20 @@ pub fn HoverCard(props: HoverCardProps, cx: Scope<HoverCardEvent>) -> impl IntoE
                         at_once(!open.get_untracked(), OpenChangeReason::TriggerPress)
                     });
             }
+            // A terminal is driven from the keyboard: the focus on the
+            // trigger shows the card at once and moving it away hides it,
+            // or what the card says would be out of reach.
+            let trigger = if terminal {
+                trigger
+                    .on_focus(move || at_once(true, OpenChangeReason::Focus))
+                    .on_blur(move || {
+                        if !over.with(|o| o.holds()) {
+                            at_once(false, OpenChangeReason::Focus);
+                        }
+                    })
+            } else {
+                trigger
+            };
             trigger
                 .on_mouse_enter(move |_: &MouseEvent| {
                     over.with(|o| o.trigger = true);

@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { textTooltip } from './ui';
+import { radius, textTooltip } from './ui';
 import { inputAction, Scroll, signal, Text, View } from 'nsh';
 import { Button, Popover } from 'nsh/base';
 import { windowSize } from 'nsh';
@@ -103,7 +103,7 @@ export function SessionPermissionsSelect(props: {
           disabled
           accessibilityLabel={tr('Sandbox and approvals')}
           tooltip={textTooltip(() => tr('Choose a conversation to change sandbox settings.'))}
-          style={composerToolbarControlStyle}
+          style={composerToolbarControlStyle()}
           disabledStyle={controlDisabledStyle}
         >
           <Text style={{ ...captionTextStyle, color: C.muted }}>{tr('Sandbox')}</Text>
@@ -216,9 +216,9 @@ function PermissionsMenu(props: { owner: MenuOwner }) {
           )}
           style={
             iconOnly()
-              ? { ...composerIconSlot, borderRadius: 8 }
+              ? { ...composerIconSlot, borderRadius: radius(8) }
               : {
-                  ...composerToolbarControlStyle,
+                  ...composerToolbarControlStyle(),
                   maxWidth: '100%',
                   minWidth: 0,
                   flexDirection: 'row',

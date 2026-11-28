@@ -22,7 +22,7 @@ use super::PreparationIo;
 use crate::{
     RunError,
     history::{
-        canonical_prompt::{self, Builder, Layout},
+        canonical_prompt::{self, Builder, Layout, MediaCapture, RestoredMediaEntry},
         capture_arena::CaptureArena,
         preparation::RequestPreparation,
     },
@@ -59,12 +59,27 @@ pub type FrozenPromptCleanup = Pin<Box<dyn Future<Output = Result<(), RunError>>
 pub struct FrozenPrompt {
     reference: ContentRef,
     chunks: Vec<ContentBlob>,
+    media: Vec<ContentBlob>,
     pub layout: Layout,
     cleanup: FrozenPromptCleanup,
 }
 impl FrozenPrompt {
-    pub fn into_parts(self) -> (ContentRef, Vec<ContentBlob>, Layout, FrozenPromptCleanup) {
-        (self.reference, self.chunks, self.layout, self.cleanup)
+    pub fn into_parts(
+        self,
+    ) -> (
+        ContentRef,
+        Vec<ContentBlob>,
+        Vec<ContentBlob>,
+        Layout,
+        FrozenPromptCleanup,
+    ) {
+        (
+            self.reference,
+            self.chunks,
+            self.media,
+            self.layout,
+            self.cleanup,
+        )
     }
 }
 
@@ -75,15 +90,17 @@ struct Staging {
 }
 async fn staging(
     resources: &ModelPreparationResources,
+    extra_directory_bytes: usize,
     cancellation: &CancellationToken,
 ) -> Result<Staging, RunError> {
-    let metadata = CaptureArena::metadata_bytes()
+    let metadata = 2 * CaptureArena::metadata_bytes()
         + RequestPreparation::metadata_bytes()
         + std::mem::size_of::<ArenaBody>()
         + std::mem::size_of::<ArenaReader<'static>>()
         + 4 * std::mem::size_of::<usize>();
     let resident_bytes = metadata
         .checked_add(Builder::resident_bytes())
+        .and_then(|bytes| bytes.checked_add(extra_directory_bytes))
         .ok_or_else(overflow)?;
     let staged = tokio::select! {
         biased;
@@ -108,11 +125,13 @@ pub async fn snapshot_prompt(
     let source = prompt.recipes().ok_or_else(|| {
         RunError::Internal("snapshot requires final source-backed prompt recipes".into())
     })?;
-    let staging = staging(&resources, cancellation).await?;
+    let staging = staging(&resources, 0, cancellation).await?;
     let arena = CaptureArena::new(io.clone(), None).await?;
+    let media_capture = MediaCapture::new(io.clone(), staging.preparation.clone());
     let result = async {
-        let mut builder = Builder::new(
+        let mut builder = Builder::new_external_media(
             arena.clone(),
+            media_capture.clone(),
             resources.clone(),
             staging.preparation.clone(),
             cancellation.clone(),
@@ -189,18 +208,25 @@ pub async fn snapshot_prompt(
         }
         let (released, done) = tokio::sync::oneshot::channel();
         let cleanup_arena = arena.clone();
+        let cleanup_media_arena = captured.media_arena.clone();
         let cleanup_preparation = staging.preparation.clone();
         let cleanup: FrozenPromptCleanup = Box::pin(async move {
             let released = done.await;
-            let closed = cleanup_arena.close().await;
+            let closed_main = cleanup_arena.close().await;
+            let closed_media = match cleanup_media_arena {
+                Some(media) => media.close().await,
+                None => Ok(()),
+            };
             drop(cleanup_preparation);
-            closed.map_err(RunError::PreparationCleanup)?;
+            closed_main.map_err(RunError::PreparationCleanup)?;
+            closed_media.map_err(RunError::PreparationCleanup)?;
             released.map_err(|_| {
                 RunError::Internal("frozen prompt body release signal was lost".into())
             })
         });
         let body = Arc::new(ArenaBody {
             arena: arena.clone(),
+            media_arena: captured.media_arena,
             access: Mutex::new(()),
             _io: io,
             _preparation: staging.preparation,
@@ -217,20 +243,36 @@ pub async fn snapshot_prompt(
                     body: body.clone(),
                     start,
                     end,
+                    media: false,
                 };
                 start = end;
                 ContentBlob::prepared(chunk, Arc::new(data))
             })
             .collect::<Result<Vec<_>, _>>()?;
+        let media = captured
+            .media_entries
+            .into_iter()
+            .map(|entry| {
+                let data = ArenaChunk {
+                    body: body.clone(),
+                    start: entry.range.start,
+                    end: entry.range.end,
+                    media: true,
+                };
+                ContentBlob::prepared(entry.reference, Arc::new(data))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(FrozenPrompt {
             reference,
             chunks,
+            media,
             layout: captured.layout,
             cleanup,
         })
     }
     .await;
-    close_failed(&arena, result).await
+    let media_arena = media_capture.current_arena();
+    close_failed_arenas(&arena, media_arena.as_ref(), result).await
 }
 
 pub enum ContentSource<'a> {
@@ -243,7 +285,7 @@ pub enum ContentSource<'a> {
 
 #[expect(
     clippy::too_many_arguments,
-    reason = "Restoration requires the original history cut, content identity, layout, I/O owner and cancellation as independent inputs"
+    reason = "Restoration requires the original history cut, content identity, chunks, media refs, layout, I/O owner and cancellation as independent inputs"
 )]
 pub async fn restore_prompt(
     io: PreparationIo,
@@ -253,6 +295,7 @@ pub async fn restore_prompt(
     run: RunId,
     reference: &ContentRef,
     chunks: &[ContentRef],
+    media: &[ContentRef],
     layout: &Layout,
     cancellation: &CancellationToken,
 ) -> Result<PreparedPrompt, RunError> {
@@ -263,6 +306,7 @@ pub async fn restore_prompt(
         run,
         reference,
         chunks,
+        media,
         layout,
         cancellation,
     )
@@ -280,6 +324,7 @@ pub async fn restore_prompt_from(
     run: RunId,
     reference: &ContentRef,
     chunks: &[ContentRef],
+    media: &[ContentRef],
     layout: &Layout,
     cancellation: &CancellationToken,
 ) -> Result<PreparedPrompt, RunError> {
@@ -291,7 +336,31 @@ pub async fn restore_prompt_from(
             "frozen prompt manifest length differs from its content".into(),
         ));
     }
-    let staging = staging(&resources, cancellation).await?;
+    match layout.version {
+        2 if !media.is_empty() => {
+            return Err(RunError::InvalidInput(
+                "legacy v2 frozen prompt cannot carry external media references".into(),
+            ));
+        }
+        2 | 3 => {}
+        _ => {
+            return Err(RunError::InvalidInput(
+                "unsupported frozen prompt layout version".into(),
+            ));
+        }
+    }
+    let media_directory_bytes = media
+        .len()
+        .checked_mul(std::mem::size_of::<RestoredMediaEntry>())
+        .ok_or_else(overflow)?;
+    let staging = staging(&resources, media_directory_bytes, cancellation).await?;
+    let media_directory = staging.preparation.plan_directory(media_directory_bytes)?;
+    let mut expected_media = Vec::with_capacity(media.len());
+    for part in media {
+        part.validate()
+            .map_err(|reason| RunError::InvalidInput(reason.into()))?;
+        expected_media.push((decode_sha256_ref(&part.digest)?, part.bytes));
+    }
     let arena = CaptureArena::new(io, None).await?;
     let result = async {
         let work = tokio::select! {
@@ -349,21 +418,79 @@ pub async fn restore_prompt_from(
             )
             .into());
         }
+        // Validate every record's media slot, digest, length, and exact coverage BEFORE
+        // copying external media blobs into the arena or returning PreparedPrompt.
+        canonical_prompt::validate_external_media_directory(
+            &arena,
+            layout,
+            &expected_media,
+            cancellation,
+        )
+        .await?;
+        let mut restored_media = Vec::with_capacity(media.len());
+        for (part, &(expected_digest, expected)) in media.iter().zip(expected_media.iter()) {
+            check(cancellation)?;
+            let start = arena.with_writer(|w| Ok(w.position())).await?;
+            let copy_arena = arena.clone();
+            let copy_cancellation = cancellation.clone();
+            let mut media_hash = Sha256::new();
+            let consume = move |reader: &mut dyn Read| {
+                Ok(copy_arena
+                    .with_writer_sync(|writer| {
+                        copy_content(
+                            reader,
+                            writer,
+                            &mut buffer,
+                            expected,
+                            &mut media_hash,
+                            &copy_cancellation,
+                        )
+                    })
+                    .map(|()| (buffer, media_hash)))
+            };
+            let copied = match &source {
+                ContentSource::Live { history, cut } => {
+                    history.with_content(cut, run, part, consume).await?
+                }
+                ContentSource::Snapshot(snapshot) => {
+                    snapshot.with_content(run, part, consume).await?
+                }
+            };
+            let (next_buffer, next_hash) = copied.map_err(RunError::preparation)?;
+            buffer = next_buffer;
+            let actual_digest: [u8; 32] = next_hash.finalize().into();
+            if actual_digest != expected_digest {
+                return Err(invalid(
+                    "frozen prompt media content digest differs from its reference",
+                )
+                .into());
+            }
+            let end = start.checked_add(expected).ok_or_else(overflow)?;
+            restored_media.push(RestoredMediaEntry {
+                digest: actual_digest,
+                range: start..end,
+            });
+        }
         drop(buffer);
         drop((budget, work));
         check(cancellation)?;
         let source_directory = staging
             .preparation
             .plan_directory(Builder::resident_bytes())?;
-        let body =
-            canonical_prompt::restore(arena.clone(), resources.clone(), layout.clone()).await?;
+        let body = canonical_prompt::restore(
+            arena.clone(),
+            resources.clone(),
+            layout.clone(),
+            restored_media.into(),
+        )
+        .await?;
         let source = body
             .recipes()
             .cloned()
             .ok_or_else(|| RunError::Internal("restored prompt lacks source recipes".into()))?;
         let source = ChargedSource {
             source,
-            owner: Arc::new((staging.directory, source_directory)),
+            owner: Arc::new((staging.directory, source_directory, media_directory)),
         };
         let body = Prompt::from_recipes(
             Arc::new(source),
@@ -419,8 +546,19 @@ fn copy_content(
     Ok(())
 }
 
+fn decode_sha256_ref(digest: &str) -> io::Result<[u8; 32]> {
+    let hex_part = digest
+        .strip_prefix("sha256:")
+        .ok_or_else(|| invalid("invalid sha256 content reference prefix"))?;
+    let mut bytes = [0u8; 32];
+    hex::decode_to_slice(hex_part, &mut bytes)
+        .map_err(|_| invalid("invalid sha256 content reference digest"))?;
+    Ok(bytes)
+}
+
 struct ArenaBody {
     arena: CaptureArena,
+    media_arena: Option<CaptureArena>,
     access: Mutex<()>,
     _io: PreparationIo,
     _preparation: Arc<RequestPreparation>,
@@ -443,6 +581,7 @@ struct ArenaChunk {
     body: Arc<ArenaBody>,
     start: u64,
     end: u64,
+    media: bool,
 }
 impl ImmutableContentBody for ArenaChunk {
     fn reader(&self) -> io::Result<Box<dyn Read + Send + '_>> {
@@ -450,6 +589,7 @@ impl ImmutableContentBody for ArenaChunk {
             body: &self.body,
             position: self.start,
             end: self.end,
+            media: self.media,
         }))
     }
 }
@@ -457,6 +597,7 @@ struct ArenaReader<'a> {
     body: &'a ArenaBody,
     position: u64,
     end: u64,
+    media: bool,
 }
 impl Read for ArenaReader<'_> {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
@@ -469,8 +610,15 @@ impl Read for ArenaReader<'_> {
             .access
             .lock()
             .map_err(|_| io::Error::other("frozen prompt reader lock poisoned"))?;
-        self.body
-            .arena
+        let target = if self.media {
+            self.body
+                .media_arena
+                .as_ref()
+                .ok_or_else(|| invalid("missing frozen prompt media arena"))?
+        } else {
+            &self.body.arena
+        };
+        target
             .with_writer_sync(|writer| writer.read_exact_at(self.position, &mut buffer[..count]))?;
         self.position += count as u64;
         Ok(count)
@@ -491,17 +639,31 @@ fn overflow() -> io::Error {
     io::Error::other("frozen prompt size overflow")
 }
 async fn close_failed<T>(arena: &CaptureArena, result: Result<T, RunError>) -> Result<T, RunError> {
+    close_failed_arenas(arena, None, result).await
+}
+async fn close_failed_arenas<T>(
+    arena: &CaptureArena,
+    media_arena: Option<&CaptureArena>,
+    result: Result<T, RunError>,
+) -> Result<T, RunError> {
     match result {
         Ok(value) => Ok(value),
-        Err(preparation) => match arena.close().await {
-            Ok(()) => Err(preparation),
-            Err(cleanup) => Err(RunError::PreparationCleanup(io::Error::other(
-                CleanupError {
-                    preparation,
-                    cleanup,
-                },
-            ))),
-        },
+        Err(preparation) => {
+            let main_close = arena.close().await;
+            let media_close = match media_arena {
+                Some(media) => media.close().await,
+                None => Ok(()),
+            };
+            match main_close.and(media_close) {
+                Ok(()) => Err(preparation),
+                Err(cleanup) => Err(RunError::PreparationCleanup(io::Error::other(
+                    CleanupError {
+                        preparation,
+                        cleanup,
+                    },
+                ))),
+            }
+        }
     }
 }
 #[derive(Debug)]
@@ -526,7 +688,7 @@ impl std::error::Error for CleanupError {
 
 struct ChargedSource {
     source: Arc<dyn MessageSource>,
-    owner: Arc<(DirectoryLease, DirectoryLease)>,
+    owner: Arc<(DirectoryLease, DirectoryLease, DirectoryLease)>,
 }
 impl RecipeSource<MessageRecipe> for ChargedSource {
     fn len(&self) -> usize {
@@ -549,10 +711,348 @@ impl MessageSource for ChargedSource {
 }
 struct ChargedCursor<T> {
     cursor: Box<dyn RecipeCursor<T>>,
-    _owner: Arc<(DirectoryLease, DirectoryLease)>,
+    _owner: Arc<(DirectoryLease, DirectoryLease, DirectoryLease)>,
 }
 impl<T: Send + 'static> RecipeCursor<T> for ChargedCursor<T> {
     fn next(&mut self) -> NextRecipe<'_, T> {
         self.cursor.next()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use base64::Engine as _;
+    use maka_agent_facts::model::prompt_source::source::{
+        ByteCursor, ByteSource, ContentRecipe, MediaSource, ReadSource, SourceBudget, TextEncoding,
+        TextSource,
+    };
+    use maka_event_log::{
+        RootStore,
+        root::{RootNamespaces, RootOwner},
+    };
+    use maka_model::{
+        PreparationPolicy,
+        prompt::{ContentPart, FileData, Message},
+    };
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    async fn open_io() -> (
+        tempfile::TempDir,
+        RootStore,
+        maka_event_log::root_store::SessionWorkLease,
+        maka_event_log::root_store::WorkEffects,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let namespaces = RootNamespaces {
+            ownership: dir.path().join("owners"),
+            control: dir.path().join("control"),
+        };
+        let owner = Arc::new(RootOwner::create(&dir.path().join("root"), &namespaces).unwrap());
+        let root = RootStore::open(owner, maka_event_log::ROOT_MIGRATIONS)
+            .await
+            .unwrap();
+        let scope = root
+            .create_session("snapshot-test", "fp", &serde_json::json!({}), 1)
+            .await
+            .unwrap()
+            .work_scope(None)
+            .await
+            .unwrap();
+        let (lease, effects) = scope.accept(CancellationToken::new());
+        (dir, root, lease, effects)
+    }
+
+    async fn read_source_bytes(
+        source: &SourceBytes,
+        budget: &Arc<dyn SourceBudget>,
+    ) -> io::Result<Vec<u8>> {
+        let mut cursor = source.open(budget.clone());
+        let mut buf = budget.allocate(16 * 1024).await?;
+        let mut out = Vec::new();
+        loop {
+            let read = cursor.read_chunk(buf).await?;
+            out.extend_from_slice(&read.buffer.as_ref()[..read.bytes_read]);
+            buf = read.buffer;
+            if read.eof {
+                return Ok(out);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn legacy_v2_inline_image_restores_without_media_and_rejects_media_refs() {
+        let (_dir, root, lease, _effects) = open_io().await;
+        let resources = ModelPreparationResources::new(PreparationPolicy::default()).unwrap();
+        let cancel = CancellationToken::new();
+        let io = PreparationIo::new(&lease.store()).unwrap();
+
+        let image = b"legacy-v2-inline-image-payload-0123456789".to_vec();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&image);
+        let stage = staging(&resources, 0, &cancel).await.unwrap();
+        let arena = CaptureArena::new(io.clone(), None).await.unwrap();
+        let mut builder = Builder::new(
+            arena.clone(),
+            resources.clone(),
+            stage.preparation.clone(),
+            cancel.clone(),
+        )
+        .await
+        .unwrap();
+        builder
+            .append(
+                Message::User {
+                    content: vec![ContentPart::File {
+                        data: FileData::Data(b64),
+                        media_type: "image/png".into(),
+                        provider_options: None,
+                    }],
+                    provider_options: None,
+                },
+                false,
+            )
+            .await
+            .unwrap();
+        let captured = builder.finish_captured().await.unwrap();
+        assert_eq!(captured.layout.version, 2);
+
+        // Paired checks against the genuine v2 inline-image arena:
+        // 1. Non-empty media refs are rejected at directory validation.
+        let bogus_digest: [u8; 32] = Sha256::digest(&image).into();
+        assert!(
+            canonical_prompt::validate_external_media_directory(
+                &arena,
+                &captured.layout,
+                &[(bogus_digest, image.len() as u64)],
+                &cancel,
+            )
+            .await
+            .is_err()
+        );
+        // 2. Empty media validates and restores the exact inline image bytes.
+        canonical_prompt::validate_external_media_directory(&arena, &captured.layout, &[], &cancel)
+            .await
+            .unwrap();
+        let restored = canonical_prompt::restore(
+            arena.clone(),
+            resources.clone(),
+            captured.layout.clone(),
+            Arc::from([]),
+        )
+        .await
+        .unwrap();
+        {
+            let work = resources.acquire_work().await.unwrap();
+            let Some(MessageRecipe::User { content, .. }) =
+                restored.recipes().unwrap().open(0).next().await.unwrap()
+            else {
+                panic!("expected user message");
+            };
+            let Some(ContentRecipe::Media { media, .. }) = content.open(0).next().await.unwrap()
+            else {
+                panic!("expected inline media");
+            };
+            assert_eq!(
+                read_source_bytes(&media.bytes, &work.budget())
+                    .await
+                    .unwrap(),
+                image
+            );
+        }
+        drop((restored, captured, stage));
+        arena.close().await.unwrap();
+        drop(arena);
+        drop(io);
+        lease.finish();
+        root.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn external_media_capture_is_single_pass_rewinds_duplicates_and_charges_directory_budget()
+    {
+        struct CountingBytes {
+            data: Arc<[u8]>,
+            opens: Arc<AtomicUsize>,
+        }
+        struct SliceCursor {
+            data: Arc<[u8]>,
+            pos: usize,
+        }
+        impl ByteCursor for SliceCursor {
+            fn read_chunk(&mut self, mut buffer: ChargedBuffer) -> ReadSource<'_> {
+                Box::pin(async move {
+                    let rem = self.data.len() - self.pos;
+                    let n = rem.min(buffer.as_ref().len());
+                    buffer.as_mut()[..n].copy_from_slice(&self.data[self.pos..self.pos + n]);
+                    self.pos += n;
+                    Ok(maka_agent_facts::model::prompt_source::source::SourceRead {
+                        buffer,
+                        bytes_read: n,
+                        eof: self.pos == self.data.len(),
+                    })
+                })
+            }
+        }
+        impl ByteSource for CountingBytes {
+            fn len(&self) -> Option<u64> {
+                Some(self.data.len() as u64)
+            }
+            fn open(&self, _budget: Arc<dyn SourceBudget>) -> Box<dyn ByteCursor> {
+                self.opens.fetch_add(1, Ordering::SeqCst);
+                Box::new(SliceCursor {
+                    data: self.data.clone(),
+                    pos: 0,
+                })
+            }
+        }
+        struct OneMessage(MessageRecipe);
+        impl RecipeSource<MessageRecipe> for OneMessage {
+            fn len(&self) -> usize {
+                1
+            }
+            fn open(&self, start: usize) -> Box<dyn RecipeCursor<MessageRecipe>> {
+                let item = (start == 0).then(|| self.0.clone());
+                struct Once(Option<MessageRecipe>);
+                impl RecipeCursor<MessageRecipe> for Once {
+                    fn next(&mut self) -> NextRecipe<'_, MessageRecipe> {
+                        let item = self.0.take();
+                        Box::pin(async move { Ok(item) })
+                    }
+                }
+                Box::new(Once(item))
+            }
+        }
+        impl MessageSource for OneMessage {
+            fn open_metadata(&self, _start: usize) -> Box<dyn RecipeCursor<MessageMetadata>> {
+                unreachable!("snapshot_prompt only opens recipes")
+            }
+        }
+        struct Parts(Vec<ContentRecipe>);
+        impl RecipeSource<ContentRecipe> for Parts {
+            fn len(&self) -> usize {
+                self.0.len()
+            }
+            fn open(&self, start: usize) -> Box<dyn RecipeCursor<ContentRecipe>> {
+                struct VecCursor(std::vec::IntoIter<ContentRecipe>);
+                impl RecipeCursor<ContentRecipe> for VecCursor {
+                    fn next(&mut self) -> NextRecipe<'_, ContentRecipe> {
+                        let item = self.0.next();
+                        Box::pin(async move { Ok(item) })
+                    }
+                }
+                Box::new(VecCursor(Vec::from(&self.0[start..]).into_iter()))
+            }
+        }
+
+        let (_dir, root, lease, _effects) = open_io().await;
+        let resources = ModelPreparationResources::new(PreparationPolicy::default()).unwrap();
+        let cancel = CancellationToken::new();
+        let io = PreparationIo::new(&lease.store()).unwrap();
+
+        let img_a: Arc<[u8]> = vec![0xAAu8; 4096].into();
+        let img_b: Arc<[u8]> = vec![0xBBu8; 4096].into();
+        let (opens_a1, opens_b, opens_a2) = (
+            Arc::new(AtomicUsize::new(0)),
+            Arc::new(AtomicUsize::new(0)),
+            Arc::new(AtomicUsize::new(0)),
+        );
+        let make_part = |data: Arc<[u8]>, opens: Arc<AtomicUsize>| ContentRecipe::Media {
+            media: MediaSource {
+                bytes: SourceBytes::Source(Arc::new(CountingBytes { data, opens })),
+                media_type: TextSource::new(
+                    SourceBytes::Inline(b"image/png".as_slice().into()),
+                    TextEncoding::Utf8,
+                ),
+                detail: None,
+            },
+            provider_options: None,
+        };
+        let prompt = Prompt::from_recipes(
+            Arc::new(OneMessage(MessageRecipe::User {
+                is_pinned_memory: false,
+                content: Arc::new(Parts(vec![
+                    make_part(img_a.clone(), opens_a1.clone()),
+                    make_part(img_b.clone(), opens_b.clone()),
+                    make_part(img_a.clone(), opens_a2.clone()),
+                ])),
+                provider_options: None,
+            })),
+            String::from("id"),
+            1,
+            Default::default(),
+        );
+        let frozen = snapshot_prompt(io.clone(), resources, &prompt, &cancel)
+            .await
+            .unwrap();
+        assert_eq!(opens_a1.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            opens_b.load(Ordering::SeqCst),
+            1,
+            "2nd unique image must be read once"
+        );
+        assert_eq!(
+            opens_a2.load(Ordering::SeqCst),
+            1,
+            "duplicate image must be read once"
+        );
+        let (_ref, chunks, media, layout, cleanup) = frozen.into_parts();
+        assert_eq!(layout.version, 3);
+        assert_eq!(media.len(), 2);
+        assert_eq!(
+            media[0].reference(),
+            ContentBlob::new(img_a.to_vec()).reference()
+        );
+        assert_eq!(
+            media[1].reference(),
+            ContentBlob::new(img_b.to_vec()).reference()
+        );
+        drop((chunks, media));
+        cleanup.await.unwrap();
+
+        // Tight staging budget must reject unbounded unique media directory growth.
+        let base_meta = 2 * CaptureArena::metadata_bytes()
+            + RequestPreparation::metadata_bytes()
+            + std::mem::size_of::<ArenaBody>()
+            + std::mem::size_of::<ArenaReader<'static>>()
+            + 4 * std::mem::size_of::<usize>()
+            + Builder::resident_bytes();
+        let tight = ModelPreparationResources::new(PreparationPolicy {
+            staging_bytes: base_meta + 1024,
+            resident_bytes: base_meta + 64 * 1024,
+            work_bytes: 64 * 1024,
+            progress_bytes: 128 * 1024,
+        })
+        .unwrap();
+        let many_parts: Vec<_> = (0u8..20)
+            .map(|i| ContentRecipe::Media {
+                media: MediaSource {
+                    bytes: SourceBytes::Inline(vec![i; 64].into()),
+                    media_type: TextSource::new(
+                        SourceBytes::Inline(b"image/png".as_slice().into()),
+                        TextEncoding::Utf8,
+                    ),
+                    detail: None,
+                },
+                provider_options: None,
+            })
+            .collect();
+        let big_prompt = Prompt::from_recipes(
+            Arc::new(OneMessage(MessageRecipe::User {
+                is_pinned_memory: false,
+                content: Arc::new(Parts(many_parts)),
+                provider_options: None,
+            })),
+            String::from("many"),
+            1,
+            Default::default(),
+        );
+        let err = snapshot_prompt(io.clone(), tight, &big_prompt, &cancel).await;
+        assert!(
+            err.is_err(),
+            "unique media directory growth must hit staging plan_directory budget"
+        );
+        drop(io);
+        lease.finish();
+        root.close().await.unwrap();
     }
 }

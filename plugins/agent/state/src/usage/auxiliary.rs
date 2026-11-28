@@ -217,7 +217,7 @@ fn contains(c: &Connection, write: &AuxiliaryWrite) -> Result<bool, StoreError> 
     type AuxiliarySourceRow = (String, i64, Option<String>, Option<Vec<u8>>);
     let row: Option<AuxiliarySourceRow> = c
         .query_row(
-            "SELECT e.request,e.at,b.content_sha256,b.payload FROM agent_usage_aux_events e
+            "SELECT e.request,e.at,b.content_sha256,maka_content_bytes(b.payload,b.encoding) FROM agent_usage_aux_events e
          LEFT JOIN contents b ON b.id=e.body_content_id WHERE e.id=?",
             [write.id.to_string()],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
@@ -237,7 +237,7 @@ fn contains(c: &Connection, write: &AuxiliaryWrite) -> Result<bool, StoreError> 
 }
 fn stored_spec(c: &Connection, request: Uuid) -> Result<AuxiliarySpec, StoreError> {
     let (owner,session,key,digest,bytes): (String,String,String,Option<String>,Option<Vec<u8>>) = c.query_row(
-        "SELECT s.owner,s.session,s.source_key,b.content_sha256,b.payload FROM agent_usage_aux_specs s
+        "SELECT s.owner,s.session,s.source_key,b.content_sha256,maka_content_bytes(b.payload,b.encoding) FROM agent_usage_aux_specs s
          LEFT JOIN contents b ON b.id=s.spec_content_id WHERE s.request=?",
         [request.to_string()], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)),
     ).optional()?.ok_or_else(|| invalid("auxiliary request was not started"))?;
@@ -315,7 +315,7 @@ impl Statement for AuxiliaryWrite {
             AuxiliaryEvent::UsageObserved { .. } | AuxiliaryEvent::Settled { .. } => {
                 let spec = stored_spec(c, self.request)?;
                 let (digest,bytes): (Option<String>,Option<Vec<u8>>) = c.query_row(
-                    "SELECT b.content_sha256,b.payload FROM agent_usage_aux_events e
+                    "SELECT b.content_sha256,maka_content_bytes(b.payload,b.encoding) FROM agent_usage_aux_events e
                      LEFT JOIN contents b ON b.id=e.body_content_id WHERE e.request=? ORDER BY e.sequence DESC LIMIT 1",
                     [self.request.to_string()], |r| Ok((r.get(0)?,r.get(1)?)),
                 ).optional()?.ok_or_else(|| invalid("auxiliary request has no Started event"))?;
@@ -361,7 +361,7 @@ fn validate_source(c: &Connection, spec: &AuxiliarySpec) -> Result<(), StoreErro
     match &spec.source {
         AuxiliarySource::Agent { execution, .. } | AuxiliarySource::SessionTitle { execution } => {
             let (owner,session,version,digest,bytes): (String,String,u32,Option<String>,Option<Vec<u8>>) = c.query_row(
-                "SELECT r.owner,r.session,r.schema_version,b.content_sha256,b.payload FROM agent_run_specs r
+                "SELECT r.owner,r.session,r.schema_version,b.content_sha256,maka_content_bytes(b.payload,b.encoding) FROM agent_run_specs r
                  LEFT JOIN contents b ON b.id=r.spec_content_id WHERE r.run=?",
                 [execution.run_id.to_string()], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)),
             ).optional()?.ok_or_else(|| invalid("auxiliary source Run missing"))?;
@@ -384,13 +384,45 @@ fn validate_source(c: &Connection, spec: &AuxiliarySpec) -> Result<(), StoreErro
             fingerprint,
             ..
         } => {
-            let (revision,contract_digest,request,contract): (i64,String,String,String) = c.query_row(
-                "SELECT o.source_revision,o.contract_digest,o.request_json,k.contract_json FROM application_operations o
-                 JOIN application_operation_contracts k ON k.digest=o.contract_digest
-                 WHERE o.deployment=? AND o.namespace=? AND o.operation=?",
-                params![source.deployment.to_string(),serde_json::to_string(namespace)?,operation.to_string()],
-                |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)),
-            ).optional()?.ok_or_else(|| invalid("auxiliary original operation or contract missing"))?;
+            let (revision, contract_digest, request_raw, request_enc, contract_raw, contract_enc): (
+                i64,
+                String,
+                rusqlite::types::Value,
+                i64,
+                rusqlite::types::Value,
+                i64,
+            ) = c
+                .query_row(
+                    "SELECT o.source_revision,o.contract_digest,o.request_json,o.request_encoding,k.contract_json,k.contract_encoding
+                     FROM application_operations o
+                     JOIN application_operation_contracts k ON k.digest=o.contract_digest
+                     WHERE o.deployment=? AND o.namespace=? AND o.operation=?",
+                    params![
+                        source.deployment.to_string(),
+                        serde_json::to_string(namespace)?,
+                        operation.to_string()
+                    ],
+                    |r| {
+                        Ok((
+                            r.get(0)?,
+                            r.get(1)?,
+                            r.get(2)?,
+                            r.get(3)?,
+                            r.get(4)?,
+                            r.get(5)?,
+                        ))
+                    },
+                )
+                .optional()?
+                .ok_or_else(|| invalid("auxiliary original operation or contract missing"))?;
+            let request = maka_event_log::content::decode_inline_text(
+                rusqlite::types::ValueRef::from(&request_raw),
+                request_enc,
+            )?;
+            let contract = maka_event_log::content::decode_inline_text(
+                rusqlite::types::ValueRef::from(&contract_raw),
+                contract_enc,
+            )?;
             let original: OperationRequest<RecoveryContract> = serde_json::from_str(&request)?;
             let contract: Contract = serde_json::from_str(&contract)?;
             let captured_contract = original.contract;
@@ -432,7 +464,7 @@ impl Statement for RebuildAuxiliary {
     fn execute(self, c: &Connection) -> Result<Prepared<()>, StoreError> {
         let spec = stored_spec(c, self.0)?;
         let (digest, bytes): (String, i64) = c.query_row(
-            "SELECT b.content_sha256,length(b.payload) FROM agent_usage_aux_specs s
+            "SELECT b.content_sha256,COALESCE(b.logical_bytes,length(b.payload)) FROM agent_usage_aux_specs s
              JOIN contents b ON b.id=s.spec_content_id WHERE s.request=?",
             [self.0.to_string()],
             |row| Ok((row.get(0)?, row.get(1)?)),
@@ -451,7 +483,7 @@ impl Statement for RebuildAuxiliary {
         loop {
             type AuxiliaryFactRow = (i64, i64, Option<String>, Option<Vec<u8>>);
             let page: Vec<AuxiliaryFactRow> = c.prepare_cached(
-                "SELECT e.sequence,e.at,b.content_sha256,b.payload FROM agent_usage_aux_events e
+                "SELECT e.sequence,e.at,b.content_sha256,maka_content_bytes(b.payload,b.encoding) FROM agent_usage_aux_events e
                  LEFT JOIN contents b ON b.id=e.body_content_id
                  WHERE e.request=? AND e.sequence>? ORDER BY e.sequence LIMIT 128"
             )?.query_map(params![self.0.to_string(),after], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?)))?
@@ -487,5 +519,166 @@ impl Statement for RebuildAuxiliary {
     fn committed(_: ()) {}
     fn isolated_rejection(error: &StoreError) -> bool {
         AuxiliaryWrite::isolated_rejection(error)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use maka_agent_facts::{context::ModelPurpose, execution::ModelBinding};
+    use maka_plugin_core::{
+        composition::InstanceId,
+        contract::{Interface, Method, MethodMode, Transport},
+        deployment::DeploymentRef,
+    };
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn application_operation_auxiliary_source_decodes_compressed_and_raw_blob_rows() {
+        let db = Connection::open_in_memory().unwrap();
+        let all_migrations: Vec<_> = maka_event_log::ROOT_MIGRATIONS
+            .iter()
+            .chain(crate::MIGRATIONS)
+            .copied()
+            .collect();
+        maka_event_log::migration::run(&db, &all_migrations).unwrap();
+
+        let contract = Contract {
+            name: "test.ReceiptLedger".into(),
+            version: 1,
+            transport: Transport::Local,
+            interface: Interface::Service {
+                methods: BTreeMap::from([(
+                    "write".into(),
+                    Method {
+                        mode: MethodMode::Mutation,
+                        input: serde_json::json!({
+                            "type": "object",
+                            "properties": {
+                                "prompt": {
+                                    "type": "string",
+                                    "description": "long repeated schema description ".repeat(16)
+                                }
+                            }
+                        })
+                        .into(),
+                        output: serde_json::json!({ "type": "object" }).into(),
+                        progress: None,
+                        resources: BTreeMap::new(),
+                    },
+                )]),
+            },
+        };
+        let contract_json = serde_json::to_string(&contract).unwrap();
+        let deployment = Uuid::new_v4();
+        let namespace = InstanceId(vec![Uuid::new_v4()]);
+        let consumer = InstanceId(vec![Uuid::new_v4()]);
+
+        for (case_idx, force_raw_blob) in [false, true].into_iter().enumerate() {
+            let operation = Uuid::new_v4();
+            let source = DeploymentRef {
+                state_domain: "a".repeat(64),
+                deployment,
+                revision: (case_idx as u64) + 1,
+            };
+            let request = OperationRequest {
+                source: source.clone(),
+                namespace: namespace.clone(),
+                consumer: consumer.clone(),
+                export: "ledger".into(),
+                method: "write".into(),
+                contract: contract.clone(),
+                operation,
+                input: serde_json::json!({
+                    "payload": "compressible repeated application operation request payload ".repeat(12)
+                }),
+                capture: None,
+                origin: serde_json::json!({ "kind": "auxiliary-decode-test" }),
+            };
+            let reference = request.reference().unwrap();
+            let recovery_request = OperationRequest {
+                source: request.source,
+                namespace: request.namespace,
+                consumer: request.consumer,
+                export: request.export,
+                method: request.method,
+                contract: reference.contract.clone(),
+                operation: request.operation,
+                input: request.input,
+                capture: request.capture,
+                origin: request.origin,
+            };
+            let request_json = serde_json::to_string(&recovery_request).unwrap();
+
+            let (req_bytes, req_enc) = if force_raw_blob {
+                (request_json.as_bytes().to_vec(), content::ENCODING_RAW)
+            } else {
+                let enc = content::encode(request_json.as_bytes()).unwrap();
+                assert_ne!(enc.encoding, content::ENCODING_RAW);
+                (enc.payload.into_owned(), enc.encoding)
+            };
+            let (con_bytes, con_enc) = if force_raw_blob {
+                (contract_json.as_bytes().to_vec(), content::ENCODING_RAW)
+            } else {
+                let enc = content::encode(contract_json.as_bytes()).unwrap();
+                assert_ne!(enc.encoding, content::ENCODING_RAW);
+                (enc.payload.into_owned(), enc.encoding)
+            };
+
+            let contract_digest = reference.contract.digest.clone();
+            db.execute(
+                "INSERT OR REPLACE INTO application_operation_contracts(digest, contract_json, contract_encoding)
+                 VALUES(?1, ?2, ?3)",
+                params![contract_digest, con_bytes, con_enc],
+            )
+            .unwrap();
+            db.execute(
+                r#"INSERT INTO application_operations(
+                    deployment, namespace, operation, source_revision,
+                    request_json, request_encoding,
+                    outcome_content_id, outcome_json, cleanup_json, contract_digest
+                 ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, NULL, '{"kind":"unresolved"}', '{"kind":"unconfirmed"}', ?7)"#,
+                params![
+                    deployment.to_string(),
+                    serde_json::to_string(&namespace).unwrap(),
+                    operation.to_string(),
+                    source.revision as i64,
+                    req_bytes,
+                    req_enc,
+                    contract_digest,
+                ],
+            )
+            .unwrap();
+
+            let spec = AuxiliarySpec {
+                schema_version: SCHEMA_VERSION,
+                owner: RunOwner {
+                    deployment,
+                    namespace: namespace.clone(),
+                },
+                session: "sess-aux-compressed".into(),
+                source: AuxiliarySource::ApplicationOperation {
+                    source,
+                    namespace: namespace.clone(),
+                    operation,
+                    fingerprint: reference.fingerprint,
+                    attempt: None,
+                },
+                accounting: ModelEvidence {
+                    binding: ModelBinding {
+                        connection_id: "conn-test".into(),
+                        connection_slug: "test".into(),
+                        model: "test-model".into(),
+                    },
+                    model_id: "test-model".into(),
+                    purpose: ModelPurpose::Summary,
+                    quote: None,
+                },
+                language: Language::EN,
+            };
+            validate_source(&db, &spec).unwrap_or_else(|e| {
+                panic!("validate_source failed for force_raw_blob={force_raw_blob}: {e}")
+            });
+        }
     }
 }

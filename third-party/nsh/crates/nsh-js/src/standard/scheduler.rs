@@ -32,19 +32,19 @@ pub(crate) struct Scheduler {
     /// `WebSocket`'s), made when the first such API is: a VM that uses none
     /// starts no I/O thread. (The runtime's Rust modules run on the core's
     /// executor and the engine's tokio runtime instead.)
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "websocket"))]
     io: std::cell::OnceCell<tokio::runtime::Runtime>,
 }
 impl Scheduler {
     pub(crate) fn new() -> Rc<Self> {
         Rc::new(Self {
             wake: Arc::new(EngineWake::default()),
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(not(target_arch = "wasm32"), feature = "websocket"))]
             io: std::cell::OnceCell::new(),
         })
     }
     /// Starts the I/O runtime (once); JS entered after this runs inside it.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "websocket"))]
     pub(crate) fn start_io(&self) -> std::io::Result<()> {
         if self.io.get().is_none() {
             let io = tokio::runtime::Builder::new_multi_thread()
@@ -63,7 +63,7 @@ impl Scheduler {
         *self.wake.0.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
     pub(crate) fn enter<R>(&self, f: impl FnOnce() -> R) -> R {
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(not(target_arch = "wasm32"), feature = "websocket"))]
         let _guard = self.io.get().map(tokio::runtime::Runtime::enter);
         f()
     }
@@ -91,7 +91,7 @@ impl Scheduler {
 impl Drop for Scheduler {
     fn drop(&mut self) {
         self.disable();
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(not(target_arch = "wasm32"), feature = "websocket"))]
         if let Some(io) = self.io.take() {
             io.shutdown_background();
         }

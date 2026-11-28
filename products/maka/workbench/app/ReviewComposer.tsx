@@ -51,9 +51,11 @@ import {
   controlFocusStyle,
   controlHoverStyle,
   controlStyle,
+  lineWidth,
   quietActiveStyle,
   quietFocusStyle,
   quietHoverStyle,
+  radius,
   textTooltip,
 } from './ui';
 
@@ -82,7 +84,7 @@ export function AddLineNoteButton(props: { onPress(): void }) {
       style={{
         width: 20,
         height: 20,
-        borderRadius: 4,
+        borderRadius: radius(4),
         alignItems: 'center',
         justifyContent: 'center',
         backgroundColor: C.accent,
@@ -152,8 +154,8 @@ export function InlineReviewComposer(props: {
         marginHorizontal: 8,
         padding: 8,
         gap: 8,
-        borderRadius: 8,
-        borderWidth: 1,
+        borderRadius: radius(8),
+        borderWidth: lineWidth(),
         borderColor: C.line,
         backgroundColor: C.panel,
       }}
@@ -174,7 +176,7 @@ export function InlineReviewComposer(props: {
           accessibilityLabel={tr('Cancel')}
           onPress={props.onCancel}
           style={{
-            ...controlStyle,
+            ...controlStyle(),
             width: 24,
             minHeight: 24,
             paddingHorizontal: 4,
@@ -210,8 +212,8 @@ export function InlineReviewComposer(props: {
           maxHeight: 140,
           paddingHorizontal: 8,
           paddingVertical: 6,
-          borderRadius: 6,
-          borderWidth: 1,
+          borderRadius: radius(6),
+          borderWidth: lineWidth(),
           borderColor: C.line,
           backgroundColor: C.card,
           color: C.text,
@@ -239,7 +241,7 @@ export function InlineReviewComposer(props: {
               if (valid()) props.onSave(draft());
             }}
             style={{
-              ...controlStyle,
+              ...controlStyle(),
               minHeight: 28,
               height: 28,
               paddingHorizontal: 8,
@@ -259,7 +261,7 @@ export function InlineReviewComposer(props: {
                 if (valid()) props.onInsertPrompt(draft());
               }}
               style={{
-                ...controlStyle,
+                ...controlStyle(),
                 minHeight: 28,
                 height: 28,
                 paddingHorizontal: 8,
@@ -278,7 +280,7 @@ export function InlineReviewComposer(props: {
                 if (valid()) props.onSendNow(draft());
               }}
               style={{
-                ...controlStyle,
+                ...controlStyle(),
                 minHeight: 28,
                 height: 28,
                 paddingHorizontal: 10,
@@ -312,7 +314,7 @@ export function InlineReviewComposer(props: {
               if (valid() && props.onAddPrComment) props.onAddPrComment(draft());
             }}
             style={{
-              ...controlStyle,
+              ...controlStyle(),
               minHeight: 28,
               height: 28,
               paddingHorizontal: 10,
@@ -364,8 +366,8 @@ export function InlineReviewNoteCard(props: {
         marginHorizontal: 8,
         padding: 8,
         gap: 4,
-        borderRadius: 8,
-        borderWidth: 1,
+        borderRadius: radius(8),
+        borderWidth: lineWidth(),
         borderColor: C.line,
         backgroundColor: C.panel,
       }}
@@ -388,7 +390,7 @@ export function InlineReviewNoteCard(props: {
             tooltip={textTooltip(() => tr('Send now'))}
             onPress={props.onSendNow}
             style={{
-              ...controlStyle,
+              ...controlStyle(),
               minHeight: 24,
               height: 24,
               paddingHorizontal: 6,
@@ -405,7 +407,7 @@ export function InlineReviewNoteCard(props: {
           tooltip={textTooltip(() => tr('Edit note'))}
           onPress={props.onEdit}
           style={{
-            ...controlStyle,
+            ...controlStyle(),
             minHeight: 24,
             height: 24,
             paddingHorizontal: 6,
@@ -421,7 +423,7 @@ export function InlineReviewNoteCard(props: {
           tooltip={textTooltip(() => tr('Remove note'))}
           onPress={props.onRemove}
           style={{
-            ...controlStyle,
+            ...controlStyle(),
             minHeight: 24,
             height: 24,
             paddingHorizontal: 6,
@@ -455,8 +457,8 @@ export function PendingPrCommentCard(props: {
         marginHorizontal: 8,
         padding: 8,
         gap: 4,
-        borderRadius: 8,
-        borderWidth: 1,
+        borderRadius: radius(8),
+        borderWidth: lineWidth(),
         borderColor: C.accent,
         backgroundColor: C.panel,
       }}
@@ -472,7 +474,7 @@ export function PendingPrCommentCard(props: {
           tooltip={textTooltip(() => tr('Edit note'))}
           onPress={props.onEdit}
           style={{
-            ...controlStyle,
+            ...controlStyle(),
             minHeight: 24,
             height: 24,
             paddingHorizontal: 6,
@@ -488,7 +490,7 @@ export function PendingPrCommentCard(props: {
           tooltip={textTooltip(() => tr('Remove note'))}
           onPress={props.onRemove}
           style={{
-            ...controlStyle,
+            ...controlStyle(),
             minHeight: 24,
             height: 24,
             paddingHorizontal: 6,
@@ -543,8 +545,8 @@ export function GitHubThreadCard(props: {
         marginHorizontal: 8,
         padding: 8,
         gap: 8,
-        borderRadius: 8,
-        borderWidth: 1,
+        borderRadius: radius(8),
+        borderWidth: lineWidth(),
         borderColor: C.line,
         backgroundColor: C.panel,
       }}
@@ -578,7 +580,7 @@ export function GitHubThreadCard(props: {
                   style={{
                     paddingHorizontal: 6,
                     paddingVertical: 2,
-                    borderRadius: 4,
+                    borderRadius: radius(4),
                     backgroundColor: C.card,
                   }}
                 >
@@ -610,7 +612,7 @@ export function GitHubThreadCard(props: {
               accessibilityLabel={tr('Reply')}
               onPress={() => replying.set(true)}
               style={{
-                ...controlStyle,
+                ...controlStyle(),
                 minHeight: 24,
                 height: 24,
                 paddingHorizontal: 8,
@@ -626,7 +628,7 @@ export function GitHubThreadCard(props: {
                 accessibilityLabel={tr('Add to prompt')}
                 onPress={() => props.onAskAgent('insert')}
                 style={{
-                  ...controlStyle,
+                  ...controlStyle(),
                   minHeight: 24,
                   height: 24,
                   paddingHorizontal: 8,
@@ -659,8 +661,8 @@ export function GitHubThreadCard(props: {
               maxHeight: 120,
               paddingHorizontal: 8,
               paddingVertical: 6,
-              borderRadius: 6,
-              borderWidth: 1,
+              borderRadius: radius(6),
+              borderWidth: lineWidth(),
               borderColor: C.line,
               backgroundColor: C.card,
               color: C.text,
@@ -678,7 +680,7 @@ export function GitHubThreadCard(props: {
                 error.set('');
               }}
               style={{
-                ...controlStyle,
+                ...controlStyle(),
                 minHeight: 28,
                 height: 28,
                 paddingHorizontal: 8,
@@ -694,7 +696,7 @@ export function GitHubThreadCard(props: {
               disabled={!replyText().trim() || submitting()}
               onPress={() => void submitReply()}
               style={{
-                ...controlStyle,
+                ...controlStyle(),
                 minHeight: 28,
                 height: 28,
                 paddingHorizontal: 10,
@@ -745,8 +747,8 @@ export function ReviewBatchBar(props: {
     <If when={notes().length > 0}>
       <View
         style={{
-          borderRadius: 8,
-          borderWidth: 1,
+          borderRadius: radius(8),
+          borderWidth: lineWidth(),
           borderColor: C.line,
           backgroundColor: C.card,
           padding: 8,
@@ -766,7 +768,7 @@ export function ReviewBatchBar(props: {
                       gap: 8,
                       paddingHorizontal: 6,
                       paddingVertical: 4,
-                      borderRadius: 6,
+                      borderRadius: radius(6),
                       backgroundColor: C.panel,
                     }}
                   >
@@ -802,7 +804,7 @@ export function ReviewBatchBar(props: {
                       accessibilityLabel={tr('Remove note')}
                       onPress={() => props.store.removeNote(props.sessionId, note().id)}
                       style={{
-                        ...controlStyle,
+                        ...controlStyle(),
                         width: 24,
                         minHeight: 24,
                         paddingHorizontal: 4,
@@ -830,7 +832,7 @@ export function ReviewBatchBar(props: {
           <Button
             onPress={() => expanded.set(!expanded())}
             style={{
-              ...controlStyle,
+              ...controlStyle(),
               minHeight: 28,
               height: 28,
               paddingHorizontal: 8,
@@ -855,7 +857,7 @@ export function ReviewBatchBar(props: {
               expanded.set(false);
             }}
             style={{
-              ...controlStyle,
+              ...controlStyle(),
               minHeight: 28,
               height: 28,
               paddingHorizontal: 8,
@@ -870,7 +872,7 @@ export function ReviewBatchBar(props: {
               accessibilityLabel={tr('Add to prompt')}
               onPress={() => deliverAll('insert')}
               style={{
-                ...controlStyle,
+                ...controlStyle(),
                 minHeight: 28,
                 height: 28,
                 paddingHorizontal: 8,
@@ -885,7 +887,7 @@ export function ReviewBatchBar(props: {
               accessibilityLabel={tr('Send review')}
               onPress={() => deliverAll('send')}
               style={{
-                ...controlStyle,
+                ...controlStyle(),
                 minHeight: 28,
                 height: 28,
                 paddingHorizontal: 10,
@@ -939,8 +941,8 @@ export function SymbolLocationsDrawer(props: {
       style={{
         height: platform.idiom === 'terminal' ? 10 : 196,
         minHeight: platform.idiom === 'terminal' ? 6 : 120,
-        borderRadius: 8,
-        borderWidth: 1,
+        borderRadius: radius(8),
+        borderWidth: lineWidth(),
         borderColor: C.line,
         backgroundColor: C.card,
         padding: 8,
@@ -964,7 +966,7 @@ export function SymbolLocationsDrawer(props: {
           tooltip={textTooltip(() => tr('Close symbol results'))}
           onPress={props.onClose}
           style={{
-            ...controlStyle,
+            ...controlStyle(),
             width: 24,
             minHeight: 24,
             paddingHorizontal: 4,
@@ -998,7 +1000,7 @@ export function SymbolLocationsDrawer(props: {
             style={{
               paddingHorizontal: 8,
               paddingVertical: 4,
-              borderRadius: 6,
+              borderRadius: radius(6),
               gap: 2,
               backgroundColor: props.batch.activeIndex === index() ? C.cardRaised : 'transparent',
             }}

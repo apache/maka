@@ -17,18 +17,52 @@
  * under the License.
  */
 
-import { platform, Text, View, windowSize, type JSX, type ViewStyle } from 'nsh';
+import {
+  cleanup,
+  platform,
+  signal,
+  Text,
+  untracked,
+  View,
+  windowSize,
+  type JSX,
+  type Signal,
+  type ViewStyle,
+} from 'nsh';
 import { Dialog } from 'nsh/base';
 import { dialogTop } from './chrome';
-import { C } from './ui';
+import { C, floatingShadow, lineWidth, radius } from './ui';
 
-const WIDTHS = { alert: 400, form: 520, editor: 720, page: 880 } as const;
+const OPEN_MODAL_SURFACES_KEY = Symbol.for('maka.workbench.openModalSurfaces');
+type GlobalWithOpenModals = typeof globalThis & { [OPEN_MODAL_SURFACES_KEY]?: Signal<number> };
+const openModalSurfaces = (): Signal<number> => {
+  const host = globalThis as GlobalWithOpenModals;
+  if (!host[OPEN_MODAL_SURFACES_KEY]) host[OPEN_MODAL_SURFACES_KEY] = signal(0);
+  return host[OPEN_MODAL_SURFACES_KEY]!;
+};
+/** Whether any main-window modal dialog is currently open above the main shell. */
+export const hasOpenModalSurface = () => openModalSurfaces()() > 0;
+
+/**
+ * Main-window modal `<Dialog>` wrapper: tracks mounted modal dialogs so page-level
+ * `Escape` bindings (such as Settings) yield while any main-window dialog is open.
+ */
+export function WindowDialog(props: Parameters<typeof Dialog>[0]) {
+  const modals = openModalSurfaces();
+  modals.set(untracked(modals) + 1);
+  cleanup(() => {
+    modals.set(Math.max(0, untracked(modals) - 1));
+  });
+  return <Dialog {...props} />;
+}
+
+const WIDTHS = { alert: 400, form: 520, editor: 720 } as const;
 
 /**
  * A modal over the window: the scrim and the card every dialog shares. The
  * card keeps `surface`, the fill its controls' `raised` and `background` are
  * set against, and takes the floating family's line, radius and shadow. `onCancel` gets Escape; the caller closes.
- * `height` makes it fill the window up to that height, for editors and pages;
+ * `height` makes it fill the window up to that height, for editors;
  * a launcher opens an eighth of the window down so typing does not move it,
  * and a press on its scrim cancels it too: nothing typed there is lost.
  */
@@ -44,7 +78,7 @@ export function ModalDialog(props: {
   children: JSX.Element;
 }) {
   return (
-    <Dialog
+    <WindowDialog
       animation="none"
       closeOnEscape={false}
       closeOnBackdropPress={false}
@@ -78,17 +112,19 @@ export function ModalDialog(props: {
         {props.children}
       </View>
       {props.outside}
-    </Dialog>
+    </WindowDialog>
   );
 }
 
 /** The card of a dialog that lays out its own scrim: `ModalDialog` uses it too. */
 export const dialogCardStyle = () => ({
   backgroundColor: C.surface,
-  borderWidth: 1,
+  borderWidth: lineWidth(),
   borderColor: C.line,
-  borderRadius: 12,
-  ...(platform.idiom === 'terminal' ? {} : { boxShadow: `0 16px 48px ${C.shadow}` }),
+  borderRadius: radius(12),
+  ...(platform.idiom === 'terminal'
+    ? {}
+    : { boxShadow: floatingShadow(`0 16px 48px ${C.shadow}`) }),
 });
 
 /** The decision and its object as the title; `detail` adds only what changes it. */

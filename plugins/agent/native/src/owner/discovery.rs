@@ -1058,6 +1058,7 @@ impl Owner {
                     job.approval.thinking_level,
                 )),
                 job.request.clone(),
+                crate::owner::send::PinCapture::Excluded,
                 native.scope(),
             )
             .await;

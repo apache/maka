@@ -34,7 +34,7 @@ import { SettingsField } from './SettingsField';
 import { settingsValue } from './settingsOperations';
 import { createText, errorMessage, message } from './text';
 import { currentLocale, tr, type MessageKey } from './locale';
-import { C, captionTextStyle, bodyTextStyle } from './ui';
+import { bodyTextStyle, C, captionTextStyle, radius } from './ui';
 import { LoadingIndicator } from './Loading';
 
 const triggers = [
@@ -542,7 +542,7 @@ export function Automations(props: {
                     <View
                       style={{
                         padding: 10,
-                        borderRadius: 8,
+                        borderRadius: radius(8),
                         backgroundColor: C.background,
                         gap: 6,
                       }}

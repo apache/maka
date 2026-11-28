@@ -25,7 +25,6 @@ import { tmpdir } from 'node:os';
 import { parseArgs } from 'node:util';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { nativeCliTargets } from './pack-cli.mjs';
 import { rustTarget } from './build-cli.mjs';
 import { licenseFiles, licenseName } from './license-files.mjs';
 import { licenseDownloader } from './license-source.mjs';
@@ -34,9 +33,13 @@ import { uiCompiler } from './product.mjs';
 const repository = fileURLToPath(new URL('../../', import.meta.url));
 const documentPath = 'products/maka/cli/THIRD_PARTY_NOTICES.txt';
 const manifestPath = 'products/maka/cli/notices.json';
-const distributionTargets = Object.values(nativeCliTargets).map(({ os, cpu }) =>
-  rustTarget(os, cpu),
-);
+export const distributionTargets = [
+  ['darwin', 'arm64'],
+  ['darwin', 'x64'],
+  ['linux', 'arm64'],
+  ['linux', 'x64'],
+  ['win32', 'x64'],
+].map(([os, cpu]) => rustTarget(os, cpu));
 const hash = (value) => createHash('sha256').update(value).digest('hex');
 const localPath = (directory, file) => relative(directory, file).replaceAll('\\', '/');
 

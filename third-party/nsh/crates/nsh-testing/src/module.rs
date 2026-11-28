@@ -276,6 +276,7 @@ impl Testing {
             width: options.width,
             height: options.height,
             safe_area: options.safe_area,
+            reserved_regions: options.reserved_regions,
             clipboard: options.clipboard,
             color_scheme: options.color_scheme,
             locale: options.locale,
@@ -404,6 +405,11 @@ pub struct OpenOptions {
     pub height: Option<Points>,
     /// The safe area insets in points (none).
     pub safe_area: Option<SafeArea>,
+    /// The regions the device reserves (`reservedRegions()`), each a
+    /// `kind` and its `bounds` in points: a fold to lay out around
+    /// (none). Headless only: on a device the system reports its own, so
+    /// with `--target` giving it rejects with `ERR_NSH_TEST_UNSUPPORTED`.
+    pub reserved_regions: Option<Vec<nsh_core::platform::ReservedRegion>>,
     /// The text on the clipboard at the start (none).
     pub clipboard: Option<String>,
     /// The system's appearance (`"light"`).
@@ -1660,6 +1666,8 @@ pub(crate) struct Launch {
     /// What the test gives of the environment: a real platform's host pins
     /// it, defaults included, and keeps its own for what it leaves out.
     pub(crate) safe_area: Option<SafeArea>,
+    /// The regions the device reserves (a headless run's only).
+    pub(crate) reserved_regions: Option<Vec<nsh_core::platform::ReservedRegion>>,
     pub(crate) clipboard: Option<String>,
     pub(crate) color_scheme: Option<ColorScheme>,
     pub(crate) locale: Option<String>,

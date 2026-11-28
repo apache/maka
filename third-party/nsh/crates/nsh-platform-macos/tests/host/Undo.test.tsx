@@ -40,3 +40,27 @@ test("Command+Z after a multiline input was removed leaves the app running", asy
   await app.type("id:note", "x");
   await app.waitFor("Text: abcx");
 });
+
+test("Command+Z and Command+Shift+Z in a multiline input report the text they bring back", async () => {
+  const app = await open("./Undo.tsx");
+  await app.type("id:note", "abc");
+  await app.waitFor("Text: abc");
+  await app.keyboard.press("mod+z");
+  await app.waitFor("Text: ");
+  await app.keyboard.press("mod+shift+z");
+  await app.waitFor("Text: abc");
+});
+
+test("Command+Z after the app cleared a one line input undoes nothing", async () => {
+  const app = await open("./Undo.tsx");
+  await app.press("label:single");
+  await app.type("id:note", "abc");
+  await app.waitFor("Text: abc");
+  await app.press("label:clear");
+  await app.waitFor("Text: ");
+  await app.keyboard.press("mod+z");
+  await app.wait(100);
+  expect(app.texts()).toContain("Text: ");
+  await app.type("id:note", "x");
+  await app.waitFor("Text: x");
+});

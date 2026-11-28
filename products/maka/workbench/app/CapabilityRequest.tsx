@@ -21,7 +21,7 @@ import { Text, View } from 'nsh';
 import type { InteractionRequest } from '../../../../packages/plugin-sdk/src/generated/runtime';
 import { Icon } from './Icon';
 import { tr } from './locale';
-import { bodyTextStyle, C, captionTextStyle, codeTextStyle } from './ui';
+import { bodyTextStyle, C, captionTextStyle, codeTextStyle, radius } from './ui';
 
 type Request = Extract<InteractionRequest, { kind: 'client_capability' }>;
 // The Agent's response gate accepts these exact producer-owned Computer capabilities.
@@ -66,7 +66,7 @@ export function CapabilityRequest(props: {
           gap: 12,
           padding: 16,
           backgroundColor: C.cardRaised,
-          borderRadius: 12,
+          borderRadius: radius(12),
         }}
       >
         <Icon name="shield" color={C.warning} />

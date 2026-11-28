@@ -20,12 +20,14 @@
 import { effect, locale, localeSettings, signal, Storage } from 'nsh';
 import { setLocale as setNshLocale } from 'nsh/i18n';
 import {
+  formatNumber,
   negotiateSingleLocale,
   normalizeLocaleTag,
   resolveLocale,
   SUPPORTED_LOCALES,
   type SupportedLocaleTag,
 } from '../../../../packages/plugin-sdk/src/index.js';
+import type { ThinkingLevel } from '../../../../packages/plugin-sdk/src/generated/runtime';
 import { type MessageKey, translate } from './localeCatalog';
 
 export type { MessageKey } from './localeCatalog';
@@ -63,6 +65,25 @@ export const currentLocale = () => resolveLocale(preference(), deviceLocale);
 
 export function tr(key: MessageKey, values?: Readonly<Record<string, string | number>>): string {
   return translate(currentLocale(), key, values);
+}
+
+export function formatCount(count: number): string {
+  return formatNumber(count, currentLocale());
+}
+
+const THINKING_LEVEL_KEYS = {
+  off: 'Off',
+  minimal: 'Minimal',
+  low: 'Low',
+  medium: 'Medium',
+  high: 'High',
+  xhigh: 'Extra high',
+  max: 'Maximum',
+  ultra: 'Ultra',
+} satisfies Record<ThinkingLevel, MessageKey>;
+
+export function thinkingLevelLabel(level: ThinkingLevel): string {
+  return Object.hasOwn(THINKING_LEVEL_KEYS, level) ? tr(THINKING_LEVEL_KEYS[level]) : level;
 }
 
 function reportStorageError(cause: unknown) {

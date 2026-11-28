@@ -91,6 +91,7 @@ import {
   type QuickTools,
 } from './QuickTools';
 import {
+  homeRecommendations,
   isFrequent,
   parseUsage,
   ranked,
@@ -100,15 +101,17 @@ import {
 } from './quick-results';
 import { errorText, renderText } from './text';
 import {
-  C,
   bodyTextStyle,
+  C,
   controlHoverStyle,
   floatingStyle,
+  lineWidth,
   menuDetailTextStyle,
+  menuLabelStyle,
   menuRowHoverStyle,
   menuRowStyle,
   menuSeparatorStyle,
-  menuLabelStyle,
+  radius,
   textTooltip,
 } from './ui';
 
@@ -134,29 +137,38 @@ type Navigation = {
 const frameStyle = () =>
   ({
     backgroundColor: C.panel,
-    borderRadius: 12,
-    borderWidth: 1,
+    borderRadius: radius(12),
+    borderWidth: lineWidth(),
     borderColor: C.line,
     overflow: 'hidden',
   }) as const;
 
 type UsageStore = {
   current(): Usage;
+  loaded(): boolean;
   record(key: string): void;
   failure(): ReturnType<typeof errorText> | null;
 };
 
 function createUsageStore(): UsageStore {
   const usage = signal<Usage>({});
+  const loaded = signal(false);
   const failure = signal<ReturnType<typeof errorText> | null>(null);
   const report = (reason: unknown) =>
     failure.set(errorText(reason, 'Could not load or save launcher history.'));
   Storage.getItem(USAGE_KEY)
-    .then((stored) => usage.set(parseUsage(stored)))
+    .then((stored) => {
+      const parsed = parseUsage(stored);
+      batch(() => {
+        usage.set(parsed);
+        loaded.set(true);
+      });
+    })
     .catch(report);
   let saving: Promise<void> = Promise.resolve();
   return {
     current: usage,
+    loaded,
     failure,
     record(key) {
       const next = recordUse(usage(), key, Date.now());
@@ -307,7 +319,7 @@ function QuickSettings(props: { quick: QuickTools; tool: UiContributionRef; back
           style={{
             width: 28,
             height: 28,
-            borderRadius: 6,
+            borderRadius: radius(6),
             alignItems: 'center',
             justifyContent: 'center',
           }}
@@ -328,7 +340,7 @@ function QuickSettings(props: { quick: QuickTools; tool: UiContributionRef; back
             accessibilityLabel={action()!.label}
             disabled={busy() || action()!.disabled === true}
             onPress={() => action()!.run()}
-            style={{ paddingVertical: 4, paddingHorizontal: 10, borderRadius: 6 }}
+            style={{ paddingVertical: 4, paddingHorizontal: 10, borderRadius: radius(6) }}
             hoverStyle={controlHoverStyle()}
           >
             <Text style={{ fontSize: 13, lineHeight: 18, color: C.accentText }}>
@@ -514,7 +526,12 @@ function Launcher(props: {
           {
             key: 'recommended',
             title: tr('Recommended'),
-            rows: recommendations(),
+            rows: homeRecommendations(
+              recommendations(),
+              entries(),
+              (row) => `${row.tool.instance.package.id}/${row.entry.id}`,
+              props.usage.loaded(),
+            ),
           },
           { key: 'tools', title: tr('Tools'), rows: entries() },
         ]
@@ -806,7 +823,7 @@ function Launcher(props: {
                   fontSize: 13,
                   lineHeight: 20,
                   paddingHorizontal: 8,
-                  borderRadius: 6,
+                  borderRadius: radius(6),
                   backgroundColor: C.raised,
                   color: C.text,
                 }}

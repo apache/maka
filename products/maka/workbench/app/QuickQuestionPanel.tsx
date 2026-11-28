@@ -107,7 +107,12 @@ export function QuickQuestionPanel(props: {
               trigger={
                 <Button
                   accessibilityLabel={tr('Launcher actions')}
-                  style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
+                  style={{
+                    ...controlStyle(),
+                    width: 32,
+                    paddingHorizontal: 8,
+                    alignItems: 'center',
+                  }}
                   hoverStyle={quietHoverStyle()}
                   focusStyle={quietFocusStyle()}
                 >

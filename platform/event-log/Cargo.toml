@@ -47,9 +47,11 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["fs"] }
 tokio-util.workspace = true
 tempfile.workspace = true
+zstd.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["process"] }
+zstd = { workspace = true, features = ["zdict_builder"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Threading", "Win32_System_SystemServices", "Win32_UI_Shell"] }

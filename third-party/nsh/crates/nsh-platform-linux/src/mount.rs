@@ -148,6 +148,7 @@ impl Mounter {
                     crate::input::removed(surface, &view);
                     crate::native::deleted(surface, &view);
                     crate::shader::deleted(surface, &view);
+                    crate::gpu::deleted(surface, &view);
                     // A removal animation detaches the view when it ends.
                     if !crate::transition::removing(surface, &view, self.layout_animation.as_ref())
                     {
@@ -202,7 +203,10 @@ impl Mounter {
                         crate::shader::resized(view);
                         crate::image::resized(surface, view);
                     }
-                    _ => crate::shader::resized(view),
+                    _ => {
+                        crate::shader::resized(view);
+                        crate::gpu::resized(surface, view);
+                    }
                 }
             }
             MountItem::ViewStyle { id, style } => {
@@ -317,6 +321,11 @@ impl Mounter {
                     crate::shader::set(surface, view, layer.clone());
                 }
             }
+            MountItem::GpuView { id, source } => {
+                if let Some(view) = self.get(*id) {
+                    crate::gpu::set(surface, view, source.clone());
+                }
+            }
             MountItem::ShaderInput { id } => {
                 if let Some(view) = self.get(*id) {
                     crate::shader::input_changed(view);
@@ -381,7 +390,9 @@ impl Mounter {
                 }
             }
             MountItem::ComponentProps { id, props } => {
-                if let Some(view) = self.get(*id) {
+                if let Some(view) = self.get(*id)
+                    && !crate::gpu::props(surface, view, props)
+                {
                     crate::native::component_props(surface, view, props);
                 }
             }

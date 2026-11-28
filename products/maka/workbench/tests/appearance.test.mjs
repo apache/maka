@@ -182,6 +182,106 @@ test('a color made readable on a mid-gray background reaches the ratio', () => {
     assert.ok(look.contrast(look.readable(gray, gray, 4.5), gray) >= 4.5, gray);
 });
 
+test('a saved shape keeps the values in range, and the default radius draws corners as before', () => {
+  const saved = structuredClone(look.presetLooks.brutalist);
+  Object.assign(saved.cssVars.theme, { radius: 40, 'letter-spacing': 'wide' });
+  const read = look.readLook(saved);
+  assert.equal(read.cssVars.theme.radius, undefined);
+  assert.equal(read.cssVars.theme['letter-spacing'], undefined);
+  assert.equal(read.cssVars.theme['border-width'], 2);
+  assert.equal(look.lookShadow(read, true), '4px 4px 0px 0px #55555eff');
+  for (const n of [1, 4, 8, 12, 16, 20]) assert.equal(look.scaledRadius(n, 8), n);
+  // A shadow at no opacity is none, and a left-out shadow color is black.
+  const faded = structuredClone(look.presetLooks.default);
+  Object.assign(faded.cssVars.theme, { 'shadow-x': 4, 'shadow-y': 4, 'shadow-opacity': 0 });
+  faded.cssVars.dark['shadow-color'] = '#f0f1f3';
+  assert.ok(look.unchanged(faded));
+  const black = structuredClone(look.presetLooks.morandi);
+  black.cssVars.light['shadow-color'] = '#000000';
+  assert.ok(look.unchanged(black));
+});
+
+test("a theme block fills from its preset, and the skill's example reads whole", async () => {
+  const block = look.readThemeBlock({
+    base: 'bauhaus',
+    cssVars: { light: { primary: '#0044CC', accent: '#ff0000' }, theme: { radius: 99 } },
+  });
+  assert.equal(block.look.cssVars.light.primary, '#0044cc');
+  assert.equal(
+    block.look.cssVars.light.background,
+    look.presetLooks.bauhaus.cssVars.light.background,
+  );
+  assert.equal(block.look.cssVars.theme.radius, 0);
+  assert.equal(block.ignored, 2);
+  assert.equal(look.readThemeBlock({ base: 'nope', cssVars: {} }), null);
+  const { readFile } = await import('node:fs/promises');
+  const skill = await readFile(
+    new URL('../../../../skills/maka-theme/SKILL.md', import.meta.url),
+    'utf8',
+  );
+  const examples = [...skill.matchAll(/^```maka-theme\n([\s\S]*?)\n```$/gm)];
+  assert.ok(examples.length > 0);
+  for (const [, source] of examples) {
+    const example = look.readThemeBlock(JSON.parse(source));
+    assert.equal(example.ignored, 0);
+    assert.equal(look.hardToRead(example.look), false);
+  }
+});
+
+test('changed main colors derive optional colors for that appearance only', () => {
+  const pale = look.readThemeBlock({
+    base: 'default',
+    cssVars: { light: { background: '#d8e6f3' }, dark: { primary: '#8AB8F8' } },
+  }).look;
+  const light = look.lookTokens(pale.cssVars.light);
+  const dark = look.lookTokens(pale.cssVars.dark);
+  assert.equal(look.hardToRead(pale), false);
+  assert.ok(look.contrast(light.muted, '#d8e6f3') >= 4.5);
+  assert.equal(light.sidebar, light.surface);
+  assert.equal(light.line, light.pressed);
+  assert.equal(dark.muted, '#969ba4');
+
+  const terminal = look.readThemeBlock({
+    base: 'terminal',
+    cssVars: {
+      light: {
+        background: '#ffffff',
+        foreground: '#000000',
+        primary: '#000000',
+        border: '#444444',
+      },
+    },
+  }).look;
+  assert.equal(look.lookTokens(terminal.cssVars.light).line, '#444444');
+  assert.equal(look.lookShadow(terminal, false), '0px 0px 8px 0px #00000040');
+  assert.equal(look.lookShadow(terminal, true), '0px 0px 8px 0px #7ce38b40');
+});
+
+test('theme blocks reject missing or malformed cssVars and malformed appearance sections', () => {
+  for (const value of [
+    { base: 'default', foo: 1 },
+    ...['invalid', null, [], { light: [] }, { dark: null }, { theme: 'invalid' }].map(
+      (cssVars) => ({
+        base: 'paper',
+        cssVars,
+      }),
+    ),
+  ]) {
+    assert.equal(look.readThemeBlock(value), null, JSON.stringify(value));
+  }
+});
+
+test('copy and paste preserve the system font, automatic colors and a cleared preset shadow', () => {
+  const edited = structuredClone(look.presetLooks.terminal);
+  delete edited.cssVars.theme['font-sans'];
+  delete edited.cssVars.light.border;
+  delete edited.cssVars.light['shadow-color'];
+  delete edited.cssVars.theme['shadow-opacity'];
+  const pasted = look.readThemeBlock(JSON.parse(look.writeThemeBlock(edited)));
+  assert.deepEqual(pasted.look, edited);
+  assert.equal(pasted.ignored, 0);
+});
+
 test('every preset reads in both appearances', () => {
   for (const id of look.lookIds)
     for (const mode of ['light', 'dark']) {

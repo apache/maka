@@ -26,7 +26,7 @@
 ## 编译环境与 V8 预编译包
 
 - **macOS** — 需要 Xcode 26+ 以及 `libclang`（用于生成 SQLite preupdate-hook 绑定）。
-- **Linux** — 需要 GLib、X11/XCB、`xkbcommon`、Wayland、Fontconfig、FreeType 开发头文件、`libclang`、`cargo-zigbuild` 与 Zig（具体环境对齐 [`.github/workflows/npm-publication.yml`](../../.github/workflows/npm-publication.yml)）。
+- **Linux** — 需要 GLib、X11/XCB、`xkbcommon`、Wayland、Fontconfig、FreeType 开发头文件、`libclang`、`cargo-zigbuild` 与 Zig（具体环境对齐 [`.github/workflows/nightly.yml`](../../.github/workflows/nightly.yml)）。
 - **V8 缓存** — Release 构建按 [`v8-prebuilts.json`](v8-prebuilts.json) 下载关闭了 LGPL glibc 数学库的预编译 V8 静态库并缓存至 `target/v8`（或 `$CARGO_TARGET_DIR/v8`），校验 SHA-256 摘要后复用；若未命中锁定配置则会回退到耗时的 V8 源码编译（需 Python、Git 与 Clang/libclang 19+）。
 
 ## 依赖与许可证清单

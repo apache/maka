@@ -114,7 +114,7 @@ function ComposerUsagePopover(props: {
           accessibilityLabel={tooltipText()}
           tooltip={textTooltip(() => (open() ? undefined : tooltipText()))}
           style={{
-            ...composerToolbarControlStyle,
+            ...composerToolbarControlStyle(),
             flexDirection: 'row',
             alignItems: 'center',
             gap: 4,
@@ -138,7 +138,7 @@ function ComposerUsagePopover(props: {
                 if (!current) return;
                 cx.lineWidth = 1.5;
                 cx.lineCap = 'round';
-                cx.strokeStyle = C.line;
+                cx.strokeStyle = C.pressed;
                 cx.beginPath();
                 cx.arc(7, 7, 5.5, 0, Math.PI * 2);
                 cx.stroke();

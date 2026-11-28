@@ -6,7 +6,9 @@
 //! and ships the glue next to `nsh.js`, which merges the glue's imports with
 //! its own (`nsh`, `env`) and runs the glue's setup before the app starts. A
 //! runtime that calls no JS through wasm-bindgen (one that only links it,
-//! through a crate's default features) is built and served as before.
+//! through a crate's default features) is built and served as before. The
+//! published runtime is kept linkable ([`install_linkable`]): `nsh package`
+//! splits it and runs [`process`] on its main module (`web::link`).
 //!
 //! The glue is wasm-bindgen's `--target web` output, adapted ([`adapt`]),
 //! with the JS snippets it imports (`#[wasm_bindgen(inline_js = …)]`,
@@ -45,23 +47,37 @@ pub(crate) fn install(built: &Path, out: &Path, name: &str) -> anyhow::Result<Op
     match needs(&module).with_context(|| format!("read {}", built.display()))? {
         Some(version) => process(built, &version, out, name).map(Some),
         None => {
-            let wasm = out.join(format!("{name}.wasm"));
-            std::fs::write(&wasm, &module).with_context(|| format!("write {}", wasm.display()))?;
-            let glue = out.join(format!("{name}-bindgen.js"));
-            if glue.exists() {
-                std::fs::remove_file(&glue)
-                    .with_context(|| format!("remove {}", glue.display()))?;
-            }
-            let dir = output_dir(&glue);
-            for dir in [staging_dir(&dir), dir] {
-                if dir.exists() {
-                    std::fs::remove_dir_all(&dir)
-                        .with_context(|| format!("remove {}", dir.display()))?;
-                }
-            }
+            install_as_is(&module, out, name)?;
             Ok(None)
         }
     }
+}
+
+/// Puts the linkable web runtime cargo built (`built`, the published one)
+/// into `out` as `<name>.wasm` as it is: `nsh package` splits it and runs
+/// wasm-bindgen on its main module when it calls JS through it
+/// (`web::link`), as wasm-bindgen's module could not be split.
+pub(crate) fn install_linkable(built: &Path, out: &Path, name: &str) -> anyhow::Result<()> {
+    let module = std::fs::read(built).with_context(|| format!("read {}", built.display()))?;
+    install_as_is(&module, out, name)
+}
+
+/// Writes `module` into `out` as `<name>.wasm`, without the glue and
+/// snippets an earlier build had.
+fn install_as_is(module: &[u8], out: &Path, name: &str) -> anyhow::Result<()> {
+    let wasm = out.join(format!("{name}.wasm"));
+    std::fs::write(&wasm, module).with_context(|| format!("write {}", wasm.display()))?;
+    let glue = out.join(format!("{name}-bindgen.js"));
+    if glue.exists() {
+        std::fs::remove_file(&glue).with_context(|| format!("remove {}", glue.display()))?;
+    }
+    let dir = output_dir(&glue);
+    for dir in [staging_dir(&dir), dir] {
+        if dir.exists() {
+            std::fs::remove_dir_all(&dir).with_context(|| format!("remove {}", dir.display()))?;
+        }
+    }
+    Ok(())
 }
 
 /// The version of the wasm-bindgen crate `module` links when its imports
@@ -767,8 +783,10 @@ mod tests {
 
     /// End to end with the `wasm-bindgen` CLI on `PATH` (or
     /// `NSH_WASM_BINDGEN`): builds a crate that calls JS through
-    /// wasm-bindgen of the CLI's version for `wasm32-unknown-unknown` and
-    /// installs it as a web runtime. Needs the target and the crates
+    /// wasm-bindgen of the CLI's version for `wasm32-unknown-unknown`,
+    /// installs it as a development web runtime and publishes it as
+    /// `nsh package` does, split, with wasm-bindgen run on its main module,
+    /// whose side module then runs on it. Needs the target and the crates
     /// (network, or Cargo's cache), plus Node.js to instantiate both the
     /// development and published modules:
     /// `cargo test -p nsh-cli bindgen -- --ignored`.
@@ -843,6 +861,25 @@ pub extern "C" fn probe() -> f64 {
     log(&twice(&shout(&unsafe { now_ms() }.to_string())));
     second(first(3.0))
 }
+
+// A part's gate, a side module once split: its own code, and a function
+// that calls JS, which stays in the main module wasm-bindgen runs on.
+#[no_mangle]
+pub extern "C" fn nsh_part_probe() -> f64 {
+    let sum = own(std::hint::black_box(2.0));
+    say(&sum.to_string());
+    sum
+}
+
+#[inline(never)]
+fn own(x: f64) -> f64 {
+    (0..std::hint::black_box(4)).map(|i| f64::from(i) * x).sum()
+}
+
+#[inline(never)]
+fn say(s: &str) {
+    log(&twice(s));
+}
 "#,
         );
         let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
@@ -872,13 +909,54 @@ pub extern "C" fn probe() -> f64 {
         // The module wasm-bindgen wrote: its imports are the glue's now.
         let wasm = std::fs::read(out.join("nsh.wasm")).unwrap();
         assert_eq!(needs(&wasm).unwrap(), None);
-        // Published as `nsh package` publishes it: the module run below.
-        let published = crate::web::link(&wasm, true, &[], &[]).unwrap();
-        assert!(published.sides.is_empty());
-        std::fs::write(out.join("nsh.wasm"), published.main).unwrap();
         assert!(!out.join("nsh-bindgen/nsh_bg.wasm").exists());
         assert!(!out.join("nsh-bindgen.tmp").exists());
-        let found: Vec<String> = snippets(&glue)
+        assert_eq!(snippets(&glue).unwrap().len(), 4);
+        // Published as `nsh package` publishes it (`web::link`): split, the
+        // part's gate a side module, and wasm-bindgen run on the main
+        // module. Both are run below.
+        let linkable = std::fs::read(&built).unwrap();
+        let gate = "nsh_part_probe";
+        let mut keep = Vec::new();
+        for payload in wasmparser::Parser::new(0).parse_all(&linkable) {
+            if let wasmparser::Payload::ExportSection(reader) = payload.unwrap() {
+                for export in reader {
+                    let export = export.unwrap();
+                    if export.kind == wasmparser::ExternalKind::Func && export.name != gate {
+                        keep.push(export.name.to_owned());
+                    }
+                }
+            }
+        }
+        let keep: Vec<&str> = keep.iter().map(String::as_str).collect();
+        let run = crate::web::BindgenRun::next_to(&out.join("nsh.wasm"), version.clone()).unwrap();
+        let (published, published_glue) =
+            crate::web::link(&linkable, &keep, &[gate], Some(&run)).unwrap();
+        let published_glue = published_glue.expect("a glue");
+        assert_eq!(published_glue, out.join("nsh-main-bindgen.js"));
+        let [side] = &published.sides[..] else {
+            panic!("one side module")
+        };
+        assert_eq!(side.gate.as_deref(), Some(gate));
+        // It imports only the main module's own functions, none that
+        // wasm-bindgen replaced.
+        for payload in wasmparser::Parser::new(0).parse_all(&side.bytes) {
+            if let wasmparser::Payload::ImportSection(reader) = payload.unwrap() {
+                for import in reader.into_imports() {
+                    let import = import.unwrap();
+                    assert_eq!(import.module, "main", "{}", import.name);
+                    assert!(
+                        import.name.starts_with("__nsh_") || import.name == "memory",
+                        "{}",
+                        import.name
+                    );
+                }
+            }
+        }
+        std::fs::write(out.join("nsh-main.wasm"), &published.main).unwrap();
+        std::fs::write(out.join("side.wasm"), &side.bytes).unwrap();
+        assert!(!out.join("nsh-main-split.wasm").exists());
+        let found: Vec<String> = snippets(&published_glue)
             .unwrap()
             .into_iter()
             .map(|(path, _)| path)
@@ -896,7 +974,7 @@ pub extern "C" fn probe() -> f64 {
         // numeric imports: their module names must match the Wasm binary
         // even when publication relocates the JS files.
         for directory in ["snippets", "snippets.0123456789"] {
-            for (name, file) in snippets(&glue).unwrap() {
+            for (name, file) in snippets(&published_glue).unwrap() {
                 let path = out
                     .join(directory)
                     .join(name.strip_prefix("snippets/").unwrap());
@@ -907,7 +985,7 @@ pub extern "C" fn probe() -> f64 {
                 // Publication must work without the development paths.
                 std::fs::remove_dir_all(out.join("snippets")).unwrap();
             }
-            let text = std::fs::read_to_string(&glue).unwrap();
+            let text = std::fs::read_to_string(&published_glue).unwrap();
             let text = link_snippets(&text, directory);
             let text = nsh_bundler::minify_module("nsh-bindgen.js", &text).unwrap();
             let linked = out.join(format!("{directory}.mjs"));
@@ -927,10 +1005,18 @@ imports.nsh = { now_ms: () => 12 };
 const instance = await WebAssembly.instantiate(module, imports);
 glue.__nsh_finalize(instance, module);
 assert.equal(instance.exports.probe(), 42);
+assert.equal(instance.exports.nsh_part_probe, undefined);
+// The side module as `nsh.js` loads it (`instantiateSide`).
+const side = await WebAssembly.instantiate(
+  await WebAssembly.compile(await readFile(process.argv[3])),
+  { main: instance.exports },
+);
+assert.equal(side.exports.nsh_part_probe(), 12);
 "#,
                 ])
                 .arg(linked)
-                .arg(out.join("nsh.wasm"))
+                .arg(out.join("nsh-main.wasm"))
+                .arg(out.join("side.wasm"))
                 .output()
                 .expect("Node.js runs the generated module");
             assert!(
@@ -938,7 +1024,7 @@ assert.equal(instance.exports.probe(), 42);
                 "{directory}: {}",
                 String::from_utf8_lossy(&result.stderr)
             );
-            assert_eq!(String::from_utf8_lossy(&result.stdout).trim(), "1212");
+            assert_eq!(String::from_utf8_lossy(&result.stdout).trim(), "1212\n1212");
         }
         // Built again, it replaces the output.
         assert_eq!(install(&built, &out, "nsh").unwrap(), Some(glue.clone()));

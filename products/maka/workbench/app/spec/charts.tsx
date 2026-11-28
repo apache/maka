@@ -31,7 +31,7 @@ import {
   type Curve,
 } from 'nsh/base/plot';
 import { tr } from '../locale';
-import { C, captionTextStyle, secondaryTextStyle } from '../ui';
+import { C, captionTextStyle, lineWidth, radius, secondaryTextStyle } from '../ui';
 import type { SpecElementRenderContext } from './runtime.tsx';
 
 type SeriesItem = {
@@ -146,9 +146,9 @@ function ChartFrame(props: {
         gap: 8,
         padding: platform.idiom === 'terminal' ? 8 : 12,
         backgroundColor: C.card,
-        borderWidth: 1,
+        borderWidth: lineWidth(),
         borderColor: C.line,
-        borderRadius: platform.idiom === 'terminal' ? 0 : 10,
+        borderRadius: platform.idiom === 'terminal' ? 0 : radius(10),
       }}
     >
       <If when={props.title()}>

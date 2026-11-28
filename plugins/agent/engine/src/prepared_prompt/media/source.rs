@@ -83,9 +83,11 @@ impl RecipeCursor<MessageRecipe> for MessageCursor {
             let mapping = &self.mapping;
             Ok(Some(match message {
                 MessageRecipe::User {
+                    is_pinned_memory,
                     content,
                     provider_options,
                 } => MessageRecipe::User {
+                    is_pinned_memory,
                     content: contents(content, mapping.clone(), index, 0),
                     provider_options,
                 },

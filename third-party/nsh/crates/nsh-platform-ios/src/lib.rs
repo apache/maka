@@ -73,6 +73,7 @@ pub mod dev;
 pub mod embed;
 mod file_drop;
 mod fps;
+mod gpu;
 mod haptics;
 mod image;
 mod input;
@@ -91,6 +92,7 @@ mod scroll_watch;
 mod selectable_view;
 mod shader;
 mod share;
+mod sight;
 mod split;
 mod state_words;
 // Sound (`Sound`, `AudioPlayer`) and the notification center, shared with

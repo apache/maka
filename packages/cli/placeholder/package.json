@@ -1,14 +1,14 @@
 {
   "name": "@maka-agent/cli",
   "version": "0.0.0-placeholder.2",
-  "description": "Empty placeholder; experimental Rust previews are unofficial and are not ASF releases",
+  "description": "Empty placeholder; nightly builds are unofficial developer previews and are not ASF releases",
   "license": "Apache-2.0",
   "files": [
     "README.md"
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/M4n5ter/maka-agent.git"
+    "url": "https://github.com/apache/maka.git"
   },
   "publishConfig": {
     "access": "public",

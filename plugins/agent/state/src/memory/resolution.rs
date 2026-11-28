@@ -1966,20 +1966,25 @@ mod tests {
         );
     }
     fn automatic(c: &Connection, text: &str, at: i64) -> MemoryWrite {
-        c.execute_batch("CREATE TABLE IF NOT EXISTS session_control(id TEXT PRIMARY KEY,configuration TEXT,archived INTEGER); CREATE TABLE IF NOT EXISTS session_retirements(session_id TEXT,remove_session INTEGER); CREATE TABLE IF NOT EXISTS agent_recall_messages(owner TEXT,session TEXT,sequence INTEGER,ordinal INTEGER,body TEXT,at INTEGER,internal INTEGER); CREATE TABLE IF NOT EXISTS agent_session_history(owner TEXT,session TEXT,sequence INTEGER,fact_id TEXT);").unwrap();
+        c.execute_batch("CREATE TABLE IF NOT EXISTS session_control(id TEXT PRIMARY KEY,configuration TEXT,archived INTEGER); CREATE TABLE IF NOT EXISTS session_retirements(session_id TEXT,remove_session INTEGER); CREATE TABLE IF NOT EXISTS agent_namespaces(id INTEGER PRIMARY KEY, owner TEXT NOT NULL, session TEXT NOT NULL, UNIQUE(owner, session)); CREATE TABLE IF NOT EXISTS agent_recall_messages(namespace_id INTEGER,sequence INTEGER,ordinal INTEGER,body TEXT,at INTEGER,internal INTEGER,body_ref_sequence INTEGER,body_ref_start INTEGER,body_ref_end INTEGER); CREATE TABLE IF NOT EXISTS agent_session_history(namespace_id INTEGER,sequence INTEGER,fact_id TEXT);").unwrap();
         c.execute(
             "INSERT OR IGNORE INTO session_control VALUES('s','{}',0)",
             [],
         )
         .unwrap();
+        c.execute(
+            "INSERT OR IGNORE INTO agent_namespaces VALUES(1,'host/agent','s')",
+            [],
+        )
+        .unwrap();
         let fact = uuid::Uuid::new_v4();
         c.execute(
-            "INSERT INTO agent_recall_messages VALUES('host/agent','s',?,0,?,?,0)",
+            "INSERT INTO agent_recall_messages(namespace_id,sequence,ordinal,body,at,internal) VALUES(1,?,0,?,?,0)",
             params![at, text, at],
         )
         .unwrap();
         c.execute(
-            "INSERT INTO agent_session_history VALUES('host/agent','s',?,?)",
+            "INSERT INTO agent_session_history VALUES(1,?,?)",
             params![at, fact.to_string()],
         )
         .unwrap();

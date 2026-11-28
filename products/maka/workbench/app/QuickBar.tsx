@@ -21,7 +21,7 @@ import { Canvas, Image, Path2D, signal, type InputRef, Text, View, type JSX } fr
 import { Button, Input } from 'nsh/base';
 import type { QuickIcon } from '../../../../packages/plugin-sdk/src/workbench-views.js';
 import { Icon } from './Icon';
-import { C, bodyTextStyle, controlFocusStyle, controlHoverStyle } from './ui';
+import { bodyTextStyle, C, controlFocusStyle, controlHoverStyle, lineWidth, radius } from './ui';
 
 /** The height controls in the bar center on, however tall its input grows. */
 export const QUICK_BAR_SLOT = 40;
@@ -167,8 +167,8 @@ export function QuickRow(props: {
             lineHeight: 18,
             flexShrink: 0,
             paddingHorizontal: 6,
-            borderRadius: 4,
-            borderWidth: 1,
+            borderRadius: radius(4),
+            borderWidth: lineWidth(),
             borderColor: C.line,
             color: C.secondary,
           }}

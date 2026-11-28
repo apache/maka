@@ -23,7 +23,7 @@ use rusqlite::{OptionalExtension, params};
 pub(super) fn content_id(c: &Connection, r: &ContentRef) -> Result<i64, StoreError> {
     r.validate().map_err(invalid)?;
     c.query_row(
-        "SELECT id FROM contents WHERE content_sha256=? AND length(payload)=?",
+        "SELECT id FROM contents WHERE content_sha256=? AND COALESCE(logical_bytes,length(payload))=?",
         params![
             r.digest,
             i64::try_from(r.bytes)
@@ -64,9 +64,18 @@ pub(super) fn read(
 ) -> Result<Option<CellView>, StoreError> {
     let body: Option<String> = c
         .query_row(
-            "SELECT body FROM agent_cells WHERE session=? AND cell=?",
+            "SELECT body, body_encoding FROM agent_cells WHERE session=? AND cell=?",
             params![session, cell.to_string()],
-            |r| r.get(0),
+            |r| {
+                let enc: i64 = r.get(1)?;
+                maka_event_log::content::decode_inline_text(r.get_ref(0)?, enc).map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        0,
+                        rusqlite::types::Type::Blob,
+                        Box::new(e),
+                    )
+                })
+            },
         )
         .optional()?;
     body.map(|s| serde_json::from_str(&s).map_err(Into::into))
@@ -77,7 +86,7 @@ pub(super) fn value(
     session: &str,
     key: &str,
 ) -> Result<Option<Vec<u8>>, StoreError> {
-    Ok(c.query_row("SELECT c.payload FROM agent_session_values v JOIN contents c ON c.id=v.value_content_id WHERE v.session=? AND v.key=?",params![session,key],|r|r.get(0)).optional()?)
+    Ok(c.query_row("SELECT maka_content_bytes(c.payload,c.encoding) FROM agent_session_values v JOIN contents c ON c.id=v.value_content_id WHERE v.session=? AND v.key=?",params![session,key],|r|r.get(0)).optional()?)
 }
 pub(super) fn loaded(c: &Connection, session: &str) -> Result<Vec<String>, StoreError> {
     let body: Option<String> = c
@@ -104,7 +113,7 @@ pub(super) fn owned_content(
         CellOwner::External { run, .. } => crate::sql::owned_content(c, run, reference),
         CellOwner::Standalone { .. } => {
             let id = content_id(c, reference)?;
-            c.query_row("SELECT c.payload FROM contents c JOIN agent_standalone_cell_pins p ON p.content_id=c.id WHERE p.cell=? AND c.id=?",params![cell.to_string(),id],|r|r.get(0)).optional()?.ok_or_else(||invalid("content not retained by this Cell"))
+            c.query_row("SELECT maka_content_bytes(c.payload,c.encoding) FROM contents c JOIN agent_standalone_cell_pins p ON p.content_id=c.id WHERE p.cell=? AND c.id=?",params![cell.to_string(),id],|r|r.get(0)).optional()?.ok_or_else(||invalid("content not retained by this Cell"))
         }
     }
 }
@@ -117,7 +126,7 @@ pub(super) fn notifications(
     if !(1..=1024).contains(&limit) {
         return Err(invalid("Cell page size must be 1..=1024"));
     }
-    let mut q=c.prepare_cached("SELECT n.cell,n.notification,c.content_sha256,length(c.payload) FROM agent_cell_notifications n JOIN contents c ON c.id=n.content_id WHERE n.run=?1 AND n.consumed_step IS NULL AND (?2 IS NULL OR n.queued_sequence>(SELECT queued_sequence FROM agent_cell_notifications WHERE notification=?2 AND run=?1)) ORDER BY n.queued_sequence LIMIT ?3")?;
+    let mut q=c.prepare_cached("SELECT n.cell,n.notification,c.content_sha256,COALESCE(c.logical_bytes,length(c.payload)) FROM agent_cell_notifications n JOIN contents c ON c.id=n.content_id WHERE n.run=?1 AND n.consumed_step IS NULL AND (?2 IS NULL OR n.queued_sequence>(SELECT queued_sequence FROM agent_cell_notifications WHERE notification=?2 AND run=?1)) ORDER BY n.queued_sequence LIMIT ?3")?;
     let mut rows = q.query(params![
         run.to_string(),
         after.map(|x| x.to_string()),
@@ -157,9 +166,9 @@ pub(crate) fn load_run(
         .chain(blocked_cells)
         .collect();
     let query = if all {
-        "SELECT body FROM agent_cells WHERE run=?1"
+        "SELECT body, body_encoding FROM agent_cells WHERE run=?1"
     } else {
-        "SELECT body FROM agent_cells WHERE run=?1 AND pending=1 UNION ALL SELECT body FROM agent_cells WHERE run=?1 AND pending=0 AND cell IN (SELECT value FROM json_each(?2)) UNION ALL SELECT v.body FROM agent_tools t JOIN agent_cells v ON v.run=t.run AND json_extract(v.body,'$.owner.link.attempt')=json_extract(t.body,'$.key.attempt') AND json_extract(v.body,'$.owner.call')=json_extract(t.body,'$.key.call') WHERE t.run=?1 AND t.pending=1 AND json_extract(t.body,'$.admitted')=1 AND v.pending=0 AND v.cell NOT IN (SELECT value FROM json_each(?2))"
+        "SELECT body, body_encoding FROM agent_cells WHERE run=?1 AND pending=1 UNION ALL SELECT body, body_encoding FROM agent_cells WHERE run=?1 AND pending=0 AND cell IN (SELECT value FROM json_each(?2)) UNION ALL SELECT v.body, v.body_encoding FROM agent_tools t JOIN agent_cells v ON v.run=t.run AND v.owner_attempt=json_extract(t.body,'$.key.attempt') AND v.owner_call=json_extract(t.body,'$.key.call') WHERE t.run=?1 AND t.pending=1 AND json_extract(t.body,'$.admitted')=1 AND v.pending=0 AND v.cell NOT IN (SELECT value FROM json_each(?2))"
     };
     let mut stmt = c.prepare_cached(query)?;
     let mut rows = if all {
@@ -169,7 +178,9 @@ pub(crate) fn load_run(
     };
     let mut result = BTreeMap::new();
     while let Some(row) = rows.next()? {
-        let cell: CellView = serde_json::from_str(&row.get::<_, String>(0)?)?;
+        let enc: i64 = row.get(1)?;
+        let body = maka_event_log::content::decode_inline_text(row.get_ref(0)?, enc)?;
+        let cell: CellView = serde_json::from_str(&body)?;
         result.insert(cell.id, cell);
     }
     Ok(result)
@@ -264,7 +275,13 @@ pub(super) fn project(
     if original.is_some_and(|(s, r)| s != session || r != run.map(|r| r.to_string())) {
         return Err(StoreError::EventConflict);
     }
-    c.execute("INSERT INTO agent_cells(cell,session,run,pending,body) VALUES(?,?,?,?,?) ON CONFLICT(cell) DO UPDATE SET pending=excluded.pending,body=excluded.body",params![view.id.to_string(),session,run.map(|r|r.to_string()),view.pending(),serde_json::to_string(view)?])?;
+    let (owner_attempt, owner_call) = match &view.owner {
+        CellOwner::Agent { link, call } => (Some(link.attempt.to_string()), Some(call.as_str())),
+        CellOwner::Standalone { .. } | CellOwner::External { .. } => (None, None),
+    };
+    let raw_body = serde_json::to_string(view)?;
+    let encoded = maka_event_log::content::encode(raw_body.as_bytes())?;
+    c.execute("INSERT INTO agent_cells(cell,session,run,pending,owner_attempt,owner_call,body,body_encoding) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(cell) DO UPDATE SET pending=excluded.pending,owner_attempt=excluded.owner_attempt,owner_call=excluded.owner_call,body=excluded.body,body_encoding=excluded.body_encoding",params![view.id.to_string(),session,run.map(|r|r.to_string()),view.pending(),owner_attempt,owner_call,encoded.payload.as_ref(),encoded.encoding])?;
     match event {
         CellEvent::ChildBound { .. } => {}
         CellEvent::SessionValuePublished { key, value, .. } => {
@@ -534,7 +551,11 @@ pub(crate) fn rebuild_run(c: &Connection, run: RunId) -> Result<(), StoreError> 
 }
 pub(super) fn rebuild_session(c: &Connection, session: &str) -> Result<(), StoreError> {
     c.execute(
-        "DELETE FROM agent_usage_calls WHERE source='cell' AND session=?",
+        "DELETE FROM agent_usage_calls WHERE source='cell' AND standalone_session=?1 AND standalone_session IS NOT NULL",
+        [session],
+    )?;
+    c.execute(
+        "DELETE FROM agent_usage_calls WHERE source='cell' AND namespace_id IN (SELECT id FROM agent_namespaces WHERE session=?1) AND namespace_id IS NOT NULL",
         [session],
     )?;
     for table in [
@@ -548,9 +569,9 @@ pub(super) fn rebuild_session(c: &Connection, session: &str) -> Result<(), Store
     // Standalone sources record the Agent cursor visible in their original Root
     // transaction. This merges the two canonical owners in actual commit order.
     let mut q=c.prepare_cached("SELECT source,payload FROM (
-        SELECT 0 AS source,f.sequence AS position,0 AS tie,c.payload
+        SELECT 0 AS source,f.sequence AS position,0 AS tie,maka_content_bytes(c.payload,c.encoding) AS payload
         FROM agent_facts f JOIN agent_run_specs r ON r.run=f.run JOIN contents c ON c.id=f.body_content_id WHERE r.session=?1
-        UNION ALL SELECT 1 AS source,e.agent_cursor AS position,e.sequence AS tie,c.payload
+        UNION ALL SELECT 1 AS source,e.agent_cursor AS position,e.sequence AS tie,maka_content_bytes(c.payload,c.encoding) AS payload
         FROM agent_standalone_cell_events e JOIN contents c ON c.id=e.body_content_id WHERE e.session=?1
     ) ORDER BY position,source,tie")?;
     let mut rows = q.query([session])?;
@@ -561,7 +582,7 @@ pub(super) fn rebuild_session(c: &Connection, session: &str) -> Result<(), Store
             let fact: RecordedFact = serde_json::from_slice(&bytes)?;
             if matches!(&fact.fact, Fact::ContextCompacted { .. }) {
                 let spec: Vec<u8> = c.query_row(
-                    "SELECT c.payload FROM agent_run_specs r JOIN contents c ON c.id=r.spec_content_id WHERE r.run=?",
+                    "SELECT maka_content_bytes(c.payload,c.encoding) FROM agent_run_specs r JOIN contents c ON c.id=r.spec_content_id WHERE r.run=?",
                     [fact.run.to_string()],
                     |row| row.get(0),
                 )?;
@@ -601,7 +622,7 @@ pub(super) fn rebuild_session(c: &Connection, session: &str) -> Result<(), Store
     drop(q);
     let mut cursor = 0i64;
     loop {
-        let mut query=c.prepare_cached("SELECT e.sequence,c.payload FROM agent_standalone_cell_events e JOIN contents c ON c.id=e.body_content_id WHERE e.session=? AND e.sequence>? ORDER BY e.sequence LIMIT 128")?;
+        let mut query=c.prepare_cached("SELECT e.sequence,maka_content_bytes(c.payload,c.encoding) FROM agent_standalone_cell_events e JOIN contents c ON c.id=e.body_content_id WHERE e.session=? AND e.sequence>? ORDER BY e.sequence LIMIT 128")?;
         let page = query
             .query_map(params![session, cursor], |r| {
                 Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?))
@@ -655,7 +676,7 @@ pub(crate) fn native_source_pending(
 ) -> Result<bool, StoreError> {
     let view = read_cell(c, execution.run_id, cell)?;
     let original: Vec<u8> = c.query_row(
-        "SELECT c.payload FROM agent_run_specs r JOIN contents c ON c.id=r.spec_content_id WHERE r.run=?",
+        "SELECT maka_content_bytes(c.payload,c.encoding) FROM agent_run_specs r JOIN contents c ON c.id=r.spec_content_id WHERE r.run=?",
         [execution.run_id.to_string()],
         |r| r.get(0),
     )?;

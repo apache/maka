@@ -4,7 +4,7 @@
 //!
 //! `fps 120/120 frame 1.21/1.10/2.40/3.90 gap 8.33/8.33/8.40/16.70 over 0% update 0.10/… layout
 //! 0.05/… paint 1.00/… snapshot 0.40/… canvas 0.10/… drain 0.20/0.15/0.60/0.90 commits 20
-//! js 0.30/… core 0.50/… items 42 engine 3% cpu 24% rss 92.4 MB`: frames GTK
+//! js 0.30/… core 0.50/… items 42 engine 3% cpu 24% rss 92.4 MB gc 2/94.1`: frames GTK
 //! drew in the second over the display's rate, the main thread's time per
 //! drawn frame (GTK's frame clock from `before-paint` to `after-paint`), the
 //! gaps between drawn frames (one refresh while something moves) and
@@ -14,8 +14,9 @@
 //! it), the share of frames over one refresh, the
 //! time applying the engine's batches per drain, the engine's commits with
 //! their JS and core time, mount items per commit, the engine thread's busy
-//! share and the process' CPU (percent of one core) and resident memory
-//! (milliseconds as mean/p50/p95/max).
+//! share, the process' CPU (percent of one core) and resident memory, and
+//! the engine's idle collections over the last 10 s: how many, and the
+//! longest in milliseconds (milliseconds as mean/p50/p95/max).
 
 use std::{
     cell::{Cell, RefCell},
@@ -702,7 +703,7 @@ fn line(s: &PerfSnapshot, phases: &[Stat; 5], drains: &Stat) -> String {
     let process = &s.process;
     format!(
         "fps {:.0}/{:.0} frame {} gap {} over {:.0}% update {} layout {} paint {} snapshot {} canvas {} drain {} \
-         commits {:.0} js {} core {} items {:.0} engine {:.0}% cpu {} rss {}",
+         commits {:.0} js {} core {} items {:.0} engine {:.0}% cpu {} rss {} gc {}/{:.1}",
         s.fps,
         s.refresh_rate.unwrap_or(0.0),
         ms(&s.frame),
@@ -723,6 +724,8 @@ fn line(s: &PerfSnapshot, phases: &[Stat; 5], drains: &Stat) -> String {
         process
             .memory
             .map_or("-".into(), |m| format!("{:.1} MB", m as f64 / 1e6)),
+        s.gc.count,
+        s.gc.longest.as_secs_f64() * 1e3,
     )
 }
 

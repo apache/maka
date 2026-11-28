@@ -38,8 +38,32 @@ use objc2_foundation::{
 
 use crate::surface::Surface;
 
-/// `NSRectEdgeMaxY`: below the anchor in a flipped view.
-const BELOW: isize = 3;
+/// `NSRectEdgeMinY`: the edge with the smaller y, below the rect in an
+/// unflipped view and above it in a flipped one.
+const MIN_Y: isize = 1;
+/// `NSRectEdgeMaxY`: below the rect in a flipped view, above it in an
+/// unflipped one.
+const MAX_Y: isize = 3;
+
+/// The edge of a rect in a view that is below it on screen: AppKit's
+/// edges follow the view's y axis, which only a flipped view runs down.
+fn below(flipped: bool) -> isize {
+    if flipped { MAX_Y } else { MIN_Y }
+}
+
+/// The rect at the middle of `bounds` that an unanchored menu points at.
+/// One point, not empty: AppKit reads an empty positioning rect as the
+/// whole view, and pointing below a whole window leaves the menu no room
+/// there, so it opens past the window's side (#2912).
+fn middle(bounds: NSRect) -> NSRect {
+    NSRect::new(
+        NSPoint::new(
+            bounds.origin.x + bounds.size.width / 2.0 - 0.5,
+            bounds.origin.y + bounds.size.height / 2.0 - 0.5,
+        ),
+        NSSize::new(1.0, 1.0),
+    )
+}
 
 /// `NSUserCancelledError`: the user cancelled the service (Cocoa's domain).
 const USER_CANCELLED: isize = 3072;
@@ -347,16 +371,12 @@ fn show(surface: &Rc<Surface>, id: u32, sheet: &ShareSheet) {
                     "share: the surface is in no visible window",
                 ));
             }
-            let bounds = root.bounds();
-            (
-                root,
-                NSRect::new(
-                    NSPoint::new(bounds.size.width / 2.0, bounds.size.height / 2.0),
-                    NSSize::new(0.0, 0.0),
-                ),
-            )
+            let rect = middle(root.bounds());
+            (root, rect)
         }
     };
+    // The window's container is not flipped, an anchor (an NSH view) is.
+    let edge = below(view.isFlipped());
     let window = view.window();
     let key = window.as_ref().is_some_and(|w| w.isKeyWindow());
     let delegate = PickerDelegate::alloc(surface.mtm).set_ivars(DelegateIvars {
@@ -395,7 +415,7 @@ fn show(surface: &Rc<Surface>, id: u32, sheet: &ShareSheet) {
         *surface.share.picker.borrow_mut() = Some(picker.clone());
         *surface.share.delegate.borrow_mut() = Some(delegate);
         let _: () =
-            msg_send![&picker, showRelativeToRect: rect, ofView: &*view, preferredEdge: BELOW];
+            msg_send![&picker, showRelativeToRect: rect, ofView: &*view, preferredEdge: edge];
     }
 }
 
@@ -403,4 +423,25 @@ fn show(surface: &Rc<Surface>, id: u32, sheet: &ShareSheet) {
 fn object<T: objc2::Message>(value: Retained<T>) -> Retained<AnyObject> {
     // SAFETY: every Objective-C object is an `AnyObject`.
     unsafe { Retained::cast_unchecked(value) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_unanchored_menu_points_at_one_point_in_the_middle() {
+        let bounds = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(480.0, 860.0));
+        let rect = middle(bounds);
+        assert_eq!(rect.size, NSSize::new(1.0, 1.0));
+        assert_eq!(rect.origin, NSPoint::new(239.5, 429.5));
+        let shifted = NSRect::new(NSPoint::new(10.0, 20.0), NSSize::new(100.0, 50.0));
+        assert_eq!(middle(shifted).origin, NSPoint::new(59.5, 44.5));
+    }
+
+    #[test]
+    fn the_menu_opens_below_in_flipped_and_unflipped_views() {
+        assert_eq!(below(true), MAX_Y);
+        assert_eq!(below(false), MIN_Y);
+    }
 }

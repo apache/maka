@@ -92,6 +92,7 @@ impl Recall {
         }
         Ok(())
     }
+
     async fn worker<T: Send + 'static>(
         &self,
         call: &Scope,
@@ -112,6 +113,7 @@ impl Recall {
         query: &search::Query,
         before: usize,
         after: usize,
+        transcript_only: bool,
     ) -> Result<indexed::Batch, ToolError> {
         self.check(call).await?;
         let index = self.index(call)?;
@@ -127,6 +129,7 @@ impl Recall {
             since: query.since,
             until: query.until,
             exclude,
+            transcript_only,
         };
         let stop = call.cancellation.child_token();
         let _guard = stop.clone().drop_guard();
@@ -198,6 +201,11 @@ impl Recall {
         } else {
             None
         };
+        let binding = project
+            .as_ref()
+            .map(|(scope, _)| scope)
+            .unwrap_or(&personal)
+            .clone();
         let mut page = self
             .data(call)
             .map_err(|e| e.to_string())?
@@ -212,6 +220,22 @@ impl Recall {
             })
             .await
             .map_err(|e| e.to_string())?;
+        if call.identity.agent().is_some() {
+            let facts = page
+                .facts
+                .iter()
+                .map(|f| crate::contract::LoadedMemory {
+                    scope: match f.scope {
+                        MemoryScope::Personal => "personal".into(),
+                        MemoryScope::Project { .. } => binding.location.clone(),
+                    },
+                    id: f.id.clone(),
+                    assertion: f.assertion,
+                    revision: f.revision,
+                })
+                .collect();
+            owner.record_memory_reads(call, binding, facts).await?;
+        }
         if let Some(reason) = project_gap {
             page.gaps.push(reason);
         }
@@ -228,7 +252,7 @@ impl Recall {
     ) -> Result<RecallPage, String> {
         query.validate()?;
         let found = self
-            .batch(call, &query, 0, 0)
+            .batch(call, &query, 0, 0, true)
             .await
             .map_err(|e| e.to_string())?;
         let mut titles = Vec::new();
@@ -311,7 +335,7 @@ impl Recall {
         before: usize,
         after: usize,
     ) -> Result<search::ResultSet, ToolError> {
-        let found = self.batch(call, query, before, after).await?;
+        let found = self.batch(call, query, before, after, false).await?;
         let mut passages = Vec::with_capacity(found.hits.len());
         for hit in found.hits {
             let address = Self::address(&hit.anchor);

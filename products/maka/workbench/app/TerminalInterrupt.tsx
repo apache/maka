@@ -25,7 +25,7 @@ import type { RunId } from '../../../../packages/plugin-sdk/src/index.js';
 import { tr } from './locale';
 import { DialogFooter, DialogHeader, ModalDialog } from './ModalDialog';
 import { SettingsButton } from './SettingsPage';
-import { bodyTextStyle, C } from './ui';
+import { bodyTextStyle, C, lineWidth, radius } from './ui';
 
 type InterruptSession = Pick<ComposerSession, 'draft' | 'run' | 'stopping' | 'stop'>;
 type StopRequest = { owner: InterruptSession; runId: RunId };
@@ -138,9 +138,9 @@ export function TerminalInterrupt(props: { state: ReturnType<typeof createTermin
             style={{
               paddingHorizontal: 16,
               paddingVertical: 12,
-              borderRadius: 12,
+              borderRadius: radius(12),
               backgroundColor: C.raised,
-              borderWidth: 1,
+              borderWidth: lineWidth(),
               borderColor: C.line,
             }}
           >

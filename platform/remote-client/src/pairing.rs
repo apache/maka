@@ -19,7 +19,8 @@
 
 use crate::{
     DeviceIdentity, HostProfile, PathSummary, RemoteClientError, RemoteHostConnection,
-    client::redeem_pairing_invite, link::Link,
+    client::{pairing_platform, redeem_pairing_invite},
+    link::Link,
 };
 use maka_remote_pairing::{RelayEndpoint, SignedPairingTicket, parse_peer_id};
 use maka_remote_transport::{PeerEndpoint, Relay};
@@ -51,7 +52,7 @@ impl PendingPairing {
     ) -> Result<Self, RemoteClientError> {
         let ticket = SignedPairingTicket::parse_and_verify_uri(uri, now_ms)?;
         let payload = ticket.payload();
-        let profile = HostProfile::from_ticket(payload);
+        let mut profile = HostProfile::from_ticket(payload);
         saved.check_host_key(&profile)?;
         let endpoint = bind(identity, &payload.relays, authorization).await?;
         let connection = endpoint
@@ -61,10 +62,15 @@ impl PendingPairing {
         let sas = connection
             .export_sas()
             .map_err(RemoteClientError::Transport)?;
+        let supports_pairing_info = connection.supports_pairing_info();
+        let link = Link::peer(endpoint, connection);
+        if supports_pairing_info {
+            profile.set_platform(pairing_platform(&link).await?);
+        }
         Ok(Self {
             ticket,
             profile,
-            link: Link::peer(endpoint, connection),
+            link,
             local_peer_id: identity.public_key().to_string(),
             sas,
         })
@@ -76,6 +82,15 @@ impl PendingPairing {
 
     pub fn host_name(&self) -> &str {
         self.profile.host_name()
+    }
+
+    pub fn platform(&self) -> Option<maka_remote_pairing::HostPlatform> {
+        self.profile.platform()
+    }
+
+    /// Validate and adopt the override, or the invitation name when omitted.
+    pub fn select_host_name(&mut self, name: Option<&str>) -> Result<(), crate::PairingNameError> {
+        self.profile.select_host_name(name)
     }
 
     pub fn host_peer_id(&self) -> &str {
@@ -164,10 +179,15 @@ impl HostProfile {
     ) -> Result<RemoteHostConnection, RemoteClientError> {
         let host_key = parse_peer_id(self.host_peer_id())?;
         let endpoint = bind(identity, self.relays(), authorization).await?;
-        let connection = endpoint
-            .connect(&host_key)
-            .await
-            .map_err(RemoteClientError::Transport)?;
+        let connection = endpoint.connect(&host_key).await.map_err(|cause| {
+            if cause.is::<maka_remote_transport::PeerAccessRevoked>() {
+                return RemoteClientError::PeerAccessRevoked;
+            }
+            match cause.downcast::<maka_remote_transport::RelayAuthRejected>() {
+                Ok(auth) => RemoteClientError::RelayAuth(*auth),
+                Err(cause) => RemoteClientError::Transport(cause),
+            }
+        })?;
         RemoteHostConnection::connect(
             Link::peer(endpoint, connection),
             self.root_id(),

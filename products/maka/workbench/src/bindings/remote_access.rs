@@ -19,7 +19,7 @@
 
 use super::{ApplicationClient, ApplicationHost, execute};
 use maka_host_runtime::application::host::{
-    PeerPairingOptions,
+    PeerPairingOptions, default_host_name,
     protocol::{Request, Response},
     remote_access::RemoteAccessUpdate,
 };
@@ -78,7 +78,7 @@ pub(super) async fn control(
         let request = match action {
             Action::Status { invite_id } => Request::RemoteAccessStatus { invite_id },
             Action::Pair => Request::PreparePeerPairing(PeerPairingOptions {
-                host_name: "Maka Desktop".into(),
+                host_name: default_host_name(),
                 label: None,
                 ttl_secs: None,
             }),

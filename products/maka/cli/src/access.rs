@@ -123,8 +123,9 @@ pub(super) struct Invite {
     label: Option<String>,
     #[arg(long)]
     ttl_secs: Option<u64>,
+    /// Public name in the invite (defaults to the local hostname).
     #[arg(long)]
-    host_name: String,
+    host_name: Option<String>,
 }
 
 impl Invite {
@@ -132,7 +133,9 @@ impl Invite {
         let client = HostClient::connect(&self.root.root, None).await?;
         let invite = client
             .prepare_peer_pairing(PeerPairingOptions {
-                host_name: self.host_name,
+                host_name: self
+                    .host_name
+                    .unwrap_or_else(maka_remote_pairing::default_host_name),
                 label: self.label,
                 ttl_secs: self.ttl_secs,
             })

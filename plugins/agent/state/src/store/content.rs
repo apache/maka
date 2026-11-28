@@ -70,6 +70,28 @@ impl ContentBlob {
             body: Body::Prepared(body),
         })
     }
+    #[cfg(test)]
+    pub(crate) fn store_legacy(&self, connection: &Connection) -> Result<i64, StoreError> {
+        use rusqlite::{OptionalExtension, params};
+        let Body::Memory(bytes) = &self.body else {
+            return Err(invalid("legacy test content must be in memory"));
+        };
+        if let Some(id) = connection
+            .query_row(
+                "SELECT id FROM contents WHERE content_sha256=?1",
+                [&self.reference.digest],
+                |r| r.get(0),
+            )
+            .optional()?
+        {
+            return Ok(id);
+        }
+        Ok(connection.query_row(
+            "INSERT INTO contents(content_sha256,payload) VALUES(?1,?2) RETURNING id",
+            params![&self.reference.digest, bytes.as_ref()],
+            |r| r.get(0),
+        )?)
+    }
     pub(crate) fn store(&self, connection: &Connection) -> Result<i64, StoreError> {
         match &self.body {
             Body::Memory(bytes) => content::put(connection, &self.reference.digest, bytes),

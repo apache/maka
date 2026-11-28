@@ -17,16 +17,29 @@
  * under the License.
  */
 
+import { tr } from '../../locale';
 import type {
   WebSettings,
   WebSnapshot,
   WebUpdate,
 } from '../../../../../../packages/plugin-sdk/src/generated/runtime';
-import type { SettingsRpc } from './rpc';
+import { LocalizedSettingsError, type SettingsRpc } from './rpc';
 
 function updated(result: WebUpdate) {
-  if (result.kind !== 'updated') throw new Error(result.kind);
-  return result.snapshot;
+  switch (result.kind) {
+    case 'updated':
+      return result.snapshot;
+    case 'changed':
+      throw new LocalizedSettingsError('Refresh and try again.', { cause: result });
+    case 'invalid_key':
+      throw new LocalizedSettingsError('Invalid API key', { cause: result });
+    case 'invalid_settings':
+      throw new Error(tr('Could not read or update settings.'), { cause: result.message });
+    case 'check_unavailable':
+      throw new LocalizedSettingsError('Unavailable', { cause: result });
+    default:
+      throw new Error(tr('Could not read or update settings.'), { cause: result });
+  }
 }
 
 export async function saveWebSettings(

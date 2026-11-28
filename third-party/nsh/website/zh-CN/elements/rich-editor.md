@@ -46,6 +46,12 @@ mount(() => (
 
 `onCompositionChange({ composing })` 在此视图开始输入法组合输入时报告 `true`，结束时报告 `false`，取消也会报告结束。组合中的文本更新保持当前状态。回调执行时，会话的 `composing` 值和已提交文本已经更新，应用可以在组合输入期间保留编辑器视图，在结束时释放它。开始或取消组合输入可以保持文档及其修订号不变；`onChange` 报告文档修改。
 
+`onReadonlyInput()` 在用户往不可编辑的编辑器（`editable={false}`、编辑器的 `editable: false` / `setEditable(false)`，或插件的 `editable`）里输入文字时触发，这些文字不会进入文档：硬件键盘输入的字符、软键盘的输入和输入法提交的文字，每次变化触发一次。应用可以用它提示进入编辑，例如阅读视图在用户开始打字时切换到编辑。应用自己插入的文字、删除和粘贴不会报告。键盘替换已输入的词时（自动更正、选候选词）会再触发一次，所以它只表示用户在打字，不能当作字数。
+
+```tsx
+<RichEditor editor={editor} editable={false} onReadonlyInput={() => showEditHint()} />
+```
+
 ## 样式
 
 编辑器以应用的外观绘制文档：`classes` 和 `styles` 设置它的各个部件（`root`、`content`、`caret`、`selection`、`placeholder`、`composition`、`selectedNode`、`listMarker`、触摸选区的手柄 `selectionHandle`、`selectionHandleStart`、`selectionHandleEnd`，以及表格的 `selectedCell`、`tableGrip`、`tableResizeHandle`、`tableDropIndicator`），按类型设置节点（`nodes: { heading: "text-2xl font-bold", "heading[level=2]": "text-xl" }`），以及设置标记（`marks: { bold: "font-bold" }`）。节点规格把 `extra.listMarker` 设为 `"bullet"` 或 `"ordered"` 的列表（starter schema 的列表）中，每一项都在 `listMarker` 部件中显示标记：按层级显示 `•`、`◦`、`▪`，或从列表的 `start` 开始编号，放在列表项之前、列表的缩进中（如浏览器缩进 `ul`，在列表上设置 `pl-6`）。
@@ -213,6 +219,8 @@ const canIndent = editor.can(sinkListItem("listItem"));
 | `on(event, listener)` | 每次发生 `event` 后，在 JS 的下一轮以它的数据调用 `listener`：`revision`（`{ revision }`，每次修改之后，无论来自何处）、`update`、`selectionUpdate`、`transaction`、`focus`、`blur`、`delete`。返回一个停止监听的函数；在组件渲染期间添加的监听器随组件一起停止 |
 | `focus()`、`blur()` | 把键盘焦点移到显示编辑器的视图，或从中移开 |
 
+`insertContent` 收到文本、Markdown 或 JSON 时，内容会在边缘打开并适配插入位置：光标位于文本中时，一个段落会拼接进光标前后的文本；列表、表格等无法内联放入的结构仍作为块插入。HTML 字符串遵循 Tiptap 的 `insertContent`：裸文本或内联标记拼进文本，显式的块元素作为块插入。
+
 位置的计算与 ProseMirror 相同：文本按 UTF-16 码元计数，叶子节点计为一，有内容的节点计其两个边界。需要在编辑后仍然有效的东西，在节点属性或标记中保存一个 id。位置查询（`resolve(pos)`、`nodeAt(pos)`、`coordsAtPos(pos)`、`findParentNode(name, pos)` 等）在位置超出文档（`0` 到 `doc.content.size`）时抛出 `RangeError`，与 ProseMirror 的 `resolve` 相同；那里没有东西时回答 `null`（`nodeAt` 在节点末尾，`coordsAtPos` 在没有视图显示编辑器时）。`run` 和 `can` 遇到编辑器不认识的命令、节点或标记类型时抛出 `TypeError`。
 
 ### 接管事务
@@ -236,7 +244,11 @@ editor.run(command("toggleHeading", { level: 2 }));
 editor.run(command("toggleBold"));
 ```
 
-`StarterKit` 包含 `Document`、`Paragraph`、文本节点、`Heading`、`Blockquote`、`BulletList`、`OrderedList`、`ListItem`、`TaskList`、`TaskItem`、`CodeBlock`、`HardBreak`、`HorizontalRule`、`RichImage`（Tiptap 的 `Image`）、`Bold`、`Italic`、`Strike`、`Code`、`Underline`、`RichLink`（Tiptap 的 `Link`）、`Highlight`、`Subscript`、`Superscript`、`RichTextStyle`（Tiptap 的 `TextStyle`）、`TextAlign`、`History`、`TrailingNode`、`Typography` 和 `ListKeymap`。以某个扩展命名的选项设为 `false` 即不包含它，设为对象则配置它（`heading: { levels }`、`history: { depth }`、`textAlign: { types }`、`codeBlock: { enableTabIndentation }`）。每个类的 `configure(options)` 与 `extend({...})` 生成 `RichExtension`，它有 `name`、`type`、`priority` 和 `options`。每个编辑器还带有核心键位（Enter、Backspace、Delete、全选）。
+`StarterKit` 包含 `Document`、`Paragraph`、文本节点、`Heading`、`Blockquote`、`BulletList`、`OrderedList`、`ListItem`、`TaskList`、`TaskItem`、`CodeBlock`、`CodeBlockHighlight`、`HardBreak`、`HorizontalRule`、`RichImage`（Tiptap 的 `Image`）、`Bold`、`Italic`、`Strike`、`Code`、`Underline`、`RichLink`（Tiptap 的 `Link`）、`Highlight`、`Subscript`、`Superscript`、`RichTextStyle`（Tiptap 的 `TextStyle`）、`TextAlign`、`History`、`TrailingNode`、`Typography` 和 `ListKeymap`。以某个扩展命名的选项设为 `false` 即不包含它，设为对象则配置它（`heading: { levels }`、`history: { depth }`、`textAlign: { types }`、`codeBlock: { enableTabIndentation }`）。每个类的 `configure(options)` 与 `extend({...})` 生成 `RichExtension`，它有 `name`、`type`、`priority` 和 `options`。每个编辑器还带有核心键位（Enter、Backspace、Delete、全选）。
+
+写明语言的代码块（` ```rust `、`toggleCodeBlock({ language: "rust" })`）会按 `TextView` 给围栏代码着色的方式着色，语法库和配色都相同：这由 `CodeBlockHighlight` 负责，相当于 Tiptap 的 `CodeBlockLowlight`，只是不用传入高亮器。`StarterKit.configure({ codeBlockHighlight: false })` 让代码不着色。在长代码块里打字不用等着色：颜色在引擎线程之外算出，稍后显示。Web 上语法库在第一次需要时从页面下载一次，与 `TextView` 共用，不在首屏下载里。没有开启平台的 feature `highlight` 时，代码不着色。
+
+Rust 里是 `kit::code_block_highlight()`，包含在 `kit::starter_kit()` 和 `starter::plugins` 里。
 
 每个扩展都加入 Tiptap 的命令，由 `command(name, args)` 运行：`toggleBold`、`setItalic`、`unsetStrike`、`toggleHeading({ level })`、`setParagraph`、`toggleBlockquote`、`toggleBulletList`、`toggleOrderedList`、`toggleTaskList`、`toggleCodeBlock({ language })`、`setHardBreak`、`setHorizontalRule`、`setImage({ src })`、`toggleHighlight({ color })`、`setTextAlign("center")`、`unsetTextAlign`，以及下文的链接、字数统计与建议命令。图片的 `src` 与 `Image` 接受的相同（URL、文件路径或 `file:` URL、`data:` URI）；不设 `width` 和 `height` 时按原始尺寸显示，只设其一时按该边和图片的宽高比显示。
 
@@ -267,7 +279,7 @@ const editor = createRichEditor({ extensions: [StarterKit, Signature.configure({
 
 ### 节点视图
 
-`addNodeView` 返回一个组件，由它渲染该扩展节点类型的每个节点：正文里的股票标签、段落之间的卡片、@ 提及、嵌入内容。节点类型必须是原子节点（`atom: true` 或叶子节点）：光标把它当作一个字符或一个块跳过，Backspace 删除它。有内容的节点会被拒绝。
+`addNodeView` 返回一个组件，由它渲染该扩展节点类型的每个节点：正文里的股票标签、段落之间的卡片、@ 提及、嵌入内容。节点类型必须是原子节点（`atom: true` 或叶子节点）：方向键移到它时先把它作为节点选中，再按一次才越过它，与 ProseMirror 和 Tiptap 相同（`selectable: false` 的节点，如 @ 提及，被当作一个字符跳过），Backspace 删除它。有内容的节点会被拒绝。
 
 ```tsx
 import { RichEditor, StarterKit, createRichEditor, defineExtension, type RichNodeViewProps } from "nsh/base";
@@ -367,9 +379,9 @@ const paste = new RichEditorPlugin("paste")
 
 应用自己清洗剪贴板里的 HTML（Word 的列表、Google Docs 的外壳、转成 HTML 的 Markdown）时，用 `editor.pasteHTML(html)`
 把结果接着粘贴进去并返回 `true`；纯文本用 `editor.pasteText(text)`。它们就是 ProseMirror 的 `pasteHTML` 和 `pasteText`：
-内容按粘贴的方式读取，即按 schema 的规则解析并适配选区，所以标了 `isolating` 的节点（带图注的图片）会完整保留，而
-`insertContent(html, "html")` 会把它打开；编辑器自己的粘贴步骤（链接、字数限制、粘贴规则）照常生效。插件的 `transformPasted`
-和 `handlePaste` 不会再被调用。返回值表示是否粘贴了内容。
+内容按粘贴的方式读取，即按 schema 的规则解析并适配选区，所以标了 `isolating` 的节点（带图注的图片）会完整保留；
+相比之下，传给 `insertContent` 的 JSON 或 Markdown 会在内容边缘打开，即使穿过这样的节点也一样。编辑器自己的粘贴步骤
+（链接、字数限制、粘贴规则）照常生效。插件的 `transformPasted` 和 `handlePaste` 不会再被调用。返回值表示是否粘贴了内容。
 
 ```tsx
 const paste = new RichEditorPlugin("paste").handlePaste((_slice, clipboard) => {
@@ -473,6 +485,16 @@ Tab 与 Shift-Tab 在单元格之间移动，在最后一个单元格按 Tab 会
 
 - 在桌面平台上，每列的右边框和每行的下边框可以调整尺寸：指针显示调整光标和 `tableResizeHandle` 线条，表格随拖动变化，松开时在一步中设置 `colwidth` 或 `height`，撤销可以一次撤回。`resizable: false` 关闭此功能，`lastColumnResizable: false` 保持最后一列的宽度。
 - 选区所在的表格在其上边框每列上方、左边框每行旁边显示抓手（`tableGrip`）。按下抓手选中该列或该行；在桌面平台上拖动抓手会显示放置位置（`tableDropIndicator`），松开时移动到那里。
+- 按下抓手后没有拖动就松开（触摸屏上为轻点），会在选中该列或该行之后调用 `onTableMenu`，参数为 `{ table, row, column, bounds }`：`table` 是表格之前的位置，行抓手带 `row`，列抓手带 `column`，`bounds` 是抓手在根视图中的边界，应用在这里打开该行或该列的菜单。拖动会移动行或列，不调用它；松开前抓手所在的表格或行列已被删除时也不调用。
+
+```tsx
+<RichEditor
+  editor={editor}
+  onTableMenu={({ table, row, column, bounds }) =>
+    openLineMenu({ table, row, column, anchor: bounds })
+  }
+/>
+```
 
 ```tsx
 <RichEditor

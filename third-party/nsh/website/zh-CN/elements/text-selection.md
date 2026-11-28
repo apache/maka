@@ -83,7 +83,7 @@ fn transcript(replies: Signal<Vec<SharedString>>) -> impl IntoElement {
 
 ## 读取选中的文字
 
-在可选择视图上设置 `onSelectionChange`（Rust 中为 `.on_text_selection_change(..)`），每次选区变化时都会收到选中的文字：`{ text, start, bounds, pageBounds }`，即复制会得到的内容、它在整个视图文字中的起始位置，以及它在视图中和所在根视图中的外框（macOS 和 Windows；锚定在 `pageBounds` 的 `Overlay` 就是选区上方的操作栏）；不再有选中内容时（点击别处、按 Escape、另一个视图开始选择）收到 `""`。只在文字或外框变化时报告。可选择视图嵌套时由外层视图报告，因为选区只有一个。设置了 `selectable` 的 [`TextView`](./text-view.md) 也以同样方式报告自己的选区（`onSelectionChange`，Rust 中为 `.on_selection_change(..)`）。聊天应用可以用它引用读者在回答中选中的部分：
+在可选择视图上设置 `onSelectionChange`（Rust 中为 `.on_text_selection_change(..)`），每次选区变化时都会收到选中的文字：`{ text, start, bounds, pageBounds, anchor, focus }`，即复制会得到的内容、它在整个视图文字中的起始位置、它在视图中和所在根视图中的外框（macOS 和 Windows；锚定在 `pageBounds` 的 `Overlay` 就是选区上方的操作栏），以及两端所在的列表项（见下文）；不再有选中内容时（点击别处、按 Escape、另一个视图开始选择）收到 `""`。只在文字、外框或两端变化时报告。可选择视图嵌套时由外层视图报告，因为选区只有一个。设置了 `selectable` 的 [`TextView`](./text-view.md) 也以同样方式报告自己的选区（`onSelectionChange`，Rust 中为 `.on_selection_change(..)`）。聊天应用可以用它引用读者在回答中选中的部分：
 
 ```tsx tabs
 import { signal, View } from "nsh";
@@ -106,6 +106,20 @@ fn reply(markdown: SharedString, quote: Signal<String>) -> impl IntoElement {
         .child(nsh_base::text_view().markdown(markdown))
 }
 ```
+
+### 选区在哪些列表项里
+
+可选择视图里有 [`List`](./list.md) 时，事件还会按列表对列表项的命名说明选区从哪一项开始、到哪一项结束：`anchor` 是选区开始的地方（按下处），`focus` 是它现在到达的地方，各为 `{ key, offset }`。`key` 是列表项的 key（`keyExtractor` 给出的，否则是列表项的 `key` 或 `id`，再否则是它的下标，与 `onViewableItemsChange` 相同），`offset` 是这一端在该项文字中的位置，按复制整个列表项得到的文字计算（UTF-16 单位）。向上拖选时，`focus` 所在的项在 `anchor` 之前。文字相同的两项不会混淆，选区存在期间在它上方插入的项、被替换的项也一样：每次事件给出的都是两端在该事件发生时所在的项（行重建了文字时选区会清空，和任何文字消失时一样）。某一端所在的项滚出视口后仍保留它的 key。列表嵌套在另一个列表的项里时，给出的是最内层的项；列表项里组件自带的列表（[`Tree`](./tree.md)、`Listbox`）交给外层的项命名。不在列表项里的一端没有对应字段；列表给不出 key 的行（`keyExtractor` 抛出异常，异常和应用抛出的其他异常一样上报；或者返回的既不是字符串也不是数字）里的一端也没有。聊天记录可以据此引用每条消息中被选中的部分：
+
+```tsx
+<View selectable onSelectionChange={({ text, anchor, focus }) => quote.set({ text, from: anchor, to: focus })}>
+  <List each={messages()} keyExtractor={(m) => m.id}>
+    {(m) => <TextView markdown={m().text} />}
+  </List>
+</View>
+```
+
+Rust 中对应的是 `TextSelectionEvent::anchor` 和 `focus`（`TextSelectionEndpoint { key, offset }`）。外层没有 TSX 列表为其命名时，Rust `virtual_list` 的行按下标命名（`"3"`），因为它的 `.keys(..)` 可以是任意可哈希的值。Web 目前还不报告这两端。
 
 在可选择视图（或它里面的视图）的 ref 上调用 `clearSelection()` 会清除选区，效果和点击别处一样：高亮消失，`onSelectionChange` 收到 `""`。选区上方的操作栏在完成操作后调用它即可。Rust 中为 `ElementRef::clear_selection`。
 
@@ -157,7 +171,7 @@ fn reply(markdown: SharedString, quote: Signal<String>) -> impl IntoElement {
 
 | 平台 | 如何选择 |
 |---|---|
-| macOS、Windows、Linux、GPUI | 在文字上拖动；双击选择一个词，三击选择一个段落，之后的拖动按词或段落继续。Shift+点击扩展选区。Ctrl / Cmd+A 选择视图中的全部内容，Ctrl / Cmd+C 复制，Escape 或在外部按下会清除选区。 |
+| macOS、Windows、Linux、GPUI | 在文字上拖动；双击选择一个词，三击选择一个段落，之后的拖动按词或段落继续。Shift+点击扩展选区。Ctrl / Cmd+A 选择视图中的全部内容，Ctrl / Cmd+C 复制，Escape 或在外部按下会清除选区。在 macOS 上，Shift 加方向键会从按下的位置扩展可选择视图的选区，与文本视图一致：按字符或按行，加 Option 按词或按段落，加 Cmd 到行或视图的开头 / 结尾（Shift+Home / End 亦可）。 |
 | iOS、Android | 长按选择一个词；平台的选择手柄可以扩展它，编辑菜单中有拷贝和全选。 |
 | Web | 浏览器自己的选择，以及它的手势、菜单和快捷键。 |
 

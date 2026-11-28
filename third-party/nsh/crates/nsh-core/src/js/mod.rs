@@ -232,6 +232,7 @@ mod tests {
                 "  onLoad?: (e: { duration: number; size: PixelSize }) => void;",
             ),
             ("VideoHostProps", "  audioSession?: AudioSession;"),
+            ("VideoHostProps", "  poster?: string;"),
             (
                 "ScrollingHostProps",
                 "  decelerationRate?: \"normal\" | \"fast\" | number;",

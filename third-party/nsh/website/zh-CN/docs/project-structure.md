@@ -165,10 +165,10 @@ pub fn App() -> impl IntoElement {
 | `statusBar` | object | 每次构建、`package` | 所有页面和对话框之下的状态栏默认值（iOS 和 Android）：`{ "foreground": "auto" \| "light" \| "dark", "hidden": boolean }`，两个字段都可省略。打包的 iOS 应用从启动屏起就使用它（[状态栏](../modules/nsh-base.md#status-bar)）。 |
 | `capabilities` | object | 每次构建 | 应用可以访问 VM 之外的哪些资源：网络主机、网页视图主机、状态栏、应用自己的窗口（[沙箱与权限](./sandbox-and-capabilities.md)）。 |
 | `window` | object | 每次构建、`package` | 桌面平台上应用声明的第一个窗口的启动设置，从第一帧起生效：`title`、`defaultSize`、`minSize`、`titleBar`、`backdrop` 以及窗口的其他选项和属性，写法与 `nsh/desktop` 的 `WindowOptions` 相同（`{ "defaultSize": { "width": 1100, "height": 720 }, "titleBar": { "style": "hidden" } }`）（[应用宿主与第一个窗口](../modules/nsh-desktop.md#应用宿主与第一个窗口)）。`defaultVisible` 不再适用：应用宿主永远不会显示；以无窗口状态启动的应用不打开窗口即可。 |
-| `application` | object | 每次构建、`package` | 应用的生命周期：`"quitMode": "platform" \| "lastWindowClosed" \| "explicit"`。`"platform"`（默认）让 macOS 应用在没有窗口时继续运行，并在 Windows 和 Linux 上于最后一个窗口关闭时退出；`"lastWindowClosed"` 在所有平台上最后一个窗口关闭时退出；`"explicit"` 在没有窗口时继续运行。应用可在运行时用 `Application.setQuitMode` 修改（[退出](../modules/nsh-desktop.md#退出)）。 |
+| `application` | object | 每次构建、`package` | 应用的生命周期：`"quitMode": "platform" \| "lastWindowClosed" \| "explicit"`。`"platform"`（`<Window>` 应用的默认）让 macOS 应用在没有窗口时继续运行，并在 Windows 和 Linux 上于最后一个窗口关闭时退出；`"lastWindowClosed"` 在所有平台上最后一个窗口关闭时退出；`"explicit"` 在没有窗口时继续运行。未声明 `<Window>` 的裸 `mount(App)` 隐式主窗口在关闭时默认在所有平台退出，除非在此或通过 `Application.setQuitMode` 显式配置（[退出](../modules/nsh-desktop.md#退出)）。 |
 | `resolve` | object | 每次构建 | 裸导入如何解析：npm 包的导出条件和别名（[npm 包](#npm-包)）。 |
 | `rust` | string 或 string[] | 每个命令 | 应用的 Rust crate 或 crate 列表，路径相对于 `nsh.json`：其中的组件和模块，TSX 按每个 crate 的 `#[native_module]` 名称导入（[用 Rust 开发](./rust.md#多个-crate)）。 |
-| `dependencies` | object | 每个命令 | 应用使用的 [nshm](./nshm.md)，以包名为键，由 `nsh add` 记录在这里并由 NSH 锁定在 `nsh.lock`：来自 crates.io 时写版本要求（`"acme-gauge": "^1.0"`），否则写带 `"github"`、`"git"` 或 `"path"` 的对象，可加 `"version"`、`"tag"` 或 `"rev"`，以及 `"features"`，即要开启的 Rust nshm 的 Cargo feature（`"nsh-extra": { "version": "^0.6", "features": ["camera"] }`）（[CLI：nsh add](./cli.md#nsh-add)）。 |
+| `dependencies` | object | 每个命令 | 应用使用的 [nshm](./nshm.md)，以包名为键，由 `nsh add` 记录在这里并由 NSH 锁定在 `nsh.lock`：来自 crates.io 时写版本要求（`"acme-gauge": "^1.0"`），否则写带 `"github"`、`"git"` 或 `"path"` 的对象，可加 `"version"`、`"tag"` 或 `"rev"`，`"features"`，即要开启的 Rust nshm 的 Cargo feature（`"nsh-extra": { "version": "^0.6", "features": ["camera"] }`），以及 `"targets"`，即按 `platform.os` 名字列出的、要链接 Rust nshm 的 target（默认所有 target；[nshm](./nshm.md#使用-nshm)）（[CLI：nsh add](./cli.md#nsh-add)）。 |
 | `web` | object | `package` | Web 包给页面添加的内容。`web.host`：一个 JS 模块，路径相对于 `nsh.json`，导出 `createHost(player)`，应答应用的 [`host`](../modules/nsh.md#host) 调用；`web.connect`：该模块自己的请求访问的主机，写法同 `capabilities.network.hosts` 的模式，页面的 Content-Security-Policy 允许它们（[Web](./web.md#宿主的函数)）；`web.base`：站点所在的路径（`"/apps/counter/"`），即页面的 `<base href>`，使页面在应用自己的路径上也能加载（[Web](./web.md#部署)）；`web.history`：压入的页面和打开的对话框是否作为浏览器历史记录（默认在应用占据整个页面时是，在 iframe 里不是）。 |
 | `updater` | object | `package` | 打包后的应用从哪里获取更新：`{ "github": "owner/repo" }` 或 `{ "url": "https://…/latest.json", "publicKey": "…" }`，配 `github` 时 `publicKey` 可选；[OTA 更新](./ota-updates.md)另需 `"packages": { "roots": [...] }`（[应用更新](./app-updates.md)、[nsh/updater](../modules/nsh-updater.md#nshjson)）。 |
 | `ios` | object | `package` | iOS 包添加的内容：`infoPlist` 是应用 `Info.plist` 的键，`infoPlistStrings` 是这些键在其他语言下的文字，按语言给出（`{ "zh-Hans": { "NSCameraUsageDescription": "…" } }`），`nsh run` 的模拟器宿主也会带上（[其他语言的 Info.plist 文字](./packaging.md#其他语言的-infoplist-文字)），`entitlements` 在真机构建时对照描述文件检查，`launchScreen` 是应用启动时系统显示的颜色和图（[启动画面](./packaging.md#启动画面)），`extensions` 是应用自己构建的应用扩展（`.appex`），由打包放进包里并签名（[应用扩展](./packaging.md#应用扩展)），`privacyManifest` 是应用在 `PrivacyInfo.xcprivacy` 里补充的内容，打包时会和 NSH 自己的条目合并（[隐私清单](./packaging.md#隐私清单)）。NSH 自己的键会被拒绝（[打包](./packaging.md#infoplist-键与-entitlements)）；`infoPlist` 的 `MinimumOSVersion` 提高应用所需的 iOS 版本（[最低系统版本](./packaging.md#最低系统版本)）。 |
@@ -253,7 +253,7 @@ import strings from "./strings.json";
 
 平台 crate 默认开启全部可选功能：`js`、`shader`、`editor`（含 `DiffView`）、`rich-editor`、`plot`、`term`、`highlight`、`math`、`emoji-picker`（`EmojiPicker`）、`zlib`、`crypto`、`websocket` 和 `updater`，以及平台自己的功能：Linux 上的 `net` 和 `sound`，Windows 上的 `net`、`webview` 和 `media`。SVG 图片始终包含在内。`nsh run` 和开发宿主带有全部功能。
 
-`nsh package` 在本机构建 release runner 时（应用带 Rust crate，或本机装有 `cargo` 且打包目标是本机系统或 Android），只保留应用 bundle 用得到的功能，并输出每项保留或去掉的原因。用到 `TextView` 时保留 `highlight` 和 `math`，因为它显示的文本可能含有代码和公式。它看不到应用的 Rust 代码用了什么，也看不到动态 `import()` 加载什么：这些功能写在 [`nsh.json` 的 `features`](#nshjson) 中，例如 `"features": ["shader"]`。依赖 `nsh-base` 默认功能的 Rust crate 会通过 Cargo 保留 `editor`、`rich-editor`、`plot`、`term` 和 `highlight`；但 Rust 代码绘制 `Shader` 仍需写上 `"shader"`，否则着色器视图不绘制任何内容。`nsh-base` 默认不开启的功能（`math`、`emoji-picker`）写在 crate 自己的依赖中：`nsh-base = { version = "0.6", features = ["emoji-picker"] }`。
+`nsh package` 在本机构建 release runner 时（应用带 Rust crate，或本机装有 `cargo` 且打包目标是本机系统或 Android），只保留应用 bundle 用得到的功能，并输出每项保留或去掉的原因。用到 `TextView` 时保留 `highlight` 和 `math`，因为它显示的文本可能含有代码和公式。Linux 的 runner 只在应用导入 `Sound` 时包含声音（`sound`，它会加载 GStreamer），Windows 的 runner 只在应用导入 `Sound` 或 `AudioPlayer`、或显示 `Video` 时链接 Media Foundation（`media`），因此不播放声音和视频的应用不带任何媒体代码。它看不到应用的 Rust 代码用了什么，也看不到动态 `import()` 加载什么：这些功能写在 [`nsh.json` 的 `features`](#nshjson) 中，例如 `"features": ["shader"]`。依赖 `nsh-base` 默认功能的 Rust crate 会通过 Cargo 保留 `editor`、`rich-editor`、`plot`、`term` 和 `highlight`；但 Rust 代码绘制 `Shader` 仍需写上 `"shader"`，否则着色器视图不绘制任何内容。`nsh-base` 默认不开启的功能（`math`、`emoji-picker`）写在 crate 自己的依赖中：`nsh-base = { version = "0.6", features = ["emoji-picker"] }`。
 
 如果你用 Cargo 自己构建可执行文件（嵌入 NSH，或自己写 `main`），由你自己选择功能：在平台 crate 和 `nsh-base` 上都设置 `default-features = false`（任何一个保留默认功能，都会把它们重新开启），再列出要保留的项：
 
@@ -295,6 +295,14 @@ const open = async () => {
 ### npm 包
 
 NSH 本身不依赖 npm 上的任何东西，但如果你用包管理器安装了包，打包器会从 `node_modules` 目录解析裸导入。包会解析到它们的浏览器版本，因为运行时提供的是 Web API（`fetch`、streams、`URL`、`TextEncoder` 等），而不是 Node 的 API（`fs`、`Buffer`、`process`）。依赖 DOM 的包无法工作：这里没有 DOM。
+
+打包器从导入它的文件所在目录逐级向上查找 `node_modules`。解析不到的导入会让构建失败，错误里写明是哪个文件导入的。TSX [nshm](./nshm.md) 安装在应用之外的 `~/.nsh/nshms`，它导入的包在那里找不到。做法是在应用里安装这个包，再用 `resolve.alias` 把导入指向包里的文件；包自己的导入随后从应用的 `node_modules` 解析：
+
+```json
+"resolve": { "alias": { "@internationalized/date": "./node_modules/@internationalized/date/dist/import.mjs" } }
+```
+
+别名要指向文件，不能指向包目录；nshm 导入的每个子路径都要单独写一项。
 
 浏览器版本依赖 DOM 的包，往往另有面向 worker 或 React Native 的版本。`resolve.conditions` 指定解析包时使用的导出条件，取代默认的 `["browser"]`：`import`、`require`、`module` 和 `default` 始终生效；不含 `browser` 时，包通过 `module` 和 `main` 字段解析。`resolve.alias` 替换一个导入：换成相对 `nsh.json` 的路径（`./` 或 `../`）、另一个包，或用 `false` 换成空模块。TypeScript（`nsh check` 和编辑器）按导入原本的写法做类型检查：不是已安装包的名称，其类型由应用里的 `.d.ts` 文件声明。
 

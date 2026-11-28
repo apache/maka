@@ -236,7 +236,7 @@ function createComposerToolbarOwner() {
   const supported = platform.idiom !== 'terminal';
   const layout = signal<ComposerToolbarSlot[]>([...DEFAULT_COMPOSER_TOOLBAR_LAYOUT]);
   const contextUsage = signal<ContextUsageDisplay>('always');
-  const usageLimits = signal(false);
+  const usageLimits = signal(true);
 
   const dirty = new Set<Field>();
   let loading: Promise<void> | null = null;

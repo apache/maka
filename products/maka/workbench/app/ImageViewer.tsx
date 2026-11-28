@@ -19,8 +19,9 @@
 
 import { cleanup, createAnimatedValue, Image, inputAction, keymap, signal, Text, View } from 'nsh';
 import type { PinchEvent, PressEvent, ViewRef, WheelEvent } from 'nsh';
-import { Button, Dialog } from 'nsh/base';
+import { Button } from 'nsh/base';
 import { controlsLeft, controlsRight, ownTitleBar, TITLE_BAR_HEIGHT } from './chrome';
+import { WindowDialog } from './ModalDialog';
 import { Icon } from './Icon';
 import { tr } from './locale';
 import { createText } from './text';
@@ -32,10 +33,13 @@ import {
   controlStyle,
   defaultColors,
   isDark,
+  radius,
   textTooltip,
 } from './ui';
 
 export type ViewerImage = { uri: string; width: number; height: number; title: string };
+/** An image the viewer can page to; one without a size is measured when shown. */
+export type GalleryImage = { uri: string; title: string; width?: number; height?: number };
 export type OpenImageViewer = (image: ViewerImage, restoreFocus: () => boolean) => void;
 type ImageControl = 'fit' | 'actual' | 'in' | 'out';
 
@@ -46,12 +50,13 @@ const KEY_PAN_STEP = 32;
 
 // The viewer is dark in every appearance, so its controls take the dark colors.
 const DARK = defaultColors(true);
-const darkControlStyle = {
-  ...controlStyle,
-  height: 36,
-  borderRadius: 18,
-  alignItems: 'center',
-} as const;
+const darkControlStyle = () =>
+  ({
+    ...controlStyle(),
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+  }) as const;
 const darkHoverStyle = { backgroundColor: DARK.line };
 const darkFocusStyle = { backgroundColor: DARK.line, borderColor: DARK.accent };
 
@@ -81,7 +86,7 @@ export function ImageViewerButton(props: { image: ViewerImage; open: OpenImageVi
       accessibilityLabel={tr('Open image full screen')}
       tooltip={textTooltip(() => tr('Open full screen'))}
       onPress={inputAction(show, image)}
-      style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
+      style={{ ...controlStyle(), width: 32, paddingHorizontal: 8, alignItems: 'center' }}
       hoverStyle={controlHoverStyle()}
       focusStyle={controlFocusStyle()}
     >
@@ -90,8 +95,33 @@ export function ImageViewerButton(props: { image: ViewerImage; open: OpenImageVi
   );
 }
 
-export function ImageViewer(props: { image: ViewerImage; close(): void }) {
-  const image = props.image;
+/**
+ * A list given as a function may be replaced while it is shown; the viewer
+ * stays on the image it shows, by URI.
+ */
+export function ImageViewer(props: {
+  images: readonly GalleryImage[] | (() => readonly GalleryImage[]);
+  /** The URI shown first; the first image when absent. */
+  start?: string;
+  close(): void;
+}) {
+  const given = props.images;
+  const images = typeof given === 'function' ? given : () => given;
+  const current = signal(props.start ?? images()[0]!.uri);
+  const index = () =>
+    Math.max(
+      0,
+      images().findIndex((item) => item.uri === current()),
+    );
+  const image = () => images()[index()]!;
+  // A replaced list may drop a size the first list carried; the loaded one is kept.
+  const measured = signal<{ uri: string; width: number; height: number } | null>(null);
+  const size = () => {
+    const { uri, width, height } = image();
+    if (width !== undefined && height !== undefined) return { width, height };
+    const known = measured();
+    return known?.uri === uri ? { width: known.width, height: known.height } : null;
+  };
   const viewport = signal({ width: 0, height: 0 });
   const error = createText();
   const scale = createAnimatedValue(1);
@@ -102,9 +132,11 @@ export function ImageViewer(props: { image: ViewerImage; close(): void }) {
   let alive = true;
   let closeButton: ViewRef | undefined;
   const fit = () => {
-    const size = viewport();
-    if (size.width <= 0 || size.height <= 0 || image.width <= 0 || image.height <= 0) return 1;
-    return Math.min(size.width / image.width, size.height / image.height);
+    const area = viewport();
+    const shown = size();
+    if (!shown || area.width <= 0 || area.height <= 0 || shown.width <= 0 || shown.height <= 0)
+      return 1;
+    return Math.min(area.width / shown.width, area.height / shown.height);
   };
   const minScale = () => Math.min(MIN_ZOOM_FLOOR, fit() * 0.5);
   const maxScale = () => Math.max(MAX_ZOOM_CEIL, fit() * 8);
@@ -138,12 +170,19 @@ export function ImageViewer(props: { image: ViewerImage; close(): void }) {
     }
   };
   const control = (target: { uri: string; kind: ImageControl }) => {
-    if (!alive || target.uri !== image.uri) return;
+    if (!alive || target.uri !== image().uri) return;
     if (target.kind === 'fit' || target.kind === 'actual') {
       reset(target.kind === 'fit' ? fit() : 1);
     } else {
       zoomBy(target.kind === 'in' ? ZOOM_STEP : 1 / ZOOM_STEP);
     }
+  };
+  const go = (step: -1 | 1) => {
+    const next = images()[index() + step];
+    if (!alive || !next) return;
+    error.set('');
+    current.set(next.uri);
+    if (size()) reset(Math.min(1, fit()));
   };
   const move = (dx: number, dy: number) => {
     if (!alive) return;
@@ -195,18 +234,19 @@ export function ImageViewer(props: { image: ViewerImage; close(): void }) {
   const unbind = keymap.bind(
     {
       escape: props.close,
-      'mod+plus': () => control({ uri: image.uri, kind: 'in' }),
-      'mod+shift+plus': () => control({ uri: image.uri, kind: 'in' }),
-      plus: () => control({ uri: image.uri, kind: 'in' }),
-      'shift+plus': () => control({ uri: image.uri, kind: 'in' }),
-      'mod+minus': () => control({ uri: image.uri, kind: 'out' }),
-      minus: () => control({ uri: image.uri, kind: 'out' }),
-      'mod+0': () => control({ uri: image.uri, kind: 'fit' }),
-      '0': () => control({ uri: image.uri, kind: 'fit' }),
-      'mod+1': () => control({ uri: image.uri, kind: 'actual' }),
-      '1': () => control({ uri: image.uri, kind: 'actual' }),
-      left: () => move(KEY_PAN_STEP, 0),
-      right: () => move(-KEY_PAN_STEP, 0),
+      'mod+plus': () => control({ uri: image().uri, kind: 'in' }),
+      'mod+shift+plus': () => control({ uri: image().uri, kind: 'in' }),
+      plus: () => control({ uri: image().uri, kind: 'in' }),
+      'shift+plus': () => control({ uri: image().uri, kind: 'in' }),
+      'mod+minus': () => control({ uri: image().uri, kind: 'out' }),
+      minus: () => control({ uri: image().uri, kind: 'out' }),
+      'mod+0': () => control({ uri: image().uri, kind: 'fit' }),
+      '0': () => control({ uri: image().uri, kind: 'fit' }),
+      'mod+1': () => control({ uri: image().uri, kind: 'actual' }),
+      '1': () => control({ uri: image().uri, kind: 'actual' }),
+      // With several images the arrows page through them; dragging still pans.
+      left: () => (images().length > 1 ? go(-1) : move(KEY_PAN_STEP, 0)),
+      right: () => (images().length > 1 ? go(1) : move(-KEY_PAN_STEP, 0)),
       up: () => move(0, KEY_PAN_STEP),
       down: () => move(0, -KEY_PAN_STEP),
     },
@@ -236,7 +276,7 @@ export function ImageViewer(props: { image: ViewerImage; close(): void }) {
       : { top: 16, left: 16, right: 16 }),
   } as const;
   return (
-    <Dialog
+    <WindowDialog
       animation="none"
       onOpen={() => {
         if (alive) closeButton?.focus();
@@ -286,23 +326,35 @@ export function ImageViewer(props: { image: ViewerImage; close(): void }) {
             }}
           >
             <If when={viewport().width > 0 && viewport().height > 0}>
-              <Image
-                src={image.uri}
-                role="image"
-                accessibilityLabel={image.title}
-                onError={(reason) => {
-                  if (alive) error.set(reason.message);
-                }}
-                style={[
-                  {
-                    width: image.width,
-                    height: image.height,
-                    flexShrink: 0,
-                    transform: [{ translateX: x }, { translateY: y }, { scale }],
-                  },
-                  { pointerEvents: 'none', objectFit: 'contain' },
-                ]}
-              />
+              <Each of={[image()]} key={(item) => item.uri}>
+                {(item) => (
+                  <Image
+                    src={item().uri}
+                    role="image"
+                    accessibilityLabel={item().title}
+                    onLoad={({ size: dimensions }) => {
+                      if (!alive || image().uri !== item().uri) return;
+                      const unknown = !size();
+                      measured.set({ uri: item().uri, ...dimensions });
+                      if (unknown) reset(Math.min(1, fit()));
+                    }}
+                    onError={(reason) => {
+                      if (alive && image().uri === item().uri) error.set(reason.message);
+                    }}
+                    style={[
+                      {
+                        // An unmeasured image loads unseen at one point, then takes its own size.
+                        width: size()?.width ?? 1,
+                        height: size()?.height ?? 1,
+                        opacity: size() ? 1 : 0,
+                        flexShrink: 0,
+                        transform: [{ translateX: x }, { translateY: y }, { scale }],
+                      },
+                      { pointerEvents: 'none', objectFit: 'contain' },
+                    ]}
+                  />
+                )}
+              </Each>
             </If>
           </View>
         </View>
@@ -317,7 +369,7 @@ export function ImageViewer(props: { image: ViewerImage; close(): void }) {
                 width: controlsRight(true),
                 height: TITLE_BAR_HEIGHT,
                 backgroundColor: C.chrome,
-                borderBottomLeftRadius: 8,
+                borderBottomLeftRadius: radius(8),
               },
               { pointerEvents: 'none' },
             ]}
@@ -326,10 +378,17 @@ export function ImageViewer(props: { image: ViewerImage; close(): void }) {
         <View style={headerStyle}>
           <View style={[{ flex: 1, gap: 4 }, { pointerEvents: 'none' }]}>
             <Text style={[{ ...captionTextStyle, color: DARK.text }, { numberOfLines: 1 }]}>
-              {image.title}
+              {image().title}
             </Text>
             <Text style={{ ...captionTextStyle, color: DARK.muted }}>
-              {image.width} × {image.height} · {zoomPercent()}%
+              {[
+                ...(images().length > 1 ? [`${index() + 1} / ${images().length}`] : []),
+                ...(size()
+                  ? [`${size()!.width} × ${size()!.height}`, `${zoomPercent()}%`]
+                  : error()
+                    ? []
+                    : [tr('Loading image…')]),
+              ].join(' · ')}
             </Text>
             <If when={error()}>
               <Text style={{ ...captionTextStyle, color: DARK.danger }}>{error()}</Text>
@@ -343,7 +402,7 @@ export function ImageViewer(props: { image: ViewerImage; close(): void }) {
             tooltip={textTooltip(() => tr('Close · Esc'))}
             onPress={props.close}
             style={{
-              ...darkControlStyle,
+              ...darkControlStyle(),
               width: 36,
               paddingHorizontal: 10,
               backgroundColor: DARK.raised,
@@ -354,6 +413,48 @@ export function ImageViewer(props: { image: ViewerImage; close(): void }) {
             <Icon name="close" color={DARK.text} />
           </Button>
         </View>
+        <Each
+          of={[
+            { step: -1 as const, edge: { left: 16 }, icon: 'back' as const },
+            { step: 1 as const, edge: { right: 16 }, icon: 'right' as const },
+          ]}
+          key={(item) => item.step}
+        >
+          {(item) => (
+            <If when={images()[index() + item().step] !== undefined}>
+              <View
+                style={[
+                  {
+                    position: 'absolute',
+                    top: 0,
+                    bottom: 0,
+                    ...item().edge,
+                    justifyContent: 'center',
+                  },
+                  { pointerEvents: 'box-none' },
+                ]}
+              >
+                <Button
+                  accessibilityLabel={item().step < 0 ? tr('Previous image') : tr('Next image')}
+                  tooltip={textTooltip(() =>
+                    item().step < 0 ? tr('Previous image · ←') : tr('Next image · →'),
+                  )}
+                  onPress={inputAction(go, item().step)}
+                  style={{
+                    ...darkControlStyle(),
+                    width: 36,
+                    paddingHorizontal: 10,
+                    backgroundColor: DARK.raised,
+                  }}
+                  hoverStyle={darkHoverStyle}
+                  focusStyle={darkFocusStyle}
+                >
+                  <Icon name={item().icon} color={DARK.text} />
+                </Button>
+              </View>
+            </If>
+          )}
+        </Each>
         <View
           style={[
             { position: 'absolute', left: 16, right: 16, bottom: 16, alignItems: 'center' },
@@ -401,8 +502,8 @@ export function ImageViewer(props: { image: ViewerImage; close(): void }) {
                 <Button
                   accessibilityLabel={item().label()}
                   tooltip={textTooltip(() => item().label())}
-                  onPress={inputAction(control, { uri: image.uri, kind: item().kind })}
-                  style={{ ...darkControlStyle, minWidth: 36, paddingHorizontal: 12 }}
+                  onPress={inputAction(control, { uri: image().uri, kind: item().kind })}
+                  style={{ ...darkControlStyle(), minWidth: 36, paddingHorizontal: 12 }}
                   hoverStyle={darkHoverStyle}
                   focusStyle={darkFocusStyle}
                 >
@@ -413,6 +514,6 @@ export function ImageViewer(props: { image: ViewerImage; close(): void }) {
           </View>
         </View>
       </View>
-    </Dialog>
+    </WindowDialog>
   );
 }

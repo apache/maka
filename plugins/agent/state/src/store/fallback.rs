@@ -45,6 +45,7 @@ pub(super) async fn compaction_fallback(
 struct ReadFallback(RunId, StepId);
 struct Scope {
     run: RunId,
+    namespace_id: crate::namespace::NamespaceId,
     owner: String,
     session: String,
     revision: u64,
@@ -119,8 +120,11 @@ fn scope(
             |r| r.get(0),
         )
         .optional()?;
+    let namespace_id = crate::namespace::find_id(c, &owner, &session)?
+        .ok_or_else(|| invalid("compaction fallback has no actual history namespace"))?;
     Ok(Scope {
         run,
+        namespace_id,
         owner,
         session,
         revision,
@@ -139,8 +143,8 @@ fn prepared(c: &Connection, scope: &Scope, step: StepId) -> Result<PreparedStep,
         Option<u32>,
     );
     let row:Option<ProviderObservationRow>=c.query_row(
-        "SELECT h.sequence,h.fact_id,f.id,f.run,f.revision,f.schema_version FROM agent_session_history h INDEXED BY agent_session_history_run LEFT JOIN agent_facts f ON f.sequence=h.sequence WHERE h.owner=? AND h.session=? AND h.run=? AND h.step=? AND h.kind='step_prepared' AND h.sequence<=? ORDER BY h.sequence LIMIT 1",
-        params![scope.owner,scope.session,scope.run.to_string(),step.to_string(),scope.sequence],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?)),
+        "SELECT h.sequence,h.fact_id,f.id,f.run,f.revision,f.schema_version FROM agent_session_history h INDEXED BY agent_session_history_run LEFT JOIN agent_facts f ON f.sequence=h.sequence WHERE h.namespace_id=? AND h.run=? AND h.step=? AND h.kind='step_prepared' AND h.sequence<=? ORDER BY h.sequence LIMIT 1",
+        params![scope.namespace_id,scope.run.to_string(),step.to_string(),scope.sequence],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?)),
     ).optional()?;
     let (sequence, id, f_id, run, revision, schema) =
         row.ok_or_else(|| invalid("compaction fallback StepPrepared source/index is missing"))?;
@@ -179,7 +183,7 @@ fn prepared(c: &Connection, scope: &Scope, step: StepId) -> Result<PreparedStep,
             "compaction fallback original Step identity differs",
         ));
     }
-    let registered:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM agent_request_specs r JOIN contents b ON b.id=r.content_id WHERE r.run=? AND r.step=? AND b.content_sha256=? AND length(b.payload)=?)",params![scope.run.to_string(),step.to_string(),reference.digest,i64::try_from(reference.bytes).map_err(|_|invalid("invalid frozen request length"))?],|r|r.get(0))?;
+    let registered:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM agent_request_specs r JOIN contents b ON b.id=r.content_id WHERE r.run=? AND r.step=? AND b.content_sha256=? AND COALESCE(b.logical_bytes,length(b.payload))=?)",params![scope.run.to_string(),step.to_string(),reference.digest,i64::try_from(reference.bytes).map_err(|_|invalid("invalid frozen request length"))?],|r|r.get(0))?;
     if !registered {
         return Err(invalid(
             "compaction fallback immutable request projection differs",
@@ -318,7 +322,7 @@ fn compacted(
     let Some(baseline) = &view.baseline else {
         return Ok(false);
     };
-    let id:Option<String>=c.query_row("SELECT fact_id FROM agent_session_history INDEXED BY agent_session_history_run WHERE owner=? AND session=? AND run=? AND step IS NULL AND kind='context_compacted' AND sequence<=? ORDER BY sequence DESC LIMIT 1",params![scope.owner,scope.session,scope.run.to_string(),scope.sequence],|r|r.get(0)).optional()?;
+    let id:Option<String>=c.query_row("SELECT fact_id FROM agent_session_history INDEXED BY agent_session_history_run WHERE namespace_id=? AND run=? AND step IS NULL AND kind='context_compacted' AND sequence<=? ORDER BY sequence DESC LIMIT 1",params![scope.namespace_id,scope.run.to_string(),scope.sequence],|r|r.get(0)).optional()?;
     let id: FactId =
         serde_json::from_value(serde_json::Value::String(id.ok_or_else(|| {
             invalid("compaction baseline has no actual canonical checkpoint")
@@ -539,9 +543,43 @@ impl Query for ReadySummary {
         } else {
             sql::request(c, run, attempt.step)?
         };
-        Ok((request.accounting.purpose == ModelPurpose::Summary
-            && valid_summary(c, run, &request, &attempt)?)
-        .then_some(marker))
+        if request.accounting.purpose != ModelPurpose::Summary
+            || !valid_summary(c, run, &request, &attempt)?
+        {
+            return Ok(None);
+        }
+        // A Summary prepared before an already-adopted checkpoint in this Run is
+        // either already adopted or superseded by a newer checkpoint; never re-adopt
+        // it at Run termination via a retained compaction_recovery lineage marker.
+        let (owner, session): (String, String) = c.query_row(
+            "SELECT owner, session FROM agent_run_specs WHERE run=?",
+            [run.to_string()],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        let Some(namespace_id) = crate::namespace::find_id(c, &owner, &session)? else {
+            return Ok(None);
+        };
+        let prepared_seq: Option<i64> = c
+            .query_row(
+                "SELECT sequence FROM agent_session_history INDEXED BY agent_session_history_run
+                 WHERE namespace_id=?1 AND run=?2 AND step=?3
+                   AND kind IN ('step_prepared','proactive_summary_prepared')
+                 ORDER BY sequence LIMIT 1",
+                params![namespace_id, run.to_string(), attempt.step.to_string()],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let Some(prepared_seq) = prepared_seq else {
+            return Ok(None);
+        };
+        let superseded: bool = c.query_row(
+            "SELECT EXISTS(SELECT 1 FROM agent_session_history INDEXED BY agent_session_history_run
+             WHERE namespace_id=?1 AND run=?2 AND step IS NULL
+               AND kind='context_compacted' AND sequence>?3)",
+            params![namespace_id, run.to_string(), prepared_seq],
+            |r| r.get(0),
+        )?;
+        Ok((!superseded).then_some(marker))
     }
 }
 
@@ -627,13 +665,13 @@ pub(crate) fn deferred_summary(
             "deferred compaction requires its actual known successful private Summary",
         ));
     }
-    let admitted: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM agent_session_history h INDEXED BY agent_session_history_run JOIN agent_facts f ON f.sequence=h.sequence AND f.id=h.fact_id AND f.run=h.run WHERE h.owner=? AND h.session=? AND h.run=? AND h.step=? AND h.kind='model_attempt_admitted' AND h.attempt=? AND h.sequence>? AND h.sequence<? AND f.schema_version=?)",params![scope.owner,scope.session,view.run.to_string(),summary_step.to_string(),marker.to_string(),summary.sequence,current.sequence,SCHEMA_VERSION],|r|r.get(0))?;
+    let admitted: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM agent_session_history h INDEXED BY agent_session_history_run JOIN agent_facts f ON f.sequence=h.sequence AND f.id=h.fact_id AND f.run=h.run WHERE h.namespace_id=? AND h.run=? AND h.step=? AND h.kind='model_attempt_admitted' AND h.attempt=? AND h.sequence>? AND h.sequence<? AND f.schema_version=?)",params![scope.namespace_id,view.run.to_string(),summary_step.to_string(),marker.to_string(),summary.sequence,current.sequence,SCHEMA_VERSION],|r|r.get(0))?;
     if !admitted {
         return Err(invalid(
             "deferred Summary has no actual original model admission",
         ));
     }
-    let (id,schema,revision):(String,u32,i64)=c.query_row("SELECT f.id,f.schema_version,f.revision FROM agent_session_history h INDEXED BY agent_session_history_run JOIN agent_facts f ON f.sequence=h.sequence AND f.id=h.fact_id AND f.run=h.run WHERE h.owner=? AND h.session=? AND h.run=? AND h.step=? AND h.kind='model_closed' AND h.attempt=? AND h.sequence<? ORDER BY h.sequence DESC LIMIT 1",params![scope.owner,scope.session,view.run.to_string(),summary_step.to_string(),marker.to_string(),current.sequence],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
+    let (id,schema,revision):(String,u32,i64)=c.query_row("SELECT f.id,f.schema_version,f.revision FROM agent_session_history h INDEXED BY agent_session_history_run JOIN agent_facts f ON f.sequence=h.sequence AND f.id=h.fact_id AND f.run=h.run WHERE h.namespace_id=? AND h.run=? AND h.step=? AND h.kind='model_closed' AND h.attempt=? AND h.sequence<? ORDER BY h.sequence DESC LIMIT 1",params![scope.namespace_id,view.run.to_string(),summary_step.to_string(),marker.to_string(),current.sequence],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
     if schema != SCHEMA_VERSION || revision <= 0 || revision as u64 > scope.revision {
         return Err(invalid(
             "deferred Summary closure is outside its actual original prefix",
@@ -672,7 +710,7 @@ pub(crate) fn deferred_summary(
     if saving_for_next_run {
         return Ok((summary.request, attempt));
     }
-    let attempted: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM agent_session_history INDEXED BY agent_session_history_run WHERE owner=? AND session=? AND run=? AND step=? AND kind='model_attempt_prepared' AND sequence<=?)",params![scope.owner,scope.session,view.run.to_string(),current.request.step.to_string(),scope.sequence],|r|r.get(0))?;
+    let attempted: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM agent_session_history INDEXED BY agent_session_history_run WHERE namespace_id=? AND run=? AND step=? AND kind='model_attempt_prepared' AND sequence<=?)",params![scope.namespace_id,view.run.to_string(),current.request.step.to_string(),scope.sequence],|r|r.get(0))?;
     if attempted {
         let main = view
             .current_attempt
@@ -886,7 +924,7 @@ pub(crate) fn progress_in_snapshot(
     }
     let anchor = match budget.request.accounting.purpose {
         ModelPurpose::Summary => {
-            let closure: Option<(i64,String)> = c.query_row("SELECT sequence,fact_id FROM agent_session_history INDEXED BY agent_session_history_run WHERE owner=? AND session=? AND run=? AND step=? AND kind='model_closed' AND attempt=? AND sequence<=? ORDER BY sequence DESC LIMIT 1",params![scope.owner,scope.session,scope.run.to_string(),old_step.to_string(),marker.to_string(),scope.sequence],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
+            let closure: Option<(i64,String)> = c.query_row("SELECT sequence,fact_id FROM agent_session_history INDEXED BY agent_session_history_run WHERE namespace_id=? AND run=? AND step=? AND kind='model_closed' AND attempt=? AND sequence<=? ORDER BY sequence DESC LIMIT 1",params![scope.namespace_id,scope.run.to_string(),old_step.to_string(),marker.to_string(),scope.sequence],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
             let Some((sequence, id)) = closure else {
                 return Ok(None);
             };
@@ -964,7 +1002,7 @@ pub(crate) fn progress_in_snapshot(
                 .ok_or_else(|| invalid("compaction budget has no original Frozen Main"))?
         }
         ModelPurpose::Main => {
-            let row: Option<(i64,String)> = c.query_row("SELECT sequence,fact_id FROM agent_session_history INDEXED BY agent_session_history_run WHERE owner=? AND session=? AND run=? AND step=? AND kind='attempt_recovery_recorded' AND attempt=? AND sequence<=? ORDER BY sequence DESC LIMIT 1",params![scope.owner,scope.session,scope.run.to_string(),old_step.to_string(),marker.to_string(),scope.sequence],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
+            let row: Option<(i64,String)> = c.query_row("SELECT sequence,fact_id FROM agent_session_history INDEXED BY agent_session_history_run WHERE namespace_id=? AND run=? AND step=? AND kind='attempt_recovery_recorded' AND attempt=? AND sequence<=? ORDER BY sequence DESC LIMIT 1",params![scope.namespace_id,scope.run.to_string(),old_step.to_string(),marker.to_string(),scope.sequence],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
             let Some((sequence, id)) = row else {
                 return Ok(None);
             };
@@ -973,7 +1011,7 @@ pub(crate) fn progress_in_snapshot(
             {
                 return Ok(None);
             }
-            let closure:Option<(String,u32,i64,Option<String>)>=c.query_row("SELECT f.id,f.schema_version,f.revision,r.outcome FROM agent_session_history h INDEXED BY agent_session_history_run JOIN agent_facts f ON f.sequence=h.sequence AND f.id=h.fact_id AND f.run=h.run LEFT JOIN agent_usage_results r ON r.request='model:'||h.run||':'||h.attempt AND r.sequence=h.sequence WHERE h.owner=? AND h.session=? AND h.run=? AND h.step=? AND h.kind='model_closed' AND h.attempt=? AND h.sequence<=? ORDER BY h.sequence DESC LIMIT 1",params![scope.owner,scope.session,scope.run.to_string(),old_step.to_string(),marker.to_string(),scope.sequence],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?;
+            let closure:Option<(String,u32,i64,Option<String>)>=c.query_row("SELECT f.id,f.schema_version,f.revision,r.outcome FROM agent_session_history h INDEXED BY agent_session_history_run JOIN agent_facts f ON f.sequence=h.sequence AND f.id=h.fact_id AND f.run=h.run LEFT JOIN agent_usage_results r ON r.request='model:'||h.run||':'||h.attempt AND r.sequence=h.sequence WHERE h.namespace_id=? AND h.run=? AND h.step=? AND h.kind='model_closed' AND h.attempt=? AND h.sequence<=? ORDER BY h.sequence DESC LIMIT 1",params![scope.namespace_id,scope.run.to_string(),old_step.to_string(),marker.to_string(),scope.sequence],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?;
             if let Some((id, schema, revision, outcome)) = closure {
                 let _: FactId = serde_json::from_value(serde_json::Value::String(id))?;
                 if schema != SCHEMA_VERSION || revision <= 0 || revision as u64 > scope.revision {
@@ -1004,10 +1042,9 @@ pub(crate) fn progress_in_snapshot(
     }
     let through = i64::try_from(captured.current.through_sequence)
         .map_err(|_| invalid("compaction progress source exceeds SQLite range"))?;
-    let mut statement=c.prepare_cached("SELECT sequence,fact_id FROM agent_session_history INDEXED BY agent_session_history_kind WHERE owner=? AND session=? AND kind='tool_result_accepted' AND run=? AND sequence>? AND sequence<=? ORDER BY sequence")?;
+    let mut statement=c.prepare_cached("SELECT sequence,fact_id FROM agent_session_history INDEXED BY agent_session_history_kind WHERE namespace_id=? AND kind='tool_result_accepted' AND run=? AND sequence>? AND sequence<=? ORDER BY sequence")?;
     let mut rows = statement.query(params![
-        scope.owner,
-        scope.session,
+        scope.namespace_id,
         scope.run.to_string(),
         anchor.sequence,
         through
@@ -1040,10 +1077,10 @@ fn message_progress(
     through: i64,
 ) -> Result<Option<FactId>, StoreError> {
     use crate::queue::{DeliveryTarget, Event, QueueEdit};
-    let mut statement=c.prepare_cached("SELECT h.sequence,h.fact_id,h.step,q.revision,b.content_sha256,b.payload FROM agent_session_history h INDEXED BY agent_session_history_kind JOIN agent_queue_events q ON q.session=h.session AND q.id=h.fact_id JOIN contents b ON b.id=q.body_content_id WHERE h.owner=? AND h.session=? AND h.kind='step_prepared' AND h.run=? AND h.sequence>? AND (h.sequence<=? OR h.sequence=?) ORDER BY h.sequence")?;
+    let mut statement=c.prepare_cached("SELECT h.sequence,h.fact_id,h.step,q.revision,b.content_sha256,maka_content_bytes(b.payload,b.encoding) FROM agent_session_history h INDEXED BY agent_session_history_kind JOIN agent_queue_events q ON q.session=? AND q.id=h.fact_id JOIN contents b ON b.id=q.body_content_id WHERE h.namespace_id=? AND h.kind='step_prepared' AND h.run=? AND h.sequence>? AND (h.sequence<=? OR h.sequence=?) ORDER BY h.sequence")?;
     let mut rows = statement.query(params![
-        scope.owner,
         scope.session,
+        scope.namespace_id,
         scope.run.to_string(),
         anchor.sequence,
         through,
@@ -1091,7 +1128,7 @@ fn message_progress(
         }
         let mut semantic = false;
         for (position, id) in cut.requests.iter().enumerate() {
-            let (event_id,actual_id,hash,body):(String,String,String,Vec<u8>)=c.query_row("SELECT i.event_id,e.id,b.content_sha256,b.payload FROM agent_history_queue_requests i JOIN agent_queue_events e ON e.session=i.session AND e.revision=i.revision JOIN contents b ON b.id=e.body_content_id WHERE i.session=? AND i.request=? AND i.revision<? ORDER BY i.revision DESC LIMIT 1",params![scope.session,id.0,revision],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))?;
+            let (event_id,actual_id,hash,body):(String,String,String,Vec<u8>)=c.query_row("SELECT i.event_id,e.id,b.content_sha256,maka_content_bytes(b.payload,b.encoding) FROM agent_history_queue_requests i JOIN agent_queue_events e ON e.session=i.session AND e.revision=i.revision JOIN contents b ON b.id=e.body_content_id WHERE i.session=? AND i.request=? AND i.revision<? ORDER BY i.revision DESC LIMIT 1",params![scope.session,id.0,revision],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))?;
             if event_id != actual_id || content_digest(&body) != hash {
                 return Err(invalid(
                     "compaction message original queue request proof differs",
@@ -1128,7 +1165,7 @@ fn message_progress(
             }
             request.spec.input.validate().map_err(invalid)?;
             let input: Vec<u8> = c.query_row(
-                "SELECT b.payload FROM agent_queue_content_pins p JOIN contents b ON b.id=p.content_id WHERE p.session=? AND p.request=? AND b.content_sha256=? AND length(b.payload)=?",
+                "SELECT maka_content_bytes(b.payload,b.encoding) FROM agent_queue_content_pins p JOIN contents b ON b.id=p.content_id WHERE p.session=? AND p.request=? AND b.content_sha256=? AND COALESCE(b.logical_bytes,length(b.payload))=?",
                 params![scope.session, id.0, request.spec.input.digest, i64::try_from(request.spec.input.bytes).map_err(|_|invalid("compaction message input length exceeds SQLite range"))?],
                 |row| row.get(0),
             ).optional()?.ok_or_else(||invalid("compaction message input is not pinned by its original queue request"))?;

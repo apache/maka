@@ -86,37 +86,19 @@ github:
       required_reviewers:
         - id: M4n5ter
           type: User
+        - id: Astro-Han
+          type: User
       wait_timer: 0
       prevent_self_review: true
       deployment_branch_policy:
         protected_branches: false
         policies:
-          - name: "v*-incubating-rc*"
+          - name: "v*-incubating"
             type: tag
-    npm-publication:
-      required_reviewers: []
-      wait_timer: 0
-      prevent_self_review: false
-      deployment_branch_policy:
-        protected_branches: false
-        policies:
-          - name: main
-            type: branch
     nightly:
       required_reviewers: []
       wait_timer: 0
       prevent_self_review: false
-      deployment_branch_policy:
-        protected_branches: false
-        policies:
-          - name: main
-            type: branch
-    product-release:
-      required_reviewers:
-        - id: M4n5ter
-          type: User
-      wait_timer: 0
-      prevent_self_review: true
       deployment_branch_policy:
         protected_branches: false
         policies:

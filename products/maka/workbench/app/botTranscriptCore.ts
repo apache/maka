@@ -18,7 +18,11 @@
  */
 
 /** What the Bot sent with `SendUser`, and what is known about each Turn's replies. */
-import type { ServiceMethods, QuoteRef } from '../../../../packages/plugin-sdk/src/index.js';
+import type {
+  ServiceMethods,
+  QuoteRef,
+  AgentWorkerProgress,
+} from '../../../../packages/plugin-sdk/src/index.js';
 
 type Query = (
   endpoint: 'agent',
@@ -149,31 +153,39 @@ export function createBotTranscriptCore(
   const started = new Promise<void>((resolve) => {
     ready = resolve;
   });
+  let resolveIdentified: () => void = () => {};
+  const whenIdentified = new Promise<void>((resolve) => {
+    resolveIdentified = resolve;
+  });
   /** Ask who the Bot is, retrying a failed lookup; a failure never decides "ordinary". */
   const identify = async (): Promise<boolean> => {
-    for (let attempt = 0; alive; attempt++) {
-      const prior = fromKnown();
-      if (prior !== 'unknown') {
-        identity = prior;
-        current = true;
-        changed();
-        return identity === 'bot';
+    try {
+      for (let attempt = 0; alive; attempt++) {
+        const prior = fromKnown();
+        if (prior !== 'unknown') {
+          identity = prior;
+          current = true;
+          changed();
+          return identity === 'bot';
+        }
+        try {
+          const head = await host.query('agent', 'botOutbox', { limit: 0, sessionId });
+          if (!alive) return false;
+          // A replaced Bot still reads as a Bot, so its replies stay what the user saw.
+          identity = head.isBot ? 'bot' : 'ordinary';
+          current = head.sessionId === sessionId;
+          changed();
+          return identity === 'bot';
+        } catch {
+          const delay = IDENTITY_RETRY_MS[attempt];
+          if (delay === undefined) return false;
+          await wait(delay);
+        }
       }
-      try {
-        const head = await host.query('agent', 'botOutbox', { limit: 0, sessionId });
-        if (!alive) return false;
-        // A replaced Bot still reads as a Bot, so its replies stay what the user saw.
-        identity = head.isBot ? 'bot' : 'ordinary';
-        current = head.sessionId === sessionId;
-        changed();
-        return identity === 'bot';
-      } catch {
-        const delay = IDENTITY_RETRY_MS[attempt];
-        if (delay === undefined) return false;
-        await wait(delay);
-      }
+      return false;
+    } finally {
+      resolveIdentified();
     }
-    return false;
   };
   // The watch starts once the Session is known to be the Bot. If every lookup failed
   // it ends unstarted, and a later answer from the application starts it (`resume`).
@@ -240,6 +252,7 @@ export function createBotTranscriptCore(
 
   return {
     started,
+    whenIdentified,
     identity: (): BotIdentity => {
       if (identity !== 'unknown') return identity;
       resume();
@@ -255,6 +268,7 @@ export function createBotTranscriptCore(
     latest: () => latest,
     close() {
       alive = false;
+      resolveIdentified();
       const previous = stream;
       stream = null;
       if (previous) void previous.close().catch(() => {});
@@ -268,6 +282,18 @@ export function createBotTranscriptCore(
  * `unanswered` is a Turn that ended with neither a `SendUser` message nor a `sleep`,
  * so the user cannot tell it from a deliberate silence unless Chat says so.
  */
+/**
+ * Bot Chat shows only what the user said and what the Bot published via `SendUser`.
+ * Model replies and host-authored user turns (worker completions, scheduled runs) stay
+ * in Trajectory.
+ */
+export function botChatHidesRow(row: { role: string; origin?: { kind: string } | null }): boolean {
+  return (
+    row.role === 'assistant' ||
+    (row.role === 'user' && row.origin != null && row.origin.kind !== 'session')
+  );
+}
+
 export type BotTurnEnding = 'running' | 'replied' | 'quiet' | 'unanswered' | 'other';
 export function botTurnEnding(turn: {
   /** The Turn has finished and is not the one running now. */
@@ -330,7 +356,12 @@ export async function assembleChildren<S extends Session, P extends Page<S>>(
   return [...rows.values()];
 }
 
-export type ActiveWorker = { id: string; title: string; activity: 'working' | 'waiting' };
+export type ActiveWorker = {
+  id: string;
+  title: string;
+  activity: 'working' | 'waiting';
+  progress?: AgentWorkerProgress;
+};
 /**
  * The conversations the Bot created that are running, or waiting for the user, now. Such a
  * conversation has not ended its run, so the Bot is not woken and says nothing about it.
@@ -343,13 +374,25 @@ export function activeWorkers<
     activity: string;
     archived: boolean;
   },
->(sessions: readonly T[], bot: string | null | undefined): ActiveWorker[] {
+>(
+  sessions: readonly T[],
+  bot: string | null | undefined,
+  progress?: ReadonlyMap<string, AgentWorkerProgress>,
+): ActiveWorker[] {
   if (!bot) return [];
   const found: ActiveWorker[] = [];
   for (const session of sessions) {
     if (session.parentSessionId !== bot || session.archived) continue;
-    if (session.activity === 'working' || session.activity === 'waiting')
-      found.push({ id: session.id, title: session.title, activity: session.activity });
+    const live = progress?.get(session.id);
+    if (session.activity === 'working' || session.activity === 'waiting') {
+      const waiting = live && ['approval', 'question', 'permission', 'form'].includes(live.kind);
+      found.push({
+        id: session.id,
+        title: session.title,
+        activity: live ? (waiting ? 'waiting' : 'working') : session.activity,
+        ...(live ? { progress: live } : {}),
+      });
+    }
   }
   // What waits for the user comes first.
   return found.sort((a, b) => Number(b.activity === 'waiting') - Number(a.activity === 'waiting'));

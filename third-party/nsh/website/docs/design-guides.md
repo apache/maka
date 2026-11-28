@@ -105,6 +105,45 @@ layer when it is created, and builds every feature from it.
 - **Show it.** Keep a page (a debug screen or the app's own gallery) that shows every `ui` component in every
   variant, size and state, in light and dark; review new components there before features use them.
 
+### Build each `ui` control on its `nsh/base` counterpart
+
+A `ui` component is a styled wrapper around the `nsh/base` element that owns the behavior. It adds the look, never
+re-implements the behavior: popup placement and width, focus, keyboard, typeahead, dismissal, cascading and
+accessibility come from the element. A control rebuilt from `View` and a pressable is missing those details even when a
+screenshot looks right.
+
+| `ui` component | Wraps | Not |
+|---|---|---|
+| `Button`, `IconButton` | `Button` | a pressable `View` with a `Text` |
+| `Select` | `Select` (popup as wide as the trigger on desktop, sheet on phones) | a `Popover` with a list, a `Menu` of values |
+| `Combobox` | `Combobox` | an `Input` plus a hand-placed list |
+| `Menu`, context menus | `Menu` with `Submenu` for nested items | rows that expand nested items in place, `MenuButton` as an anchored drop-down |
+| `Tabs`, segmented control | `Tabs` / `Tab`, `ToggleGroup` | a row of pressables with a selected flag |
+| `Checkbox`, `Switch`, `Radio`, `Slider` | the element of the same name | a drawn box or track with an `onPress` |
+| `Dialog`, `AlertDialog`, `Sheet`, `Popover`, `Tooltip`, `HoverCard` | the element of the same name | an absolutely positioned `View` |
+| `Toast` | `Toast` | a timed overlay `View` |
+| `Input`, `Textarea`, `NumberInput`, `DatePicker` | the element of the same name | a `Text` that edits itself |
+
+When no element fits, look again in the element index (nsh.dev/elements) before building one; a new control is still
+built in `ui`, from the closest element, and keeps its keyboard and accessibility behavior.
+
+**Icons are drawn, never typed.** The `ui` layer has one `Icon` component over one SVG icon family (Lucide unless the
+app's design system names another), imported as `.svg` assets or `data:` URIs and colored from tokens. Chevrons,
+checks, close, menu, arrows and disclosure triangles are icons. Never use text characters (`▾ ▼ › ✕ ☰ ✓ …`) or emoji
+as icons in GUI targets: they change with the font, misalign with the text baseline and ignore the icon size scale.
+TUI targets, which draw cells, are the exception.
+
+**Common mistakes** (each seen in generated apps):
+- A select built from `Popover`, whose list is narrower or wider than the field. Wrap `Select`; its popup already
+  matches the trigger width.
+- A `▾` character as the drop-down indicator. Use the `ui` `Icon` chevron in the trigger.
+- A text (I-beam) cursor over a button, tab or menu item, usually from a selectable region or `cursor` set around it.
+  Leave `cursor` unset on controls; keep text selection off containers of controls.
+- Hand-made tabs with their own selected state. Wrap `Tabs` (or `ToggleGroup` for a segmented control).
+- Nested menu items listed inline inside the parent menu. Use `Submenu`, which cascades beside its row.
+- `MenuButton` used as an anchored drop-down: on desktop it opens the system menu at the pointer. Use `Menu` for a
+  drop-down attached to a trigger.
+
 ### Design for the platforms the app targets
 
 Choose the supported targets before defining component variants. NSH apps run in three families of interfaces; share
@@ -1629,6 +1668,11 @@ report each group as passed or as what was fixed. A group not checked is not pas
 - [ ] Feature code uses only `ui` components and layout primitives: no controls imported from `nsh/base`, no colors,
   radii, paddings or font sizes, no controls hand-built from pressable views.
 - [ ] Every new look or behavior a feature needed was added to `ui` as a variant, size or component.
+- [ ] Every `ui` control wraps its `nsh/base` counterpart ("Build each `ui` control on its `nsh/base` counterpart");
+  none is rebuilt from a view and a pressable.
+- [ ] Select and combobox popups are as wide as their trigger on desktop and web.
+- [ ] Every icon comes from the `ui` `Icon` component; no text characters or emoji used as icons in GUI targets.
+- [ ] Buttons, tabs, menu items and rows show the default cursor, never the text cursor.
 
 **Component standards**
 - [ ] Each styled control takes one `size` that sets its height, padding, text, icon and radius together; heights

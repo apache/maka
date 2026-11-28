@@ -38,6 +38,7 @@ struct Source {
     refreshing: bool,
     last_failed: bool,
     value: Option<Value>,
+    latest: Option<Result<Value, String>>,
 }
 
 impl Catalog {
@@ -90,6 +91,7 @@ impl Catalog {
                     refreshing: false,
                     last_failed: false,
                     value: None,
+                    latest: None,
                 });
                 if !source.refreshing && source.checked.elapsed() >= Duration::from_secs(30) {
                     source.refreshing = true;
@@ -120,6 +122,7 @@ impl Catalog {
                     .iter()
                     .any(|field| value[field]["kind"] == "error");
                 source.last_failed = failed;
+                source.latest = Some(Ok(value.clone()));
                 if failed {
                     tracing::warn!(runtime = runtime.as_str(), detail = %value, "Native model discovery failed; retaining the last catalog");
                 }
@@ -129,6 +132,7 @@ impl Catalog {
             }
             Err(error) => {
                 source.last_failed = true;
+                source.latest = Some(Err(error.to_string()));
                 tracing::warn!(runtime = runtime.as_str(), %error, "Native model discovery failed")
             }
         }
@@ -147,6 +151,67 @@ impl Catalog {
             last_failed |= source.last_failed;
         }
         (values, refreshing, last_failed)
+    }
+
+    pub(super) fn status_records(
+        &self,
+        runtimes: impl Iterator<Item = NativeRuntime>,
+    ) -> Vec<Value> {
+        runtimes
+            .map(|runtime| {
+                let latest = self
+                    .sources
+                    .get(&runtime)
+                    .and_then(|source| source.latest.as_ref());
+                project_status_record(runtime, latest)
+            })
+            .collect()
+    }
+}
+
+fn project_status_record(runtime: NativeRuntime, latest: Option<&Result<Value, String>>) -> Value {
+    match latest {
+        Some(Ok(discovered)) => {
+            let models = if runtime == NativeRuntime::Claude
+                && discovered
+                    .pointer("/installation/kind")
+                    .and_then(Value::as_str)
+                    == Some("available")
+            {
+                serde_json::json!({
+                    "kind": "unsupported",
+                    "detail": "Claude interactive CLI does not expose model discovery; native default is available"
+                })
+            } else if let Some(models) = discovered
+                .pointer("/models/models")
+                .and_then(Value::as_array)
+            {
+                serde_json::json!({"kind": "ready", "count": models.len()})
+            } else {
+                discovered["models"].clone()
+            };
+            serde_json::json!({
+                "id": runtime.as_str(),
+                "name": runtime.name(),
+                "installation": discovered["installation"],
+                "authentication": discovered["authentication"],
+                "models": models
+            })
+        }
+        Some(Err(detail)) => serde_json::json!({
+            "id": runtime.as_str(),
+            "name": runtime.name(),
+            "installation": {"kind": "error", "detail": detail},
+            "authentication": {"kind": "unknown"},
+            "models": {"kind": "error", "detail": detail}
+        }),
+        None => serde_json::json!({
+            "id": runtime.as_str(),
+            "name": runtime.name(),
+            "installation": {"kind": "error", "detail": "Native runtime discovery did not complete"},
+            "authentication": {"kind": "unknown"},
+            "models": {"kind": "error", "detail": "Native runtime discovery did not complete"}
+        }),
     }
 }
 
@@ -193,12 +258,44 @@ mod tests {
         catalog.publish(
             generation,
             NativeRuntime::Codex,
-            Ok(json!({"runtime":"codex","models":{"kind":"error","detail":"offline"}})),
+            Ok(json!({
+                "runtime": "codex",
+                "installation": {"kind": "available"},
+                "authentication": {"kind": "unknown"},
+                "models": {"kind": "error", "detail": "offline"}
+            })),
         );
         assert_eq!(
             catalog.snapshot(Some(NativeRuntime::Codex)),
             (vec![codex.clone()], false, true),
             "a discovery failure must not erase selectable models"
+        );
+        assert_eq!(
+            catalog.status_records([NativeRuntime::Codex].into_iter()),
+            vec![json!({
+                "id": "codex",
+                "name": "Codex",
+                "installation": {"kind": "available"},
+                "authentication": {"kind": "unknown"},
+                "models": {"kind": "error", "detail": "offline"}
+            })],
+            "status must project the latest error even while catalog retains selectable models"
+        );
+        catalog.publish(
+            generation,
+            NativeRuntime::Antigravity,
+            Err(Error::Provider("agy timed out".into())),
+        );
+        assert_eq!(
+            catalog.status_records([NativeRuntime::Antigravity].into_iter()),
+            vec![json!({
+                "id": "antigravity",
+                "name": "Antigravity",
+                "installation": {"kind": "error", "detail": "executor failed: agy timed out"},
+                "authentication": {"kind": "unknown"},
+                "models": {"kind": "error", "detail": "executor failed: agy timed out"}
+            })],
+            "status must emit an error record when a runtime fails with Err"
         );
         catalog.invalidate();
         let (_, work) = catalog.prepare("/a", [NativeRuntime::Codex].into_iter(), true);

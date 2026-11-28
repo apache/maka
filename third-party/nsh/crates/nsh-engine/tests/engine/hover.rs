@@ -248,6 +248,9 @@ fn a_move_with_a_button_down_reaches_on_mouse_move_with_the_button() {
                     pressure: 0.5,
                     tilt_x: 0.0,
                     tilt_y: 0.0,
+                    coalesced: Vec::new(),
+                    eraser: false,
+                    barrel: false,
                 }],
             })),
         );

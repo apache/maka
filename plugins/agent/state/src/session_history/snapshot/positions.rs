@@ -24,6 +24,8 @@ use maka_agent_facts::{
 };
 use serde::Deserialize;
 
+const CAPTURE_POSITIONS_SQL: &str = "SELECT d.sequence,d.ordinal,d.internal,d.run,h.admission_sequence,f.id,NOT EXISTS(SELECT 1 FROM agent_recall_legacy_evidenced e WHERE e.fact_id=f.id) FROM agent_recall_messages d JOIN agent_session_history h ON h.sequence=d.sequence AND h.namespace_id=d.namespace_id AND h.run=d.run JOIN agent_facts f ON f.sequence=h.sequence AND f.run=h.run WHERE d.namespace_id=? AND d.sequence<=? ORDER BY d.sequence,d.ordinal";
+
 pub(super) fn capture(
     c: &Connection,
     scope: &HistoryNamespace,
@@ -34,22 +36,57 @@ pub(super) fn capture(
         return Err(invalid("snapshot position cut belongs to another session"));
     }
     crate::recall::checked_source_cut(c, &scope.owner, cut)?;
-    let mut statement=c.prepare_cached("SELECT d.sequence,d.ordinal,d.internal,d.run,h.admission_sequence,f.id FROM agent_recall_messages d INDEXED BY agent_recall_message_order JOIN agent_session_history h ON h.sequence=d.sequence AND h.owner=d.owner AND h.session=d.session AND h.run=d.run JOIN agent_facts f ON f.sequence=h.sequence AND f.run=h.run WHERE d.owner=? AND d.session=? AND d.sequence<=? ORDER BY d.sequence,d.ordinal")?;
-    let mut rows = statement.query(params![
-        serde_json::to_string(&scope.owner)?,
-        scope.session,
-        bind_u64(cut.through_sequence)?
-    ])?;
+    let owner_json = serde_json::to_string(&scope.owner)?;
+    let Some(namespace_id) = crate::namespace::find_id(c, &owner_json, &scope.session)? else {
+        return Ok(());
+    };
+    let unsealed = crate::recall::index::unsealed_external_segment_headers(
+        c,
+        namespace_id,
+        cut.through_sequence,
+        0,
+    )?;
+    let mut unsealed_iter = unsealed.into_iter().peekable();
+    let mut statement = c.prepare_cached(CAPTURE_POSITIONS_SQL)?;
+    let mut rows = statement.query(params![namespace_id, bind_u64(cut.through_sequence)?])?;
     while let Some(row) = rows.next()? {
+        let seq = read_u64(row, 0)?;
+        while let Some(delta) = unsealed_iter.next_if(|d| d.sequence < seq) {
+            builder.add(Entry::Position {
+                row: SnapshotPosition::Canonical {
+                    run: delta.run,
+                    sequence: delta.sequence,
+                    admission_sequence: delta.admission_sequence,
+                    fact: delta.fact,
+                    item_index: 0,
+                    internal: delta.is_thinking,
+                },
+                compact: true,
+            })?;
+        }
         builder.add(Entry::Position {
             row: SnapshotPosition::Canonical {
                 run: super::super::sql::identity(row.get(3)?)?,
-                sequence: read_u64(row, 0)?,
+                sequence: seq,
                 admission_sequence: read_u64(row, 4)?,
                 fact: super::super::sql::identity(row.get(5)?)?,
                 item_index: read_u64(row, 1)?,
                 internal: row.get(2)?,
             },
+            compact: row.get(6)?,
+        })?;
+    }
+    for delta in unsealed_iter {
+        builder.add(Entry::Position {
+            row: SnapshotPosition::Canonical {
+                run: delta.run,
+                sequence: delta.sequence,
+                admission_sequence: delta.admission_sequence,
+                fact: delta.fact,
+                item_index: 0,
+                internal: delta.is_thinking,
+            },
+            compact: true,
         })?;
     }
     Ok(())
@@ -59,6 +96,7 @@ pub(super) fn index(
     c: &Connection,
     snapshot: SnapshotId,
     row: &SnapshotPosition,
+    compact: bool,
 ) -> Result<(), StoreError> {
     let (kind, major, minor, run, admission, fact, internal) = match row {
         SnapshotPosition::Canonical {
@@ -96,7 +134,7 @@ pub(super) fn index(
             *internal,
         ),
     };
-    c.execute("INSERT INTO agent_history_snapshot_positions(snapshot,kind,major,minor,run,admission_sequence,fact,internal) VALUES(?,?,?,?,?,?,?,?)",params![snapshot.to_string(),kind,bind_u64(major)?,bind_u64(minor)?,run,admission,fact,internal])?;
+    c.execute("INSERT INTO agent_history_snapshot_positions(snapshot,kind,major,minor,run,admission_sequence,fact,internal,compact) VALUES(?,?,?,?,?,?,?,?,?)",params![snapshot.to_string(),kind,bind_u64(major)?,bind_u64(minor)?,run,admission,fact,internal,compact])?;
     Ok(())
 }
 
@@ -138,7 +176,7 @@ pub(super) fn imported(
 ) -> Result<(), StoreError> {
     for (part_ordinal, reference) in message.parts.iter().enumerate() {
         reference.validate().map_err(invalid)?;
-        let content:Option<i64>=c.query_row("SELECT b.id FROM contents b JOIN agent_history_snapshot_pins p ON p.content_id=b.id WHERE p.snapshot=? AND b.content_sha256=? AND length(b.payload)=?",params![snapshot.to_string(),reference.digest,bind_u64(reference.bytes)?],|row|row.get(0)).optional()?;
+        let content:Option<i64>=c.query_row("SELECT b.id FROM contents b JOIN agent_history_snapshot_pins p ON p.content_id=b.id WHERE p.snapshot=? AND b.content_sha256=? AND COALESCE(b.logical_bytes,length(b.payload))=?",params![snapshot.to_string(),reference.digest,bind_u64(reference.bytes)?],|row|row.get(0)).optional()?;
         let content = content
             .ok_or_else(|| invalid("imported position part has no actual supplied source bytes"))?;
         let metadata: PartMetadata =
@@ -170,6 +208,7 @@ pub(super) fn imported(
                     .map_err(|_| invalid("imported part ordinal exceeds source range"))?,
                 internal,
             },
+            compact: false,
         })?;
     }
     Ok(())
@@ -308,5 +347,44 @@ impl Query for Positions {
             });
         }
         Ok(positions)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CAPTURE_POSITIONS_SQL;
+    use rusqlite::{Connection, params};
+
+    #[test]
+    fn capture_positions_scans_recall_ordered_without_temp_sort() {
+        let catalog: Vec<_> = maka_event_log::ROOT_MIGRATIONS
+            .iter()
+            .chain(crate::MIGRATIONS)
+            .copied()
+            .collect();
+        let db = Connection::open_in_memory().unwrap();
+        maka_event_log::migration::run(&db, &catalog).unwrap();
+        let mut stmt = db
+            .prepare(&format!("EXPLAIN QUERY PLAN {CAPTURE_POSITIONS_SQL}"))
+            .unwrap();
+        let details: Vec<String> = stmt
+            .query_map(params![1_i64, 100_i64], |r| r.get::<_, String>(3))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(
+            details.iter().any(|line| {
+                (line.contains("SEARCH d USING INDEX sqlite_autoindex_agent_recall_messages_1")
+                    || line.contains(
+                        "SEARCH d USING COVERING INDEX sqlite_autoindex_agent_recall_messages_1",
+                    ))
+                    && line.contains("(namespace_id=? AND sequence<?)")
+            }),
+            "expected capture query to seek agent_recall_messages via UNIQUE(namespace_id,sequence,ordinal), got: {details:?}"
+        );
+        assert!(
+            !details.iter().any(|line| line.contains("TEMP B-TREE")),
+            "expected capture query to avoid temp sort, got: {details:?}"
+        );
     }
 }

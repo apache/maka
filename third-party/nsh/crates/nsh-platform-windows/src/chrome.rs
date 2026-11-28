@@ -1406,6 +1406,31 @@ fn set_hover(surface: &Surface, hwnd: HWND, code: u32) {
     if let Some(shell) = crate::window::shell(hwnd)
         && shell.hover.replace(code) != code
     {
+        invalidate_buttons(surface, hwnd);
+    }
+}
+
+/// Where window `hwnd`'s drawn caption buttons are, in its DIPs: across
+/// the right of its title bar, `width` points wide.
+fn buttons_area(area: Edges<Points>, width: f32) -> crate::view::WindowRect {
+    crate::view::WindowRect {
+        left: width - area.right.0,
+        top: 0.0,
+        right: width,
+        bottom: area.top.0,
+    }
+}
+
+/// Asks for window `hwnd`'s caption buttons to be drawn again (a hover or
+/// press changed), and nothing else of it.
+fn invalidate_buttons(surface: &Surface, hwnd: HWND) {
+    let area = buttons_area(title_bar_area(hwnd), client_width(surface, hwnd));
+    if crate::app_window::invalidate_area(surface, hwnd, area) {
+        return;
+    }
+    if hwnd == surface.hwnd() {
+        surface.invalidate_area(area);
+    } else {
         crate::window::invalidate(hwnd);
         surface.invalidate();
     }
@@ -1479,8 +1504,7 @@ pub(crate) fn nc_mouse(
         }
         WM_NCLBUTTONDOWN | WM_NCLBUTTONDBLCLK if is_button(code) => {
             shell.pressed.set(code);
-            crate::window::invalidate(hwnd);
-            surface.invalidate();
+            invalidate_buttons(surface, hwnd);
             Some(LRESULT(0))
         }
         WM_NCLBUTTONDOWN if code == HTCAPTION && !crate::window::from_touch() => {
@@ -2018,12 +2042,23 @@ fn item_text(action: &MenuAction, labels: &MenuLabels) -> Vec<u16> {
     text.encode_utf16().chain(Some(0)).collect()
 }
 
-/// The roles Windows has no use for.
+/// The roles Windows has no counterpart for: hiding the other apps and
+/// showing them again are macOS's. Their items are left out, with a warning
+/// so the app knows why. `About` stays (the app hears it, and shows its own
+/// panel) and `Hide` minimizes the window.
 fn unsupported(role: Option<MenuRole>) -> bool {
-    matches!(
-        role,
-        Some(MenuRole::About | MenuRole::Hide | MenuRole::HideOthers | MenuRole::ShowAll)
-    )
+    let skip = matches!(role, Some(MenuRole::HideOthers | MenuRole::ShowAll));
+    // Once per role: menus are rebuilt and searched for shortcuts often.
+    static WARNED: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+    let bit = if role == Some(MenuRole::ShowAll) {
+        2
+    } else {
+        1
+    };
+    if skip && WARNED.fetch_or(bit, std::sync::atomic::Ordering::Relaxed) & bit == 0 {
+        log::warn!("nsh: menu role {role:?} has no Windows equivalent; the item is left out");
+    }
+    skip
 }
 
 /// How long a context menu waits for its icons before it opens without the
@@ -2342,7 +2377,7 @@ fn choose(surface: &Rc<Surface>, id: u32, role: Option<MenuRole>, area: Option<&
             // SAFETY: posting to a live window.
             let _ = unsafe { PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0)) };
         }
-        Some(MenuRole::Minimize) => {
+        Some(MenuRole::Minimize | MenuRole::Hide) => {
             // SAFETY: a plain call.
             let _ = unsafe { ShowWindow(hwnd, SW_MINIMIZE) };
         }
@@ -2724,6 +2759,21 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn caption_buttons_area_is_the_right_of_the_title_bar() {
+        let area = Edges {
+            top: Points(32.0),
+            right: Points(3.0 * BUTTON_WIDTH),
+            bottom: Points(0.0),
+            left: Points(0.0),
+        };
+        let r = buttons_area(area, 800.0);
+        assert_eq!(
+            (r.left, r.top, r.right, r.bottom),
+            (800.0 - 138.0, 0.0, 800.0, 32.0)
+        );
+    }
     use crate::{geom::rect, view::NshView};
 
     fn view(parent: &NshView, id: NodeId, kind: ViewKind, frame: Bounds<Points>) -> NshView {

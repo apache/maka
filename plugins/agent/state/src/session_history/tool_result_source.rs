@@ -56,7 +56,10 @@ pub struct ToolResultReader {
 }
 pub enum ToolResultSource {
     Returned(ReturnedToolSource),
-    External { body: JsonSource },
+    External {
+        body: JsonSource,
+        reader: Option<ToolResultReader>,
+    },
     Direct(JsonSource),
     Provider(JsonSource),
 }
@@ -168,7 +171,9 @@ impl ToolResultSource {
     ) -> io::Result<Option<ToolResultFields>> {
         match self {
             Self::Returned(returned) => Ok(Some(returned.fields(budget).await?)),
-            Self::External { body } => Ok(Some(ToolResultFields::read(body, None, budget).await?)),
+            Self::External { body, reader } => Ok(Some(
+                ToolResultFields::read(body, reader.as_ref(), budget).await?,
+            )),
             Self::Direct(_) | Self::Provider(_) => Ok(None),
         }
     }
@@ -189,6 +194,46 @@ impl ToolResultSource {
 }
 
 impl ReturnedToolSource {
+    /// Extract the compact v59 `Field::Receipt` string for a `StoredCellReturn`
+    /// without materializing large inline results.
+    pub async fn compact_cell_receipt(
+        &self,
+        default_receipt: &str,
+        budget: Arc<dyn SourceBudget>,
+    ) -> io::Result<String> {
+        let [operation] = json::fields(&self.body, &["operation"], budget.clone())
+            .await?
+            .try_into()
+            .expect("one field per requested name");
+        let Some(operation) = operation else {
+            return Ok(default_receipt.to_owned());
+        };
+        let [reference] = json::fields(&operation.source, &["reference"], budget.clone())
+            .await?
+            .try_into()
+            .expect("one field per requested name");
+        let reference = present(reference)?;
+        let mut cursor = reference.source.bytes().open(budget.clone());
+        let mut buffer = budget.allocate(8 * 1024).await?;
+        let mut bytes = Vec::new();
+        loop {
+            let read = cursor.read_chunk(buffer).await?;
+            bytes.extend_from_slice(&read.buffer.as_ref()[..read.bytes_read]);
+            buffer = read.buffer;
+            if bytes.len() > 64 * 1024 {
+                return Err(invalid("operation receipt reference exceeds bound"));
+            }
+            if read.eof {
+                break;
+            }
+        }
+        let recovery_ref: maka_plugin_core::operation::RecoveryRef = serde_json::from_slice(&bytes)
+            .map_err(|_| invalid("invalid operation receipt reference"))?;
+        Ok(crate::recall::index::compact_operation_receipt(
+            &recovery_ref,
+        ))
+    }
+
     pub async fn fields(&self, budget: Arc<dyn SourceBudget>) -> io::Result<ToolResultFields> {
         ToolResultFields::read(&self.body, self.reader.as_ref(), budget).await
     }
@@ -318,9 +363,22 @@ impl ToolResultFields {
             let output = self
                 .inline_output()
                 .ok_or_else(|| invalid("shared projection requires an inline output"))?;
-            ToolProjectionSource::Json(JsonProjectionSource(JsonProjection::FromOutput(
-                output.clone(),
-            )))
+            let (format, value) = output_fields(output, &budget).await?;
+            if json::text_eq(&format, "text", budget.clone()).await? {
+                ToolProjectionSource::Text(JsonValue {
+                    kind: JsonKind::String,
+                    source: value,
+                })
+            } else if json::text_eq(&format, "cell", budget.clone()).await? {
+                ToolProjectionSource::Text(
+                    completed_cell_projection_json(&value, self.cell_reader.as_ref(), &budget)
+                        .await?,
+                )
+            } else {
+                ToolProjectionSource::Json(JsonProjectionSource(JsonProjection::FromOutput(
+                    output.clone(),
+                )))
+            }
         } else {
             return Err(invalid("unsupported durable projection kind"));
         };
@@ -341,16 +399,21 @@ impl ToolResultFields {
         if !json::text_eq(&format, "cell", budget.clone()).await? {
             return Ok(value);
         }
-        let [observation, state] = json::fields(&value, &["observation", "state"], budget.clone())
-            .await?
-            .try_into()
-            .expect("one field per requested name");
-        if observation.is_some() {
+        let [observation, state, cell] =
+            json::fields(&value, &["observation", "state", "cell"], budget.clone())
+                .await?
+                .try_into()
+                .expect("one field per requested name");
+        if observation
+            .as_ref()
+            .is_some_and(|field| field.kind != JsonKind::Null)
+        {
             return Ok(value);
         }
+        let had_null_observation = observation.is_some();
         let state = present(state)?.source;
         let kind = required(&state, &["kind"], &budget).await?.text()?;
-        let observation = if json::text_eq(&kind, "completed", budget.clone()).await? {
+        let hydrated = if json::text_eq(&kind, "completed", budget.clone()).await? {
             let reference =
                 reference_value(required(&state, &["result"], &budget).await?, &budget).await?;
             reader.source(&reference).await?
@@ -358,7 +421,7 @@ impl ToolResultFields {
             let reference =
                 reference_value(required(&state, &["report"], &budget).await?, &budget).await?;
             let report = reader.cell_report(&reference, budget.clone()).await?;
-            let cell = required(&value, &["cell"], &budget).await?.source;
+            let cell = present(cell.clone())?.source;
             joined_json(vec![
                 literal(b"{\"state\":\"interrupted\",\"cell_id\":"),
                 cell.into_bytes(),
@@ -369,6 +432,18 @@ impl ToolResultFields {
         } else {
             return Err(invalid("Cell result has no original observation"));
         };
+        if had_null_observation {
+            let cell = present(cell)?.source;
+            return joined_json(vec![
+                literal(b"{\"cell\":"),
+                cell.into_bytes(),
+                literal(b",\"state\":"),
+                state.into_bytes(),
+                literal(b",\"observation\":"),
+                hydrated.into_bytes(),
+                literal(b"}"),
+            ]);
+        }
         let end = value
             .bytes()
             .len()
@@ -377,7 +452,7 @@ impl ToolResultFields {
         joined_json(vec![
             value.bytes().slice(0..end)?,
             literal(b",\"observation\":"),
-            observation.into_bytes(),
+            hydrated.into_bytes(),
             literal(b"}"),
         ])
     }
@@ -391,6 +466,93 @@ async fn output_fields(
         .try_into()
         .expect("one field per requested name");
     Ok((present(format)?.text()?, present(value)?.source))
+}
+
+/// Stream a `from_output` text projection of a `CellObservation::Completed` as a
+/// JSON string `JsonValue` without buffering cell output text chunks in RAM.
+async fn completed_cell_projection_json(
+    cell_reply: &JsonSource,
+    reader: Option<&ToolResultReader>,
+    budget: &Arc<dyn SourceBudget>,
+) -> io::Result<JsonValue> {
+    let [observation, state] = json::fields(cell_reply, &["observation", "state"], budget.clone())
+        .await?
+        .try_into()
+        .expect("one field per requested name");
+    let obs_source = if let Some(obs) = observation.filter(|v| v.kind != JsonKind::Null) {
+        obs.source
+    } else {
+        let reader =
+            reader.ok_or_else(|| invalid("shared cell projection has no original Run scope"))?;
+        let state = present(state)?.source;
+        let kind = required(&state, &["kind"], budget).await?.text()?;
+        if !json::text_eq(&kind, "completed", budget.clone()).await? {
+            return Err(invalid("shared cell projection requires a completed cell"));
+        }
+        let reference =
+            reference_value(required(&state, &["result"], budget).await?, budget).await?;
+        reader.source(&reference).await?
+    };
+
+    let [obs_state, cell_id, content, result] = json::fields(
+        &obs_source,
+        &["state", "cell_id", "content", "result"],
+        budget.clone(),
+    )
+    .await?
+    .try_into()
+    .expect("one field per requested name");
+    let obs_state = present(obs_state)?.text()?;
+    if !json::text_eq(&obs_state, "completed", budget.clone()).await? {
+        return Err(invalid("shared cell projection requires a completed cell"));
+    }
+    let cell_id_bytes = read_bounded_source_bytes(&present(cell_id)?.source, budget, 128).await?;
+    let cell_id_val: maka_agent_facts::cells::CellId =
+        serde_json::from_slice(&cell_id_bytes).map_err(io::Error::other)?;
+    let escaped_result =
+        JsonStringEscapedBytes::new(present(result)?.source.bytes().clone(), budget.clone())
+            .await?;
+    let prefix = format!(
+        "\"{{\\\"state\\\":\\\"completed\\\",\\\"cell_id\\\":\\\"{cell_id_val}\\\",\\\"result\\\":"
+    );
+
+    let mut pieces = vec![
+        SourceBytes::Inline(prefix.into_bytes().into()),
+        SourceBytes::Source(Arc::new(escaped_result)),
+        literal(b"}"),
+    ];
+    let mut cursor = json::ArrayCursor::open(present(content)?.source, budget.clone()).await?;
+    while let Some(item) = cursor.next().await? {
+        let [item_kind, item_text] = json::fields(&item.source, &["kind", "text"], budget.clone())
+            .await?
+            .try_into()
+            .expect("one field per requested name");
+        let item_kind = present(item_kind)?.text()?;
+        if !json::text_eq(&item_kind, "text", budget.clone()).await? {
+            return Err(invalid(
+                "shared cell projection requires text-only completed cell outputs",
+            ));
+        }
+        let text_val = present(item_text)?;
+        if text_val.kind != JsonKind::String {
+            return Err(invalid("completed cell text output is not a JSON string"));
+        }
+        let len = text_val
+            .source
+            .bytes()
+            .len()
+            .ok_or_else(|| invalid("unbounded cell text output"))?;
+        if len < 2 {
+            return Err(invalid("invalid JSON string token for cell text output"));
+        }
+        pieces.push(literal(b"\\n"));
+        pieces.push(text_val.source.bytes().slice(1..(len - 1))?);
+    }
+    pieces.push(literal(b"\""));
+    Ok(JsonValue {
+        kind: JsonKind::String,
+        source: joined_json(pieces)?,
+    })
 }
 
 impl ToolResultReader {
@@ -694,7 +856,10 @@ impl ToolResultReader {
                 if present(projection)?.kind != JsonKind::Object {
                     return Err(invalid("canonical external output projection is invalid"));
                 }
-                return Ok(ToolResultSource::External { body: source });
+                return Ok(ToolResultSource::External {
+                    body: source,
+                    reader: Some(self.clone()),
+                });
             }
             if json::text_eq(&kind, "failure", budget).await? {
                 let diagnostic = present(diagnostic)?;
@@ -860,6 +1025,233 @@ async fn checked_hash(
         return Err(invalid("original imported source hash or length differs"));
     }
     Ok(())
+}
+async fn read_bounded_source_bytes(
+    source: &JsonSource,
+    budget: &Arc<dyn SourceBudget>,
+    max_bytes: usize,
+) -> io::Result<Vec<u8>> {
+    let mut cursor = source.bytes().open(budget.clone());
+    let mut buffer = budget.allocate(max_bytes.clamp(64, 32 * 1024)).await?;
+    let mut out = Vec::new();
+    loop {
+        let read = cursor.read_chunk(buffer).await?;
+        if out.len().saturating_add(read.bytes_read) > max_bytes {
+            return Err(invalid("bounded JSON metadata field exceeded cap"));
+        }
+        out.extend_from_slice(&read.buffer.as_ref()[..read.bytes_read]);
+        buffer = read.buffer;
+        if read.eof {
+            break;
+        }
+    }
+    Ok(out)
+}
+
+#[derive(Default)]
+struct CompactJsonEscapeState {
+    in_string: bool,
+    prev_backslash: bool,
+}
+
+impl CompactJsonEscapeState {
+    /// Feed one raw JSON byte, compacting insignificant whitespace outside JSON strings
+    /// and writing its outer JSON-string-escaped representation into `out`.
+    fn push_byte(&mut self, byte: u8, out: &mut Vec<u8>) {
+        if !self.in_string {
+            if matches!(byte, b' ' | b'\t' | b'\r' | b'\n') {
+                return;
+            }
+            if byte == b'"' {
+                self.in_string = true;
+            }
+        } else if self.prev_backslash {
+            self.prev_backslash = false;
+        } else if byte == b'\\' {
+            self.prev_backslash = true;
+        } else if byte == b'"' {
+            self.in_string = false;
+        }
+        escape_json_string_byte(byte, out);
+    }
+
+    fn escaped_len_for_byte(&mut self, byte: u8) -> usize {
+        if !self.in_string {
+            if matches!(byte, b' ' | b'\t' | b'\r' | b'\n') {
+                return 0;
+            }
+            if byte == b'"' {
+                self.in_string = true;
+            }
+        } else if self.prev_backslash {
+            self.prev_backslash = false;
+        } else if byte == b'\\' {
+            self.prev_backslash = true;
+        } else if byte == b'"' {
+            self.in_string = false;
+        }
+        escaped_json_byte_len(byte)
+    }
+}
+
+fn escaped_json_byte_len(byte: u8) -> usize {
+    match byte {
+        b'"' | b'\\' | 0x08 | 0x0c | b'\n' | b'\r' | b'\t' => 2,
+        0x00..=0x1f => 6,
+        _ => 1,
+    }
+}
+
+fn escape_json_string_byte(byte: u8, out: &mut Vec<u8>) {
+    match byte {
+        b'"' => out.extend_from_slice(b"\\\""),
+        b'\\' => out.extend_from_slice(b"\\\\"),
+        0x08 => out.extend_from_slice(b"\\b"),
+        0x0c => out.extend_from_slice(b"\\f"),
+        b'\n' => out.extend_from_slice(b"\\n"),
+        b'\r' => out.extend_from_slice(b"\\r"),
+        b'\t' => out.extend_from_slice(b"\\t"),
+        0x00..=0x1f => {
+            const HEX: &[u8; 16] = b"0123456789abcdef";
+            out.extend_from_slice(&[
+                b'\\',
+                b'u',
+                b'0',
+                b'0',
+                HEX[(byte >> 4) as usize],
+                HEX[(byte & 0x0f) as usize],
+            ]);
+        }
+        _ => out.push(byte),
+    }
+}
+
+/// Streaming `ByteSource` adapter that compacts an arbitrary JSON value stream and
+/// JSON-string-escapes it in bounded 32 KiB chunks without materializing a DOM.
+#[derive(Clone)]
+struct JsonStringEscapedBytes {
+    inner: SourceBytes,
+    total_len: u64,
+    range: Range<u64>,
+}
+
+impl JsonStringEscapedBytes {
+    async fn new(inner: SourceBytes, budget: Arc<dyn SourceBudget>) -> io::Result<Self> {
+        let mut cursor = inner.open(budget.clone());
+        let mut buffer = budget.allocate(32 * 1024).await?;
+        let mut state = CompactJsonEscapeState::default();
+        let mut total_len = 0u64;
+        loop {
+            let read = cursor.read_chunk(buffer).await?;
+            for &byte in &read.buffer.as_ref()[..read.bytes_read] {
+                total_len = total_len
+                    .checked_add(state.escaped_len_for_byte(byte) as u64)
+                    .ok_or_else(|| invalid("escaped JSON string length overflow"))?;
+            }
+            buffer = read.buffer;
+            if read.eof {
+                break;
+            }
+        }
+        Ok(Self {
+            inner,
+            total_len,
+            range: 0..total_len,
+        })
+    }
+}
+
+impl ByteSource for JsonStringEscapedBytes {
+    fn len(&self) -> Option<u64> {
+        Some(self.range.end - self.range.start)
+    }
+
+    fn open(&self, budget: Arc<dyn SourceBudget>) -> Box<dyn ByteCursor> {
+        Box::new(JsonStringEscapedCursor {
+            inner: self.inner.open(budget.clone()),
+            budget,
+            state: CompactJsonEscapeState::default(),
+            pending: Vec::new(),
+            pending_pos: 0,
+            skip_remaining: self.range.start,
+            emit_remaining: self.range.end - self.range.start,
+            inner_eof: false,
+        })
+    }
+
+    fn slice(&self, range: Range<u64>) -> io::Result<Arc<dyn ByteSource>> {
+        let len = self.range.end - self.range.start;
+        if range.start > range.end || range.end > len {
+            return Err(invalid("escaped JSON slice exceeds bounds"));
+        }
+        Ok(Arc::new(Self {
+            inner: self.inner.clone(),
+            total_len: self.total_len,
+            range: (self.range.start + range.start)..(self.range.start + range.end),
+        }))
+    }
+}
+
+struct JsonStringEscapedCursor {
+    inner: Box<dyn ByteCursor>,
+    budget: Arc<dyn SourceBudget>,
+    state: CompactJsonEscapeState,
+    pending: Vec<u8>,
+    pending_pos: usize,
+    skip_remaining: u64,
+    emit_remaining: u64,
+    inner_eof: bool,
+}
+
+impl ByteCursor for JsonStringEscapedCursor {
+    fn read_chunk(&mut self, mut buffer: ChargedBuffer) -> pull::ReadSource<'_> {
+        Box::pin(async move {
+            let cap = buffer.as_mut().len();
+            let mut written = 0usize;
+            while written < cap && self.emit_remaining > 0 {
+                if self.pending_pos < self.pending.len() {
+                    let avail = self.pending.len() - self.pending_pos;
+                    if self.skip_remaining > 0 {
+                        let skip = (avail as u64).min(self.skip_remaining) as usize;
+                        self.pending_pos += skip;
+                        self.skip_remaining -= skip as u64;
+                        continue;
+                    }
+                    let take = avail
+                        .min(cap - written)
+                        .min(usize::try_from(self.emit_remaining).unwrap_or(usize::MAX));
+                    buffer.as_mut()[written..written + take]
+                        .copy_from_slice(&self.pending[self.pending_pos..self.pending_pos + take]);
+                    self.pending_pos += take;
+                    written += take;
+                    self.emit_remaining -= take as u64;
+                    continue;
+                }
+                if self.inner_eof {
+                    break;
+                }
+                self.pending.clear();
+                self.pending_pos = 0;
+                let scratch = self.budget.allocate(32 * 1024).await?;
+                let read = self.inner.read_chunk(scratch).await?;
+                for &byte in &read.buffer.as_ref()[..read.bytes_read] {
+                    self.state.push_byte(byte, &mut self.pending);
+                }
+                if read.eof {
+                    self.inner_eof = true;
+                } else if read.bytes_read == 0 {
+                    return Err(invalid("escaped JSON source made no progress"));
+                }
+            }
+            let eof = self.emit_remaining == 0
+                || (self.inner_eof && self.pending_pos >= self.pending.len());
+            Ok(pull::SourceRead {
+                buffer,
+                bytes_read: written,
+                eof,
+            })
+        })
+    }
 }
 fn invalid(reason: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, reason)
@@ -1082,5 +1474,102 @@ impl ByteCursor for Cursor {
                 eof: self.offset == self.source.range.end,
             })
         })
+    }
+}
+
+#[cfg(test)]
+mod streaming_projection_tests {
+    use super::*;
+    use maka_agent_facts::cells::{CellId, CellObservation, CellOutput, CellReply, CellReplyState};
+    use serde_json::json;
+
+    struct TestBudget(Arc<tokio::sync::Semaphore>);
+    impl SourceBudget for TestBudget {
+        fn allocate(&self, n: usize) -> pull::Allocate<'_> {
+            Box::pin(async move {
+                let permit = self
+                    .0
+                    .clone()
+                    .try_acquire_many_owned(u32::try_from(n).map_err(io::Error::other)?)
+                    .map_err(|_| io::Error::other("test source budget exhausted"))?;
+                Ok(ChargedBuffer::new(vec![0; n], permit))
+            })
+        }
+    }
+
+    async fn drain(bytes: &SourceBytes, budget: &Arc<dyn SourceBudget>) -> Vec<u8> {
+        let mut cursor = bytes.open(budget.clone());
+        let mut buf = budget.allocate(13).await.unwrap(); // tiny chunk size to stress boundaries
+        let mut out = Vec::new();
+        loop {
+            let read = cursor.read_chunk(buf).await.unwrap();
+            out.extend_from_slice(&read.buffer.as_ref()[..read.bytes_read]);
+            buf = read.buffer;
+            if read.eof {
+                break;
+            }
+        }
+        out
+    }
+
+    #[tokio::test]
+    async fn completed_cell_projection_json_streams_byte_identical_output_and_slices() {
+        let budget: Arc<dyn SourceBudget> = Arc::new(TestBudget(Arc::new(
+            tokio::sync::Semaphore::new(256 * 1024),
+        )));
+        let cell = CellId::new();
+        let obs = CellObservation::Completed {
+            cell_id: cell,
+            content: vec![
+                CellOutput::Text {
+                    text: "line 1 with \"quotes\" and \\slashes\\".into(),
+                },
+                CellOutput::Text {
+                    text: "line 2 中文 🚀\t\r\ncontrol".into(),
+                },
+            ],
+            result: json!({
+                "ok": true,
+                "nested": {
+                    "quoted": "a \"b\" \\ c \n d \u{0007} e",
+                    "unicode": "测试🔥",
+                    "arr": [1, 2, null, false]
+                }
+            }),
+        };
+        let expected_text =
+            maka_agent_facts::tool_output::completed_cell_text_projection(&obs).unwrap();
+        let expected_json = serde_json::to_vec(&expected_text).unwrap();
+
+        // Also test pretty-printed observation JSON to prove whitespace compaction matches serde_json.
+        let reply_value = serde_json::to_value(CellReply {
+            cell,
+            state: CellReplyState::Completed {
+                result: ContentRef {
+                    digest: format!("sha256:{}", "a".repeat(64)),
+                    bytes: 1,
+                },
+            },
+            observation: serde_json::to_value(&obs).unwrap(),
+        })
+        .unwrap();
+        let pretty = serde_json::to_vec_pretty(&reply_value).unwrap();
+        let cell_reply_src = JsonSource::new(SourceBytes::Inline(pretty.into()));
+        let streamed = completed_cell_projection_json(&cell_reply_src, None, &budget)
+            .await
+            .unwrap();
+        assert_eq!(streamed.kind, JsonKind::String);
+        let actual_json = drain(streamed.source.bytes(), &budget).await;
+        assert_eq!(actual_json, expected_json);
+
+        // Verify sub-range slicing through JsonStringEscapedBytes matches exact byte slice.
+        let mid_start = 10u64;
+        let mid_end = (actual_json.len() as u64).saturating_sub(15);
+        let sliced = streamed.source.bytes().slice(mid_start..mid_end).unwrap();
+        let actual_slice = drain(&sliced, &budget).await;
+        assert_eq!(
+            actual_slice,
+            &expected_json[mid_start as usize..mid_end as usize]
+        );
     }
 }

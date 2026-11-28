@@ -181,7 +181,6 @@ pub fn compile_with_locales(
         entry: entry.clone(),
         minify: false,
         split: false,
-        fail_on_unresolved_imports: true,
         ui_sets,
         asset_root_from: asset_root.map(Path::to_path_buf),
         locales,

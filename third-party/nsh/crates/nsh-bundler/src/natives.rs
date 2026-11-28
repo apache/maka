@@ -97,6 +97,11 @@ pub struct NativeUse {
     /// `<WebView>` passes to `nsh:rt`'s `element`, in a string or a
     /// template. Linux's runner leaves WebKitGTK out without one (#2377).
     pub web_view: bool,
+    /// It may make a video view: it spells `video`, the tag the compiled
+    /// `<Video>` passes to `nsh:rt`'s `element`, in a string or a template.
+    /// Windows' runner leaves Media Foundation out when the app makes
+    /// none and imports neither `Sound` nor `AudioPlayer`.
+    pub video: bool,
 }
 
 impl NativeUse {
@@ -153,6 +158,8 @@ impl NativeUse {
         self.computed_import |= other.computed_import;
         self.shader |= other.shader;
         self.scrollbar_theme |= other.scrollbar_theme;
+        self.web_view |= other.web_view;
+        self.video |= other.video;
     }
 
     fn import(&mut self, specifier: &str) -> &mut Imported {
@@ -257,6 +264,9 @@ impl<F> Finder<'_, F> {
         }
         if value == "webview" {
             self.uses.web_view = true;
+        }
+        if value == "video" {
+            self.uses.video = true;
         }
     }
 
@@ -845,6 +855,18 @@ mod tests {
             uses(r#"import "nsh/base";"#).imports.get("nsh/base"),
             Some(&names(&[]))
         );
+    }
+
+    #[test]
+    fn a_video_tag_counts_as_a_video() {
+        assert!(uses("_$element(\"video\", {});").video);
+        assert!(uses("u(`video`);").video);
+        assert!(!uses("const video = view;").video);
+        assert!(!uses("_$element(\"view\", { class: \"aspect-video\" });").video);
+        let mut merged = uses("_$element(\"view\");");
+        merged.merge(&uses("_$element(\"video\");"));
+        merged.merge(&uses("_$element(\"webview\");"));
+        assert!(merged.video && merged.web_view);
     }
 
     #[test]

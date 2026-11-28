@@ -27,12 +27,13 @@ import type { JSX } from 'nsh';
 import { useHost } from './host';
 import { sameValue } from '../../../../plugins/shared/value';
 import { sameHistoryRow, type Row } from './history';
-import type { HistoryRowAddress } from '../../../../packages/plugin-sdk/src/index.js';
+import type { HistoryRowAddress, QuoteRef } from '../../../../packages/plugin-sdk/src/index.js';
 import { MessageCopy } from './MessageCopy';
+import { MessageQuote } from './MessageQuote';
 import { forkTitle, type SessionAction } from './sessionLifecycle';
 import { Button } from 'nsh/base';
 import type { MessageMenu } from './messageMenu';
-import { forgetPassage, selectedPassage } from './sideQuestions';
+import type { MessageSelection } from './messageSelection';
 import { ExecutorTokenCounts, TurnUsage } from './TurnUsage';
 import {
   C,
@@ -71,7 +72,10 @@ export function FinalActions(props: {
   /** Another action on this turn, after the fork. */
   extra?: JSX.Element;
   menu?: MessageMenu;
+  selection?: MessageSelection;
   compact?: boolean;
+  /** Quotes this reply or its selected passage into the current conversation's draft. */
+  quote?(quote: QuoteRef): boolean;
   /** Asks a side question beside this reply. */
   side?: {
     ask(row: Row, passage: string | null): void;
@@ -141,13 +145,11 @@ export function FinalActions(props: {
     }
   };
   const askLabel = () =>
-    selectedPassage(props.sessionId, props.row().turnId)
-      ? tr('Ask about the selection beside')
-      : tr('Ask beside');
+    props.selection?.current() ? tr('Ask about the selection beside') : tr('Ask beside');
   const askBeside = (passage: string | null) => {
     if (target() === null) return;
     props.side?.ask(props.row(), passage);
-    forgetPassage();
+    props.selection?.clear();
   };
   if (props.side)
     props.menu?.add({
@@ -157,22 +159,22 @@ export function FinalActions(props: {
       // The menu holds the passage selected as it opened.
       action: () => {
         if (target() === null) return null;
-        const passage = selectedPassage(props.sessionId, props.row().turnId);
+        const passage = props.selection?.current() ?? null;
         return () => askBeside(passage);
       },
     });
   if (props.side)
     props.menu?.add({
-      kind: 'quote',
+      kind: 'sideQuote',
       label: () => tr('Quote for a side question'),
       busy: () => false,
       action: () => {
         if (target() === null) return null;
-        const passage = selectedPassage(props.sessionId, props.row().turnId);
+        const passage = props.selection?.current() ?? null;
         return passage
           ? () => {
               props.side?.gather(props.row(), passage);
-              forgetPassage();
+              props.selection?.clear();
             }
           : null;
       },
@@ -194,6 +196,20 @@ export function FinalActions(props: {
       menu={props.menu}
     />
   );
+  const quote = () =>
+    props.quote ? (
+      <MessageQuote
+        compact={props.compact}
+        menuOnly={props.compact}
+        row={props.row}
+        ownerKey={props.ownerKey}
+        sessionId={props.sessionId}
+        through={props.through}
+        menu={props.menu}
+        selection={props.selection}
+        quote={props.quote}
+      />
+    ) : null;
   if (props.compact)
     return (
       <View style={{ maxWidth: '100%' }}>
@@ -202,6 +218,7 @@ export function FinalActions(props: {
           at={props.row().timestamp}
           metrics={() => replyMetrics(props.row())}
         />
+        {quote()}
         {props.extra}
       </View>
     );
@@ -240,11 +257,14 @@ export function FinalActions(props: {
           />
         </If>
         {props.extra}
+        {quote()}
         <If when={props.side !== undefined && target() !== null}>
           <IconButton
             label={askLabel()}
             icon="ask"
-            onPress={() => askBeside(selectedPassage(props.sessionId, props.row().turnId))}
+            {...(props.selection
+              ? props.selection.bindPress(askBeside)
+              : { onPress: () => askBeside(null) })}
           />
         </If>
         <If
@@ -258,7 +278,7 @@ export function FinalActions(props: {
                 target()?.turnId === undefined
               }
               onPress={inputAction(showUsage, target())}
-              style={{ ...controlStyle, paddingHorizontal: 8 }}
+              style={{ ...controlStyle(), paddingHorizontal: 8 }}
               hoverStyle={quietHoverStyle()}
               activeStyle={quietActiveStyle()}
               focusStyle={quietFocusStyle()}

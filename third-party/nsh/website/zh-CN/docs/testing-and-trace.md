@@ -159,6 +159,7 @@ describe("the cart", () => {
 | `network` | 无 | 应用的请求按路由得到的结果，见[模拟网络](#模拟网络)。`"live"`：请求、socket 和 WebSocket 都使用真实网络。 |
 | `width`、`height` | 390、844 | 视口大小，单位为点：headless、桌面平台的窗口、web 的页面。在 iOS 和 Android 上应用占满设备屏幕。 |
 | `safeArea` | 0 | 安全区域内边距，单位为点：`{ top: 47, bottom: 34 }`。 |
+| `reservedRegions` | 无 | 设备保留的区域（`reservedRegions()`），比如布局要避开的折痕：`[{ kind: "division", bounds: { origin: { x: 460, y: 0 }, size: { width: 31, height: 669 } } }]`。只用于无头运行：加 `--target` 时由设备报告自己的，给出它会以 `ERR_NSH_TEST_UNSUPPORTED` 拒绝。 |
 | `clipboard` | 空 | 剪贴板初始的文字。 |
 | `colorScheme` | `"light"` | 系统外观：`"light"` 或 `"dark"`（`colorScheme()`、`dark:` 类）。 |
 | `locale` | `"en-US"` | 设备的区域设置，BCP 47 标签（`locale()`、`Intl` 的默认值）。 |
@@ -467,7 +468,7 @@ fn autosaves() {
 | `ERR_NSH_TEST_COVERED` | `press` 指向的视图上面盖着另一个视图，手指按在那里会按到它（盖住按钮的浮层、滚到底栏下面的行、盖住视图的选区编辑菜单）。 |
 | `ETIMEDOUT` | `waitFor` 或 `waitUntil` 超时，或者应用在 `open` 之后没有渲染任何内容。 |
 | `ERR_NSH_TEST_NO_BACK` | `back()` 没有可以返回的地方。 |
-| `ERR_NSH_TEST_UNSUPPORTED` | 使用 `--target` 时，`open` 收到了目标平台无法满足的选项：iOS 和 Android 上的 `width` 或 `height`、桌面或 web 上的手机 `platform`、iOS 或 Android 上的桌面平台或另一种手机的 `platform`、`host.handlers`、`modules`、`url`。消息会指出是哪一个。不使用 `--target web` 时的 `forward()` 也是如此。 |
+| `ERR_NSH_TEST_UNSUPPORTED` | 使用 `--target` 时，`open` 收到了目标平台无法满足的选项：iOS 和 Android 上的 `width` 或 `height`、桌面或 web 上的手机 `platform`、iOS 或 Android 上的桌面平台或另一种手机的 `platform`、`host.handlers`、`modules`、`url`、`reservedRegions`。消息会指出是哪一个。不使用 `--target web` 时的 `forward()` 也是如此。 |
 
 ```tsx
 await expect(app.press("Pay")).rejects.toMatchObject({ code: "ERR_NSH_TEST_DISABLED" });
@@ -595,7 +596,7 @@ nsh test tests/form.test.tsx --target macos   # 只运行一个文件
 应用的剪贴板调用由测试自己的剪贴板应答（`clipboard` 是它的初始文本，`app.clipboard()` 读取它），机器的剪贴板保持不变；文本输入框自身的复制和
 粘贴使用系统剪贴板。`host.params` 会传给应用，`app.host.send` 发送事件，应用打开的 URL 被记录下来供 `app.openedUrls()` 读取，而不会真正打开。
 `host.handlers` 在 headless 运行，由测试回答应用的调用。`open` 会按目标检查它的选项：iOS 和 Android 上的 `width` 与
-`height`、属于另一类设备的 `platform`（桌面或 web 上的手机平台，iOS 或 Android 上的桌面平台或另一种手机）、`host.handlers`、`modules` 以及 `url` 会以
+`height`、属于另一类设备的 `platform`（桌面或 web 上的手机平台，iOS 或 Android 上的桌面平台或另一种手机）、`host.handlers`、`modules`、`url` 以及 `reservedRegions` 会以
 `ERR_NSH_TEST_UNSUPPORTED` reject，这样测试要么按写的那样运行，要么说明它需要什么。桌面平台的 `platform`（例如用 `"macos"` 获得桌面的鼠标和按键）
 可以在任何桌面目标和 web 上运行，应用以该目标的平台运行，且总是桌面形态：在浏览器中页面无论宽度都以桌面形态启动；
 不给 `platform`（或给 `"web"`）时，页面像浏览器一样自己判断形态（宽度至少 600 点时为桌面）。带有自己 Rust crate 的应用运行在 NSH 为该平台用这些 crate 构建的开发 host 中（Android 上和 `nsh run` 一样，只为设备的 ABI 构建）；

@@ -249,6 +249,7 @@ fn unborn_repository_uses_empty_head_and_prunes_ignored_dependency_tree() {
 }
 
 struct ReadOnlySnapshot {
+    worktree_modified: SystemTime,
     index: Vec<u8>,
     index_modified: SystemTime,
     head: Vec<u8>,
@@ -258,6 +259,7 @@ impl ReadOnlySnapshot {
     fn capture(f: &Fixture, names: &[&str]) -> Self {
         let index = f.root.join(".git/index");
         Self {
+            worktree_modified: fs::metadata(&f.root).unwrap().modified().unwrap(),
             index: fs::read(&index).unwrap(),
             index_modified: fs::metadata(&index).unwrap().modified().unwrap(),
             head: git_stdout(&f.root, &["rev-parse", "HEAD"]),
@@ -275,6 +277,11 @@ impl ReadOnlySnapshot {
         }
     }
     fn assert_unchanged(&self, f: &Fixture) {
+        assert_eq!(
+            fs::metadata(&f.root).unwrap().modified().unwrap(),
+            self.worktree_modified,
+            "Git observation mutated the worktree directory"
+        );
         let index = f.root.join(".git/index");
         assert!(
             fs::read(&index).unwrap() == self.index,
@@ -413,6 +420,33 @@ fn filters_subdirectories_private_overlap_and_cancellation_fail_with_static_code
         "git_unsupported"
     );
     assert!(!sentinel.exists());
+}
+
+#[test]
+fn status_recognizes_a_symlink_checked_out_as_a_plain_file() {
+    let f = Fixture::new();
+    git(&f.root, &["config", "core.symlinks", "false"]);
+    fs::write(f.root.join("link"), "destination").unwrap();
+    let oid = String::from_utf8(git_stdout(&f.root, &["hash-object", "-w", "link"])).unwrap();
+    git(
+        &f.root,
+        &[
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            "120000",
+            oid.trim(),
+            "link",
+        ],
+    );
+    git(&f.root, &["commit", "--quiet", "-m", "tracked link"]);
+
+    assert!(f.status().entries.is_empty());
+    fs::write(f.root.join("link"), "another destination").unwrap();
+    assert_eq!(
+        entries(f.status()),
+        [(GitArea::Worktree, b"link".to_vec(), GitChangeKind::Modified)]
+    );
 }
 
 #[cfg(unix)]
@@ -1044,7 +1078,7 @@ fn status_digest_invalidates_on_same_length_rewrite_and_pr_merge_base_handles_re
     assert!(patch.contains("-    10\n+    20\n"), "{patch}");
 
     // Linked git worktrees are discovered with branch names and share same_repository.
-    let wt_path = f.root.parent().unwrap().join("linked-wt");
+    let wt_path = f._temp.path().join("linked-wt");
     git(
         &f.root,
         &["worktree", "add", wt_path.to_str().unwrap(), "feat-rename"],

@@ -115,6 +115,7 @@ impl Compiler {
             MessageRecipe::User {
                 content,
                 provider_options,
+                ..
             } => (
                 provider_options.clone(),
                 MessageRole::User,

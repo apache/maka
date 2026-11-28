@@ -84,6 +84,7 @@ nsh dev --server-only            # TSX and mixed: serve hosts you start yourself
 - **Full reload instead:** first import of a new NSH module, a `capabilities` change, a host on an older build, or a patch that cannot apply.
 - **`--release`:** minified, no hot updates. Hardening stays off for anything loaded from a dev server. On `nsh run` and `nsh test`, an app with Rust crates also builds its development hosts (and `nsh test`'s headless runner and `cargo test`) in release mode (`--release`).
 - **Devices:** the server prints LAN URLs. A device needs the port reachable. Android uses `adb reverse`, which `nsh run` sets up.
+- **Keychain on macOS:** the host is signed ad hoc, a signature every build changes, so macOS asks for the keychain password before a rebuilt app reads its items. `nsh run --sign "Apple Development: …"` signs it with the identity `nsh package --sign` takes, a signature that stays the same across builds.
 
 **Reading the terminal:** `✓` done, `→` where to connect, `•` what a device did, `warn` and `error` problems, plain lines the app's own output.
 
@@ -152,6 +153,7 @@ Notes:
 | Status bar | `.status_bar(StatusBarStyle::Light)` on `nav_page()` or `dialog()` | `statusBar={{ foreground: "light" }}` on `NavPage` or `Dialog` |
 | Target-gated Rust | `#[cfg(target_os = "macos")]`, `#[cfg(target_arch = "wasm32")]` | - |
 | A view of the OS | `native(name)`, registered with `#[native_components(macos)]` | `nativeComponent(name, spec)` |
+| A view drawn with wgpu (2D/3D) | `gpu_view().renderer(make)`; `registry.gpu_renderer(name, make)` (`nsh-gpu`) | `gpuView(name, spec)` |
 
 - Desktop means macOS, Windows, Linux, and browsers in the desktop idiom. Mobile means iOS, Android, Mac Catalyst and browsers in the phone or tablet idiom.
 - Gate layout and input on `platform.desktop`. Gate windows and `Menu` calls on `isAvailable` from `nsh/desktop`, which is false in browsers.
@@ -231,6 +233,8 @@ nsh package --target web              # static site
 ```
 
 With your own host, `"updater": { "url": "https://dl.example.com/app/latest.json", "publicKey": "<keys/update.pub>" }`; the key is required there. A beta for users who opt in: add `"channels": { "beta": "<its latest.json URL>" }` (needs `publicKey`) and call `checkForUpdate({ channel: "beta" })`; the code can pass only a declared name.
+
+OTA packages from a server the user picks at run time: `"packages": { "roots": [...], "source": "runtime" }` (needs `publicKey`; `github`/`url` become optional), then `checkForPackage({ url })`. Add `"allowHttp": true` only for a plain-HTTP feed on a private network; its files and redirects must stay on its origin. See `website/docs/ota-updates.md`.
 
 ```tsx
 import { openUrl } from "nsh";

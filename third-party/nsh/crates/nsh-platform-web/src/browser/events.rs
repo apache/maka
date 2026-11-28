@@ -340,6 +340,28 @@ pub(super) fn payload(host: &Bindings, payload: &EventPayload) -> Result<Value, 
                     ("pressure", number(p.pressure)),
                     ("tiltX", number(p.tilt_x)),
                     ("tiltY", number(p.tilt_y)),
+                    ("eraser", boolean(p.eraser)),
+                    ("barrel", boolean(p.barrel)),
+                    (
+                        "coalesced",
+                        Value::array(
+                            p.coalesced
+                                .iter()
+                                .map(|c| {
+                                    object([
+                                        ("pageX", number(c.page.x.0)),
+                                        ("pageY", number(c.page.y.0)),
+                                        ("locationX", number(c.location.x.0)),
+                                        ("locationY", number(c.location.y.0)),
+                                        ("pressure", number(c.pressure)),
+                                        ("tiltX", number(c.tilt_x)),
+                                        ("tiltY", number(c.tilt_y)),
+                                        ("timestamp", number(c.timestamp)),
+                                    ])
+                                })
+                                .collect::<Result<Vec<_>, _>>()?,
+                        )?,
+                    ),
                 ])?);
             }
             object([

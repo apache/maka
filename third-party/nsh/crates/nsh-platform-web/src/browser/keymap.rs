@@ -5,7 +5,7 @@ use nsh_core::{
     Op, Prop, ROOT_ID,
     element::PropError,
     js::host::HostInput,
-    keymap::{KeyBinding, Keymap, Keystroke, When},
+    keymap::{KeyBinding, Keymap, Keystroke, OverFocused, When},
     platform::Os,
 };
 
@@ -51,11 +51,22 @@ pub(super) fn call(host: &Bindings, op: u32, args: &Value) -> Result<Value, Prop
                 ));
             }
         };
+        let over = entry.index(6)?;
+        let over_focused = match over.as_string().as_deref() {
+            None => OverFocused::from(over.truthy()),
+            Some("pointer") => OverFocused::Pointer,
+            _ => {
+                return Err(PropError(
+                    "keymap.bind: overFocused must be a boolean or pointer".into(),
+                ));
+            }
+        };
         let binding = KeyBinding::new(id, key, when, entry.index(3)?.truthy());
         bindings.push(
             binding
                 .passing_through(entry.index(4)?.truthy())
-                .focus_keys(entry.index(5)?.truthy()),
+                .focus_keys(entry.index(5)?.truthy())
+                .over_focused(over_focused),
         );
     }
     host.ops.borrow_mut().push(Op::SetProp {
