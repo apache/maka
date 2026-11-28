@@ -645,7 +645,7 @@ for (const { logicalLane: id, model, baseUrl, keyEnv } of lanes) {
     models: [{
       id: model, name: model, api: 'openai-completions', provider: id, baseUrl,
       reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-      contextWindow: 128000, maxTokens: 8192,
+      contextWindow: 1047576, maxTokens: 32768,
     }],
   }));
 }
@@ -764,7 +764,7 @@ const zcode = adapter({
           },
         }] },
         modelConfigRules: {
-          providerModelRules: [{ ...selection, config: { enabled: true, properties: { contextWindow: 128000 } } }],
+          providerModelRules: [{ ...selection, config: { enabled: true, properties: { contextWindow: 1047576 } } }],
           manualProviderModelRules: [],
         },
         defaultModelSelection: selection,
@@ -789,7 +789,7 @@ function kimiAdapter(id, protocol, type) {
         'default_model = "mock"', 'telemetry = false', '[providers.mock]', `type = ${toml(type)}`,
         `base_url = ${toml(type === 'anthropic' ? ctx.base : ctx.v1)}`,
         `api_key = ${toml(ctx.apiKey)}`, '[models.mock]', 'provider = "mock"',
-        `model = ${toml(ctx.model)}`, 'max_context_size = 128000', '',
+        `model = ${toml(ctx.model)}`, 'max_context_size = 1047576', '',
       ].join('\n'));
       if (ctx.mcp) await jsonFile(join(home, 'mcp.json'), {
         mcpServers: { bench: { transport: 'stdio', ...ctx.mcp, deferred: false } },

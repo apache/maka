@@ -692,7 +692,7 @@ impl Binding {
             use_patch,
         } = self.encoding
         {
-            let code = code_mode_source(actions, use_patch)?;
+            let code = code_mode_source(workspace, actions, use_patch)?;
             return Ok(if freeform {
                 CallPayload::Freeform(code)
             } else {
@@ -736,7 +736,7 @@ impl Binding {
                 "Read fixture file",
             )?,
             (Encoding::Patch(key), ToolAction::Write { .. } | ToolAction::Edit { .. }) => {
-                let patch = patch_text(action)?;
+                let patch = patch_text(workspace, action)?;
                 let Some(key) = key else {
                     return Ok(CallPayload::Freeform(patch));
                 };
@@ -948,14 +948,19 @@ fn code_mode(tool: &ToolDeclaration) -> Option<Encoding> {
     }
 }
 
-fn code_mode_source(actions: &[ToolAction<'_>], use_patch: bool) -> Result<String, ToolBindError> {
+fn code_mode_source(
+    workspace: &Path,
+    actions: &[ToolAction<'_>],
+    use_patch: bool,
+) -> Result<String, ToolBindError> {
     let mut code = String::from("text(JSON.stringify(await Promise.all([\n");
     for (slot, action) in actions.iter().enumerate() {
         let (tool, input) = match *action {
             ToolAction::Read { path } => ("Read", json!({ "path": path })),
-            ToolAction::Write { .. } | ToolAction::Edit { .. } if use_patch => {
-                ("ApplyPatch", json!({ "patch": patch_text(*action)? }))
-            }
+            ToolAction::Write { .. } | ToolAction::Edit { .. } if use_patch => (
+                "ApplyPatch",
+                json!({ "patch": patch_text(workspace, *action)? }),
+            ),
             ToolAction::Write { path, content } => {
                 ("Write", json!({ "path": path, "content": content }))
             }
@@ -977,9 +982,18 @@ fn code_mode_source(actions: &[ToolAction<'_>], use_patch: bool) -> Result<Strin
     Ok(code)
 }
 
-fn patch_text(action: ToolAction<'_>) -> Result<String, ToolBindError> {
+fn patch_text(workspace: &Path, action: ToolAction<'_>) -> Result<String, ToolBindError> {
+    let existing_write = match action {
+        ToolAction::Write { path, .. } => std::fs::read_to_string(workspace.join(path)).ok(),
+        _ => None,
+    };
     let preserves_line_endings = match action {
-        ToolAction::Write { content, .. } => content.is_empty() || content.ends_with('\n'),
+        ToolAction::Write { content, .. } => {
+            (content.is_empty() || content.ends_with('\n'))
+                && existing_write
+                    .as_deref()
+                    .is_none_or(|old| old.is_empty() || old.ends_with('\n'))
+        }
         ToolAction::Edit { hunk, .. } => {
             hunk.ends_with_newline && (hunk.after.is_empty() || hunk.after.ends_with('\n'))
         }
@@ -994,8 +1008,14 @@ fn patch_text(action: ToolAction<'_>) -> Result<String, ToolBindError> {
     let mut patch = String::from("*** Begin Patch\n");
     match action {
         ToolAction::Write { path, content } => {
-            writeln!(patch, "*** Add File: {path}").expect("writing to String");
-            patch_lines(&mut patch, '+', content);
+            if let Some(old) = existing_write.as_deref() {
+                writeln!(patch, "*** Update File: {path}\n@@").expect("writing to String");
+                patch_lines(&mut patch, '-', old);
+                patch_lines(&mut patch, '+', content);
+            } else {
+                writeln!(patch, "*** Add File: {path}").expect("writing to String");
+                patch_lines(&mut patch, '+', content);
+            }
         }
         ToolAction::Edit { path, hunk, .. } => {
             writeln!(patch, "*** Update File: {path}\n@@").expect("writing to String");
