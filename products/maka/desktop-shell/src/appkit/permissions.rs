@@ -21,7 +21,7 @@
 //! enter through the verified workbench request, never component props.
 
 use maka_workbench::bindings::SystemPermissionWindow;
-use nsh_engine::{EngineConfig, JsonValue};
+use nsh_engine::{CacheOptions, EngineConfig, JsonValue, StorageBackend};
 use nsh_platform_macos::{
     AppOptions, AppView,
     objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, rc::Retained},
@@ -71,7 +71,28 @@ define_class!(
     }
 );
 
-pub(super) fn open(request: SystemPermissionWindow, alive: Arc<AtomicBool>, parent: &EngineConfig) {
+#[derive(Clone)]
+pub(super) struct ParentStorage {
+    data_dir: Option<std::path::PathBuf>,
+    cache: CacheOptions,
+    storage: Option<Arc<dyn StorageBackend>>,
+}
+
+impl From<&EngineConfig> for ParentStorage {
+    fn from(config: &EngineConfig) -> Self {
+        Self {
+            data_dir: config.data_dir.clone(),
+            cache: config.cache.clone(),
+            storage: config.storage.clone(),
+        }
+    }
+}
+
+pub(super) fn open(
+    request: SystemPermissionWindow,
+    alive: Arc<AtomicBool>,
+    parent: &ParentStorage,
+) {
     let key = request.key().to_owned();
     if WINDOWS.with(|windows| {
         let windows = windows.borrow();

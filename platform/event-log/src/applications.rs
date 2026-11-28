@@ -519,22 +519,24 @@ impl EventLog {
             return Ok(None);
         };
         tokio::task::spawn_blocking(move || {
-            let mut packages = Vec::with_capacity(raw_packages.len());
-            for (reference, files) in raw_packages {
-                packages.push(build_checked_package(files, &reference)?);
-            }
-            let plan = validate(
-                &metadata.source.input,
-                &metadata.source.remote_exports,
-                &packages,
-            )?;
-            let snapshot = SourceSnapshot::new(owner, metadata.source.reference.clone(), &plan);
-            Ok(Some(LoadedDeployment {
-                snapshot,
-                source: metadata.source,
-                packages,
-                plan,
-            }))
+            maka_plugin_core::with_validation_cache(|| {
+                let mut packages = Vec::with_capacity(raw_packages.len());
+                for (reference, files) in raw_packages {
+                    packages.push(build_checked_package(files, &reference)?);
+                }
+                let plan = validate(
+                    &metadata.source.input,
+                    &metadata.source.remote_exports,
+                    &packages,
+                )?;
+                let snapshot = SourceSnapshot::new(owner, metadata.source.reference.clone(), &plan);
+                Ok(Some(LoadedDeployment {
+                    snapshot,
+                    source: metadata.source,
+                    packages,
+                    plan,
+                }))
+            })
         })
         .await
         .map_err(|error| {

@@ -30,7 +30,7 @@ import { tr } from './locale';
 import { compactCopyInset, CompactReplyFooter, LocalMessageCopy } from './CompactReplyFooter';
 import type { replyMetrics } from './replyDetails';
 import { Icon } from './Icon';
-import { ShimmerText, ThinkingMark } from './Loading';
+export { BotWorking } from './BotWorking';
 import { splitSpecMarkdown } from './spec/session.ts';
 import type { BindTextViewToc } from './turnToc';
 import { C, bodyTextStyle, captionTextStyle } from './ui';
@@ -56,7 +56,11 @@ export function BotReply(props: {
   };
   return (
     <View
-      style={{ width: '100%', paddingVertical: props.metrics ? 0 : 8, gap: props.metrics ? 0 : 16 }}
+      style={{
+        width: '100%',
+        paddingVertical: props.metrics ? 0 : 8,
+        gap: props.metrics ? 0 : 16,
+      }}
     >
       <Each of={props.messages()} key={(message) => String(message.sequence)}>
         {(message) => {
@@ -134,7 +138,10 @@ export function BotReply(props: {
                                 }}
                                 contentStyle={{ rowGap: 16 }}
                                 options={{ preserveLineBreaks: true }}
-                                labels={{ table: tr('Markdown table'), copied: tr('Copied') }}
+                                labels={{
+                                  table: tr('Markdown table'),
+                                  copied: tr('Copied'),
+                                }}
                                 onScrollIntent={props.userScroll}
                                 onLinkPress={(event) => {
                                   const target = event.target;
@@ -160,7 +167,10 @@ export function BotReply(props: {
                                 styles={{
                                   root: { ...bodyTextStyle, color: C.text },
                                   paragraph: bodyTextStyle,
-                                  code: { color: C.accentHover, backgroundColor: C.card },
+                                  code: {
+                                    color: C.accentHover,
+                                    backgroundColor: C.card,
+                                  },
                                 }}
                               />
                             }
@@ -327,28 +337,6 @@ export function BotWaiting(props: {
 }
 
 /** Shown at the end of Chat while a Turn is at work and has no header of its own yet. */
-export function BotWorking(props: { detail: () => string }) {
-  const text = () => (props.detail() ? `${tr('Working…')} · ${props.detail()}` : tr('Working…'));
-  return (
-    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 8 }}>
-      <If
-        when={platform.idiom === 'terminal'}
-        else={
-          <>
-            <ThinkingMark />
-            <ShimmerText text={text()} style={captionTextStyle} />
-          </>
-        }
-      >
-        <Icon name="activity" color={C.accentText} />
-        <Text style={[{ ...captionTextStyle, color: C.muted }, { numberOfLines: 1 }]}>
-          {text()}
-        </Text>
-      </If>
-    </View>
-  );
-}
-
 /** Shown under a finished Turn that ended without a message and without going to sleep. */
 export function BotNote(props: { text: () => string }) {
   return (

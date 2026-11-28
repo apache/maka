@@ -17,10 +17,7 @@
  * under the License.
  */
 
-use maka_host_runtime::{
-    HostError,
-    application::host::{Client, discovery},
-};
+use maka_host_runtime::HostError;
 use std::{path::PathBuf, process::ExitCode};
 #[cfg(not(target_os = "macos"))]
 use tokio::process::Command;
@@ -95,65 +92,45 @@ impl Args {
             }
         }
         let root = crate::application::root_path(self.root)?;
-        let mut client = tokio::select! {
-            result = crate::deployment::connect_local(root.clone()) => result?,
-            _ = stop.cancelled() => return Ok(ExitCode::SUCCESS),
-        };
-        let result = Self::launch(&root, &client, &stop).await;
-        let mut cleanup = if matches!(&result, Ok(0)) {
-            client.quit_ephemeral().await
-        } else {
-            client.close().await
-        };
-        // A Host that stopped while the window was open (the window then
-        // moved to the Root's next Host) has no client left to detach.
-        if cleanup.is_err() && !runs(&root, client.epoch()).await {
-            cleanup = Ok(());
-        }
-        match (result, cleanup) {
-            (Ok(code), Ok(())) => {
-                #[cfg(windows)]
-                std::process::exit(code);
-                #[cfg(unix)]
-                Ok(ExitCode::from(code as u8))
+        match std::fs::metadata(&root) {
+            Ok(meta) if !meta.is_dir() => {
+                std::fs::create_dir_all(&root)?;
             }
-            (Err(error), Ok(())) => Err(error),
-            (Ok(_), Err(cleanup)) => Err(format!("desktop Host cleanup: {cleanup}").into()),
-            (Err(error), Err(cleanup)) => {
-                Err(format!("{error}; desktop Host cleanup: {cleanup}").into())
+            Err(error) if error.kind() == std::io::ErrorKind::NotADirectory => {
+                return Err(error.into());
             }
+            _ => {}
         }
+        let code = Self::launch(&root, &stop).await?;
+        #[cfg(windows)]
+        std::process::exit(code);
+        #[cfg(unix)]
+        Ok(ExitCode::from(code as u8))
     }
 
-    async fn launch(
-        root: &std::path::Path,
-        client: &Client,
-        stop: &CancellationToken,
-    ) -> Result<i32, HostError> {
-        let registered = discovery::read(root)?;
-        if registered.host_epoch != client.epoch() || &registered.source != client.source() {
-            return Err("application Host changed during desktop startup admission".into());
-        }
-        registered.verify(&Client::status(&registered.endpoint, Some(client.epoch())).await?)?;
+    async fn launch(root: &std::path::Path, stop: &CancellationToken) -> Result<i32, HostError> {
         if stop.is_cancelled() {
             return Ok(0);
         }
         let launcher = std::env::current_exe()?.canonicalize()?;
         let executable = desktop_shell_path(&launcher);
         let root = std::path::absolute(root)?;
-        let epoch = registered.host_epoch.to_string();
-        let variables: [(&str, &std::ffi::OsStr); 4] = [
-            ("MAKA_HOST_ROOT", root.as_ref()),
-            ("MAKA_HOST_ENDPOINT", registered.endpoint.as_ref()),
-            ("MAKA_HOST_EPOCH", epoch.as_ref()),
-            // The shell starts the Root's next Host through it.
-            ("MAKA_LAUNCHER", launcher.as_ref()),
-        ];
         #[cfg(target_os = "macos")]
-        let child = disclaimed::Shell::spawn(&executable, &variables);
+        let child = {
+            let variables: [(&str, Option<&std::ffi::OsStr>); 4] = [
+                ("MAKA_HOST_ROOT", Some(root.as_ref())),
+                ("MAKA_HOST_ENDPOINT", None),
+                ("MAKA_HOST_EPOCH", None),
+                ("MAKA_LAUNCHER", Some(launcher.as_ref())),
+            ];
+            disclaimed::Shell::spawn(&executable, &variables)
+        };
         #[cfg(not(target_os = "macos"))]
         let child = Command::new(&executable)
-            .envs(variables)
+            .env("MAKA_HOST_ROOT", &root)
+            .env("MAKA_LAUNCHER", &launcher)
+            .env_remove("MAKA_HOST_ENDPOINT")
+            .env_remove("MAKA_HOST_EPOCH")
             .kill_on_drop(true)
             .spawn();
         let mut child = child.map_err(|error| format!("{}: {error}", executable.display()))?;
@@ -234,21 +211,6 @@ pub(super) fn exec_shell(
     }
     let error = command.exec();
     Err(format!("{}: {error}", shell.display()).into())
-}
-
-/// Whether the Host with `epoch` still serves `root` and is not closing. A
-/// Host that does not answer within two seconds counts as running.
-async fn runs(root: &std::path::Path, epoch: uuid::Uuid) -> bool {
-    match discovery::read(root) {
-        Ok(registered) if registered.host_epoch == epoch => {
-            let status = Client::status(&registered.endpoint, Some(epoch));
-            match tokio::time::timeout(std::time::Duration::from_secs(2), status).await {
-                Ok(status) => status.is_ok_and(|status| !status.closing && !status.closed),
-                Err(_) => true,
-            }
-        }
-        _ => false,
-    }
 }
 
 #[cfg(all(test, target_os = "macos"))]

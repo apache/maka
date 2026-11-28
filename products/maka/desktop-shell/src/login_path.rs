@@ -178,7 +178,7 @@ fn capture(shell: &Path, timeout: Duration) -> Result<OsString, String> {
     let mark = format!("__MAKA_PATH_{}__", uuid::Uuid::new_v4().simple());
     let (mut probe, mut stdout) = Probe::spawn(shell, &mark)?;
     let (tx, rx) = mpsc::sync_channel(16);
-    std::thread::spawn(move || {
+    let reader = std::thread::spawn(move || {
         let mut total = 0usize;
         let mut chunk = [0u8; 4096];
         while let Ok(count) = stdout.read(&mut chunk) {
@@ -199,25 +199,26 @@ fn capture(shell: &Path, timeout: Duration) -> Result<OsString, String> {
     let deadline = Instant::now() + timeout;
     let mut output = Vec::new();
     let mut eof = false;
-    loop {
+    let result = loop {
         if let Some(parsed) = extract(&output, mark.as_bytes()) {
-            return parsed.map_err(str::to_owned);
+            break parsed.map_err(str::to_owned);
         }
-        if eof
-            && let Some(status) = probe
-                .child
-                .try_wait()
-                .map_err(|error| format!("{}: {error}", shell.display()))?
-        {
-            return if status.success() {
-                Err(format!("missing PATH markers from {}", shell.display()))
-            } else {
-                Err(format!("{} exited with {status}", shell.display()))
-            };
+        if eof {
+            match probe.child.try_wait() {
+                Ok(Some(status)) => {
+                    break if status.success() {
+                        Err(format!("missing PATH markers from {}", shell.display()))
+                    } else {
+                        Err(format!("{} exited with {status}", shell.display()))
+                    };
+                }
+                Ok(None) => {}
+                Err(error) => break Err(format!("{}: {error}", shell.display())),
+            }
         }
         let now = Instant::now();
         if now >= deadline {
-            return Err(format!("timed out waiting for {}", shell.display()));
+            break Err(format!("timed out waiting for {}", shell.display()));
         }
         if eof {
             std::thread::sleep(Duration::from_millis(5).min(deadline - now));
@@ -226,7 +227,7 @@ fn capture(shell: &Path, timeout: Duration) -> Result<OsString, String> {
         match rx.recv_timeout((deadline - now).min(Duration::from_millis(50))) {
             Ok(Chunk::Bytes(bytes)) => output.extend_from_slice(&bytes),
             Ok(Chunk::Overflow) => {
-                return Err(format!(
+                break Err(format!(
                     "{} output exceeded {MAX_CAPTURE_BYTES} bytes",
                     shell.display()
                 ));
@@ -234,7 +235,12 @@ fn capture(shell: &Path, timeout: Duration) -> Result<OsString, String> {
             Err(RecvTimeoutError::Disconnected) => eof = true,
             Err(RecvTimeoutError::Timeout) => {}
         }
-    }
+    };
+    // Close the channel and kill the shell group before joining so no helper thread survives into single-threaded env setup.
+    drop(rx);
+    drop(probe);
+    let _ = reader.join();
+    result
 }
 
 fn extract(output: &[u8], mark: &[u8]) -> Option<Result<OsString, &'static str>> {

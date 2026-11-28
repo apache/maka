@@ -111,11 +111,20 @@ function App(
   const selected = signal(saved === null ? nativeHost.initialSession : saved.sessionId);
   const sidebarExpanded = signal(saved?.sidebarExpanded ?? true);
   const workspaceMode = signal<'conversations' | 'rooms'>(saved?.workspaceMode ?? 'conversations');
+  const initialRoomSessionId = signal<string | null>(saved?.roomSessionId ?? null);
   const roomWorkspace = signal<RoomWorkspaceHandle | null>(null);
+  const roomsMounted = signal(workspaceMode() === 'rooms');
   const settingsOpened = signal(saved?.settings !== null && saved?.settings !== undefined);
+  const settingsMounted = signal(settingsOpened());
   const settingsModel = signal<ModelSelection | undefined>(saved?.settings?.model);
   const settingsPage = signal<string | undefined>(saved?.settings?.page);
   const settingsNavigation = signal(0);
+  effect(() => {
+    if (workspaceMode() === 'rooms' && !roomsMounted()) roomsMounted.set(true);
+  });
+  effect(() => {
+    if (settingsOpened() && !settingsMounted()) settingsMounted.set(true);
+  });
   const session = signal<ConversationSessionHandle | null>(null);
   windowTitle(() =>
     settingsOpened()
@@ -402,7 +411,13 @@ function App(
   const openSession = async (id: string | null): Promise<boolean> => {
     if (id !== null) {
       if ((await session()?.kind(id)) === 'room') {
-        if (!(await roomWorkspace()?.open(id))) return false;
+        const rooms = roomWorkspace();
+        if (rooms) {
+          if (!(await rooms.open(id))) return false;
+        } else {
+          initialRoomSessionId.set(id);
+          roomsMounted.set(true);
+        }
         return switchWorkspace('rooms');
       }
     }
@@ -589,7 +604,10 @@ function App(
             focusStyle={controlFocusStyle()}
           >
             <Text
-              style={{ fontSize: 12, color: workspaceMode() === mode() ? C.text : C.secondary }}
+              style={{
+                fontSize: 12,
+                color: workspaceMode() === mode() ? C.text : C.secondary,
+              }}
             >
               {mode() === 'rooms' ? tr('Rooms') : tr('Conversations')}
             </Text>
@@ -687,7 +705,7 @@ function App(
       await roomWorkspace()?.flush();
       return {
         workspaceMode: workspaceMode(),
-        roomSessionId: roomWorkspace()?.selected() ?? saved?.roomSessionId ?? null,
+        roomSessionId: roomWorkspace()?.selected() ?? initialRoomSessionId(),
         sessionId: selected(),
         sideSessionIds: besides(),
         sidebarExpanded: sidebarExpanded(),
@@ -778,47 +796,51 @@ function App(
           )}
         </Workbench>
       </WorkspaceSurface>
-      <WorkspaceSurface visible={() => !settingsOpened() && workspaceMode() === 'rooms'}>
-        {runtime.renderView(configuration.rooms, roomWorkspaceView, {
-          initialSessionId: saved?.roomSessionId ?? null,
-          agentSessionId: selected,
-          active: () => workspaceMode() === 'rooms',
-          visible: () => workspaceMode() === 'rooms' && !settingsOpened(),
-          blocked,
-          sidebarExpanded,
-          setSidebarExpanded: (expanded) => sidebarExpanded.set(expanded),
-          openSession: (id) => {
-            void openSession(id);
-          },
-          openSettings: () => shell.openSettings(),
-          modeSwitch,
-          attach: (handle) => {
-            if (roomWorkspace() !== handle) roomWorkspace.set(handle);
-          },
-        })}
-      </WorkspaceSurface>
-      <WorkspaceSurface visible={settingsOpened}>
-        {runtime.renderView(
-          configuration.settings,
-          settingsViewContract,
-          {
-            opened: settingsOpened,
-            navigation: settingsNavigation,
-            close: () => {
-              if (!alive || blocked()) return;
-              navigationGeneration++;
-              settingsOpened.set(false);
+      <If when={roomsMounted}>
+        <WorkspaceSurface visible={() => !settingsOpened() && workspaceMode() === 'rooms'}>
+          {runtime.renderView(configuration.rooms, roomWorkspaceView, {
+            initialSessionId: initialRoomSessionId(),
+            agentSessionId: selected,
+            active: () => workspaceMode() === 'rooms',
+            visible: () => workspaceMode() === 'rooms' && !settingsOpened(),
+            blocked,
+            sidebarExpanded,
+            setSidebarExpanded: (expanded) => sidebarExpanded.set(expanded),
+            openSession: (id) => {
+              void openSession(id);
             },
-            get model() {
-              return settingsModel();
+            openSettings: () => shell.openSettings(),
+            modeSwitch,
+            attach: (handle) => {
+              if (roomWorkspace() !== handle) roomWorkspace.set(handle);
             },
-            get page() {
-              return settingsPage();
+          })}
+        </WorkspaceSurface>
+      </If>
+      <If when={settingsMounted}>
+        <WorkspaceSurface visible={settingsOpened}>
+          {runtime.renderView(
+            configuration.settings,
+            settingsViewContract,
+            {
+              opened: settingsOpened,
+              navigation: settingsNavigation,
+              close: () => {
+                if (!alive || blocked()) return;
+                navigationGeneration++;
+                settingsOpened.set(false);
+              },
+              get model() {
+                return settingsModel();
+              },
+              get page() {
+                return settingsPage();
+              },
             },
-          },
-          { loading: false },
-        )}
-      </WorkspaceSurface>
+            { loading: false },
+          )}
+        </WorkspaceSurface>
+      </If>
       <If when={platform.idiom === 'terminal' && runtime.updateError() !== null}>
         <View
           style={{
@@ -878,7 +900,9 @@ function App(
 function WorkspaceSurface(props: { visible(): boolean; children: JSX.Element }) {
   const opacity = createAnimatedValue(props.visible() ? 1 : 0);
   effect(() => {
-    void opacity.timing(props.visible() ? 1 : 0, { duration: reduceMotion() ? 0 : 160 });
+    void opacity.timing(props.visible() ? 1 : 0, {
+      duration: reduceMotion() ? 0 : 160,
+    });
   });
   return (
     <View
@@ -888,7 +912,12 @@ function WorkspaceSurface(props: { visible(): boolean; children: JSX.Element }) 
         display: props.visible() ? 'flex' : 'none',
         opacity,
         transform: [
-          { translateY: opacity.interpolate({ inputRange: [0, 1], outputRange: [6, 0] }) },
+          {
+            translateY: opacity.interpolate({
+              inputRange: [0, 1],
+              outputRange: [6, 0],
+            }),
+          },
         ],
       }}
     >

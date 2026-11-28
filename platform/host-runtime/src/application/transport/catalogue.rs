@@ -105,21 +105,23 @@ impl Catalogue {
         Ok((catalogue, reader.inner))
     }
     pub fn validate(&self) -> Result<()> {
-        for (name, description) in &self.endpoints {
-            if name.is_empty()
-                || description
-                    .registration_epoch
-                    .is_some_and(|epoch| epoch.is_nil())
-                || description.provider.validate().is_err()
-                || description.export.is_empty()
-                || description.contract.transport != Transport::Remote
-                || !matches!(description.contract.interface, Interface::Service { .. })
-            {
-                return Err("invalid Host endpoint description".into());
+        maka_plugin_core::with_validation_cache(|| {
+            for (name, description) in &self.endpoints {
+                if name.is_empty()
+                    || description
+                        .registration_epoch
+                        .is_some_and(|epoch| epoch.is_nil())
+                    || description.provider.validate().is_err()
+                    || description.export.is_empty()
+                    || description.contract.transport != Transport::Remote
+                    || !matches!(description.contract.interface, Interface::Service { .. })
+                {
+                    return Err("invalid Host endpoint description".into());
+                }
+                description.contract.validate().map_err(|e| e.to_string())?;
             }
-            description.contract.validate().map_err(|e| e.to_string())?;
-        }
-        Ok(())
+            Ok(())
+        })
     }
 
     /// Schema compilation must not occupy the async caller's poll stack.

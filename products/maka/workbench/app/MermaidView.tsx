@@ -17,11 +17,26 @@
  * under the License.
  */
 
-import { cleanup, effect, Image, platform, signal, Text, View } from 'nsh';
+import { cleanup, effect, Image, importModule, platform, signal, Text, View } from 'nsh';
 import type { ViewRef } from 'nsh';
 import { Button, TextView } from 'nsh/base';
 import { host } from 'maka/host';
-import { diagramSvg, type DiagramPalette } from './mermaid';
+import type { DiagramPalette, diagramSvg as DiagramSvgFn } from './mermaid';
+
+const MERMAID_CHUNK_ID = 'maka-mermaid.js';
+let mermaidModule: Promise<{ diagramSvg: typeof DiagramSvgFn }> | null = null;
+
+function loadDiagramSvg() {
+  if (!mermaidModule) {
+    mermaidModule = importModule<{ diagramSvg: typeof DiagramSvgFn }>(MERMAID_CHUNK_ID).catch(
+      (error) => {
+        mermaidModule = null;
+        throw error;
+      },
+    );
+  }
+  return mermaidModule;
+}
 import { CodeBlockAction, codeBlockActions, codeBlockStyles } from './codeBlockLook';
 import { Icon } from './Icon';
 import { ImageViewer, type ViewerImage } from './ImageViewer';
@@ -60,7 +75,9 @@ export const mermaidExtensions = [{ name: 'mermaid', language: 'mermaid' }];
 export function MermaidView(props: { source(): string; editable?: boolean }) {
   const code = () => (
     <TextView
-      document={{ blocks: [{ type: 'codeBlock', language: 'mermaid', code: props.source() }] }}
+      document={{
+        blocks: [{ type: 'codeBlock', language: 'mermaid', code: props.source() }],
+      }}
       selectable
       renderCodeBlockAction={(action) => <CodeBlockAction action={action} />}
       codeBlockActions={codeBlockActions()}
@@ -111,10 +128,16 @@ export function MermaidView(props: { source(): string; editable?: boolean }) {
     const maxWidth = Math.max(Math.floor(width()), selected.width);
     void (async () => {
       try {
+        const { diagramSvg } = await loadDiagramSvg();
         const darkDiagram = diagramSvg(source, DARK_PALETTE, maxWidth);
         const uri = await host.diagramImage(darkDiagram.svg);
         if (alive && viewerGeneration === current) {
-          viewerImage.set({ uri, width: darkDiagram.width, height: darkDiagram.height, title });
+          viewerImage.set({
+            uri,
+            width: darkDiagram.width,
+            height: darkDiagram.height,
+            title,
+          });
         }
       } catch {
         if (alive && viewerGeneration === current) {
@@ -129,10 +152,16 @@ export function MermaidView(props: { source(): string; editable?: boolean }) {
     pending = null;
     running = true;
     try {
+      const { diagramSvg } = await loadDiagramSvg();
       const diagram = diagramSvg(request.source, request.palette, request.maxWidth);
       const uri = await host.diagramImage(diagram.svg);
       if (alive && generation === request.generation)
-        state.set({ kind: 'image', uri, width: diagram.width, height: diagram.height });
+        state.set({
+          kind: 'image',
+          uri,
+          width: diagram.width,
+          height: diagram.height,
+        });
     } catch (error) {
       if (alive && generation === request.generation)
         state.set({
@@ -199,7 +228,11 @@ export function MermaidView(props: { source(): string; editable?: boolean }) {
     >
       <If when={!props.editable}>
         <View
-          style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}
+          style={{
+            flexDirection: 'row',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+          }}
         >
           <Text style={{ ...captionTextStyle, color: C.muted }}>Mermaid</Text>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
@@ -210,7 +243,11 @@ export function MermaidView(props: { source(): string; editable?: boolean }) {
                 }}
                 accessibilityLabel={tr('Open diagram full screen')}
                 tooltip={textTooltip(() => tr('Open full screen'))}
-                style={{ padding: 4, alignItems: 'center', justifyContent: 'center' }}
+                style={{
+                  padding: 4,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
                 hoverStyle={controlHoverStyle()}
                 focusStyle={controlFocusStyle()}
                 onPress={() => {
@@ -279,7 +316,12 @@ export function MermaidView(props: { source(): string; editable?: boolean }) {
         }}
       </Each>
       <If when={state().kind === 'error' || (!props.editable && state().kind === 'loading')}>
-        <Text style={{ ...captionTextStyle, color: state().kind === 'error' ? C.danger : C.muted }}>
+        <Text
+          style={{
+            ...captionTextStyle,
+            color: state().kind === 'error' ? C.danger : C.muted,
+          }}
+        >
           {status()}
         </Text>
       </If>

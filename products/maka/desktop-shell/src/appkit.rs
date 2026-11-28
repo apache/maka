@@ -49,19 +49,10 @@ use tokio::{
 };
 
 pub(crate) fn start(target: crate::Target) -> Result<(), String> {
-    use maka_host_runtime::application::host::Client as HostClient;
-    let root = host::Root::find(target.root, target.launcher)?;
     let runtime = tokio::runtime::Runtime::new().map_err(|error| error.to_string())?;
-    let first = runtime.block_on(async {
-        let host = HostClient::connect(&target.endpoint, Some(target.epoch)).await?;
-        Connection::admit(
-            host,
-            target.endpoint,
-            root.path(),
-            tokio::runtime::Handle::current(),
-        )
-        .await
-    })?;
+    let (first, _, _) =
+        runtime.block_on(host::connect_initial(&target, runtime.handle().clone()))?;
+    let root = host::Root::find(target.root, target.launcher)?;
     run(first, root, runtime)
 }
 
@@ -86,7 +77,22 @@ pub fn run(first: Connection, root: Root, runtime: Runtime) -> Result<(), String
     );
     let updater_exit = Arc::clone(&updater);
     let shell = shell.with_updater(updater);
-    let config = shell.attach(first.config.clone());
+    let windows = permission_requests(&first);
+    let reloading = first
+        .config
+        .context
+        .get::<UiReload>()
+        .expect("the admitted workbench owns its UI reload channel")
+        .take_requests();
+    refuse_reloads(reloading, runtime.handle());
+    let Connection {
+        bindings,
+        endpoint,
+        epoch,
+        config,
+    } = first;
+    let config = shell.attach(config);
+    let permission_storage = permissions::ParentStorage::from(&config);
     // Keyboard-only navigation also works when the pointer is outside the panel.
     let events = shell.events.clone();
     let flags_changed =
@@ -109,19 +115,12 @@ pub fn run(first: Connection, root: Root, runtime: Runtime) -> Result<(), String
         )
     };
     carry_out(requests, &runtime);
-    let windows = permission_requests(&first);
-    refuse_reloads(
-        first
-            .config
-            .context
-            .get::<UiReload>()
-            .expect("the admitted workbench owns its UI reload channel")
-            .take_requests(),
-        runtime.handle(),
-    );
     let (quit, quitting) = watch::channel(false);
     let following = runtime.spawn(follow(
-        first,
+        bindings,
+        endpoint,
+        epoch,
+        permission_storage,
         root,
         shell,
         windows,
@@ -210,8 +209,12 @@ async fn wait_while_updating(
     *quit.borrow()
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn follow(
-    current: Connection,
+    bindings: maka_workbench::bindings::Bindings,
+    mut endpoint: std::path::PathBuf,
+    mut epoch: uuid::Uuid,
+    mut permission_storage: permissions::ParentStorage,
     root: Root,
     shell: Shell,
     mut windows: mpsc::UnboundedReceiver<SystemPermissionWindow>,
@@ -219,12 +222,6 @@ async fn follow(
     active_host: watch::Sender<(std::path::PathBuf, uuid::Uuid)>,
     mut updating: watch::Receiver<bool>,
 ) {
-    let Connection {
-        bindings,
-        mut endpoint,
-        mut epoch,
-        config: mut configuration,
-    } = current;
     let mut bindings = Some(bindings);
     let mut pause = Duration::from_secs(1);
     'connected: loop {
@@ -244,9 +241,9 @@ async fn follow(
                 request = windows.recv(), if accepting_windows => {
                     if let Some(request) = request {
                         let alive = alive.clone();
-                        let configuration = configuration.clone();
+                        let storage = permission_storage.clone();
                         with_running_view(move |_| {
-                            if alive.load(Ordering::Acquire) { permissions::open(request, alive, &configuration); }
+                            if alive.load(Ordering::Acquire) { permissions::open(request, alive, &storage); }
                         });
                     } else { accepting_windows = false; }
                 }
@@ -339,8 +336,8 @@ async fn follow(
             .expect("the admitted workbench owns its UI reload channel")
             .take_requests();
         refuse_reloads(reloading, &tokio::runtime::Handle::current());
-        configuration = shell.attach(config);
-        let config = configuration.clone();
+        let config = shell.attach(config);
+        permission_storage = permissions::ParentStorage::from(&config);
         if !was_shown {
             let mut params = config.host.params();
             params.insert("startHidden".into(), JsonValue::Bool(true));
@@ -353,10 +350,10 @@ async fn follow(
             view.load_with_config(config);
         });
     }
-    if let Some(bindings) = bindings {
-        if !*updating.borrow() {
-            host::quit(bindings).await;
-        }
+    if let Some(bindings) = bindings
+        && !*updating.borrow()
+    {
+        host::quit(bindings).await;
     }
 }
 

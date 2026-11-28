@@ -80,47 +80,117 @@ pub(crate) fn content_hash(value: &str) -> bool {
     })
 }
 
-pub(crate) fn schema(value: &serde_json::Value) -> Result<(), Error> {
-    validator(value).map(|_| ())
+static CHECKED: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<Schema, std::sync::Weak<jsonschema::Validator>>>,
+> = std::sync::OnceLock::new();
+
+std::thread_local! {
+    static VALIDATION_BATCH: std::cell::RefCell<Option<Vec<std::sync::Arc<jsonschema::Validator>>>> =
+        const { std::cell::RefCell::new(None) };
 }
 
-/// Compile an immutable JSON schema, reusing an equivalent checked validator.
+fn checked_cache() -> &'static std::sync::Mutex<
+    std::collections::HashMap<Schema, std::sync::Weak<jsonschema::Validator>>,
+> {
+    CHECKED.get_or_init(Default::default)
+}
+
+fn lookup_checked(value: &serde_json::Value) -> Option<std::sync::Arc<jsonschema::Validator>> {
+    checked_cache()
+        .lock()
+        .expect("schema cache")
+        .get(value)
+        .and_then(std::sync::Weak::upgrade)
+}
+
+fn retain_in_batch(validator: &std::sync::Arc<jsonschema::Validator>) -> bool {
+    VALIDATION_BATCH.with(|batch| {
+        if let Some(entries) = batch.borrow_mut().as_mut() {
+            entries.push(validator.clone());
+            true
+        } else {
+            false
+        }
+    })
+}
+
+fn batch_active() -> bool {
+    VALIDATION_BATCH.with(|batch| batch.borrow().is_some())
+}
+
+/// Share compiled validators across a single admission or package-loading batch
+/// without pinning admission-only validators globally after the batch finishes.
+pub fn with_validation_cache<T>(f: impl FnOnce() -> T) -> T {
+    struct Guard(bool);
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            if !self.0 {
+                return;
+            }
+            VALIDATION_BATCH.with(|batch| {
+                batch.borrow_mut().take();
+            });
+            checked_cache()
+                .lock()
+                .expect("schema cache")
+                .retain(|_, entry| entry.strong_count() > 0);
+        }
+    }
+    let owns_batch = VALIDATION_BATCH.with(|batch| {
+        let mut slot = batch.borrow_mut();
+        if slot.is_none() {
+            *slot = Some(Vec::new());
+            true
+        } else {
+            false
+        }
+    });
+    let _guard = Guard(owns_batch);
+    f()
+}
+
+pub(crate) fn schema(value: &serde_json::Value) -> Result<(), Error> {
+    if let Some(cached) = lookup_checked(value) {
+        retain_in_batch(&cached);
+        return Ok(());
+    }
+    if batch_active() {
+        validator(value).map(|_| ())
+    } else {
+        jsonschema::validator_for(value)
+            .map(|_| ())
+            .map_err(|error| Error::Declaration(format!("invalid schema: {error}")))
+    }
+}
+
+/// Compile an immutable JSON schema, reusing an equivalent live validator.
 /// Validation of each value remains the caller's responsibility.
 pub fn validator(
     value: &serde_json::Value,
 ) -> Result<std::sync::Arc<jsonschema::Validator>, Error> {
-    // Packages and configurations repeat immutable public schemas. Cache compiled
-    // validators by the complete schema, never by contract name/version.
-    // Configuration values are still validated on every call.
-    // JSON Schema is built without external file/network resolution features.
-    #[derive(Default)]
-    struct Checked {
-        schemas: std::collections::HashMap<Schema, std::sync::Arc<jsonschema::Validator>>,
-        bytes: usize,
+    if let Some(cached) = lookup_checked(value) {
+        retain_in_batch(&cached);
+        return Ok(cached);
     }
-    static CHECKED: std::sync::OnceLock<std::sync::Mutex<Checked>> = std::sync::OnceLock::new();
-    let checked = CHECKED.get_or_init(Default::default);
-    if let Some(validator) = checked.lock().expect("schema cache").schemas.get(value) {
-        return Ok(validator.clone());
-    }
-    let validator = std::sync::Arc::new(
+    let compiled = std::sync::Arc::new(
         jsonschema::validator_for(value)
             .map_err(|error| Error::Declaration(format!("invalid schema: {error}")))?,
     );
-    let size = serde_json::to_vec(value).expect("JSON schema value").len();
-    const MAX_BYTES: usize = 4 * 1024 * 1024;
-    if size <= MAX_BYTES {
-        let key = Schema::from(value.clone());
-        let mut checked = checked.lock().expect("schema cache");
-        if checked.bytes + size > MAX_BYTES || checked.schemas.len() >= 1024 {
-            checked.schemas.clear();
-            checked.bytes = 0;
-        }
-        if checked.schemas.insert(key, validator.clone()).is_none() {
-            checked.bytes += size;
-        }
+    let key = Schema::from(value.clone());
+    let mut cache = checked_cache().lock().expect("schema cache");
+    if cache.len() >= 1024 {
+        cache.retain(|_, entry| entry.strong_count() > 0);
     }
-    Ok(validator)
+    let shared = match cache.get(&key).and_then(std::sync::Weak::upgrade) {
+        Some(existing) => existing,
+        None => {
+            cache.insert(key, std::sync::Arc::downgrade(&compiled));
+            compiled
+        }
+    };
+    drop(cache);
+    retain_in_batch(&shared);
+    Ok(shared)
 }
 
 pub(crate) fn validate_value(
@@ -147,4 +217,41 @@ pub fn identifier(value: &str) -> Result<(), Error> {
         )));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod validator_cache_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn admission_batch_reuses_and_releases_validators() {
+        let schema_value = json!({
+            "type": "object",
+            "properties": { "unique_admission_batch_test": { "type": "string" } },
+            "additionalProperties": false
+        });
+        with_validation_cache(|| {
+            schema(&schema_value).unwrap();
+            let first = validator(&schema_value).unwrap();
+            let second = validator(&schema_value).unwrap();
+            assert!(std::sync::Arc::ptr_eq(&first, &second));
+        });
+        assert!(lookup_checked(&schema_value).is_none());
+    }
+
+    #[test]
+    fn live_service_validator_is_shared_until_dropped() {
+        let schema_value = json!({
+            "type": "object",
+            "properties": { "unique_live_service_test": { "type": "integer" } },
+            "additionalProperties": false
+        });
+        let held = validator(&schema_value).unwrap();
+        let reused = validator(&schema_value).unwrap();
+        assert!(std::sync::Arc::ptr_eq(&held, &reused));
+        drop(reused);
+        drop(held);
+        assert!(lookup_checked(&schema_value).is_none());
+    }
 }

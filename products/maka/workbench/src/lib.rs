@@ -26,6 +26,7 @@ mod clipboard;
 mod composer_input;
 pub mod host;
 mod live_image;
+mod locales;
 pub mod reload;
 
 use nsh_engine::{Bundle, Capabilities, EngineConfig, Limits, Policy};
@@ -49,9 +50,15 @@ pub struct UiScale {
     pub current: Box<dyn Fn() -> Result<f32, String> + Send + Sync>,
 }
 
+pub const MERMAID_CHUNK_ID: &str = "maka-mermaid.js";
+
 fn bundle_source(frame: &[u8]) -> String {
     String::from_utf8(zstd::decode_all(frame).expect("bundled UI frame"))
         .expect("bundled UI source")
+}
+
+pub fn mermaid_chunk_source() -> String {
+    bundle_source(include_bytes!(concat!(env!("OUT_DIR"), "/mermaid.js.zst")))
 }
 
 /// The common loader for trusted UI packages, without a product root or assets.

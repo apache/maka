@@ -45,12 +45,25 @@ fn main() {
         .parent()
         .unwrap();
     let compiler = maka_ui_build::compiler_identity().expect("UI build script identity");
-    for (entry, name) in [
-        ("app/Bootstrap.tsx", "bootstrap"),
+    for tag in [
+        "zh-CN", "zh-TW", "zh-HK", "ja", "ko", "es", "fr", "de", "pt-BR", "ru", "it",
+    ] {
+        let source = format!("locales/{tag}.json");
+        println!("cargo:rerun-if-changed={source}");
+        maka_ui_build::write_if_changed(
+            &output.join(format!("locales/{tag}.json.zst")),
+            &zstd::stream::compress_file(&source, 9).expect("compress workbench locale"),
+        )
+        .expect("write workbench locale");
+    }
+    for (entry, name, include_locales) in [
+        ("app/Bootstrap.tsx", "bootstrap", true),
         (
             "app/ComputerPermissionSetupEntry.tsx",
             "computer-permission-setup",
+            true,
         ),
+        ("app/mermaid.ts", "mermaid", false),
     ] {
         println!("cargo:rerun-if-changed={entry}");
         let module = maka_ui_build::compile_cached_with_locales(
@@ -58,7 +71,7 @@ fn main() {
             &output.join(name),
             Some(repo),
             &compiler,
-            true,
+            include_locales,
         )
         .expect("bundle shared UI surface");
         assert!(

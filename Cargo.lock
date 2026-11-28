@@ -9376,6 +9376,7 @@ dependencies = [
  "maka-app-client",
  "maka-event-log",
  "maka-host-runtime",
+ "maka-sandbox",
  "maka-terminal-shell",
  "maka-ui-build",
  "maka-updater",

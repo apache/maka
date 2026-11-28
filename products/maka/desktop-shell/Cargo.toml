@@ -47,6 +47,7 @@ libc.workspace = true
 nsh-platform-linux.workspace = true
 
 [target.'cfg(windows)'.dependencies]
+maka-sandbox.workspace = true
 maka-wsl-bridge.workspace = true
 nsh-core.workspace = true
 tokio = { workspace = true, features = ["process"] }

@@ -89,19 +89,21 @@ impl Compose {
 }
 
 fn packages() -> Result<BTreeMap<String, Package>, HostError> {
-    BUNDLED
-        .iter()
-        .map(|bundled| {
-            let mut reader = zstd::Decoder::with_buffer(bundled.frame)?;
-            let mut files = BTreeMap::new();
-            for &(name, size) in bundled.files {
-                let mut bytes = vec![0; size];
-                reader.read_exact(&mut bytes)?;
-                files.insert(name.into(), bytes);
-            }
-            Ok((bundled.name.into(), Package::new(files)?))
-        })
-        .collect()
+    maka_plugin_core::with_validation_cache(|| {
+        BUNDLED
+            .iter()
+            .map(|bundled| {
+                let mut reader = zstd::Decoder::with_buffer(bundled.frame)?;
+                let mut files = BTreeMap::new();
+                for &(name, size) in bundled.files {
+                    let mut bytes = vec![0; size];
+                    reader.read_exact(&mut bytes)?;
+                    files.insert(name.into(), bytes);
+                }
+                Ok((bundled.name.into(), Package::new(files)?))
+            })
+            .collect()
+    })
 }
 
 fn fingerprint(source: &str, packages: impl IntoIterator<Item = (String, String)>) -> String {

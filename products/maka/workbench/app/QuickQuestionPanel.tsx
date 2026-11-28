@@ -22,7 +22,7 @@ import { Button, Menu, MenuItem } from 'nsh/base';
 import { compactTranscriptSize, CompactInputBar } from './QuickBar';
 import type { createQuickQuestion } from './quickQuestion';
 import { MessageRow } from './MessageRow';
-import { BotWorking } from './BotReply';
+import { BotWorking } from './BotWorking';
 import { InlineCallout } from './Feedback';
 import { Icon } from './Icon';
 import { tr } from './locale';
@@ -146,7 +146,14 @@ export function QuickQuestionPanel(props: {
           </>
         }
       />
-      <View style={{ flexShrink: 1, minHeight: 0, borderTopWidth: 1, borderTopColor: C.line }}>
+      <View
+        style={{
+          flexShrink: 1,
+          minHeight: 0,
+          borderTopWidth: 1,
+          borderTopColor: C.line,
+        }}
+      >
         <List
           ref={list}
           each={rows()}

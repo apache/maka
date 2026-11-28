@@ -50,12 +50,47 @@ const URI_COMPONENT: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHAN
 #[derive(Default)]
 pub(super) struct Packages(Mutex<State>);
 
+#[derive(Clone, Default)]
+struct CachedAssets {
+    files: Arc<BTreeMap<String, Vec<u8>>>,
+}
+
+impl CachedAssets {
+    fn from_package(package: &Package) -> Self {
+        let mut skipped = BTreeSet::from([maka_packages::MANIFEST_FILE]);
+        if let Some(application) = package.manifest().application.as_ref() {
+            if let Some(ui) = application.ui.as_ref() {
+                skipped.insert(ui.module.as_str());
+            }
+            if let Some(host) = application.host.as_ref()
+                && let maka_plugin_core::package::Implementation::JavaScript { module, .. } =
+                    &host.implementation
+            {
+                skipped.insert(module.as_str());
+            }
+        }
+        let files = package
+            .files()
+            .iter()
+            .filter(|(path, _)| !skipped.contains(path.as_str()))
+            .map(|(path, bytes)| (path.clone(), bytes.clone()))
+            .collect();
+        Self {
+            files: Arc::new(files),
+        }
+    }
+
+    fn get(&self, path: &str) -> Option<&[u8]> {
+        self.files.get(path).map(Vec::as_slice)
+    }
+}
+
 #[derive(Default)]
 struct State {
     source: Option<DeploymentRef>,
     modules: BTreeMap<String, Module>,
     instances: BTreeMap<InstanceId, Arc<UiInstance>>,
-    packages: BTreeMap<PackageRef, Arc<OnceCell<Package>>>,
+    packages: BTreeMap<PackageRef, Arc<OnceCell<CachedAssets>>>,
 }
 
 #[derive(Clone)]
@@ -119,7 +154,7 @@ impl Packages {
         self.0.lock().unwrap().modules.get(id).cloned()
     }
 
-    fn entry(&self, package: &PackageRef) -> Arc<OnceCell<Package>> {
+    fn entry(&self, package: &PackageRef) -> Arc<OnceCell<CachedAssets>> {
         let mut state = self.0.lock().unwrap();
         // A late asset read may outlive its module without retaining its package.
         if !state.modules.contains_key(&module_id(package)) {
@@ -128,7 +163,7 @@ impl Packages {
         state.packages.entry(package.clone()).or_default().clone()
     }
 
-    fn cached(&self, package: &PackageRef) -> Option<Package> {
+    fn cached_assets(&self, package: &PackageRef) -> Option<CachedAssets> {
         self.0.lock().unwrap().packages.get(package)?.get().cloned()
     }
 }
@@ -144,6 +179,11 @@ pub(super) struct Loader(pub(super) Arc<Owner>);
 
 impl nsh_engine::ChunkLoader for Loader {
     fn load(&self, id: &str) -> nsh_engine::ChunkLoad {
+        if id == crate::MERMAID_CHUNK_ID {
+            return Box::pin(async move {
+                Ok(nsh_engine::ChunkSource::new(crate::mermaid_chunk_source()))
+            });
+        }
         let owner = self.0.clone();
         let id = id.to_owned();
         Box::pin(async move {
@@ -152,7 +192,11 @@ impl nsh_engine::ChunkLoader for Loader {
                     .plugins
                     .module(&id)
                     .ok_or_else(|| format!("UI module is no longer enabled: {id}"))?;
-                let package = load_package(&owner, &module.source, &module.package).await?;
+                let package = fetch_package(&owner, &module.source, &module.package).await?;
+                let _ = owner
+                    .plugins
+                    .entry(&module.package)
+                    .set(CachedAssets::from_package(&package));
                 let bytes = package
                     .file(&module.path)
                     .ok_or_else(|| format!("UI module is missing: {}", module.path))?;
@@ -209,9 +253,9 @@ pub(super) fn asset(owner: &Arc<Owner>, encoded: &str) -> Result<Vec<u8>, String
         .map_err(|error| error.to_string())?
         .into_owned();
     maka_packages::validate_path(&path).map_err(|error| error.to_string())?;
-    if let Some(package) = owner.plugins.cached(&asset.package) {
-        return package
-            .file(&path)
+    if let Some(assets) = owner.plugins.cached_assets(&asset.package) {
+        return assets
+            .get(&path)
             .map(<[u8]>::to_vec)
             .ok_or_else(|| format!("Plugin asset is missing: {path}"));
     }
@@ -220,98 +264,99 @@ pub(super) fn asset(owner: &Arc<Owner>, encoded: &str) -> Result<Vec<u8>, String
         .runtime
         .clone()
         .block_on(execute(owner.clone(), async move {
-            let package = load_package(&owner, &asset.source, &asset.package).await?;
-            package
-                .file(&path)
+            let assets = load_assets(&owner, &asset.source, &asset.package).await?;
+            assets
+                .get(&path)
                 .map(<[u8]>::to_vec)
                 .ok_or_else(|| format!("Plugin asset is missing: {path}"))
         }))
 }
 
-async fn load_package(
+async fn load_assets(
+    owner: &Arc<Owner>,
+    source: &DeploymentRef,
+    reference: &PackageRef,
+) -> Result<CachedAssets, String> {
+    let entry = owner.plugins.entry(reference);
+    entry
+        .get_or_try_init(|| async {
+            let package = fetch_package(owner, source, reference).await?;
+            Ok(CachedAssets::from_package(&package))
+        })
+        .await
+        .cloned()
+}
+
+async fn fetch_package(
     owner: &Arc<Owner>,
     source: &DeploymentRef,
     reference: &PackageRef,
 ) -> Result<Package, String> {
-    let entry = owner.plugins.entry(reference);
-    entry
-        .get_or_try_init(|| async {
-            let stream = owner
-                .client
-                .subscribe(
-                    "management",
-                    "exportPackage",
-                    json!({"source":source,"package":reference}),
-                )
-                .await?;
-            let read = async {
-                let mut bytes = Vec::new();
-                let mut length = None;
-                loop {
-                    match stream.next().await? {
-                        Some(SubscriptionEvent::Item(value)) => {
-                            let PackageBundleExport::Chunk {
-                                offset,
-                                total_bytes,
-                                text,
-                            } = serde_json::from_value(value).map_err(|error| error.to_string())?
-                            else {
-                                return Err("Package export ended in a data frame".into());
-                            };
-                            if offset != bytes.len()
-                                || length.is_some_and(|length| length != total_bytes)
-                            {
-                                return Err(
-                                    "Package export changed its original position or length".into(),
-                                );
-                            }
-                            if length.is_none() {
-                                bytes
-                                    .try_reserve(total_bytes)
-                                    .map_err(|error| error.to_string())?;
-                                length = Some(total_bytes);
-                            }
-                            bytes.extend_from_slice(text.as_bytes());
-                        }
-                        Some(SubscriptionEvent::Finished(value)) => {
-                            if !matches!(
-                                serde_json::from_value::<PackageBundleExport>(value)
-                                    .map_err(|error| error.to_string())?,
-                                PackageBundleExport::Complete {}
-                            ) || length != Some(bytes.len())
-                            {
-                                return Err(
-                                    "Package export ended before its complete contents".into()
-                                );
-                            }
-                            return Ok(bytes);
-                        }
-                        None => return Err("Package export closed before completion".into()),
+    let stream = owner
+        .client
+        .subscribe(
+            "management",
+            "exportPackage",
+            json!({"source":source,"package":reference}),
+        )
+        .await?;
+    let read = async {
+        let mut bytes = Vec::new();
+        let mut length = None;
+        loop {
+            match stream.next().await? {
+                Some(SubscriptionEvent::Item(value)) => {
+                    let PackageBundleExport::Chunk {
+                        offset,
+                        total_bytes,
+                        text,
+                    } = serde_json::from_value(value).map_err(|error| error.to_string())?
+                    else {
+                        return Err("Package export ended in a data frame".into());
+                    };
+                    if offset != bytes.len() || length.is_some_and(|length| length != total_bytes) {
+                        return Err("Package export changed its original position or length".into());
                     }
+                    if length.is_none() {
+                        bytes
+                            .try_reserve(total_bytes)
+                            .map_err(|error| error.to_string())?;
+                        length = Some(total_bytes);
+                    }
+                    bytes.extend_from_slice(text.as_bytes());
                 }
-            }
-            .await;
-            let closed = stream.close().await;
-            let bytes = match (read, closed) {
-                (Ok(bytes), Ok(())) => bytes,
-                (Err(error), Ok(())) | (Ok(_), Err(error)) => return Err(error),
-                (Err(error), Err(close)) => {
-                    return Err(format!("{error}; package export cleanup: {close}"));
+                Some(SubscriptionEvent::Finished(value)) => {
+                    if !matches!(
+                        serde_json::from_value::<PackageBundleExport>(value)
+                            .map_err(|error| error.to_string())?,
+                        PackageBundleExport::Complete {}
+                    ) || length != Some(bytes.len())
+                    {
+                        return Err("Package export ended before its complete contents".into());
+                    }
+                    return Ok(bytes);
                 }
-            };
-            let package = tokio::task::spawn_blocking(move || Package::from_bundle(&bytes))
-                .await
-                .map_err(|error| error.to_string())?
-                .map_err(|error| error.to_string())?;
-            if &package.application_ref() != reference {
-                return Err(
-                    "Plugin package does not match its requested immutable identity".into(),
-                );
+                None => return Err("Package export closed before completion".into()),
             }
-            Ok(package)
-        })
+        }
+    }
+    .await;
+    let closed = stream.close().await;
+    let bytes = match (read, closed) {
+        (Ok(bytes), Ok(())) => bytes,
+        (Err(error), Ok(())) | (Ok(_), Err(error)) => return Err(error),
+        (Err(error), Err(close)) => {
+            return Err(format!("{error}; package export cleanup: {close}"));
+        }
+    };
+    let package = tokio::task::spawn_blocking(move || Package::from_bundle(&bytes))
         .await
-        .cloned()
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())?;
+    if &package.application_ref() != reference {
+        return Err("Plugin package does not match its requested immutable identity".into());
+    }
+    Ok(package)
 }
 
 #[cfg(test)]
@@ -339,5 +384,36 @@ mod asset_url_tests {
             asset_base(&module).unwrap()
         );
         assert!(nsh_core::access::is_inside_assets(&uri));
+    }
+
+    #[test]
+    fn cached_assets_keeps_icons_and_drops_manifest_and_script_entries() {
+        let manifest = json!({
+            "schemaVersion": 1,
+            "id": "example.ui",
+            "application": {
+                "ui": {
+                    "module": "ui/index.js",
+                    "configuration": { "type": "object" },
+                    "contributions": { "root": { "kind": "root" } }
+                }
+            }
+        });
+        let package = Package::new(BTreeMap::from([
+            (
+                maka_packages::MANIFEST_FILE.into(),
+                serde_json::to_vec(&manifest).unwrap(),
+            ),
+            (
+                "ui/index.js".into(),
+                b"export default function() {}".to_vec(),
+            ),
+            ("assets/icon.svg".into(), b"<svg/>".to_vec()),
+        ]))
+        .unwrap();
+        let cached = CachedAssets::from_package(&package);
+        assert!(cached.get(maka_packages::MANIFEST_FILE).is_none());
+        assert!(cached.get("ui/index.js").is_none());
+        assert_eq!(cached.get("assets/icon.svg"), Some(b"<svg/>".as_slice()));
     }
 }
