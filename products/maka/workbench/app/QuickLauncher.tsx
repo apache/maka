@@ -91,6 +91,7 @@ import {
   type QuickTools,
 } from './QuickTools';
 import {
+  homeRecommendations,
   isFrequent,
   parseUsage,
   ranked,
@@ -144,21 +145,30 @@ const frameStyle = () =>
 
 type UsageStore = {
   current(): Usage;
+  loaded(): boolean;
   record(key: string): void;
   failure(): ReturnType<typeof errorText> | null;
 };
 
 function createUsageStore(): UsageStore {
   const usage = signal<Usage>({});
+  const loaded = signal(false);
   const failure = signal<ReturnType<typeof errorText> | null>(null);
   const report = (reason: unknown) =>
     failure.set(errorText(reason, 'Could not load or save launcher history.'));
   Storage.getItem(USAGE_KEY)
-    .then((stored) => usage.set(parseUsage(stored)))
+    .then((stored) => {
+      const parsed = parseUsage(stored);
+      batch(() => {
+        usage.set(parsed);
+        loaded.set(true);
+      });
+    })
     .catch(report);
   let saving: Promise<void> = Promise.resolve();
   return {
     current: usage,
+    loaded,
     failure,
     record(key) {
       const next = recordUse(usage(), key, Date.now());
@@ -516,7 +526,12 @@ function Launcher(props: {
           {
             key: 'recommended',
             title: tr('Recommended'),
-            rows: recommendations(),
+            rows: homeRecommendations(
+              recommendations(),
+              entries(),
+              (row) => `${row.tool.instance.package.id}/${row.entry.id}`,
+              props.usage.loaded(),
+            ),
           },
           { key: 'tools', title: tr('Tools'), rows: entries() },
         ]

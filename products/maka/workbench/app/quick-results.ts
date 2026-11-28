@@ -80,3 +80,38 @@ export function recommended<
 }
 
 export const isFrequent = (used: Used) => used.uses >= FREQUENT_USES;
+
+export const STARTER_COMMANDS: readonly string[] = [
+  'maka.conversations/bot',
+  'maka.applications/search',
+  'maka.clipboard-history/history',
+  'maka.screenshot/capture',
+  'maka.conversations/sessions',
+  'maka.file-search/search',
+  'maka.symbols/symbols',
+];
+
+/**
+ * Curated starter commands for a fresh profile once usage has loaded, keeping
+ * the Tools list intact and avoiding a cold-start flash before history loads.
+ */
+export function homeRecommendations<Row, Tool extends Row>(
+  personalized: readonly Row[],
+  tools: readonly Tool[],
+  commandId: (tool: Tool) => string,
+  usageLoaded: boolean,
+  preferred: readonly string[] = STARTER_COMMANDS,
+): readonly Row[] {
+  if (personalized.length > 0) return personalized;
+  if (!usageLoaded || tools.length <= MAX_RECOMMENDED) return [];
+  const byId = new Map(tools.map((tool) => [commandId(tool), tool]));
+  const starters: Row[] = [];
+  for (const id of preferred) {
+    const match = byId.get(id);
+    if (match !== undefined) {
+      starters.push(match);
+      if (starters.length === MAX_RECOMMENDED) break;
+    }
+  }
+  return starters;
+}
