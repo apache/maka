@@ -653,7 +653,7 @@ enum Encoding {
     Edit(PathKey, EditKeys),
     Command(&'static str),
     Patch(Option<&'static str>),
-    Code { freeform: bool },
+    Code { freeform: bool, use_patch: bool },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -687,8 +687,12 @@ impl Binding {
         workspace: &Path,
         actions: &[ToolAction<'_>],
     ) -> Result<CallPayload, ToolBindError> {
-        if let Encoding::Code { freeform } = self.encoding {
-            let code = code_mode_source(actions);
+        if let Encoding::Code {
+            freeform,
+            use_patch,
+        } = self.encoding
+        {
+            let code = code_mode_source(actions, use_patch)?;
             return Ok(if freeform {
                 CallPayload::Freeform(code)
             } else {
@@ -912,9 +916,15 @@ fn code_mode(tool: &ToolDeclaration) -> Option<Encoding> {
     {
         return None;
     }
+    let use_patch = tool.description.as_deref().is_some_and(|d| {
+        (d.contains("ApplyPatch(") || d.contains("apply_patch(")) && !d.contains("Edit(")
+    });
     match tool.kind {
         ToolKind::Function if tool.has_property("code") && !tool.has_property("command") => {
-            Some(Encoding::Code { freeform: false })
+            Some(Encoding::Code {
+                freeform: false,
+                use_patch,
+            })
         }
         ToolKind::Freeform
             if (tool
@@ -929,17 +939,23 @@ fn code_mode(tool: &ToolDeclaration) -> Option<Encoding> {
                     grammar.contains("plain_source: SOURCE") && grammar.contains(r"\/\/ @exec:")
                 }) =>
         {
-            Some(Encoding::Code { freeform: true })
+            Some(Encoding::Code {
+                freeform: true,
+                use_patch,
+            })
         }
         _ => None,
     }
 }
 
-fn code_mode_source(actions: &[ToolAction<'_>]) -> String {
+fn code_mode_source(actions: &[ToolAction<'_>], use_patch: bool) -> Result<String, ToolBindError> {
     let mut code = String::from("text(JSON.stringify(await Promise.all([\n");
     for (slot, action) in actions.iter().enumerate() {
         let (tool, input) = match *action {
             ToolAction::Read { path } => ("Read", json!({ "path": path })),
+            ToolAction::Write { .. } | ToolAction::Edit { .. } if use_patch => {
+                ("ApplyPatch", json!({ "patch": patch_text(*action)? }))
+            }
             ToolAction::Write { path, content } => {
                 ("Write", json!({ "path": path, "content": content }))
             }
@@ -958,7 +974,7 @@ fn code_mode_source(actions: &[ToolAction<'_>]) -> String {
         .expect("writing to String");
     }
     code.push_str("])));");
-    code
+    Ok(code)
 }
 
 fn patch_text(action: ToolAction<'_>) -> Result<String, ToolBindError> {

@@ -23,7 +23,6 @@ pub mod tools;
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::fmt::Write as _;
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -788,7 +787,7 @@ impl ScenarioEngine {
         Ok(Self {
             spec,
             compiled,
-            run_scope: hex(run_id.as_ref()),
+            run_scope: compact_hex(run_id.as_ref()),
             run_id: run_id.as_ref().into(),
             sessions: Mutex::new(HashMap::new()),
             registrations: AtomicU64::new(0),
@@ -819,7 +818,7 @@ impl ScenarioEngine {
                 id_scope: format!(
                     "{}_{}_{:x}",
                     self.run_scope,
-                    hex(session_id),
+                    compact_hex(session_id),
                     self.registrations.fetch_add(1, Ordering::Relaxed)
                 ),
                 logical_lane,
@@ -1423,7 +1422,19 @@ fn result_failed(result: &Value) -> bool {
 
 fn code_results_from(result: &Value) -> Option<Cow<'_, [Value]>> {
     match result {
-        Value::String(text) => serde_json::from_str(text).ok().map(Cow::Owned),
+        Value::String(text) => serde_json::from_str::<Vec<Value>>(text)
+            .ok()
+            .filter(|items| items.iter().all(|item| item.get("slot").is_some()))
+            .or_else(|| {
+                text.lines().rev().find_map(|line| {
+                    serde_json::from_str::<Vec<Value>>(line.trim())
+                        .ok()
+                        .filter(|items| {
+                            !items.is_empty() && items.iter().all(|item| item.get("slot").is_some())
+                        })
+                })
+            })
+            .map(Cow::Owned),
         Value::Array(items) if items.iter().all(|item| item.get("slot").is_some()) => {
             Some(Cow::Borrowed(items))
         }
@@ -1459,12 +1470,8 @@ fn tool_call(call: &IssuedCall, payload: CallPayload) -> ToolCallSpec {
     spec
 }
 
-fn hex(id: &str) -> String {
-    let mut encoded = String::with_capacity(id.len() * 2);
-    for byte in id.bytes() {
-        write!(encoded, "{byte:02x}").expect("writing to String");
-    }
-    encoded
+fn compact_hex(id: &str) -> String {
+    format!("{:08x}", (digest(id) & 0xffff_ffff) as u32)
 }
 
 fn large_output_command(pattern: &str, bytes: usize, seed: u64) -> String {
@@ -1492,7 +1499,12 @@ fn large_output_command(pattern: &str, bytes: usize, seed: u64) -> String {
 
 fn value_contains(value: &Value, marker: &str) -> bool {
     match value {
-        Value::String(text) => text.contains(marker),
+        Value::String(text) => {
+            text.contains(marker)
+                || serde_json::from_str::<Value>(text)
+                    .ok()
+                    .is_some_and(|parsed| value_contains(&parsed, marker))
+        }
         Value::Array(values) => values.iter().any(|value| value_contains(value, marker)),
         Value::Object(values) => values.values().any(|value| value_contains(value, marker)),
         _ => false,

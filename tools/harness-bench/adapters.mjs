@@ -65,6 +65,9 @@ async function isolatedEnv(directory, source) {
     ['XDG_CACHE_HOME', 'cache'], ['XDG_STATE_HOME', 'state'], ['XDG_RUNTIME_DIR', 'runtime'],
     ['TMPDIR', 'tmp'], ['APPDATA', 'app-data'], ['LOCALAPPDATA', 'local-app-data'],
   ].map(([name, leaf]) => [name, join(directory, leaf)]));
+  if (process.platform === 'darwin' && dirs.TMPDIR.length > 48) {
+    dirs.TMPDIR = join('/tmp', 'hb-' + randomBytes(4).toString('hex'));
+  }
   await Promise.all(Object.values(dirs).map(dir => mkdir(dir, { recursive: true, mode: 0o700 })));
   const path = (source.PATH ?? source.Path ?? '/usr/bin:/bin').split(delimiter)
     .filter(isAbsolute).join(delimiter);
