@@ -20,6 +20,7 @@
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
@@ -73,6 +74,31 @@ pub enum FinishReason {
     Incomplete(String),
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderDialectProfile {
+    #[default]
+    StandardOpenAi,
+    DeepSeekChat,
+    KimiChat,
+    AnthropicMessages,
+    OpenAiResponses,
+}
+
+impl ProviderDialectProfile {
+    pub fn emits_chat_reasoning(self) -> bool {
+        matches!(self, Self::DeepSeekChat | Self::KimiChat)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrameKind {
+    Lifecycle,
+    SemanticDelta,
+    Keepalive,
+    Terminal,
+}
+
 /// Token accounting attached to a turn completion.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -110,6 +136,51 @@ impl Usage {
         self.reasoning_tokens = Some(tokens);
         self
     }
+
+    pub fn with_iterations(self, iterations: Vec<UsageIteration>) -> TurnUsage {
+        TurnUsage {
+            totals: self,
+            iterations,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UsageIterationKind {
+    Message,
+    Compaction,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct UsageIteration {
+    #[serde(rename = "type")]
+    pub kind: UsageIterationKind,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read_input_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_creation_input_tokens: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnUsage {
+    #[serde(flatten)]
+    pub totals: Usage,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub iterations: Vec<UsageIteration>,
+}
+
+impl From<Usage> for TurnUsage {
+    fn from(totals: Usage) -> Self {
+        Self {
+            totals,
+            iterations: Vec::new(),
+        }
+    }
 }
 
 /// Citation attached to visible assistant text or search outputs.
@@ -125,6 +196,14 @@ pub struct Citation {
 
 /// Tool/function invocation emitted by the simulated model.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+pub enum ToolCallPayload {
+    FunctionArgs(Value),
+    FreeformInput(String),
+    MalformedRaw(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolCallSpec {
     #[serde(default)]
@@ -133,8 +212,14 @@ pub struct ToolCallSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub item_id: Option<String>,
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
     /// JSON object/value or raw JSON string (useful for partial/custom arguments).
+    #[serde(default)]
     pub arguments: Value,
+    /// Explicit payload takes precedence over legacy arguments.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payload: Option<ToolCallPayload>,
     /// Split serialized arguments into streaming chunks of this many chars (0 = single chunk).
     #[serde(default)]
     pub chunk_chars: usize,
@@ -158,11 +243,24 @@ impl ToolCallSpec {
             id: id.into(),
             item_id: None,
             name: name.into(),
+            namespace: None,
             arguments,
+            payload: None,
             chunk_chars: 0,
             custom_tool: false,
             thought_signature: None,
         }
+    }
+
+    pub fn with_payload(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        payload: ToolCallPayload,
+    ) -> Self {
+        let mut spec = Self::new(id, name, Value::Null);
+        spec.custom_tool = matches!(payload, ToolCallPayload::FreeformInput(_));
+        spec.payload = Some(payload);
+        spec
     }
 
     pub fn with_chunk_chars(mut self, chars: usize) -> Self {
@@ -170,15 +268,59 @@ impl ToolCallSpec {
         self
     }
 
+    pub fn with_namespace(mut self, namespace: impl Into<String>) -> Self {
+        self.namespace = Some(namespace.into());
+        self
+    }
+
     pub fn as_custom_tool(mut self) -> Self {
         self.custom_tool = true;
+        if let Some(payload) = self.payload.take() {
+            self.payload = Some(ToolCallPayload::FreeformInput(match payload {
+                ToolCallPayload::FunctionArgs(args) => args.to_string(),
+                ToolCallPayload::FreeformInput(input) | ToolCallPayload::MalformedRaw(input) => {
+                    input
+                }
+            }));
+        }
         self
     }
 
     pub fn arguments_string(&self) -> String {
-        match &self.arguments {
-            Value::String(s) => s.clone(),
-            other => other.to_string(),
+        self.wire_arguments().into_owned()
+    }
+
+    pub fn wire_arguments(&self) -> Cow<'_, str> {
+        match &self.payload {
+            Some(ToolCallPayload::FunctionArgs(args)) => Cow::Owned(args.to_string()),
+            Some(ToolCallPayload::FreeformInput(input) | ToolCallPayload::MalformedRaw(input)) => {
+                Cow::Borrowed(input)
+            }
+            None => match &self.arguments {
+                Value::String(raw) => Cow::Borrowed(raw),
+                value => Cow::Owned(value.to_string()),
+            },
+        }
+    }
+
+    pub fn is_freeform(&self) -> bool {
+        match self.payload {
+            Some(ToolCallPayload::FreeformInput(_)) => true,
+            Some(_) => false,
+            None => self.custom_tool,
+        }
+    }
+
+    pub(crate) fn take_wire_arguments(&mut self) -> String {
+        match self.payload.take() {
+            Some(ToolCallPayload::FunctionArgs(args)) => args.to_string(),
+            Some(ToolCallPayload::FreeformInput(input) | ToolCallPayload::MalformedRaw(input)) => {
+                input
+            }
+            None => match std::mem::take(&mut self.arguments) {
+                Value::String(raw) => raw,
+                value => value.to_string(),
+            },
         }
     }
 }
@@ -413,6 +555,8 @@ pub enum TurnEvent {
     NativeCompaction(CompactionOutput),
     /// Attach usage accounting (consumed when completing the turn).
     Usage(Usage),
+    /// Attach usage accounting with individual provider iterations.
+    UsageWithIterations(TurnUsage),
     /// Sleep before emitting subsequent events.
     Delay { ms: u64 },
     /// Sleep for a random duration within [min_ms, max_ms] (seeded if configured).
@@ -435,6 +579,8 @@ pub enum TurnEvent {
     /// Immediately close any currently open reasoning/message item (`response.output_item.done`
     /// or `content_block_stop`) before continuing or stalling.
     Flush,
+    /// Emit a provider ping or HTTP SSE keepalive.
+    Ping,
     /// Emit an HTTP SSE comment frame (`: <comment>\n\n`); no-op on WebSocket / non-streaming.
     SseComment { comment: String },
     /// Emit raw bytes directly onto the HTTP response stream (escape hatch).
@@ -568,8 +714,10 @@ impl TurnPlan {
         name: impl Into<String>,
         input: impl Into<String>,
     ) -> Self {
-        self.push(TurnEvent::ToolCall(
-            ToolCallSpec::new(id, name, Value::String(input.into())).as_custom_tool(),
+        self.push(ToolCallSpec::with_payload(
+            id,
+            name,
+            ToolCallPayload::FreeformInput(input.into()),
         ))
     }
 
@@ -577,8 +725,13 @@ impl TurnPlan {
         self.push(TurnEvent::NativeCompaction(output))
     }
 
-    pub fn with_usage(self, usage: Usage) -> Self {
-        self.push(TurnEvent::Usage(usage))
+    pub fn with_usage(self, usage: impl Into<TurnUsage>) -> Self {
+        let usage = usage.into();
+        if usage.iterations.is_empty() {
+            self.push(TurnEvent::Usage(usage.totals))
+        } else {
+            self.push(TurnEvent::UsageWithIterations(usage))
+        }
     }
 
     pub fn with_delay(self, duration: Duration) -> Self {

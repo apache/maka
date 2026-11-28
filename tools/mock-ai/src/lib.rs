@@ -35,8 +35,10 @@ pub mod protocol;
 #[cfg(feature = "proxy")]
 pub mod proxy;
 pub mod ratelimit;
+pub mod routing;
 #[cfg(feature = "rules")]
 pub mod rules;
+pub mod scenario;
 pub mod schema_synth;
 pub mod server;
 #[cfg(feature = "tls")]
@@ -50,20 +52,22 @@ pub use handler::{
     TurnDecision, TurnHandle, TurnHandler,
 };
 pub use metrics::{
-    AtomicHistogram, DimensionCounter, HistogramSummary, MetricsSnapshot, RecordedControlRequest,
-    RecordedRequest, RecorderMode, RequestRecorder, ServerMetrics,
+    AtomicHistogram, AttemptOutcome, AttemptSpan, DimensionCounter, HistogramSummary,
+    MetricsSnapshot, RecordedControlRequest, RecordedRequest, RecorderMode, RequestPurpose,
+    RequestRecorder, ServerMetrics, SessionTelemetryStore,
 };
 pub use pacing::{
     DynamicProfileManager, LatencyProfile, ProfileSnapshot, RuntimeProfile, ScenarioPhase,
     ScenarioSchedule, TurnPacer,
 };
 pub use plan::{
-    Citation, CloseSignal, CompactionOutput, FinishReason, HttpErrorSpec, MidStreamErrorSpec,
-    NativeToolEvent, ToolCallSpec, TurnEvent, TurnPlan, Usage, WebSearchResult,
+    Citation, CloseSignal, CompactionOutput, FinishReason, FrameKind, HttpErrorSpec,
+    MidStreamErrorSpec, NativeToolEvent, ProviderDialectProfile, ToolCallPayload, ToolCallSpec,
+    TurnEvent, TurnPlan, TurnUsage, Usage, WebSearchResult,
 };
 pub use protocol::{
     AuthPolicy, NormalizedMessage, NormalizedRequest, NormalizedRole, NormalizedTool, Protocol,
-    Transport,
+    RequestOptions, RequestSizeBreakdown, ToolDeclKind, Transport,
 };
 #[cfg(feature = "proxy")]
 pub use proxy::{
@@ -74,8 +78,10 @@ pub use ratelimit::{
     RateLimitConfig, RateLimitDecision, RateLimitHeaders, RateLimitLease, RateLimitScope,
     RateLimiter,
 };
+pub use routing::{RequestClassifier, RequestUse, SessionRegistration};
 #[cfg(feature = "rules")]
 pub use rules::{ConfigError, MockServerConfig, RuleEngine, RuleMatcher, RuleSpec};
+pub use scenario::{ScenarioEngine, ScenarioSpec};
 pub use schema_synth::{
     SynthMode, WirePoisonConfig, context_overflow_error, poison_sse_frame,
     synthesize_tool_arguments, try_synthesize_tool_arguments,
@@ -84,7 +90,8 @@ pub use server::{MockAiBuilder, MockAiServer, ServerTuning};
 #[cfg(feature = "tls")]
 pub use tls::{TlsServerConfig, UpstreamWsStream, build_tls_connector, connect_ws_upstream};
 pub use watchdog::{
-    ProtocolWatchdog, ViolationKind, ViolationRecord, WatchdogConfig, WatchdogSnapshot,
+    ProtocolWatchdog, StreamCloseReason, ViolationKind, ViolationRecord, WatchdogConfig,
+    WatchdogSnapshot,
 };
 pub use workload::{ChaosConfig, SyntheticToolTemplate, WorkloadConfig, WorkloadGenerator};
 
@@ -93,6 +100,9 @@ pub use workload::{ChaosConfig, SyntheticToolTemplate, WorkloadConfig, WorkloadG
 pub fn builder_from_config(config: MockServerConfig) -> Result<MockAiBuilder, ConfigError> {
     use std::sync::Arc;
 
+    config.validate()?;
+
+    let has_workload = config.workload.is_some();
     let mut handlers: Vec<Arc<dyn TurnHandler>> = Vec::new();
     let mut rule_engine_ref = None;
 
@@ -127,7 +137,16 @@ pub fn builder_from_config(config: MockServerConfig) -> Result<MockAiBuilder, Co
         .schedule(config.schedule)
         .rate_limit(config.rate_limit)
         .watchdog(config.watchdog)
-        .handler(handler);
+        .strict_benchmark(config.strict_benchmark)
+        .request_classifier(config.request_classifier)
+        .handler(handler)
+        .with_workload_flag(has_workload);
+    if let Some(spec) = config.scenario {
+        builder = builder.scenario(spec);
+    }
+    if let Some(dialect) = config.provider_dialect {
+        builder = builder.provider_dialect(dialect);
+    }
     if let Some(engine) = rule_engine_ref {
         builder = builder.with_rule_engine(engine);
     }

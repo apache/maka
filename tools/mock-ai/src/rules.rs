@@ -41,6 +41,8 @@ pub enum ConfigError {
     Json(#[from] serde_json::Error),
     #[error("failed to parse YAML config: {0}")]
     Yaml(String),
+    #[error("scenario and workload are mutually exclusive")]
+    ScenarioWorkloadConflict,
     #[error("invalid regex in rule '{rule_id}': {source}")]
     Regex {
         rule_id: String,
@@ -72,12 +74,22 @@ pub struct MockServerConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workload: Option<WorkloadConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scenario: Option<crate::scenario::ScenarioSpec>,
+    #[serde(default)]
+    pub strict_benchmark: bool,
+    #[serde(default)]
+    pub request_classifier: crate::routing::RequestClassifier,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_dialect: Option<crate::plan::ProviderDialectProfile>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_reply: Option<TurnPlan>,
 }
 
 impl MockServerConfig {
     pub fn from_json_str(src: &str) -> Result<Self, ConfigError> {
-        Ok(serde_json::from_str(src)?)
+        let config: Self = serde_json::from_str(src)?;
+        config.validate()?;
+        Ok(config)
     }
 
     pub fn from_yaml_str(src: &str) -> Result<Self, ConfigError> {
@@ -87,7 +99,16 @@ impl MockServerConfig {
             .next()
             .ok_or_else(|| ConfigError::Yaml("empty YAML document".into()))?;
         let json_val = yaml_to_json(doc)?;
-        Ok(serde_json::from_value(json_val)?)
+        let config: Self = serde_json::from_value(json_val)?;
+        config.validate()?;
+        Ok(config)
+    }
+
+    pub(crate) fn validate(&self) -> Result<(), ConfigError> {
+        if self.scenario.is_some() && self.workload.is_some() {
+            return Err(ConfigError::ScenarioWorkloadConflict);
+        }
+        Ok(())
     }
 
     pub fn from_file(path: &Path) -> Result<Self, ConfigError> {

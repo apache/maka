@@ -35,13 +35,14 @@ use std::time::{Duration, Instant};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
 async fn post_json(client: &reqwest::Client, url: &str, body: &Value) -> reqwest::Response {
+    json_request(client, url, body).send().await.unwrap()
+}
+
+fn json_request(client: &reqwest::Client, url: &str, body: &Value) -> reqwest::RequestBuilder {
     client
         .post(url)
         .header("content-type", "application/json")
         .body(body.to_string())
-        .send()
-        .await
-        .unwrap()
 }
 
 async fn post_json_headers(
@@ -74,6 +75,449 @@ async fn put_json(
 async fn parse_json(resp: reqwest::Response) -> Value {
     let txt = resp.text().await.unwrap();
     serde_json::from_str(&txt).unwrap_or_else(|e| panic!("invalid JSON ({e}): {txt}"))
+}
+
+async fn benchmark_json(request: reqwest::RequestBuilder, status: u16) -> Value {
+    let response = request.send().await.unwrap();
+    let actual = response.status();
+    let body = parse_json(response).await;
+    assert_eq!(actual, status, "{body}");
+    body
+}
+
+async fn register_benchmark(client: &reqwest::Client, origin: &str, scenario: &str) {
+    benchmark_json(
+        json_request(
+            client,
+            &format!("{origin}/admin/sessions"),
+            &json!({
+                "runId":"bench", "sessionId":"lane", "harness":"codex", "logicalLane":"lane",
+                "scenario":scenario, "workspace":std::env::current_dir().unwrap(),
+            }),
+        ),
+        201,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn http_and_ws_decode_duration_is_independent_of_delta_count() {
+    let payload = "a".repeat(800);
+    let reply = payload.clone();
+    let server = MockAiBuilder::new()
+        .latency_profile(LatencyProfile {
+            tokens_per_sec: 1_000.0,
+            ..Default::default()
+        })
+        .handler_fn(move |request, _| {
+            let chunk_chars = if request.last_user_text() == Some("fragmented") {
+                4
+            } else {
+                800
+            };
+            TurnPlan::new().push_text_chunked(reply.clone(), chunk_chars)
+        })
+        .start()
+        .await
+        .unwrap();
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+        .unwrap();
+    let url = format!("{}/responses", server.base_url());
+    let (mut ws, _) = tokio_tungstenite::connect_async(server.responses_ws_url())
+        .await
+        .unwrap();
+
+    let mut sse_durations = Vec::new();
+    let mut ws_durations = Vec::new();
+    for (input, count) in [("single", 1), ("fragmented", 200)] {
+        let start = Instant::now();
+        let response = post_json(
+            &client,
+            &url,
+            &json!({
+                "model":"gpt-5", "input":input, "stream":true
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), 200);
+        let stream = response.text().await.unwrap();
+        sse_durations.push(start.elapsed());
+        let chunks: Vec<_> = stream
+            .lines()
+            .filter_map(|line| line.strip_prefix("data: "))
+            .map(|data| serde_json::from_str::<Value>(data).unwrap())
+            .collect();
+        assert_eq!(
+            chunks
+                .iter()
+                .filter(|event| event["type"] == "response.output_text.delta")
+                .count(),
+            count
+        );
+        let completed = chunks.last().unwrap();
+        assert_eq!(completed["type"], "response.completed");
+        assert_eq!(
+            completed["response"]["output"][0]["content"][0]["text"],
+            payload
+        );
+
+        let start = Instant::now();
+        ws.send(WsMessage::text(
+            json!({
+                "type":"response.create", "model":"gpt-5", "input":input
+            })
+            .to_string(),
+        ))
+        .await
+        .unwrap();
+        let (completion, deltas) = tokio::time::timeout(Duration::from_secs(3), async {
+            let mut deltas = 0;
+            loop {
+                let event: Value =
+                    serde_json::from_str(ws.next().await.unwrap().unwrap().to_text().unwrap())
+                        .unwrap();
+                match event["type"].as_str() {
+                    Some("response.output_text.delta") => deltas += 1,
+                    Some("response.completed") => break (event, deltas),
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .unwrap();
+        ws_durations.push(start.elapsed());
+        assert_eq!(deltas, count);
+        assert_eq!(
+            completion["response"]["output"][0]["content"][0]["text"],
+            payload
+        );
+    }
+    for (transport, durations) in [("SSE", sse_durations), ("WS", ws_durations)] {
+        assert!(
+            durations
+                .iter()
+                .all(|elapsed| *elapsed >= Duration::from_millis(190)),
+            "{transport} fell short of the 200ms decode budget: {durations:?}"
+        );
+        assert!(
+            durations[0].abs_diff(durations[1]) < Duration::from_millis(100),
+            "{transport} accumulated per-frame drift: {durations:?}"
+        );
+    }
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn responses_retry_keeps_call_identity_across_transports_until_all_receipts_arrive() {
+    use maka_mock_ai::scenario::{
+        BenchmarkTrack, CanonicalAction, FaultBoundary, FaultKind, FixtureDef, ScenarioSpec,
+        ScheduledFault,
+    };
+
+    let read = |path: &str, marker: &str| CanonicalAction::ReadFile {
+        path: path.into(),
+        expect_marker: marker.into(),
+    };
+    let mut spec = ScenarioSpec::new("retry", 42, "sources", BenchmarkTrack::Native)
+        .with_fixture(
+            "first",
+            FixtureDef::File {
+                path: "src/first.txt".into(),
+                content: "first marker".into(),
+            },
+        )
+        .with_fixture(
+            "second",
+            FixtureDef::File {
+                path: "src/second.txt".into(),
+                content: "second marker".into(),
+            },
+        )
+        .with_step(
+            "read-batch",
+            CanonicalAction::ParallelBatch(vec![
+                read("src/first.txt", "first marker"),
+                read("src/second.txt", "second marker"),
+            ]),
+        )
+        .with_step(
+            "finish",
+            CanonicalAction::FinalAnswer {
+                text: "Both files read.".into(),
+                expect_markers: vec!["Both files read.".into()],
+            },
+        );
+    for (attempt, at, emit) in [
+        (1, FaultBoundary::BeforeHeaders, FaultKind::Http429),
+        (2, FaultBoundary::BeforeHeaders, FaultKind::Http503),
+        (3, FaultBoundary::AfterFirstCompleteCall, FaultKind::Eof),
+    ] {
+        spec = spec.with_fault(ScheduledFault {
+            step: "read-batch".into(),
+            attempt,
+            at,
+            emit,
+        });
+    }
+    let server = MockAiBuilder::new().scenario(spec).start().await.unwrap();
+    let origin = server.origin_url();
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+    register_benchmark(&client, &origin, "retry").await;
+    let path = "/s/bench/lane/v1/responses";
+    let url = format!("{origin}{path}");
+    let ws_url = format!("ws://{}{path}", server.addr());
+    let mut turn = json!({
+        "model":"gpt-4.1", "stream":true, "store":true, "input":"Read both sources.",
+        "tools":[{"type":"function","name":"Read","parameters":{
+            "type":"object","properties":{"path":{"type":"string"}},"required":["path"],
+            "additionalProperties":false,
+        }}],
+    });
+    let rejected = benchmark_json(json_request(&client, &url, &turn), 429).await;
+    assert_eq!(rejected["error"]["type"], "rate_limit_error");
+
+    let (mut ws, _) = tokio_tungstenite::connect_async(&ws_url).await.unwrap();
+    let mut create = turn.clone();
+    create["type"] = json!("response.create");
+    ws.send(WsMessage::text(create.to_string())).await.unwrap();
+    let frame = tokio::time::timeout(Duration::from_secs(5), ws.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let overloaded: Value = serde_json::from_str(frame.to_text().unwrap()).unwrap();
+    assert_eq!(overloaded["type"], "error");
+    assert_eq!(overloaded["status"], 503);
+    drop(ws);
+
+    let truncated = post_json(&client, &url, &turn)
+        .await
+        .error_for_status()
+        .unwrap()
+        .bytes()
+        .await
+        .unwrap();
+    let mut sse = responses::sse::Sse::default();
+    let mut decoder =
+        responses::decode::Decoder::new(responses::ReasoningMode::PlaintextSummary, None);
+    let mut partial = Vec::new();
+    for &byte in &truncated {
+        if let Some(event) = sse.push(byte).unwrap() {
+            if event["type"] == "response.output_item.done" {
+                partial.push(event["item"].clone());
+            }
+            decoder.push(event).unwrap();
+        }
+    }
+    assert!(decoder.end().is_err(), "EOF incorrectly completed the turn");
+    let [first] = partial.as_slice() else {
+        panic!("expected the first complete call, got {partial:?}")
+    };
+
+    let (mut ws, _) = tokio_tungstenite::connect_async(&ws_url).await.unwrap();
+    ws.send(WsMessage::text(create.to_string())).await.unwrap();
+    let completed = tokio::time::timeout(Duration::from_secs(5), async {
+        let mut done = Vec::new();
+        loop {
+            let frame = ws.next().await.unwrap().unwrap();
+            let event: Value = serde_json::from_str(frame.to_text().unwrap()).unwrap();
+            match event["type"].as_str().unwrap() {
+                "response.output_item.done" => done.push(event["item"].clone()),
+                "response.completed" => {
+                    assert_eq!(event["response"]["output"], json!(done));
+                    break event["response"].clone();
+                }
+                "error" | "response.failed" => panic!("WS retry failed: {event}"),
+                _ => {}
+            }
+        }
+    })
+    .await
+    .unwrap();
+    let [a, b] = completed["output"].as_array().unwrap().as_slice() else {
+        panic!("expected both calls on retry: {completed}")
+    };
+    assert_eq!(first, a);
+    assert_ne!(a["call_id"], b["call_id"]);
+    for (call, path) in [(a, "src/first.txt"), (b, "src/second.txt")] {
+        assert_eq!(call["name"], "Read");
+        assert_eq!(
+            serde_json::from_str::<Value>(call["arguments"].as_str().unwrap()).unwrap(),
+            json!({"path":path})
+        );
+    }
+    ws.close(None).await.unwrap();
+
+    turn["stream"] = json!(false);
+    let replay = benchmark_json(json_request(&client, &url, &turn), 200).await;
+    assert_eq!(replay["id"], completed["id"]);
+    assert_eq!(replay["output"], completed["output"]);
+    turn["previous_response_id"] = completed["id"].clone();
+    turn["input"] =
+        json!([{"type":"function_call_output", "call_id":b["call_id"], "output":"second marker"}]);
+    let pending = benchmark_json(json_request(&client, &url, &turn), 200).await;
+    assert_eq!(
+        pending["output"],
+        json!([a]),
+        "acknowledging B must leave A outstanding"
+    );
+
+    turn["input"] =
+        json!([{"type":"function_call_output", "call_id":a["call_id"], "output":"first marker"}]);
+    let final_answer = benchmark_json(json_request(&client, &url, &turn), 200).await;
+    assert_eq!(
+        final_answer["output"][0]["content"][0]["text"],
+        "Both files read."
+    );
+    let timeline = benchmark_json(client.get(format!("{origin}/admin/sessions/lane")), 200).await;
+    let main: Vec<_> = timeline["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|item| item["purpose"] == "main")
+        .collect();
+    assert_eq!(main.len(), 7);
+    for item in &main[..6] {
+        assert_eq!(item["stepId"], "read-batch");
+        assert_eq!(item["revision"], main[0]["revision"]);
+    }
+    assert_eq!(main[6]["stepId"], "finish");
+    assert_eq!(main[5]["confirmedCallIds"], json!([b["call_id"]]));
+    assert_eq!(main[6]["confirmedCallIds"], json!([a["call_id"]]));
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn admin_attributes_overlapping_attempts_and_requires_final_export_before_reclaim() {
+    let mut server = MockAiBuilder::new()
+        .strict_benchmark(true)
+        .rate_limit(RateLimitConfig {
+            enabled: true,
+            max_concurrent: Some(1),
+            ..Default::default()
+        })
+        .interactive(1)
+        .start()
+        .await
+        .unwrap();
+    let origin = server.origin_url();
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+    register_benchmark(&client, &origin, "overlap").await;
+    let url = format!("{origin}/s/bench/lane/v1/responses");
+    let detail = format!("{origin}/admin/sessions/lane");
+    let finalize = format!("{detail}/finalize");
+    let reset = format!("{origin}/admin/reset");
+    let main = tokio::spawn(benchmark_json(
+        json_request(
+            &client,
+            &url,
+            &json!({"model":"mock-model","input":"main request"}),
+        ),
+        200,
+    ));
+    let turn = tokio::time::timeout(Duration::from_secs(5), server.next_turn())
+        .await
+        .unwrap()
+        .unwrap();
+    let title = benchmark_json(
+        json_request(
+            &client,
+            &url,
+            &json!({"model":"mock-model","input":"title request"}),
+        )
+        .header("x-maka-bench-request-use", "title"),
+        200,
+    )
+    .await;
+    assert_eq!(title["output"][0]["content"][0]["text"], "Benchmark task");
+    let in_flight = benchmark_json(client.post(&finalize), 409).await;
+    assert_eq!(in_flight["error"], "session still has in-flight attempts");
+    assert_eq!(client.delete(&detail).send().await.unwrap().status(), 409);
+    turn.reply_text("main released");
+    let main = main.await.unwrap();
+    assert_eq!(main["output"][0]["content"][0]["text"], "main released");
+
+    let protected = benchmark_json(client.post(&reset), 409).await;
+    assert_eq!(
+        protected["error"],
+        "export and delete benchmark sessions before resetting"
+    );
+    let summary = benchmark_json(client.post(&finalize), 200).await;
+    assert_eq!(summary["finalized"], true);
+    assert_eq!(summary["attempts"], 2);
+    let page = benchmark_json(client.get(format!("{detail}?limit=1")), 200).await;
+    let next = &page["nextCursor"];
+    assert_eq!(next, 1);
+    let rest = benchmark_json(client.get(format!("{detail}?limit=1&after={next}")), 200).await;
+    assert_eq!(rest["nextCursor"], 2);
+    for page in [&page, &rest] {
+        assert_eq!(page["items"].as_array().unwrap().len(), 1);
+        assert_eq!(page["items"][0]["cursor"], page["nextCursor"]);
+    }
+    let attempts = [&page["items"][0], &rest["items"][0]];
+    let main = attempts
+        .iter()
+        .find(|item| item["purpose"] == "main")
+        .unwrap();
+    let title = attempts
+        .iter()
+        .find(|item| item["purpose"] == "title")
+        .unwrap();
+    let timestamp = |item: &Value, field: &str| item[field].as_u64().unwrap();
+    assert!(timestamp(main, "headersReceivedNs") < timestamp(title, "headersReceivedNs"));
+    assert!(timestamp(title, "lastFrameConsumedNs") < timestamp(main, "lastFrameConsumedNs"));
+    let attribution = &page["attribution"];
+    assert_eq!(attribution, &rest["attribution"]);
+    assert_eq!(attribution["overlappingIntervalsCount"], 1);
+    assert!(attribution["outsideMockWallNs"].as_u64().is_some());
+    let by_purpose = &attribution["mockServiceSumByPurposeNs"];
+    let main_ns = by_purpose["main"].as_u64().unwrap();
+    let title_ns = by_purpose["title"].as_u64().unwrap();
+    let sum = attribution["mockServiceSumNs"].as_u64().unwrap();
+    let union = attribution["mockUnionNs"].as_u64().unwrap();
+    assert_eq!(sum, main_ns + title_ns);
+    assert_eq!(union, main_ns);
+    assert!(union < sum);
+
+    let cursor = &summary["cursor"];
+    assert_eq!(client.delete(&detail).send().await.unwrap().status(), 400);
+    assert_eq!(
+        client
+            .delete(format!("{detail}?cursor={cursor}&after={next}"))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        409
+    );
+    assert_eq!(client.post(&reset).send().await.unwrap().status(), 409);
+    let through = &rest["nextCursor"];
+    let deleted = benchmark_json(
+        client.delete(format!("{detail}?cursor={cursor}&after={through}")),
+        200,
+    )
+    .await;
+    assert_eq!(deleted, json!({"deleted":true}));
+    assert_eq!(client.get(&detail).send().await.unwrap().status(), 404);
+    let list = benchmark_json(
+        client.get(format!("{origin}/admin/sessions?run=bench")),
+        200,
+    )
+    .await;
+    assert_eq!(list["items"], json!([]));
+    assert_eq!(
+        benchmark_json(client.post(&reset), 200).await,
+        json!({"reset":true})
+    );
+    server.shutdown().await;
 }
 
 #[tokio::test]
@@ -800,6 +1244,79 @@ async fn per_model_histograms_and_prometheus_metrics() {
 }
 
 #[tokio::test]
+async fn prometheus_exports_unique_samples_for_mixed_statuses_on_one_model() {
+    use maka_mock_ai::HttpErrorSpec;
+    use std::collections::{BTreeMap, BTreeSet};
+
+    let server = MockAiBuilder::new()
+        .scripted([
+            TurnPlan::text("ok"),
+            TurnPlan::http_error(HttpErrorSpec::rate_limit(Some(1), "slow down")),
+            TurnPlan::http_error(HttpErrorSpec::new(503, "overloaded_error", "busy")),
+        ])
+        .start()
+        .await
+        .unwrap();
+    let client = reqwest::Client::new();
+    let endpoint = format!("{}/chat/completions", server.base_url());
+    let request = json!({
+        "model":"mixed-model","stream":true,"messages":[{"role":"user","content":"ping"}],
+    });
+    for expected in [200, 429, 503] {
+        let response = post_json(&client, &endpoint, &request).await;
+        let status = response.status();
+        let body = response.text().await.unwrap();
+        assert_eq!(status, expected, "{body}");
+    }
+    let exposition = client
+        .get(format!("{}/metrics", server.origin_url()))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+
+    let mut series = BTreeSet::new();
+    let mut requests_by_status = BTreeMap::new();
+    for line in exposition
+        .lines()
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+    {
+        let (key, sample) = line.rsplit_once(' ').unwrap();
+        let (name, mut labels) = key
+            .split_once('{')
+            .map_or((key, Vec::new()), |(name, labels)| {
+                (name, labels.strip_suffix('}').unwrap().split(',').collect())
+            });
+        labels.sort_unstable();
+        if name == "mock_ai_dimension_requests_total" && labels.contains(&r#"model="mixed-model""#)
+        {
+            let status = labels
+                .iter()
+                .find_map(|label| label.strip_prefix("status=\""))
+                .unwrap();
+            assert!(
+                requests_by_status
+                    .insert(status.trim_end_matches('"'), sample)
+                    .is_none()
+            );
+        }
+        assert!(
+            series.insert((name, labels)),
+            "duplicate Prometheus sample: {line}"
+        );
+    }
+    assert_eq!(
+        requests_by_status,
+        BTreeMap::from([("200", "1"), ("429", "1"), ("503", "1")])
+    );
+    server.shutdown().await;
+}
+
+#[tokio::test]
 async fn transparent_proxy_record_redaction_and_speed_scaled_replay() {
     // 1. Start upstream simulated provider
     let upstream = MockAiBuilder::new()
@@ -1388,6 +1905,11 @@ async fn astra_audit_regressions() {
     assert_eq!(p1.status(), 200);
     let p1_json = parse_json(p1).await;
     let prev_id = p1_json["id"].as_str().unwrap().to_string();
+    let proxied_parent = format!("{}/responses/{prev_id}", chain_proxy.base_url());
+    assert_eq!(
+        benchmark_json(client.get(&proxied_parent), 200).await,
+        p1_json
+    );
     let p2 = post_json(
         &client,
         &format!("{}/responses", chain_proxy.base_url()),
@@ -1396,43 +1918,57 @@ async fn astra_audit_regressions() {
     .await;
     assert_eq!(p2.status(), 200);
     let p2_text = p2.text().await.unwrap();
+    let deleted = benchmark_json(client.delete(&proxied_parent), 200).await;
+    assert_eq!(deleted["deleted"], true);
     chain_proxy.shutdown().await;
     chain_up.shutdown().await;
 
-    // Verify Sequential mode does NOT advance cursor when a wrong previous_response_id is rejected!
-    let chain_replayer = MockAiBuilder::new()
-        .replay(
-            ReplayConfig::new(&chain_cassette)
-                .with_speed(0.0)
-                .with_match_mode(ReplayMatchMode::Sequential),
+    for strict in [false, true] {
+        let mut replay = ReplayConfig::new(&chain_cassette)
+            .with_speed(0.0)
+            .with_match_mode(ReplayMatchMode::Sequential);
+        replay.strict_replay = strict;
+        let chain_replayer = MockAiBuilder::new()
+            .replay(replay)
+            .unwrap()
+            .start()
+            .await
+            .unwrap();
+        let url = format!("{}/responses", chain_replayer.base_url());
+        let replayed_parent = format!("{url}/{prev_id}");
+        let rp1 = benchmark_json(
+            json_request(
+                &client,
+                &url,
+                &json!({"model": "gpt-5", "stream": false, "store": true, "input": "turn1"}),
+            ),
+            200,
         )
-        .unwrap()
-        .start()
-        .await
-        .unwrap();
-    let rp1 = post_json(
-        &client,
-        &format!("{}/responses", chain_replayer.base_url()),
-        &json!({"model": "gpt-5", "stream": false, "store": true, "input": "turn1"}),
-    )
-    .await;
-    assert_eq!(rp1.status(), 200);
-    // Bogus previous_response_id MUST be rejected with 400 under strict mode even in replay!
-    let rp_bad = post_json(
-        &client,
-        &format!("{}/responses", chain_replayer.base_url()),
-        &json!({"model": "gpt-5", "stream": false, "store": true, "previous_response_id": "resp_wrong_id", "input": "turn2"}),
-    )
-    .await;
-    assert_eq!(rp_bad.status(), 400);
-    let rp2 = post_json(
-        &client,
-        &format!("{}/responses", chain_replayer.base_url()),
-        &json!({"model": "gpt-5", "stream": false, "store": true, "previous_response_id": prev_id, "input": "turn2"}),
-    )
-    .await;
-    assert_eq!(rp2.status(), 200);
-    assert_eq!(rp2.text().await.unwrap(), p2_text);
-    chain_replayer.shutdown().await;
+        .await;
+        assert_eq!(rp1, p1_json);
+        assert_eq!(
+            benchmark_json(client.get(&replayed_parent), 200).await,
+            p1_json
+        );
+        let rp_bad = post_json(
+            &client,
+            &url,
+            &json!({"model": "gpt-5", "stream": false, "store": true, "previous_response_id": "resp_wrong_id", "input": "turn2"}),
+        ).await;
+        assert_eq!(rp_bad.status(), if strict { 422 } else { 400 });
+        let rp2 = post_json(
+            &client,
+            &url,
+            &json!({"model": "gpt-5", "stream": false, "store": true, "previous_response_id": prev_id, "input": "turn2"}),
+        ).await;
+        assert_eq!(rp2.status(), 200);
+        assert_eq!(rp2.text().await.unwrap(), p2_text);
+        assert_eq!(
+            benchmark_json(client.delete(&replayed_parent), 200).await,
+            deleted
+        );
+        assert_eq!(chain_replayer.metrics().replay_hits, 4);
+        chain_replayer.shutdown().await;
+    }
     let _ = std::fs::remove_file(&chain_cassette);
 }

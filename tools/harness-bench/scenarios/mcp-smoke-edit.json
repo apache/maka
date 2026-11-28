@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "scenario": "mcp-smoke-edit",
+  "seed": 41001,
+  "fixture": "smoke-edit-v1",
+  "track": "sharedMcp",
+  "fixtures": {
+    "source": {
+      "kind": "file",
+      "path": "src/lib.rs",
+      "content": "pub fn status() -> &'static str {\n    \"pending\"\n}\n"
+    },
+    "readme": {
+      "kind": "file",
+      "path": "README.md",
+      "content": "# Smoke edit fixture\n"
+    },
+    "verify": {
+      "kind": "command",
+      "command": "grep -Fx -- '    \"ready\"' 'src/lib.rs'"
+    }
+  },
+  "steps": [
+    {
+      "id": "read",
+      "readFile": { "path": "src/lib.rs", "expectMarker": "\"pending\"" }
+    },
+    {
+      "id": "edit",
+      "editFile": { "path": "src/lib.rs", "old": "\"pending\"", "new": "\"ready\"" }
+    },
+    {
+      "id": "check",
+      "parallelBatch": [
+        { "readFile": { "path": "src/lib.rs", "expectMarker": "\"ready\"" } },
+        { "shell": { "commandId": "verify" } }
+      ]
+    },
+    {
+      "id": "done",
+      "finalAnswer": {
+        "text": "SMOKE_EDIT_OK: src/lib.rs now reports ready.",
+        "expectMarkers": ["SMOKE_EDIT_OK"]
+      }
+    }
+  ]
+}

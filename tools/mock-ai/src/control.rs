@@ -17,6 +17,8 @@
  * under the License.
  */
 
+use crate::plan::Usage;
+use crate::routing::{ResponseId, SessionId};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap, VecDeque};
@@ -115,10 +117,10 @@ pub struct ControlPlaneConfig {
     /// Static extra JSON routes keyed by exact path (e.g. `"/v1/users/me/balance"`).
     #[serde(default)]
     pub extra_get_routes: BTreeMap<String, Value>,
-    /// Max stored Responses objects retained for `GET/DELETE /v1/responses/{id}`.
+    /// Max stored Responses objects per owner retained for `GET/DELETE /v1/responses/{id}`.
     #[serde(default = "default_stored_responses_cap")]
     pub stored_responses_capacity: usize,
-    /// Max approximate byte budget for stored Responses objects.
+    /// Max serialized JSON byte budget for stored Responses objects per owner.
     #[serde(default = "default_stored_responses_bytes")]
     pub stored_responses_max_bytes: usize,
     /// Enable `/admin/*` control endpoints (`/admin/metrics`, `/admin/requests`, `/admin/reset`, `/admin/rules`).
@@ -158,6 +160,13 @@ impl Default for ControlPlaneConfig {
 }
 
 impl ControlPlaneConfig {
+    pub fn find_model(&self, id: &str) -> Option<Value> {
+        self.models
+            .iter()
+            .find(|model| model.id == id)
+            .map(ModelEntry::to_wire_json)
+    }
+
     pub fn render_models_page(&self, query: Option<&str>) -> Value {
         let mut after: Option<String> = None;
         let mut limit: Option<usize> = None;
@@ -224,17 +233,119 @@ impl ControlPlaneConfig {
     }
 }
 
-/// Bounded in-memory store for completed OpenAI Responses objects (`GET/DELETE /v1/responses/{id}`).
+pub fn render_count_tokens(input_tokens: u64) -> Value {
+    json!({ "input_tokens": input_tokens })
+}
+
+pub fn render_responses_compact(
+    id: &str,
+    created_at: u64,
+    item_id: &str,
+    encrypted_content: &str,
+    mut retained_user_items: Vec<Value>,
+    usage: &Usage,
+) -> Value {
+    let reasoning = usage.reasoning_tokens.unwrap_or(0);
+    let output_tokens = usage.output_tokens.max(reasoning);
+    retained_user_items.push(json!({
+        "type": "compaction", "id": item_id, "encrypted_content": encrypted_content,
+    }));
+    json!({
+        "id": id,
+        "object": "response.compaction",
+        "created_at": created_at,
+        "output": retained_user_items,
+        "usage": {
+            "input_tokens": usage.input_tokens,
+            "input_tokens_details": {
+                "cached_tokens": usage.cache_read_tokens.unwrap_or(0),
+                "cache_write_tokens": usage.cache_creation_tokens.unwrap_or(0),
+            },
+            "output_tokens": output_tokens,
+            "output_tokens_details": { "reasoning_tokens": reasoning },
+            "total_tokens": usage.input_tokens.saturating_add(output_tokens),
+        },
+    })
+}
+
+/// Completed Responses bodies, with a count and byte budget per owner.
 pub struct StoredResponses {
     capacity: usize,
     max_bytes: usize,
     inner: Mutex<StoredResponsesInner>,
 }
 
+#[derive(Default)]
 struct StoredResponsesInner {
+    legacy: ResponseBucket,
+    by_owner: HashMap<SessionId, ResponseBucket>,
+}
+
+#[derive(Default)]
+struct ResponseBucket {
     order: VecDeque<String>,
-    map: HashMap<String, (Value, usize)>,
+    map: HashMap<String, Arc<StoredEntry>>,
     total_bytes: usize,
+}
+
+struct StoredEntry {
+    response: Arc<Value>,
+    byte_len: usize,
+}
+
+#[derive(Default)]
+struct JsonByteCount(usize);
+
+impl std::io::Write for JsonByteCount {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0 += bytes.len();
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl ResponseBucket {
+    fn insert(
+        &mut self,
+        id: String,
+        entry: Arc<StoredEntry>,
+        capacity: usize,
+        max_bytes: usize,
+        retired: &mut Vec<Arc<StoredEntry>>,
+    ) {
+        retired.extend(self.delete(&id));
+        while self.order.len() >= capacity
+            || (max_bytes > 0 && self.total_bytes > max_bytes - entry.byte_len)
+        {
+            let evicted = self
+                .order
+                .pop_front()
+                .expect("full response bucket has a head");
+            let removed = self
+                .map
+                .remove(&evicted)
+                .expect("queue entry has a response");
+            self.total_bytes -= removed.byte_len;
+            retired.push(removed);
+        }
+        self.total_bytes += entry.byte_len;
+        self.order.push_back(id.clone());
+        self.map.insert(id, entry);
+    }
+
+    fn get(&self, id: &str) -> Option<Arc<StoredEntry>> {
+        self.map.get(id).cloned()
+    }
+
+    fn delete(&mut self, id: &str) -> Option<Arc<StoredEntry>> {
+        let entry = self.map.remove(id)?;
+        self.total_bytes -= entry.byte_len;
+        self.order.retain(|key| key != id);
+        Some(entry)
+    }
 }
 
 impl StoredResponses {
@@ -242,72 +353,108 @@ impl StoredResponses {
         Self {
             capacity,
             max_bytes,
-            inner: Mutex::new(StoredResponsesInner {
-                order: VecDeque::new(),
-                map: HashMap::new(),
-                total_bytes: 0,
-            }),
+            inner: Mutex::new(StoredResponsesInner::default()),
         }
+    }
+
+    pub fn insert_owned(
+        &self,
+        owner: &SessionId,
+        id: ResponseId,
+        response: Value,
+        store: bool,
+    ) -> bool {
+        if !store {
+            return false;
+        }
+        let Some(bytes) = self.admitted_size(&response) else {
+            return false;
+        };
+        self.insert_sized(Some(owner), id.0, response, bytes);
+        true
+    }
+
+    pub(crate) fn insert_sized(
+        &self,
+        owner: Option<&SessionId>,
+        id: String,
+        response: Value,
+        bytes: usize,
+    ) {
+        let entry = Arc::new(StoredEntry {
+            response: Arc::new(response),
+            byte_len: bytes,
+        });
+        let mut retired = Vec::new();
+        {
+            let mut guard = self.inner.lock().unwrap();
+            let bucket = match owner {
+                Some(owner) => guard.by_owner.entry(owner.clone()).or_default(),
+                None => &mut guard.legacy,
+            };
+            bucket.insert(id, entry, self.capacity, self.max_bytes, &mut retired);
+        }
+        drop(retired);
+    }
+
+    pub fn get_owned(&self, owner: &SessionId, id: &ResponseId) -> Option<Value> {
+        let entry = self.inner.lock().unwrap().by_owner.get(owner)?.get(&id.0)?;
+        Some(entry.response.as_ref().clone())
+    }
+
+    pub fn delete_owned(&self, owner: &SessionId, id: &ResponseId) -> bool {
+        let retired = {
+            let mut guard = self.inner.lock().unwrap();
+            let Some(bucket) = guard.by_owner.get_mut(owner) else {
+                return false;
+            };
+            let retired = bucket.delete(&id.0);
+            if bucket.map.is_empty() {
+                guard.by_owner.remove(owner);
+            }
+            retired
+        };
+        retired.is_some()
+    }
+
+    pub fn finalize_owner(&self, owner: &SessionId) {
+        let retired = self.inner.lock().unwrap().by_owner.remove(owner);
+        drop(retired);
     }
 
     pub fn put(&self, id: String, response: Value) {
-        if self.capacity == 0 {
+        let Some(bytes) = self.admitted_size(&response) else {
             return;
-        }
-        let approx_bytes = response.to_string().len();
-        if self.max_bytes > 0 && approx_bytes > self.max_bytes {
-            return;
-        }
-        let mut guard = self.inner.lock().unwrap();
-        if let Some((_, old_bytes)) = guard.map.remove(&id) {
-            guard.total_bytes = guard.total_bytes.saturating_sub(old_bytes);
-            guard.order.retain(|k| k != &id);
-        }
-        while guard.order.len() >= self.capacity
-            || (self.max_bytes > 0
-                && !guard.order.is_empty()
-                && guard.total_bytes.saturating_add(approx_bytes) > self.max_bytes)
-        {
-            if let Some(evicted) = guard.order.pop_front()
-                && let Some((_, b)) = guard.map.remove(&evicted)
-            {
-                guard.total_bytes = guard.total_bytes.saturating_sub(b);
-            }
-        }
-        guard.total_bytes = guard.total_bytes.saturating_add(approx_bytes);
-        guard.order.push_back(id.clone());
-        guard.map.insert(id, (response, approx_bytes));
+        };
+        self.insert_sized(None, id, response, bytes);
     }
 
     pub fn get(&self, id: &str) -> Option<Value> {
-        self.inner
-            .lock()
-            .unwrap()
-            .map
-            .get(id)
-            .map(|(v, _)| v.clone())
+        let entry = self.inner.lock().unwrap().legacy.get(id)?;
+        Some(entry.response.as_ref().clone())
     }
 
     pub fn contains(&self, id: &str) -> bool {
-        self.inner.lock().unwrap().map.contains_key(id)
+        self.inner.lock().unwrap().legacy.map.contains_key(id)
     }
 
     pub fn delete(&self, id: &str) -> bool {
-        let mut guard = self.inner.lock().unwrap();
-        if let Some((_, b)) = guard.map.remove(id) {
-            guard.total_bytes = guard.total_bytes.saturating_sub(b);
-            guard.order.retain(|k| k != id);
-            true
-        } else {
-            false
-        }
+        let retired = self.inner.lock().unwrap().legacy.delete(id);
+        retired.is_some()
     }
 
     pub fn clear(&self) {
-        let mut guard = self.inner.lock().unwrap();
-        guard.order.clear();
-        guard.map.clear();
-        guard.total_bytes = 0;
+        let retired = std::mem::take(&mut *self.inner.lock().unwrap());
+        drop(retired);
+    }
+
+    pub(crate) fn admitted_size(&self, response: &Value) -> Option<usize> {
+        if self.capacity == 0 {
+            return None;
+        }
+        let mut count = JsonByteCount::default();
+        serde_json::to_writer(&mut count, response).expect("JSON value serializes to byte counter");
+        (self.max_bytes == 0 || count.0 <= self.max_bytes).then_some(count.0)
     }
 }
 
@@ -345,3 +492,115 @@ impl CustomResponse {
 pub type CustomRouteFn = Arc<
     dyn Fn(&str, &str, &BTreeMap<String, String>, &[u8]) -> Option<CustomResponse> + Send + Sync,
 >;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stored_bodies_are_isolated_by_owner_and_store_flag() {
+        let responses = StoredResponses::new(1, 64);
+        let a = SessionId("a".into());
+        let b = SessionId("b".into());
+        let first = ResponseId("first".into());
+        let second = ResponseId("second".into());
+        let ephemeral = ResponseId("ephemeral".into());
+
+        assert!(responses.insert_owned(&a, first.clone(), json!({"owner": "a"}), true));
+        assert!(!responses.delete_owned(&b, &first));
+        assert_eq!(responses.get_owned(&b, &first), None);
+        assert_eq!(responses.get("first"), None);
+        assert!(responses.insert_owned(&b, first.clone(), json!({"owner": "b"}), true));
+        assert!(responses.insert_owned(&b, second.clone(), json!({"owner": "b"}), true));
+        assert!(!responses.insert_owned(&b, ephemeral.clone(), json!({"store": false}), false));
+
+        assert_eq!(responses.get_owned(&a, &first), Some(json!({"owner": "a"})));
+        assert_eq!(responses.get_owned(&b, &first), None);
+        assert_eq!(responses.get_owned(&b, &ephemeral), None);
+        assert_eq!(
+            responses.get_owned(&b, &second),
+            Some(json!({"owner": "b"}))
+        );
+        responses.finalize_owner(&a);
+        assert_eq!(responses.get_owned(&a, &first), None);
+        assert!(responses.delete_owned(&b, &second));
+    }
+
+    #[test]
+    fn stored_bodies_evict_using_serialized_json_size() {
+        let responses = StoredResponses::new(4, 17);
+        responses.put("escaped".into(), json!("你\n\""));
+        assert_eq!(responses.get("escaped"), Some(json!("你\n\"")));
+        responses.put("next".into(), json!("1234567"));
+        assert_eq!(responses.get("escaped"), None);
+        assert_eq!(responses.get("next"), Some(json!("1234567")));
+
+        responses.put("next".into(), json!("123456789012345"));
+        responses.put("oversized".into(), json!("1234567890123456"));
+        assert_eq!(responses.get("next"), Some(json!("123456789012345")));
+        assert_eq!(responses.get("oversized"), None);
+    }
+
+    #[test]
+    fn stored_bodies_support_concurrent_owner_reads_and_writes() {
+        let responses = StoredResponses::new(1, 8192);
+        let start = std::sync::Barrier::new(8);
+        let id = ResponseId("shared-id".into());
+        let payload = "x".repeat(4096);
+
+        std::thread::scope(|threads| {
+            for index in 0..8 {
+                let (responses, start, id, payload) = (&responses, &start, &id, &payload);
+                threads.spawn(move || {
+                    let owner = SessionId(index.to_string());
+                    start.wait();
+                    for revision in 0..64 {
+                        let value = json!({"owner": index, "revision": revision, "text": payload});
+                        assert!(responses.insert_owned(&owner, id.clone(), value.clone(), true));
+                        assert_eq!(responses.get_owned(&owner, id), Some(value));
+                    }
+                    assert!(responses.delete_owned(&owner, id));
+                    assert_eq!(responses.get_owned(&owner, id), None);
+                });
+            }
+        });
+    }
+
+    #[test]
+    fn control_plane_payloads_match_wire_shapes() {
+        let cfg = ControlPlaneConfig::default();
+        assert_eq!(cfg.find_model("missing"), None);
+        assert_eq!(
+            cfg.find_model("mock-model"),
+            Some(json!({
+                "id": "mock-model", "object": "model", "owned_by": "maka-mock-ai",
+                "context_length": 200000, "top_provider": { "max_completion_tokens": 16384 },
+            }))
+        );
+        assert_eq!(render_count_tokens(73), json!({"input_tokens": 73}));
+        let retained = json!({
+            "type": "message", "id": "msg_1", "role": "user", "status": "completed",
+            "content": [{"type": "input_text", "text": "Keep this instruction"}],
+        });
+        assert_eq!(
+            render_responses_compact(
+                "resp_1",
+                123,
+                "cmp_1",
+                "opaque",
+                vec![retained.clone()],
+                &Usage::new(73, 9)
+            ),
+            json!({
+                "id": "resp_1", "object": "response.compaction", "created_at": 123,
+                "output": [retained, {"id": "cmp_1", "type": "compaction", "encrypted_content": "opaque"}],
+                "usage": {
+                    "input_tokens": 73,
+                    "input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 0},
+                    "output_tokens": 9, "output_tokens_details": {"reasoning_tokens": 0},
+                    "total_tokens": 82,
+                },
+            })
+        );
+    }
+}

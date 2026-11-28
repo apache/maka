@@ -18,302 +18,525 @@
  */
 
 use super::{
-    ActiveStreamGuard, FlushStatus, ServerState, TtftTracker, TurnCloseGuard, default_response_id,
-    format_ws_error_frame, is_semantic_delta_frame, jitter_ms, pacer_seed_for, plan_usage_hint,
-    semantic_event_bytes,
+    ActiveStreamGuard, Attempt, DeliveredItem, FlushStatus, ServerState, TurnCloseGuard,
+    default_response_id, effective_history, event_usage, format_ws_error_frame, initial_usage,
+    jitter_ms,
 };
-use crate::codec::{WireFrame, create_encoder};
-use crate::handler::{
-    CloseSignalGuard, InteractiveCommand, InteractiveStream, TurnContext, TurnDecision,
-};
+use crate::codec::{EncodedFrame, FrameKind, WireFrame};
+use crate::handler::{CloseSignalGuard, InteractiveCommand, TurnDecision};
+use crate::metrics::{AttemptOutcome, RequestPurpose};
 use crate::pacing::{LatencyProfile, TurnPacer};
-use crate::plan::{CloseSignal, FinishReason, TurnEvent, TurnPlan, Usage};
+use crate::plan::{CloseSignal, FinishReason, HttpErrorSpec, TurnEvent, TurnPlan, Usage};
 use crate::protocol::{NormalizedRequest, Protocol, Transport, normalize_request};
 #[cfg(feature = "proxy")]
-use crate::proxy::fingerprint_from_normalized;
+use crate::proxy::fingerprint_from_route;
 use crate::ratelimit::{RateLimitDecision, RateLimitLease};
+use crate::routing::{EndpointKind, ParsedRoute, RequestUse, ResponseId, RouteScope};
+use crate::schema_synth::WirePoisonConfig;
+use crate::watchdog::HistorySize;
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::collections::BTreeMap;
+use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
-use tokio_util::sync::CancellationToken;
 
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn handle_responses_websocket<S>(
     mut ws: WebSocketStream<S>,
     conn_id: u64,
     path: String,
+    scope: Option<RouteScope>,
+    canonical_offset: usize,
+    query: Option<String>,
     headers: BTreeMap<String, String>,
     state: Arc<ServerState>,
 ) where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send,
 {
-    // Single latest continuable response ID on this WS connection for `store: false` turns.
-    // Mirrors Maka's confirmed baseline semantics: continuing from a superseded ID or another
-    // connection is rejected when `strict_previous_response_id == true`.
-    let mut current_baseline_id: Option<String> = None;
-    let mut turn_on_connection = 0usize;
-
+    let mut connection = WsBinding {
+        state: &state,
+        id: conn_id,
+        bound: false,
+    };
+    let route = ParsedRoute {
+        canonical_path: &path[canonical_offset..],
+        raw_path: &path,
+        scope,
+        query: query.as_deref(),
+        endpoint: EndpointKind::ResponsesWs,
+    };
+    let mut legacy_baseline = None;
+    let mut turn_on_connection = 0;
+    let mut warmups = 0_u64;
     loop {
-        let frame = tokio::select! {
+        let message = tokio::select! {
             _ = state.shutdown.cancelled() => break,
-            msg = ws.next() => msg,
+            message = ws.next() => message,
         };
-        let Some(Ok(msg)) = frame else {
+        let Some(Ok(message)) = message else {
             break;
         };
-        match msg {
-            WsMessage::Ping(payload) => {
-                if ws.send(WsMessage::Pong(payload)).await.is_err() {
+        match message {
+            WsMessage::Ping(bytes) => {
+                if ws.send(WsMessage::Pong(bytes)).await.is_err() {
                     break;
                 }
-                continue;
             }
-            WsMessage::Pong(_) => continue,
-            WsMessage::Close(_) => break,
+            WsMessage::Pong(_) => {}
             WsMessage::Text(text) => {
-                turn_on_connection += 1;
-                let raw_body: Value = match serde_json::from_str(&text) {
-                    Ok(v) => v,
-                    Err(err) => {
-                        let _ = ws
-                            .send(WsMessage::text(
-                                json!({
-                                    "type": "error",
-                                    "error": {
-                                        "type": "invalid_request_error",
-                                        "message": format!("invalid WS JSON frame: {err}"),
-                                    }
-                                })
-                                .to_string(),
-                            ))
-                            .await;
-                        break;
+                let transport = Transport::WebSocket {
+                    connection_id: conn_id,
+                    turn_on_connection: turn_on_connection + 1,
+                };
+                let attempt = Attempt::new(
+                    &state,
+                    Protocol::OpenaiResponsesWs,
+                    transport,
+                    Instant::now(),
+                    state.clock.elapsed_ns(),
+                );
+                attempt.body_read(text.len());
+                let _ = state.resolve_identity(
+                    &attempt,
+                    route.scope.as_ref(),
+                    &headers,
+                    &Value::Null,
+                    None,
+                    false,
+                );
+                let raw_body = match serde_json::from_str::<Value>(&text) {
+                    Ok(body) => body,
+                    Err(error) => {
+                        let spec = HttpErrorSpec::new(
+                            400,
+                            "invalid_request_error",
+                            format!("invalid WS JSON frame: {error}"),
+                        );
+                        attempt.outcome(AttemptOutcome::ParseFailed, Some(400));
+                        let _ = send_error(&mut ws, &attempt, &spec).await;
+                        continue;
                     }
                 };
-                let raw_wire_bytes = Bytes::from(text);
-
-                let seq = state.next_sequence();
-                let normalized = normalize_request(
-                    seq,
+                attempt.with_span(|span, now| span.parsed_ns = Some(now));
+                if raw_body["type"] != "response.create" {
+                    let spec = HttpErrorSpec::new(
+                        400,
+                        "invalid_request_error",
+                        "expected a response.create event",
+                    );
+                    attempt.outcome(AttemptOutcome::Rejected, Some(400));
+                    if !send_error(&mut ws, &attempt, &spec).await {
+                        break;
+                    }
+                    continue;
+                }
+                let sequence = if raw_body["generate"] == false {
+                    0
+                } else {
+                    state.next_sequence()
+                };
+                let mut req = normalize_request(
+                    sequence,
                     Protocol::OpenaiResponsesWs,
-                    Transport::WebSocket {
-                        connection_id: conn_id,
-                        turn_on_connection,
-                    },
+                    attempt.0.transport.clone(),
                     path.clone(),
                     headers.clone(),
-                    raw_wire_bytes,
+                    Bytes::from(text),
                     raw_body,
                 );
-                let turn_started = Instant::now();
-                state
-                    .metrics
-                    .record_protocol(Protocol::OpenaiResponsesWs, normalized.prompt_bytes);
-                state.recorder.record(&normalized);
-                state.watchdog.inspect_request(&normalized);
-
-                let effective_profile = state.profile.effective();
-
-                // Stateful rate-limit admission on WS turns
-                let rl_lease = match state.rate_limiter.check_and_acquire(
-                    normalized.api_key(),
-                    &normalized.model,
-                    normalized.estimated_input_tokens,
-                    effective_profile.rate_limit_override.as_ref(),
+                let parent_id = req.previous_response_id.clone().map(ResponseId);
+                if let Err(spec) = state.resolve_identity(
+                    &attempt,
+                    route.scope.as_ref(),
+                    &req.headers,
+                    &req.raw_body,
+                    parent_id.as_ref(),
+                    !connection.bound,
                 ) {
-                    RateLimitDecision::Allowed { lease, .. } => lease,
-                    RateLimitDecision::Rejected {
-                        retry_after_ms,
-                        reason,
-                        ..
-                    } => {
-                        state
-                            .metrics
-                            .http_errors_emitted
-                            .fetch_add(1, Ordering::Relaxed);
-                        state
-                            .metrics
-                            .rate_limits_emitted
-                            .fetch_add(1, Ordering::Relaxed);
-                        state.metrics.record_dimension(
-                            Protocol::OpenaiResponsesWs,
-                            &normalized.model,
-                            "429",
-                            normalized.estimated_input_tokens,
-                            0,
-                            0,
-                            None,
-                            Some(turn_started.elapsed().as_millis() as u64),
-                        );
-                        let err_frame = json!({
-                            "type": "error",
-                            "status": 429,
-                            "error": {
-                                "type": "rate_limit_error",
-                                "code": "rate_limit_exceeded",
-                                "message": format!("rate limit exceeded ({reason})"),
-                                "retry_after_ms": retry_after_ms,
-                            }
-                        });
-                        let _ = ws.send(WsMessage::text(err_frame.to_string())).await;
+                    attempt.outcome(AttemptOutcome::Rejected, Some(spec.status));
+                    if !send_error(&mut ws, &attempt, &spec).await {
                         break;
                     }
-                };
-
-                if state.tuning.strict_previous_response_id
-                    && let Some(prev_id) = &normalized.previous_response_id
-                    && current_baseline_id.as_deref() != Some(prev_id.as_str())
-                    && !state.stored_responses.contains(prev_id)
-                {
-                    state
-                        .watchdog
-                        .record_invalid_previous_response_id(&normalized, prev_id);
-                    state.metrics.record_dimension(
-                        Protocol::OpenaiResponsesWs,
-                        &normalized.model,
-                        "400",
-                        normalized.estimated_input_tokens,
-                        0,
-                        0,
-                        None,
-                        Some(turn_started.elapsed().as_millis() as u64),
-                    );
-                    let err_frame = json!({
-                        "type": "error",
-                        "error": {
-                            "type": "invalid_request_error",
-                            "code": "previous_response_not_found",
-                            "message": format!("previous_response_id '{prev_id}' is not valid on this connection"),
-                        }
-                    });
-                    let _ = ws.send(WsMessage::text(err_frame.to_string())).await;
-                    break;
+                    continue;
                 }
-
-                // Cassette WS replay mode (when configured and matched)
-                #[cfg(feature = "proxy")]
-                if let Some(ref replayer) = state.cassette_replayer {
-                    let fp = fingerprint_from_normalized(&normalized);
-                    if let Some(ex) = replayer.next_ws(&fp) {
-                        state.metrics.replay_hits.fetch_add(1, Ordering::Relaxed);
-                        state.metrics.active_streams.fetch_add(1, Ordering::Relaxed);
-                        let _stream_guard = ActiveStreamGuard(state.metrics.clone());
-                        let _lease = rl_lease;
-                        let mut ok = true;
-                        let mut first_ttft: Option<u64> = None;
-                        let mut last_resp_id: Option<String> = None;
-                        for chunk in &ex.chunks {
-                            let delay = replayer.config().scaled_delay(chunk.delay_ms);
-                            if !delay.is_zero() {
-                                tokio::select! {
-                                    _ = state.shutdown.cancelled() => { ok = false; break; }
-                                    _ = tokio::time::sleep(delay) => {}
+                if !connection.bound {
+                    connection.bound = attempt.owner().is_some();
+                }
+                let purpose = state.classify(&route, &mut req, &attempt);
+                if req.options.generate == Some(false) {
+                    attempt.classified(&req, RequestPurpose::Warmup);
+                    let parent =
+                        match state.check_parent(&req, &attempt, legacy_baseline.as_deref()) {
+                            Ok(parent) => parent,
+                            Err(spec) => {
+                                attempt.outcome(AttemptOutcome::Rejected, Some(spec.status));
+                                if !send_error(&mut ws, &attempt, &spec).await {
+                                    break;
                                 }
+                                continue;
                             }
-                            let msg = if chunk.is_binary {
-                                WsMessage::Binary(chunk.to_bytes())
-                            } else {
-                                if let Ok(v) = serde_json::from_str::<Value>(&chunk.data)
-                                    && let Some(id) =
-                                        v.pointer("/response/id").and_then(Value::as_str)
-                                {
-                                    last_resp_id = Some(id.to_string());
-                                }
-                                WsMessage::text(chunk.data.clone())
-                            };
-                            let byte_len = chunk.data.len();
-                            if ws.send(msg).await.is_err() {
-                                ok = false;
+                        };
+                    attempt.admitted(parent.as_ref());
+                    warmups += 1;
+                    req.options.store = Some(false);
+                    let plan = TurnPlan::new()
+                        .with_response_id(format!("resp_warmup_{conn_id}_{warmups}"))
+                        .with_usage(Usage::new(0, 0))
+                        .finish(FinishReason::Stop);
+                    let history = effective_history(&req, parent.as_ref());
+                    let Some(id) = execute_ws_turn(
+                        &mut ws,
+                        &req,
+                        TurnDecision::Plan(plan),
+                        LatencyProfile::default(),
+                        None,
+                        history,
+                        &attempt,
+                    )
+                    .await
+                    else {
+                        break;
+                    };
+                    legacy_baseline = Some(id);
+                    continue;
+                }
+                turn_on_connection += 1;
+                attempt.classified(&req, RequestPurpose::from(&purpose));
+                let main = purpose == RequestUse::Main;
+                let profile = state.profile.effective();
+                let lease = if main {
+                    attempt.record(|metrics| {
+                        metrics.record_protocol(req.protocol, req.prompt_bytes);
+                        state.recorder.record(&req);
+                    });
+                    match state.rate_limiter.check_and_acquire(
+                        req.api_key(),
+                        &req.model,
+                        req.estimated_input_tokens,
+                        profile.rate_limit_override.as_ref(),
+                    ) {
+                        RateLimitDecision::Allowed { lease, .. } => lease,
+                        RateLimitDecision::Rejected {
+                            retry_after_ms,
+                            reason,
+                            ..
+                        } => {
+                            let spec = HttpErrorSpec::rate_limit(
+                                Some(retry_after_ms.div_ceil(1000).max(1)),
+                                format!("rate limit exceeded ({reason})"),
+                            )
+                            .with_retry_after_ms(retry_after_ms);
+                            attempt.outcome(AttemptOutcome::RateLimited, Some(429));
+                            if !send_error(&mut ws, &attempt, &spec).await {
                                 break;
                             }
-                            if first_ttft.is_none() {
-                                let ttft = turn_started.elapsed().as_millis() as u64;
-                                state.metrics.ttft_ms.record(ttft);
-                                first_ttft = Some(ttft);
-                            }
-                            state
-                                .metrics
-                                .bytes_sent
-                                .fetch_add(byte_len as u64, Ordering::Relaxed);
-                        }
-                        let dur = turn_started.elapsed().as_millis() as u64;
-                        state.metrics.turn_duration_ms.record(dur);
-                        state.metrics.record_dimension(
-                            Protocol::OpenaiResponsesWs,
-                            &normalized.model,
-                            if ok { "200" } else { "aborted" },
-                            normalized.estimated_input_tokens,
-                            0,
-                            0,
-                            first_ttft,
-                            Some(dur),
-                        );
-                        if ok {
-                            current_baseline_id = last_resp_id;
                             continue;
-                        } else {
+                        }
+                    }
+                } else {
+                    None
+                };
+
+                #[cfg(feature = "proxy")]
+                if let Some(replayer) = &state.cassette_replayer {
+                    let parent = if replayer.config().strict_replay || attempt.owner().is_some() {
+                        match state.check_parent(&req, &attempt, legacy_baseline.as_deref()) {
+                            Ok(parent) => parent,
+                            Err(spec) => {
+                                attempt.outcome(AttemptOutcome::Rejected, Some(spec.status));
+                                if !send_error(&mut ws, &attempt, &spec).await {
+                                    break;
+                                }
+                                continue;
+                            }
+                        }
+                    } else {
+                        None
+                    };
+                    let lane = attempt.replay_lane(&req.headers);
+                    let fp = fingerprint_from_route(&req, "GET", &route, lane.as_ref());
+                    match replayer.try_next_ws_if(&fp, |candidate| {
+                        !state.tuning.strict_previous_response_id
+                            || req.previous_response_id.as_deref()
+                                == candidate.request_body["previous_response_id"].as_str()
+                    }) {
+                        Ok(exchange) => {
+                            attempt.record(|metrics| {
+                                metrics.replay_hits.fetch_add(1, Ordering::Relaxed);
+                            });
+                            attempt.admitted(parent.as_ref());
+                            attempt.ready(None);
+                            let mut complete = true;
+                            for chunk in &exchange.chunks {
+                                if !wait_ws(
+                                    &mut ws,
+                                    &attempt,
+                                    replayer.config().scaled_delay(chunk.delay_ms),
+                                )
+                                .await
+                                {
+                                    complete = false;
+                                    break;
+                                }
+                                let message = if chunk.is_binary {
+                                    WsMessage::Binary(chunk.to_bytes())
+                                } else {
+                                    WsMessage::text(chunk.data.clone())
+                                };
+                                if !send_ws(&mut ws, &attempt, message).await {
+                                    complete = false;
+                                    break;
+                                }
+                                attempt.frame(chunk.data.len(), false);
+                            }
+                            if !complete {
+                                break;
+                            }
+                            if exchange.outcome != crate::proxy::ExchangeOutcome::Completed {
+                                attempt
+                                    .outcome(AttemptOutcome::InjectedFault, Some(exchange.status));
+                                break;
+                            }
+                            if let Some(response) = replayed_response(exchange)
+                                && let Some(id) = response["id"].as_str().map(str::to_owned)
+                            {
+                                attempt.ready(Some(&id));
+                                if purpose == RequestUse::Main
+                                    || matches!(purpose, RequestUse::Compact(_))
+                                {
+                                    legacy_baseline = Some(id.clone());
+                                }
+                                state.publish_response(
+                                    &req,
+                                    &attempt,
+                                    id,
+                                    response,
+                                    req.options.store.unwrap_or(false),
+                                    effective_history(&req, parent.as_ref()),
+                                );
+                            }
+                            attempt.outcome(AttemptOutcome::Completed, Some(exchange.status));
+                            continue;
+                        }
+                        Err(error) if replayer.config().strict_replay => {
+                            let mut spec =
+                                HttpErrorSpec::new(422, "invalid_request_error", error.to_string());
+                            spec.code = Some("cassette_replay_miss".into());
+                            attempt.outcome(AttemptOutcome::Rejected, Some(spec.status));
+                            if !send_error(&mut ws, &attempt, &spec).await {
+                                break;
+                            }
+                            continue;
+                        }
+                        Err(_) => {}
+                    }
+                }
+
+                let parent = match state.check_parent(&req, &attempt, legacy_baseline.as_deref()) {
+                    Ok(parent) => parent,
+                    Err(spec) => {
+                        if main {
+                            attempt.record(|_| {
+                                state.watchdog.record_invalid_previous_response_id(
+                                    &req,
+                                    req.previous_response_id.as_deref().unwrap(),
+                                )
+                            });
+                        }
+                        attempt.outcome(AttemptOutcome::Rejected, Some(spec.status));
+                        if !send_error(&mut ws, &attempt, &spec).await {
                             break;
                         }
-                    }
-                }
-
-                let session_turn = state.sessions.next_turn(&normalized.session_key);
-                let ctx = TurnContext {
-                    global_turn: seq,
-                    session_turn,
-                    chaos_override: effective_profile.chaos_override.clone(),
-                };
-                let store_flag = normalized.raw_body["store"].as_bool().unwrap_or(false);
-
-                let decision = match state.handler.handle(&normalized, &ctx).await {
-                    Some(d) => d,
-                    None => {
-                        let _ = ws
-                            .send(WsMessage::text(
-                                json!({
-                                    "type": "error",
-                                    "error": {
-                                        "type": "server_error",
-                                        "message": "mock handler exhausted",
-                                    }
-                                })
-                                .to_string(),
-                            ))
-                            .await;
-                        break;
+                        continue;
                     }
                 };
-
+                attempt.admitted(parent.as_ref());
+                let history = effective_history(&req, parent.as_ref());
+                let req = Arc::new(req);
+                let decision = match state
+                    .decide(&req, &purpose, &profile, &attempt, parent.as_ref())
+                    .await
+                {
+                    Ok(decision) => decision,
+                    Err(spec) => {
+                        attempt.outcome(AttemptOutcome::Rejected, Some(spec.status));
+                        if !send_error(&mut ws, &attempt, &spec).await {
+                            break;
+                        }
+                        continue;
+                    }
+                };
+                attempt.audit(req.clone(), &purpose, history);
                 state.metrics.active_streams.fetch_add(1, Ordering::Relaxed);
-                let _stream_guard = ActiveStreamGuard(state.metrics.clone());
-
-                let (reusable, completed_id) = execute_ws_turn(
+                let _stream = ActiveStreamGuard(state.metrics.clone());
+                let Some(response_id) = execute_ws_turn(
                     &mut ws,
-                    &normalized,
+                    &req,
                     decision,
-                    store_flag,
-                    effective_profile.latency,
-                    rl_lease,
-                    turn_started,
-                    &state,
+                    if main {
+                        profile.latency
+                    } else {
+                        LatencyProfile::default()
+                    },
+                    lease,
+                    history,
+                    &attempt,
                 )
-                .await;
-
-                if reusable {
-                    current_baseline_id = completed_id;
-                } else {
+                .await
+                else {
                     break;
+                };
+                if main || matches!(purpose, RequestUse::Compact(_)) {
+                    legacy_baseline = Some(response_id);
                 }
             }
-            WsMessage::Binary(_) | WsMessage::Frame(_) => break,
+            WsMessage::Binary(_) | WsMessage::Frame(_) | WsMessage::Close(_) => break,
         }
     }
+}
+
+#[cfg(feature = "proxy")]
+fn replayed_response(exchange: &crate::proxy::RecordedExchange) -> Option<Value> {
+    // Recorded messages are opaque bytes until the last provider terminal event.
+    exchange
+        .chunks
+        .iter()
+        .rev()
+        .filter(|chunk| !chunk.is_binary)
+        .find_map(|chunk| {
+            let mut event: Value = serde_json::from_str(&chunk.data).ok()?;
+            matches!(
+                event["type"].as_str(),
+                Some("response.completed" | "response.incomplete")
+            )
+            .then(|| event["response"].take())
+        })
+}
+
+struct WsBinding<'a> {
+    state: &'a ServerState,
+    id: u64,
+    bound: bool,
+}
+
+impl Drop for WsBinding<'_> {
+    fn drop(&mut self) {
+        if !self.bound {
+            return;
+        }
+        let mut routing = self.state.benchmark.write().unwrap();
+        routing.registry.unbind_connection(self.id);
+        routing.lineage.close_connection(self.id);
+    }
+}
+
+async fn send_ws<S>(ws: &mut WebSocketStream<S>, attempt: &Attempt, message: WsMessage) -> bool
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let mut send = std::pin::pin!(ws.send(message));
+    let mut waiting = None;
+    let result = tokio::select! {
+        _ = attempt.0.state.shutdown.cancelled() => false,
+        result = std::future::poll_fn(|cx| {
+            let result = send.as_mut().poll(cx);
+            if result.is_pending() && waiting.is_none() {
+                waiting = Some(Instant::now());
+            }
+            result
+        }) => result.is_ok(),
+    };
+    if let Some(start) = waiting {
+        attempt.backpressure(start.elapsed());
+    }
+    result
+}
+
+async fn send_error<S>(ws: &mut WebSocketStream<S>, attempt: &Attempt, spec: &HttpErrorSpec) -> bool
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    attempt.record(|metrics| {
+        metrics.http_errors_emitted.fetch_add(1, Ordering::Relaxed);
+        if spec.status == 429 {
+            metrics.rate_limits_emitted.fetch_add(1, Ordering::Relaxed);
+        }
+    });
+    let message = format_ws_error_frame(spec).to_string();
+    let len = message.len();
+    if send_ws(ws, attempt, WsMessage::text(message)).await {
+        attempt.frame(len, false);
+        true
+    } else {
+        false
+    }
+}
+
+async fn busy_message<S>(
+    ws: &mut WebSocketStream<S>,
+    message: Option<Result<WsMessage, tokio_tungstenite::tungstenite::Error>>,
+    attempt: &Attempt,
+) -> bool
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    match message {
+        Some(Ok(WsMessage::Ping(payload))) => ws.send(WsMessage::Pong(payload)).await.is_ok(),
+        Some(Ok(WsMessage::Pong(_))) => true,
+        Some(Ok(message @ (WsMessage::Text(_) | WsMessage::Binary(_)))) => {
+            let rejection = attempt.rejected_ws_message(message.len());
+            let mut error = HttpErrorSpec::new(
+                400,
+                "invalid_request_error",
+                "a response is already in progress on this connection",
+            );
+            error.code = Some("response_already_in_progress".into());
+            send_error(ws, &rejection, &error).await
+        }
+        _ => false,
+    }
+}
+
+async fn wait_ws<S>(ws: &mut WebSocketStream<S>, attempt: &Attempt, delay: Duration) -> bool
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    wait_ws_until(ws, attempt, tokio::time::Instant::now() + delay).await
+}
+
+async fn wait_ws_until<S>(
+    ws: &mut WebSocketStream<S>,
+    attempt: &Attempt,
+    deadline: tokio::time::Instant,
+) -> bool
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let now = tokio::time::Instant::now();
+    if deadline <= now {
+        return !attempt.0.state.shutdown.is_cancelled();
+    }
+    let started = Instant::now();
+    let mut sleep = std::pin::pin!(tokio::time::sleep_until(deadline));
+    let completed = loop {
+        tokio::select! {
+            _ = attempt.0.state.shutdown.cancelled() => break false,
+            _ = &mut sleep => break true,
+            msg = ws.next() => {
+                if !busy_message(ws, msg, attempt).await {
+                    break false;
+                }
+            }
+        }
+    };
+    attempt.sleep_recorded(deadline - now, started.elapsed());
+    completed
 }
 
 enum WsEventFeed {
@@ -348,14 +571,11 @@ impl WsEventFeed {
         }
     }
 
-    async fn next_event<S>(
-        &mut self,
-        ws: &mut WebSocketStream<S>,
-        shutdown: &CancellationToken,
-    ) -> WsFeedStep
+    async fn next_event<S>(&mut self, ws: &mut WebSocketStream<S>, attempt: &Attempt) -> WsFeedStep
     where
         S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send,
     {
+        let shutdown = &attempt.0.state.shutdown;
         match self {
             Self::Plan { events, .. } => {
                 if shutdown.is_cancelled() {
@@ -382,18 +602,7 @@ impl WsEventFeed {
                             }
                             None => return WsFeedStep::Ended,
                         },
-                        msg = ws.next() => match msg {
-                            Some(Ok(WsMessage::Ping(p))) => {
-                                if ws.send(WsMessage::Pong(p)).await.is_err() {
-                                    return WsFeedStep::Aborted;
-                                }
-                            }
-                            Some(Ok(WsMessage::Pong(_))) => {}
-                            None | Some(Ok(WsMessage::Close(_))) | Some(Err(_)) => {
-                                return WsFeedStep::Aborted;
-                            }
-                            _ => {}
-                        }
+                        msg = ws.next() => if !busy_message(ws, msg, attempt).await { return WsFeedStep::Aborted; }
                     }
                 }
             }
@@ -403,24 +612,17 @@ impl WsEventFeed {
     async fn wait_stall<S>(
         &mut self,
         ws: &mut WebSocketStream<S>,
-        shutdown: &CancellationToken,
+        attempt: &Attempt,
     ) -> WsStallOutcome
     where
         S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send,
     {
+        let shutdown = &attempt.0.state.shutdown;
         match self {
             Self::Plan { .. } => loop {
                 tokio::select! {
                     _ = shutdown.cancelled() => return WsStallOutcome::Ended,
-                    msg = ws.next() => match msg {
-                        Some(Ok(WsMessage::Ping(p))) => {
-                            let _ = ws.send(WsMessage::Pong(p)).await;
-                        }
-                        None | Some(Ok(WsMessage::Close(_))) | Some(Err(_)) => {
-                            return WsStallOutcome::Ended;
-                        }
-                        _ => {}
-                    }
+                    msg = ws.next() => if !busy_message(ws, msg, attempt).await { return WsStallOutcome::Ended; }
                 }
             },
             Self::Interactive { pending, rx } => {
@@ -439,52 +641,18 @@ impl WsEventFeed {
                                 }
                                 None => rx_open = false,
                             },
-                            msg = ws.next() => match msg {
-                                Some(Ok(WsMessage::Ping(p))) => {
-                                    if ws.send(WsMessage::Pong(p)).await.is_err() {
-                                        return WsStallOutcome::Ended;
-                                    }
-                                }
-                                Some(Ok(WsMessage::Pong(_))) => {}
-                                None | Some(Ok(WsMessage::Close(_))) | Some(Err(_)) => {
-                                    return WsStallOutcome::Ended;
-                                }
-                                _ => {}
-                            }
+                            msg = ws.next() => if !busy_message(ws, msg, attempt).await { return WsStallOutcome::Ended; }
                         }
                     } else {
                         tokio::select! {
                             _ = shutdown.cancelled() => return WsStallOutcome::Ended,
-                            msg = ws.next() => match msg {
-                                Some(Ok(WsMessage::Ping(p))) => {
-                                    if ws.send(WsMessage::Pong(p)).await.is_err() {
-                                        return WsStallOutcome::Ended;
-                                    }
-                                }
-                                Some(Ok(WsMessage::Pong(_))) => {}
-                                None | Some(Ok(WsMessage::Close(_))) | Some(Err(_)) => {
-                                    return WsStallOutcome::Ended;
-                                }
-                                _ => {}
-                            }
+                            msg = ws.next() => if !busy_message(ws, msg, attempt).await { return WsStallOutcome::Ended; }
                         }
                     }
                 }
             }
         }
     }
-}
-
-enum ResolvedWsDecision {
-    Plan {
-        plan: Box<TurnPlan>,
-        close_guard: TurnCloseGuard,
-    },
-    Interactive {
-        first: Box<TurnEvent>,
-        stream: InteractiveStream,
-        close_guard: TurnCloseGuard,
-    },
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -492,526 +660,321 @@ async fn execute_ws_turn<S>(
     ws: &mut WebSocketStream<S>,
     req: &NormalizedRequest,
     decision: TurnDecision,
-    store_flag: bool,
     latency_profile: LatencyProfile,
-    mut rl_lease: Option<RateLimitLease>,
-    turn_started: Instant,
-    state: &Arc<ServerState>,
-) -> (bool, Option<String>)
+    mut lease: Option<RateLimitLease>,
+    history: HistorySize,
+    attempt: &Attempt,
+) -> Option<String>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send,
 {
-    let resolved = match decision {
-        TurnDecision::Plan(mut plan) => {
-            let close_guard = TurnCloseGuard::new(CloseSignalGuard(plan.on_close.take()));
-            ResolvedWsDecision::Plan {
-                plan: Box::new(plan),
-                close_guard,
-            }
-        }
+    let state = &attempt.0.state;
+    let (mut plan, mut feed, _close_guard) = match decision {
+        TurnDecision::Plan(plan) => resolve_ws_plan(plan, None),
         TurnDecision::Interactive(mut stream) => {
-            // Hold stream.closed in an RAII guard BEFORE the first await so abort_all()
-            // during shutdown or client disconnect always wakes TurnHandle::wait_closed().
-            let mut close_guard =
+            let guard =
                 TurnCloseGuard::new(CloseSignalGuard(Some(CloseSignal(stream.closed.clone()))));
             let first = loop {
                 tokio::select! {
-                    _ = state.shutdown.cancelled() => return (false, None),
-                    ev = stream.events.recv() => break ev,
-                    msg = ws.next() => match msg {
-                        Some(Ok(WsMessage::Ping(p))) => {
-                            if ws.send(WsMessage::Pong(p)).await.is_err() {
-                                return (false, None);
-                            }
-                        }
-                        Some(Ok(WsMessage::Pong(_))) => {}
-                        None | Some(Ok(WsMessage::Close(_))) | Some(Err(_)) => {
-                            return (false, None);
-                        }
-                        _ => {}
-                    }
+                    _ = state.shutdown.cancelled() => return None,
+                    event = stream.events.recv() => break event?,
+                    msg = ws.next() => if !busy_message(ws, msg, attempt).await { return None; },
                 }
             };
             match first {
-                None => return (false, None),
-                Some(InteractiveCommand::Plan { plan, on_close }) => {
-                    close_guard.attach(on_close);
-                    ResolvedWsDecision::Plan { plan, close_guard }
+                InteractiveCommand::Plan { mut plan, on_close } => {
+                    let mut guard = guard;
+                    guard.attach(on_close);
+                    plan.on_close = None;
+                    resolve_ws_plan(*plan, Some(guard))
                 }
-                Some(InteractiveCommand::Event(first_event)) => ResolvedWsDecision::Interactive {
-                    first: first_event,
-                    stream,
-                    close_guard,
-                },
+                InteractiveCommand::Event(first) => {
+                    let id = stream.response_id.lock().unwrap().clone();
+                    (
+                        TurnPlan {
+                            response_id: id,
+                            ..Default::default()
+                        },
+                        WsEventFeed::Interactive {
+                            pending: Some(first),
+                            rx: stream.events,
+                        },
+                        guard,
+                    )
+                }
             }
         }
     };
-
-    let (
-        mut feed,
-        response_id_override,
-        model_override,
-        usage_hint,
-        mut pacer,
-        ttft_dur,
-        _close_guard,
-    ) = match resolved {
-        ResolvedWsDecision::Plan { plan, close_guard } => {
-            let plan = *plan;
-            let inferred_finish = plan.inferred_finish_reason();
-            let usage_hint = plan_usage_hint(&plan, req);
-            let cached_tokens = usage_hint.cache_read_tokens.unwrap_or(0);
-            let uncached_tokens = usage_hint.input_tokens.saturating_sub(cached_tokens);
-            let in_flight_sample = state.metrics.active_streams.load(Ordering::Relaxed).max(1);
-            let mut pacer = TurnPacer::new(
-                latency_profile,
-                pacer_seed_for(req),
-                in_flight_sample,
-                plan.ttft_ms,
-                (plan.chunk_delay_ms > 0).then_some(plan.chunk_delay_ms),
-            );
-            let ttft_dur = pacer.compute_ttft(uncached_tokens, cached_tokens);
-            let feed = WsEventFeed::Plan {
-                events: plan.events.into_iter(),
-                inferred_finish,
-            };
-            (
-                feed,
-                plan.response_id,
-                plan.model_override,
-                usage_hint,
-                Some(pacer),
-                ttft_dur,
-                close_guard,
-            )
-        }
-        ResolvedWsDecision::Interactive {
-            first,
-            stream,
-            close_guard,
-        } => {
-            let response_id = stream.response_id.lock().unwrap().clone();
-            let usage_hint = Usage::new(req.estimated_input_tokens.max(1), 0);
-            let feed = WsEventFeed::Interactive {
-                pending: Some(first),
-                rx: stream.events,
-            };
-            (
-                feed,
-                response_id,
-                None,
-                usage_hint,
-                None,
-                Duration::ZERO,
-                close_guard,
-            )
-        }
-    };
-
-    let response_id = response_id_override
-        .unwrap_or_else(|| default_response_id(Protocol::OpenaiResponsesWs, req.sequence));
-    let model = model_override.unwrap_or_else(|| req.model.clone());
-    let mut final_usage = usage_hint;
-
-    let mut encoder = create_encoder(
-        Protocol::OpenaiResponsesWs,
-        response_id,
-        model.clone(),
-        true,
+    let response_id = plan
+        .response_id
+        .take()
+        .unwrap_or_else(|| default_response_id(req.protocol, req.sequence));
+    attempt.ready(Some(&response_id));
+    let model = plan
+        .model_override
+        .take()
+        .unwrap_or_else(|| req.model.clone());
+    let usage_event = initial_usage(
+        match &feed {
+            WsEventFeed::Plan { events, .. } => events.as_slice(),
+            WsEventFeed::Interactive { .. } => &[],
+        },
+        req,
     );
-    let mut frames = Vec::new();
-    let mut first_delta_at: Option<Instant> = None;
-    let mut recorded_ttft_ms: Option<u64> = None;
-    let mut emitted_semantic_bytes = 0usize;
-    let mut emitted_tool_ids: Vec<String> = Vec::new();
-    let mut emitted_compaction = false;
-
-    if !ttft_dur.is_zero() {
-        let deadline = tokio::time::Instant::now() + ttft_dur;
-        loop {
-            let now = tokio::time::Instant::now();
-            if now >= deadline {
-                break;
-            }
-            tokio::select! {
-                _ = state.shutdown.cancelled() => return (false, None),
-                _ = tokio::time::sleep(deadline - now) => break,
-                msg = ws.next() => match msg {
-                    Some(Ok(WsMessage::Ping(p))) => {
-                        if ws.send(WsMessage::Pong(p)).await.is_err() {
-                            return (false, None);
-                        }
-                    }
-                    None | Some(Ok(WsMessage::Close(_))) | Some(Err(_)) => {
-                        state.metrics.abandoned_streams.fetch_add(1, Ordering::Relaxed);
-                        state.watchdog.record_turn_outcome(req, &emitted_tool_ids, emitted_compaction, false);
-                        return (false, None);
-                    }
-                    _ => {}
-                }
-            }
-        }
+    let mut usage = event_usage(&usage_event).unwrap().clone();
+    attempt.usage(usage.clone());
+    let mut pacer = matches!(feed, WsEventFeed::Plan { .. }).then(|| {
+        let active = state.metrics.active_streams.load(Ordering::Relaxed).max(1);
+        super::turn_pacer(req, &plan, &usage, attempt, latency_profile, active)
+    });
+    let mut encoder = state.encoder(req, response_id, model);
+    for _ in encoder.encode_event(usage_event) {}
+    let mut semantic_bytes = 0;
+    if let Some(pacer) = &pacer
+        && !wait_ws(ws, attempt, pacer.initial_delay()).await
+    {
+        return None;
     }
-
-    loop {
-        let ev = match feed.next_event(ws, &state.shutdown).await {
-            WsFeedStep::Event(ev) => *ev,
-            WsFeedStep::Ended => break,
-            WsFeedStep::Aborted => {
-                state
-                    .metrics
-                    .abandoned_streams
-                    .fetch_add(1, Ordering::Relaxed);
-                state.watchdog.record_turn_outcome(
-                    req,
-                    &emitted_tool_ids,
-                    emitted_compaction,
-                    false,
-                );
-                return (false, None);
-            }
+    let close_reason = loop {
+        let event = match feed.next_event(ws, attempt).await {
+            WsFeedStep::Aborted => return None,
+            WsFeedStep::Ended => break feed.auto_finish_reason()?,
+            WsFeedStep::Event(event) => *event,
         };
-        let ev_sem_bytes = semantic_event_bytes(&ev);
-        match ev {
+        match event {
             TurnEvent::Delay { ms } => {
-                tokio::select! {
-                    _ = state.shutdown.cancelled() => return (false, None),
-                    _ = tokio::time::sleep(Duration::from_millis(ms)) => {}
+                if !wait_ws(ws, attempt, Duration::from_millis(ms)).await {
+                    return None;
                 }
             }
             TurnEvent::JitterDelay { min_ms, max_ms } => {
-                let ms = jitter_ms(min_ms, max_ms);
-                if ms > 0 {
-                    tokio::select! {
-                        _ = state.shutdown.cancelled() => return (false, None),
-                        _ = tokio::time::sleep(Duration::from_millis(ms)) => {}
-                    }
+                let ms = pacer.as_mut().map_or_else(
+                    || jitter_ms(min_ms, max_ms),
+                    |pacer| pacer.jitter_ms(min_ms, max_ms),
+                );
+                if !wait_ws(ws, attempt, Duration::from_millis(ms)).await {
+                    return None;
                 }
             }
             TurnEvent::Stall => {
-                state.metrics.stalls_entered.fetch_add(1, Ordering::Relaxed);
-                match feed.wait_stall(ws, &state.shutdown).await {
-                    WsStallOutcome::Resumed => continue,
-                    WsStallOutcome::Ended => return (false, None),
+                attempt.record(|metrics| {
+                    metrics.stalls_entered.fetch_add(1, Ordering::Relaxed);
+                });
+                if matches!(feed.wait_stall(ws, attempt).await, WsStallOutcome::Ended) {
+                    if matches!(feed, WsEventFeed::Plan { .. }) && !state.shutdown.is_cancelled() {
+                        attempt.outcome(AttemptOutcome::InjectedFault, None);
+                    }
+                    return None;
                 }
             }
             TurnEvent::HttpError(spec) => {
-                state
-                    .metrics
-                    .http_errors_emitted
-                    .fetch_add(1, Ordering::Relaxed);
-                if spec.status == 429 {
-                    state
-                        .metrics
-                        .rate_limits_emitted
-                        .fetch_add(1, Ordering::Relaxed);
-                }
-                let err_frame = format_ws_error_frame(&spec);
-                let _ = ws.send(WsMessage::text(err_frame.to_string())).await;
-                state.metrics.record_dimension(
-                    Protocol::OpenaiResponsesWs,
-                    &model,
-                    &spec.status.to_string(),
-                    final_usage.input_tokens,
-                    0,
-                    final_usage.cache_read_tokens.unwrap_or(0),
-                    None,
-                    Some(turn_started.elapsed().as_millis() as u64),
-                );
-                return (false, None);
+                attempt.outcome(AttemptOutcome::InjectedFault, Some(spec.status));
+                let _ = send_error(ws, attempt, &spec).await;
+                return None;
             }
             TurnEvent::DropConnection => {
-                state
-                    .metrics
-                    .connection_drops_emitted
-                    .fetch_add(1, Ordering::Relaxed);
-                return (false, None);
+                attempt.record(|metrics| {
+                    metrics
+                        .connection_drops_emitted
+                        .fetch_add(1, Ordering::Relaxed);
+                });
+                attempt.outcome(AttemptOutcome::InjectedFault, None);
+                return None;
             }
             TurnEvent::TruncateEof => {
+                attempt.outcome(AttemptOutcome::InjectedFault, None);
                 let _ = ws.close(None).await;
-                return (false, None);
+                return None;
             }
-            TurnEvent::MidStreamError(err) => {
-                state
-                    .metrics
-                    .mid_stream_errors_emitted
-                    .fetch_add(1, Ordering::Relaxed);
-                encoder.push_event(TurnEvent::MidStreamError(err), &mut frames);
-                let _ = flush_ws_frames(ws, &mut frames, None, 0, None, state).await;
-                return (false, None);
-            }
-            TurnEvent::Finish { reason } => {
-                let completion = encoder.finish(reason, &mut frames);
-                if store_flag {
-                    state
-                        .stored_responses
-                        .put(completion.response_id.clone(), completion.response_json);
-                }
-                if !flush_ws_frames(ws, &mut frames, None, 0, None, state).await {
-                    state
-                        .metrics
-                        .abandoned_streams
+            TurnEvent::MidStreamError(error) => {
+                attempt.record(|metrics| {
+                    metrics
+                        .mid_stream_errors_emitted
                         .fetch_add(1, Ordering::Relaxed);
-                    state.watchdog.record_turn_outcome(
-                        req,
-                        &emitted_tool_ids,
-                        emitted_compaction,
-                        false,
-                    );
-                    return (false, None);
-                }
-                record_ws_completion(
-                    req,
-                    &model,
-                    &final_usage,
-                    emitted_semantic_bytes,
-                    &emitted_tool_ids,
-                    emitted_compaction,
-                    first_delta_at,
-                    recorded_ttft_ms,
-                    &mut rl_lease,
-                    turn_started,
-                    state,
-                );
-                return (completion.ws_reusable, Some(completion.response_id));
-            }
-            TurnEvent::NativeCompaction(c) => {
-                state
-                    .metrics
-                    .native_compactions_emitted
-                    .fetch_add(1, Ordering::Relaxed);
-                encoder.push_event(TurnEvent::NativeCompaction(c), &mut frames);
-                let mut ttft = TtftTracker {
-                    turn_started,
-                    first_delta_at: &mut first_delta_at,
-                    recorded_ttft_ms: &mut recorded_ttft_ms,
-                };
-                let status = flush_ws_frames_detailed(
+                });
+                attempt.outcome(AttemptOutcome::InjectedFault, None);
+                let _ = flush_ws_frames(
                     ws,
-                    &mut frames,
+                    encoder.encode_event(TurnEvent::MidStreamError(error)),
                     pacer.as_mut(),
-                    ev_sem_bytes,
-                    Some(&mut ttft),
-                    state,
+                    &plan.wire_poison,
+                    attempt,
+                    &mut semantic_bytes,
                 )
                 .await;
-                if status.all_wire_frames_sent {
-                    emitted_compaction = true;
-                    emitted_semantic_bytes += ev_sem_bytes;
-                }
-                if !status.continued {
-                    state
-                        .metrics
-                        .abandoned_streams
-                        .fetch_add(1, Ordering::Relaxed);
-                    state.watchdog.record_turn_outcome(
-                        req,
-                        &emitted_tool_ids,
-                        emitted_compaction,
-                        false,
-                    );
-                    return (false, None);
-                }
+                return None;
             }
-            TurnEvent::Usage(u) => {
-                final_usage = u.clone();
-                encoder.push_event(TurnEvent::Usage(u), &mut frames);
-            }
-            other => {
-                let maybe_tool_id = match &other {
-                    TurnEvent::ToolCall(tc) => Some(tc.id.clone()),
-                    _ => None,
-                };
-                encoder.push_event(other, &mut frames);
-                let mut ttft = TtftTracker {
-                    turn_started,
-                    first_delta_at: &mut first_delta_at,
-                    recorded_ttft_ms: &mut recorded_ttft_ms,
-                };
-                let status = flush_ws_frames_detailed(
+            TurnEvent::Finish { reason } => break reason,
+            event => {
+                if let Some(value) = event_usage(&event) {
+                    usage = value.clone();
+                    attempt.usage(usage.clone());
+                }
+                let item = DeliveredItem::from_event(&event);
+                if let Some(item) = &item {
+                    item.issued(attempt);
+                }
+                let sent = flush_ws_frames(
                     ws,
-                    &mut frames,
+                    encoder.encode_event(event),
                     pacer.as_mut(),
-                    ev_sem_bytes,
-                    Some(&mut ttft),
-                    state,
+                    &plan.wire_poison,
+                    attempt,
+                    &mut semantic_bytes,
                 )
                 .await;
-                if status.all_wire_frames_sent {
-                    if let Some(tid) = maybe_tool_id {
-                        emitted_tool_ids.push(tid);
-                    }
-                    emitted_semantic_bytes += ev_sem_bytes;
+                if sent.all_wire_frames_sent
+                    && let Some(item) = item
+                {
+                    item.deliver(attempt, req);
                 }
-                if !status.continued {
-                    state
-                        .metrics
-                        .abandoned_streams
-                        .fetch_add(1, Ordering::Relaxed);
-                    state.watchdog.record_turn_outcome(
-                        req,
-                        &emitted_tool_ids,
-                        emitted_compaction,
-                        false,
-                    );
-                    return (false, None);
+                if !sent.continued {
+                    return None;
                 }
             }
         }
-    }
-
-    if !encoder.is_finished()
-        && let Some(reason) = feed.auto_finish_reason()
+    };
+    let mut tail = Vec::new();
+    let completion = encoder.finish_encoded(close_reason, &mut |frame| tail.push(frame));
+    if !flush_ws_frames(
+        ws,
+        tail.into_iter(),
+        None,
+        &plan.wire_poison,
+        attempt,
+        &mut semantic_bytes,
+    )
+    .await
+    .continued
     {
-        let completion = encoder.finish(reason, &mut frames);
-        if store_flag {
-            state
-                .stored_responses
-                .put(completion.response_id.clone(), completion.response_json);
-        }
-        if !flush_ws_frames(ws, &mut frames, None, 0, None, state).await {
-            state
-                .metrics
-                .abandoned_streams
-                .fetch_add(1, Ordering::Relaxed);
-            state
-                .watchdog
-                .record_turn_outcome(req, &emitted_tool_ids, emitted_compaction, false);
-            return (false, None);
-        }
-        record_ws_completion(
-            req,
-            &model,
-            &final_usage,
-            emitted_semantic_bytes,
-            &emitted_tool_ids,
-            emitted_compaction,
-            first_delta_at,
-            recorded_ttft_ms,
-            &mut rl_lease,
-            turn_started,
-            state,
-        );
-        return (completion.ws_reusable, Some(completion.response_id));
+        return None;
     }
-
-    (false, None)
+    usage.output_tokens = usage.output_tokens.max((semantic_bytes as u64) / 4);
+    if let Some(lease) = &mut lease {
+        lease.debit_output_tokens(usage.output_tokens);
+    }
+    attempt.usage(usage);
+    attempt.with_span(|span, now| span.body_dropped_ns = Some(now));
+    if completion.errored {
+        attempt.outcome(AttemptOutcome::InjectedFault, None);
+        return None;
+    }
+    attempt.outcome(AttemptOutcome::Completed, Some(200));
+    attempt.deliver_summary(req);
+    let id = completion.response_id;
+    state.publish_response(
+        req,
+        attempt,
+        id.clone(),
+        completion.response_json,
+        req.options.store.unwrap_or(false),
+        attempt.response_history(history, semantic_bytes),
+    );
+    completion.ws_reusable.then_some(id)
 }
 
-#[allow(clippy::too_many_arguments)]
-fn record_ws_completion(
-    req: &NormalizedRequest,
-    model: &str,
-    usage: &Usage,
-    emitted_semantic_bytes: usize,
-    emitted_tool_ids: &[String],
-    emitted_compaction: bool,
-    first_delta_at: Option<Instant>,
-    recorded_ttft_ms: Option<u64>,
-    rl_lease: &mut Option<RateLimitLease>,
-    turn_started: Instant,
-    state: &ServerState,
-) {
-    let dur = turn_started.elapsed().as_millis() as u64;
-    state.metrics.turn_duration_ms.record(dur);
-    let out_toks = usage.output_tokens.max((emitted_semantic_bytes as u64) / 4);
-    if let Some(first_at) = first_delta_at
-        && out_toks > 0
-    {
-        let tps = ((out_toks as f64) / first_at.elapsed().as_secs_f64().max(0.001))
-            .round()
-            .max(1.0) as u64;
-        state.metrics.effective_tps.record(tps);
-    }
-    if let Some(lease) = rl_lease.as_mut() {
-        lease.debit_output_tokens(out_toks);
-    }
-    state.metrics.record_dimension(
-        Protocol::OpenaiResponsesWs,
-        model,
-        "200",
-        usage.input_tokens,
-        out_toks,
-        usage.cache_read_tokens.unwrap_or(0),
-        recorded_ttft_ms,
-        Some(dur),
-    );
-    state
-        .watchdog
-        .record_turn_outcome(req, emitted_tool_ids, emitted_compaction, true);
+fn resolve_ws_plan(
+    mut plan: TurnPlan,
+    guard: Option<TurnCloseGuard>,
+) -> (TurnPlan, WsEventFeed, TurnCloseGuard) {
+    let guard =
+        guard.unwrap_or_else(|| TurnCloseGuard::new(CloseSignalGuard(plan.on_close.take())));
+    let inferred_finish = plan.inferred_finish_reason();
+    let feed = WsEventFeed::Plan {
+        events: std::mem::take(&mut plan.events).into_iter(),
+        inferred_finish,
+    };
+    (plan, feed, guard)
 }
 
 async fn flush_ws_frames<S>(
     ws: &mut WebSocketStream<S>,
-    frames: &mut Vec<WireFrame>,
-    pacer: Option<&mut TurnPacer>,
-    semantic_bytes: usize,
-    ttft: Option<&mut TtftTracker<'_>>,
-    state: &ServerState,
-) -> bool
-where
-    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send,
-{
-    flush_ws_frames_detailed(ws, frames, pacer, semantic_bytes, ttft, state)
-        .await
-        .continued
-}
-
-async fn flush_ws_frames_detailed<S>(
-    ws: &mut WebSocketStream<S>,
-    frames: &mut Vec<WireFrame>,
+    frames: impl Iterator<Item = EncodedFrame>,
     mut pacer: Option<&mut TurnPacer>,
-    semantic_bytes: usize,
-    mut ttft: Option<&mut TtftTracker<'_>>,
-    state: &ServerState,
+    poison: &WirePoisonConfig,
+    attempt: &Attempt,
+    total_semantic_bytes: &mut usize,
 ) -> FlushStatus
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send,
 {
-    let total_frames = frames.len();
-    let per_frame_sem_bytes = if semantic_bytes > 0 {
-        (semantic_bytes / total_frames.max(1)).max(1)
-    } else {
-        0
-    };
-    let mut sent_frames = 0usize;
-    for frame in frames.drain(..) {
-        let text = match frame {
-            WireFrame::WsText(s) => s,
-            WireFrame::Sse(b) | WireFrame::Raw(b) => String::from_utf8_lossy(&b).into_owned(),
+    let mut frames = frames.peekable();
+    while let Some(EncodedFrame {
+        wire,
+        kind,
+        semantic_bytes,
+    }) = frames.next()
+    {
+        let mut text = match wire {
+            WireFrame::WsText(text) => text,
+            WireFrame::Raw(bytes) | WireFrame::Sse(bytes) => {
+                String::from_utf8_lossy(&bytes).into_owned()
+            }
         };
-        let is_delta = semantic_bytes > 0 && is_semantic_delta_frame(&text);
+        if poison.crlf_line_endings {
+            text.push_str("\r\n");
+        }
         let len = text.len();
-        if ws.send(WsMessage::text(text)).await.is_err() {
+        if poison.inject_sse_comments && !send_ws(ws, attempt, WsMessage::Ping(Bytes::new())).await
+        {
             return FlushStatus {
                 all_wire_frames_sent: false,
                 continued: false,
             };
         }
-        state
-            .metrics
-            .bytes_sent
-            .fetch_add(len as u64, Ordering::Relaxed);
-        sent_frames += 1;
-
-        if is_delta && let Some(ref mut tracker) = ttft {
-            tracker.record_once(&state.metrics);
+        let split = poison
+            .split_utf8_boundaries
+            .then(|| {
+                text.as_bytes()
+                    .iter()
+                    .position(|byte| byte & 0b1100_0000 == 0b1000_0000)
+            })
+            .flatten();
+        let sent = if let Some(split) = split {
+            use tokio_tungstenite::tungstenite::protocol::frame::{
+                Frame,
+                coding::{Data, OpCode},
+            };
+            let bytes = Bytes::from(text);
+            send_ws(
+                ws,
+                attempt,
+                WsMessage::Frame(Frame::message(
+                    bytes.slice(..split),
+                    OpCode::Data(Data::Text),
+                    false,
+                )),
+            )
+            .await
+                && send_ws(
+                    ws,
+                    attempt,
+                    WsMessage::Frame(Frame::message(
+                        bytes.slice(split..),
+                        OpCode::Data(Data::Continue),
+                        true,
+                    )),
+                )
+                .await
+        } else {
+            send_ws(ws, attempt, WsMessage::text(text)).await
+        };
+        if !sent {
+            return FlushStatus {
+                all_wire_frames_sent: false,
+                continued: false,
+            };
         }
-
-        if is_delta
-            && let Some(ref mut p) = pacer
-            && per_frame_sem_bytes > 0
+        attempt.frame(len, kind == FrameKind::SemanticDelta);
+        *total_semantic_bytes += semantic_bytes;
+        if let Some(deadline) = pacer.as_mut().and_then(|pacer| {
+            pacer.next_frame_deadline(kind, semantic_bytes, tokio::time::Instant::now())
+        }) && !wait_ws_until(ws, attempt, deadline).await
         {
-            let delay = p.next_chunk_delay(per_frame_sem_bytes);
-            if !delay.is_zero() {
-                tokio::select! {
-                    _ = state.shutdown.cancelled() => return FlushStatus {
-                        all_wire_frames_sent: sent_frames == total_frames,
-                        continued: false,
-                    },
-                    _ = tokio::time::sleep(delay) => {}
-                }
-            }
+            return FlushStatus {
+                all_wire_frames_sent: frames.peek().is_none(),
+                continued: false,
+            };
         }
     }
     FlushStatus {

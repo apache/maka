@@ -1,0 +1,67 @@
+{
+  "version": 1,
+  "scenario": "chaos-recovery",
+  "seed": 41004,
+  "fixture": "chaos-recovery-v1",
+  "track": "native",
+  "fixtures": {
+    "input": {
+      "kind": "file",
+      "path": "artifacts/input.txt",
+      "content": "recovery-token=783b\n"
+    },
+    "verifyBatch": {
+      "kind": "command",
+      "command": "grep -Fx -- 'state=started' 'artifacts/recovery.txt'"
+    },
+    "verifyDone": {
+      "kind": "command",
+      "command": "grep -Fx -- 'state=recovered' 'artifacts/recovery.txt'"
+    }
+  },
+  "steps": [
+    {
+      "id": "read",
+      "readFile": { "path": "artifacts/input.txt", "expectMarker": "recovery-token=783b" }
+    },
+    {
+      "id": "write",
+      "writeFile": { "path": "artifacts/recovery.txt", "content": "state=started\n" }
+    },
+    {
+      "id": "interrupted-check",
+      "parallelBatch": [
+        { "readFile": { "path": "artifacts/recovery.txt", "expectMarker": "state=started" } },
+        { "shell": { "commandId": "verifyBatch" } }
+      ]
+    },
+    {
+      "id": "bad-arguments",
+      "badToolCall": { "mode": "wrongType", "expectHandling": "toolError" }
+    },
+    {
+      "id": "unknown-tool",
+      "unknownTool": { "name": "bench_unlisted_recovery_tool", "expectHandling": "toolError" }
+    },
+    {
+      "id": "recover",
+      "editFile": { "path": "artifacts/recovery.txt", "old": "state=started", "new": "state=recovered" }
+    },
+    {
+      "id": "verify",
+      "shell": { "commandId": "verifyDone" }
+    },
+    {
+      "id": "done",
+      "finalAnswer": {
+        "text": "CHAOS_RECOVERY_OK: artifacts/recovery.txt records recovery.",
+        "expectMarkers": ["CHAOS_RECOVERY_OK"]
+      }
+    }
+  ],
+  "faults": [
+    { "step": "read", "attempt": 1, "at": "beforeHeaders", "emit": "http429" },
+    { "step": "write", "attempt": 1, "at": "beforeHeaders", "emit": "http503" },
+    { "step": "interrupted-check", "attempt": 1, "at": "afterFirstCompleteCall", "emit": "disconnect" }
+  ]
+}
