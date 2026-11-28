@@ -243,6 +243,7 @@ impl Owner {
             };
             let (preview, _) = tokio::sync::watch::channel(None);
             original_model = Some(driver_model::DriverModel {
+                discovery: None,
                 memory: basis.memory.clone(),
                 history: state.session_history(self.run_owner(), session_id.clone()),
                 state,

@@ -422,7 +422,10 @@ impl Owner {
                         let source = if let Some(pricing) = &self.pricing {
                             source.with_pricing(pricing.clone())
                         } else { source };
+                        let discovery = matches!(&view.spec.trigger, Trigger::Schedule { schedule_id } if
+                            self.scheduler.investigation.read().unwrap().as_ref().is_some_and(|j| j.worker == view.spec.session_id && j.task_id == *schedule_id));
                         let model = driver_model::DriverModel {
+                        discovery: discovery.then(Default::default),
                         memory: basis.memory.clone(),
                         state: state.clone(),
                         history: state.session_history(view.spec.owner.clone(), view.spec.session_id.clone()),

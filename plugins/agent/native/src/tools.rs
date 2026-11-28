@@ -114,12 +114,6 @@ impl SelectedTool {
     pub(crate) fn name(&self) -> &str {
         &self.selection.name
     }
-    pub(crate) fn reads_session_content(&self) -> bool {
-        use crate::contract::DiscoveryToolGroup;
-        self.discovery_group == DiscoveryToolGroup::ReadFiles
-            || (self.discovery_group == DiscoveryToolGroup::History
-                && self.selection.method == "sessionRead")
-    }
     pub(crate) fn permits_approval(&self, name: &str, method: &str, binding: &str) -> bool {
         self.selection.name == name
             && self.selection.method == method

@@ -8973,6 +8973,7 @@ dependencies = [
  "maka-web-api",
  "maka-workspace-api",
  "maka-workspace-support",
+ "notify",
  "reqwest",
  "rmcp",
  "rusqlite",

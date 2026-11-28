@@ -88,6 +88,30 @@ impl FollowupGrant {
     }
 }
 
+pub(in crate::owner) fn file_change_grant(
+    plan: &Plan,
+) -> Option<(
+    &super::notifications::BackgroundApproval,
+    &DiscoveryToolGrant,
+)> {
+    if plan.task.status != Status::Active
+        || matches!(
+            plan.task.schedule,
+            TaskSchedule::Once { .. } | TaskSchedule::Script { .. }
+        )
+    {
+        return None;
+    }
+    match &plan.authorization {
+        Some(Approval::Discovery {
+            approval,
+            tools,
+            authority: DiscoveryAuthority::User { .. },
+        }) => Some((approval, tools)),
+        _ => None,
+    }
+}
+
 impl Approval {
     pub(in crate::owner) fn discovery_generation(&self) -> Option<uuid::Uuid> {
         match self {
@@ -205,6 +229,7 @@ impl BackgroundGrant {
 }
 
 pub(super) struct ActiveInvestigation {
+    pub(super) task_id: String,
     pub(super) worker: String,
     pub(super) profile: DiscoveryWorkerTools,
 }
@@ -273,7 +298,7 @@ impl Owner {
     fn discovery_tool_groups(&self, names: &[String]) -> DiscoveryToolSelection {
         names
             .iter()
-            .filter(|name| name.as_str() != super::discovery::COMPLETE)
+            .filter(|name| !super::discovery::WORKER_TOOLS.contains(&name.as_str()))
             .map(|name| (name.clone(), self.discovery_tool_group(name)))
             .collect()
     }

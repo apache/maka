@@ -216,6 +216,93 @@ impl Owner {
             change,
         })
     }
+
+    pub(super) async fn quiescent_permission_guard(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<SessionQuiescenceGuard>, String> {
+        if self.runs.state().await.busy(session_id) || self.mcp_projects.has_any_client(session_id)
+        {
+            return Ok(None);
+        }
+        let guard = self
+            .durable
+            .quiescence_guard(self.run_owner(), session_id.to_owned())
+            .map_err(|error| error.to_string())?;
+        Ok(guard
+            .observe()
+            .await
+            .map_err(|error| error.to_string())?
+            .is_quiescent()
+            .then_some(guard))
+    }
+
+    pub(super) async fn elevate_dossier_thread(
+        &self,
+        session_id: &str,
+    ) -> Result<NativeMutation<crate::contract::DossierThread>, String> {
+        let ordered = Arc::new(self.runs.ordered(session_id).await);
+        let Some(record) = self
+            .canonical_catalog()?
+            .record(session_id)
+            .await
+            .map_err(|error| error.to_string())?
+        else {
+            return Err("dossier_thread_unavailable".into());
+        };
+        if record.metadata.archived {
+            return Err("session_archived".into());
+        }
+        let configuration: StoredSessionConfiguration =
+            serde_json::from_value(record.metadata.configuration.clone())
+                .map_err(|error| format!("agent_session_configuration_invalid: {error}"))?;
+        if configuration.dossier_seed.is_none() {
+            return Err("dossier_thread_unavailable".into());
+        }
+        if configuration.dossier_elevated {
+            return Ok(NativeMutation::Returned(crate::contract::DossierThread {
+                session_id: session_id.to_owned(),
+            }));
+        }
+        let target_permissions = cap_permissions(
+            self.default_session_permissions().await?,
+            &self.settings.permissions,
+        );
+        let guard = self
+            .quiescent_permission_guard(session_id)
+            .await?
+            .ok_or("session_busy")?;
+        let writer = guard.data_writer().clone();
+        let (_, change) = self
+            .store
+            .prepare_session_metadata(
+                &record.metadata.id,
+                record.metadata.revision,
+                move |configuration: &mut StoredSessionConfiguration| {
+                    configuration.dossier_elevated = true;
+                    configuration.permissions = target_permissions;
+                    advance_permission_boundary(configuration)?;
+                    Ok(())
+                },
+                &writer,
+                ConfigurationChange {
+                    ordered,
+                    guard: Some(guard),
+                    root: self
+                        .store
+                        .owned_root()
+                        .map_err(|_| "agent_root_unavailable")?,
+                },
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok(NativeMutation::Commit {
+            value: crate::contract::DossierThread {
+                session_id: session_id.to_owned(),
+            },
+            change,
+        })
+    }
 }
 
 struct ConfigurationChange {

@@ -23,6 +23,7 @@ pub mod artifacts;
 pub mod cells;
 pub mod computer;
 pub mod diagnostics;
+pub mod discovery;
 pub mod external_effects;
 pub mod external_publication;
 pub mod external_steering;
@@ -468,10 +469,105 @@ pub const MIGRATIONS: &[maka_event_log::migration::Migration] = &[
         configure: None,
         data: None,
     },
+    maka_event_log::migration::Migration::sql(
+        68,
+        "owner-scoped discovery dossiers, cursors, watches, pending actions and preferences",
+        include_str!("../migrations/0068_discovery_dossiers.sql"),
+    )
+    .with_configure(relocate_discovery_preview_ledger),
+    maka_event_log::migration::Migration::sql(
+        69,
+        "pending discovery changes and sliding write windows",
+        include_str!("../migrations/0069_discovery_changes.sql"),
+    ),
 ];
+
+// Before the Discovery stack joined main, its five SQL files occupied versions 57–61.
+// A move requires the original description and SHA-384. All other rows are validated normally.
+fn relocate_discovery_preview_ledger(
+    db: &rusqlite::Connection,
+) -> Result<(), maka_event_log::StoreError> {
+    let has_dossiers: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='discovery_dossiers')",
+        [], |r| r.get(0),
+    )?;
+    if !has_dossiers {
+        return Ok(());
+    }
+    let current: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM _sqlx_migrations WHERE version=68)",
+        [],
+        |r| r.get(0),
+    )?;
+    if !current {
+        let mut statement = db.prepare(
+            "UPDATE _sqlx_migrations SET version=?1 WHERE version=?2 AND success AND description=?3 AND checksum=?4",
+        )?;
+        for migration in MIGRATIONS.iter().filter(|m| (68..=72).contains(&m.version)) {
+            statement.execute(rusqlite::params![
+                migration.version,
+                57 + (migration.version - 68),
+                migration.description,
+                maka_event_log::migration::checksum(migration.sql),
+            ])?;
+        }
+    }
+    Ok(())
+}
 
 #[cfg(test)]
 mod migration_tests {
+    #[test]
+    fn discovery_preview_ledger_moves_only_exact_rows_and_rolls_back_on_drift() {
+        use maka_event_log::migration::{checksum, run};
+        let catalog: Vec<_> = maka_event_log::ROOT_MIGRATIONS
+            .iter()
+            .chain(super::MIGRATIONS)
+            .copied()
+            .collect();
+        let preview: Vec<_> = catalog
+            .iter()
+            .filter_map(|m| match m.version {
+                ..=56 => Some(*m),
+                68..=72 => Some(maka_event_log::migration::Migration {
+                    version: m.version - 68 + 57,
+                    configure: None,
+                    ..*m
+                }),
+                _ => None,
+            })
+            .collect();
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        run(&db, &preview).unwrap();
+        db.execute(
+            "INSERT INTO discovery_source_cursors(owner,source_uri,last_explored_at,updated_at)
+            VALUES('owner','maka://session/example',123,124)",
+            [],
+        )
+        .unwrap();
+        let last = preview.last().unwrap();
+        db.execute(
+            "UPDATE _sqlx_migrations SET checksum=X'00' WHERE version=?1",
+            [last.version],
+        )
+        .unwrap();
+        assert!(run(&db, &catalog).is_err());
+        assert_eq!(
+            db.query_row("SELECT max(version) FROM _sqlx_migrations", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            last.version
+        );
+        db.execute(
+            "UPDATE _sqlx_migrations SET checksum=?1 WHERE version=?2",
+            rusqlite::params![checksum(last.sql), last.version],
+        )
+        .unwrap();
+        run(&db, &catalog).unwrap();
+        run(&db, &catalog).unwrap();
+        assert_eq!(db.query_row("SELECT last_explored_at FROM discovery_source_cursors WHERE owner='owner' AND source_uri='maka://session/example'", [], |r| r.get::<_,i64>(0)).unwrap(), 123);
+    }
+
     #[test]
     fn composed_product_migrations_initialize_upgrade_and_reopen() {
         let catalog: Vec<_> = maka_event_log::ROOT_MIGRATIONS
@@ -479,7 +575,7 @@ mod migration_tests {
             .chain(super::MIGRATIONS)
             .copied()
             .collect();
-        for through in [0, 41].into_iter().chain(46..=66) {
+        for through in [0, 41].into_iter().chain(46..=68) {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("root.sqlite");
             let db = rusqlite::Connection::open(&path).unwrap();
@@ -491,7 +587,22 @@ mod migration_tests {
                     .collect();
                 maka_event_log::migration::run(&db, &previous).unwrap();
             }
+            if through == 53 {
+                db.execute(r#"INSERT INTO plugin_data(package_id,scope_id,key,revision,value_json)
+                    VALUES ('maka.agent.scheduler','profile','fixture_ready',1,'{"pending":[],"due":{}}')"#, []).unwrap();
+            }
             maka_event_log::migration::run(&db, &catalog).unwrap();
+            if through == 53 {
+                let rebuilt: bool = db
+                    .query_row(
+                        "SELECT revision=2 AND value_json IS NULL FROM plugin_data
+                    WHERE package_id='maka.agent.scheduler' AND key='fixture_ready'",
+                        [],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+                assert!(rebuilt);
+            }
             drop(db);
             let db = rusqlite::Connection::open(&path).unwrap();
             maka_event_log::migration::run(&db, &catalog).unwrap();
@@ -503,6 +614,16 @@ mod migration_tests {
                 )
                 .unwrap();
             assert_eq!(identities, 0);
+            for table in [
+                "discovery_dossiers",
+                "discovery_source_cursors",
+                "discovery_watches",
+                "discovery_pending_actions",
+                "discovery_preferences",
+            ] {
+                db.prepare(&format!("SELECT owner FROM {table} LIMIT 0"))
+                    .unwrap();
+            }
             for table in [
                 "agent_session_history",
                 "agent_recall_messages",

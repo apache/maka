@@ -36,7 +36,7 @@ pub struct Migration {
     pub description: &'static str,
     /// SQL whose exact bytes determine the migration checksum.
     pub sql: &'static str,
-    /// Register functions required by this schema on every writer, including reopen.
+    /// Prepare each writer inside the migration savepoint before ledger validation.
     pub configure: Option<ConfigureConnection>,
     /// Optional in-place Rust data rewrite executed inside the migration savepoint
     /// right after `sql`, before the ledger entry is recorded.
@@ -78,9 +78,6 @@ pub fn checksum(sql: &str) -> Vec<u8> {
 /// Returns an error for dirty, unknown, or changed applied migrations, or when
 /// SQLite cannot execute or record a migration.
 pub fn run(connection: &Connection, migrations: &[Migration]) -> Result<(), StoreError> {
-    for configure in migrations.iter().filter_map(|m| m.configure) {
-        configure(connection)?;
-    }
     connection.execute_batch("SAVEPOINT maka_schema_migrations")?;
     let result = apply(connection, migrations).and_then(|()| {
         connection.execute_batch("RELEASE maka_schema_migrations")?;
@@ -102,6 +99,9 @@ pub fn run(connection: &Connection, migrations: &[Migration]) -> Result<(), Stor
 }
 
 fn apply(connection: &Connection, migrations: &[Migration]) -> Result<(), StoreError> {
+    for configure in migrations.iter().filter_map(|m| m.configure) {
+        configure(connection)?;
+    }
     let mut ordered = migrations.to_vec();
     ordered.sort_by_key(|migration| migration.version);
     for pair in ordered.windows(2) {

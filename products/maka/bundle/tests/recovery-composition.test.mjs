@@ -122,6 +122,15 @@ test('built installation publishes the session methods on the original Agent exp
     ['schedule', 'mutation'],
     ['schedules', 'query'],
     ['watchSchedules', 'subscription'],
+    ['dossiers', 'query'],
+    ['dossier', 'query'],
+    ['watchDossiers', 'subscription'],
+    ['setDossierMuted', 'mutation'],
+    ['setDossierResolved', 'mutation'],
+    ['chooseDossierOption', 'mutation'],
+    ['setDiscoveryNotifications', 'mutation'],
+    ['dropDiscoveryLead', 'mutation'],
+    ['openDossierThread', 'mutation'],
   ];
   for (const contract of [provider.exports.agent.contract, consumer.contract]) {
     for (const field of ['name', 'version', 'transport'])

@@ -225,6 +225,21 @@ fn cap_permissions(
     }
 }
 
+fn advance_permission_boundary(
+    configuration: &mut StoredSessionConfiguration,
+) -> Result<(), maka_event_log::StoreError> {
+    configuration.boundary_revision = configuration
+        .boundary_revision
+        .checked_add(1)
+        .filter(|revision| *revision <= maka_agent_facts::interaction::MAX_SAFE_INTEGER)
+        .ok_or_else(|| {
+            maka_event_log::StoreError::InvalidTransition(
+                "permission boundary revision exhausted".into(),
+            )
+        })?;
+    Ok(())
+}
+
 fn intersect_tools(
     requested: Option<Vec<String>>,
     ceiling: Option<Vec<String>>,
@@ -246,6 +261,7 @@ pub(crate) struct Owner {
     helper: std::path::PathBuf,
     pricing: Option<Arc<dyn maka_agent_engine::pricing::Pricing>>,
     pub(super) durable: maka_agent_state::Store,
+    pub(crate) discovery: maka_agent_state::discovery::DiscoveryStore,
     pub(super) services: maka_host_runtime::application::NativeServices,
     wake_notify: tokio::sync::Notify,
     physical_changes: tokio::sync::watch::Sender<()>,
@@ -497,6 +513,7 @@ impl Owner {
             deployment: data_source.deployment,
             namespace: data_source.namespace.clone(),
         };
+        let discovery = durable.discovery(&run_owner).map_err(|e| e.to_string())?;
         let auxiliary = auxiliary::Auxiliary::new(models.clone(), run_owner.clone());
         let code_executor = maka_tools::CodeExecutor::new(maka_code_runtime::CellLimits::default())
             .and_then(|executor| {
@@ -711,6 +728,7 @@ impl Owner {
             bot,
             progress: Default::default(),
             recap_storage,
+            discovery,
             scheduler,
             recall,
             store: persistence.store().clone(),
@@ -1009,6 +1027,24 @@ impl Owner {
         })
         .await
     }
+    async fn default_session_permissions(&self) -> Result<WorkspacePermissions, String> {
+        let defaults = self
+            .configuration
+            .runtime_policy()
+            .await
+            .map_err(|_| "agent_settings_unavailable")?
+            .policy
+            .chat_defaults;
+        Ok(WorkspacePermissions {
+            access: match defaults.sandbox_mode {
+                SandboxMode::ReadOnly => WorkspaceAccess::ReadOnly,
+                SandboxMode::WorkspaceWrite => WorkspaceAccess::WorkspaceWrite,
+                SandboxMode::DangerFullAccess => WorkspaceAccess::DangerFullAccess,
+            },
+            request_permissions: self.settings.permissions.request_permissions,
+        })
+    }
+
     async fn create_inner(
         &self,
         input: Create,
@@ -1087,21 +1123,7 @@ impl Owner {
         let (incognito, parent_session_id, permissions, tool_ceiling, caller_fence) =
             match self.agent_caller(scope).await? {
                 None => {
-                    let defaults = self
-                        .configuration
-                        .runtime_policy()
-                        .await
-                        .map_err(|_| "agent_settings_unavailable")?
-                        .policy
-                        .chat_defaults;
-                    let permissions = WorkspacePermissions {
-                        access: match defaults.sandbox_mode {
-                            SandboxMode::ReadOnly => WorkspaceAccess::ReadOnly,
-                            SandboxMode::WorkspaceWrite => WorkspaceAccess::WorkspaceWrite,
-                            SandboxMode::DangerFullAccess => WorkspaceAccess::DangerFullAccess,
-                        },
-                        request_permissions: self.settings.permissions.request_permissions,
-                    };
+                    let permissions = self.default_session_permissions().await?;
                     (input.incognito, None, permissions, None, None)
                 }
                 Some(caller) => (
@@ -1248,6 +1270,8 @@ impl Owner {
                 backend,
                 applied_preset,
                 compaction_prompt: None,
+                dossier_seed: None,
+                dossier_elevated: false,
                 collaboration_mode: CollaborationMode::Agent,
                 tools,
                 title: input.title,
@@ -1328,23 +1352,11 @@ impl Owner {
             change.settings.request_permissions && !configuration.permissions.request_permissions
         });
         let guard = if invalidate_grants || enabling_requests {
-            let busy = self.runs.state().await.busy(&input.session_id)
-                || self.mcp_projects.has_any_client(&input.session_id);
-            let guard = self
-                .durable
-                .quiescence_guard(self.run_owner(), input.session_id.clone())
-                .map_err(|error| error.to_string())?;
-            if busy
-                || !guard
-                    .observe()
-                    .await
-                    .map_err(|error| error.to_string())?
-                    .is_quiescent()
-            {
+            let Some(guard) = self.quiescent_permission_guard(&input.session_id).await? else {
                 return Ok(NativeMutation::Returned(MetadataResult::Rejected {
                     reason: Rejection::Busy,
                 }));
-            }
+            };
             Some(guard)
         } else {
             None
@@ -1361,15 +1373,7 @@ impl Owner {
                 configuration.pinned = pinned;
             }
             if invalidate_grants {
-                configuration.boundary_revision = configuration
-                    .boundary_revision
-                    .checked_add(1)
-                    .filter(|revision| *revision <= maka_agent_facts::interaction::MAX_SAFE_INTEGER)
-                    .ok_or_else(|| {
-                        maka_event_log::StoreError::InvalidTransition(
-                            "permission boundary revision exhausted".into(),
-                        )
-                    })?;
+                advance_permission_boundary(configuration)?;
             }
             if let Some(change) = input.permissions {
                 configuration.permissions = change.settings;
@@ -1433,7 +1437,9 @@ impl Owner {
             .filter(|name| {
                 let bot_only = *name == bot::SEND_USER || *name == bot::SLEEP;
                 let memory = *name == discovery::MEMORY;
-                (*name == discovery::COMPLETE && !investigation)
+                (discovery::WORKER_TOOLS.contains(name) && !investigation)
+                    || (matches!(*name, discovery::LIST | discovery::READ)
+                        && !(bot || investigation))
                     || (memory && (!self.settings.scheduled_tasks || !(bot || investigation)))
                     || (bot_only && !bot)
                     || (!bot_only

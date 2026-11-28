@@ -606,12 +606,7 @@ impl Owner {
         let active = plan.task.status == Status::Active;
         if matches!(fire.effect, ScheduledEffect::Discovery { .. }) {
             return self
-                .dispatch_discovery(
-                    fire,
-                    active && !expired,
-                    &plan.timezone,
-                    plan.task.runs.first(),
-                )
+                .dispatch_discovery(fire, active && !expired, &plan.timezone)
                 .await;
         }
         let Some(Approval::Execution { approval }) = &fire.authorization else {
@@ -767,6 +762,8 @@ impl Owner {
                         parent_session_id: Some(source_session.clone()),
                         backend: None,
                         compaction_prompt: None,
+                        dossier_seed: None,
+                        dossier_elevated: false,
                         applied_preset: None,
                         collaboration_mode: CollaborationMode::Agent,
                         tools: basis.allowed_tools.clone(),
