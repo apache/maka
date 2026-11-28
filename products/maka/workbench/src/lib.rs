@@ -138,7 +138,8 @@ mod tests {
         );
         app.wait_for("role:button[Proactive discovery]").unwrap();
         app.press("role:button[Proactive discovery]").unwrap();
-        app.wait_for("text:Review copy").unwrap();
+        let evidence = "role:button[Show evidence ▾]";
+        app.wait_for(evidence).unwrap();
         let discovery = "role:button[Discovery]";
         app.wait_for("label:Probe running").unwrap();
         assert!(
@@ -165,6 +166,8 @@ mod tests {
         app.wait_for("text:planning").unwrap();
         assert!(app.screen().selected(conversation).unwrap());
         app.press("role:button[Proactive discovery]").unwrap();
+        app.wait_for(evidence).unwrap();
+        app.press(evidence).unwrap();
         app.wait_for("text:Review copy").unwrap();
         assert!(!app.screen().matches("text:/revised clause/").unwrap());
         app.press("role:button[Preview draft.md]").unwrap();
@@ -209,19 +212,21 @@ mod tests {
         app.press("role:button[Dismiss]").unwrap();
         app.wait_for("text:Action dismissed.").unwrap();
         assert!(!app.screen().matches("text:Pending actions").unwrap());
-        app.wait_for("text:1 linked schedule").unwrap();
         assert!(!app.screen().matches("text:/Last material change/").unwrap());
         app.press("role:button[Watches and activity]").unwrap();
+        app.wait_for("text:1 linked schedule").unwrap();
         app.wait_for("text:/Last material change/").unwrap();
         app.wait_for("text:/Signing window/").unwrap();
         app.press("role:button[Release, New findings]").unwrap();
         app.wait_for("text:Release summary").unwrap();
         assert!(!app.screen().matches("text:Artifacts").unwrap());
+        app.press("role:button[Watches and activity]").unwrap();
         assert!(
             !app.screen()
                 .matches("role:button[Open full thread]")
                 .unwrap()
         );
+        app.press("role:button[Watches and activity]").unwrap();
         app.type_text("label:Reply to this dossier…", "Review this")
             .unwrap();
         app.press(discovery).unwrap();
@@ -245,6 +250,7 @@ mod tests {
         app.wait_for("text:Thanks").unwrap();
         app.press_key("mod+r").unwrap();
         app.wait_for("text:Reviewed").unwrap();
+        app.press("role:button[Watches and activity]").unwrap();
         app.press("role:button[Open full thread]").unwrap();
         app.wait_for("text:thread-two").unwrap();
     }
