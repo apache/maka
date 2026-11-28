@@ -9523,12 +9523,72 @@ async fn historical_crossed_compaction_checkpoint_remains_readable_in_live_and_s
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn compaction_resumes_with_steering_indexed_at_its_original_delivery() {
+    check_compacted_steering(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn compaction_with_a_personal_memory_read_keeps_the_summary_private() {
+    check_compacted_steering(true).await;
+}
+
+async fn seed_personal_memory_read(rig: &Rig, body: &str) -> TestResult<()> {
+    use maka_agent_facts::{
+        configuration::policy::{MemoryPolicy, RuntimePolicyMutationResult},
+        memory::{LoadedMemory, MemoryResult, MemoryScope},
+    };
+    let driver = rig.driver.as_ref().unwrap();
+    let owner = &driver.owner;
+    let policy = owner.configuration.runtime_policy().await?;
+    let updated = owner
+        .configuration
+        .set_memory(
+            policy.revision,
+            MemoryPolicy {
+                enabled: true,
+                agent_read_enabled: true,
+            },
+        )
+        .await?;
+    assert!(matches!(
+        updated,
+        RuntimePolicyMutationResult::Committed { .. }
+    ));
+    let saved = model_recovery::call(
+        rig.client.as_ref().unwrap(),
+        "agent",
+        "changeMemory",
+        json!({"scope":{"kind":"personal"},"edit":{"kind":"create","body":body}}),
+    )
+    .await?;
+    let MemoryResult::Saved { id, .. } = serde_json::from_value(saved)? else {
+        return Err("memory was not saved".into());
+    };
+    let scope = owner.memory_scope(MemoryScope::Personal).await?;
+    let data = driver.access.data_writer()?;
+    let record = data
+        .query(maka_agent_state::memory::Read {
+            scope: scope.clone(),
+            id,
+        })
+        .await?
+        .ok_or("saved memory missing")?;
+    data.write(maka_agent_state::memory::reads::RecordFacts {
+        run: driver.access.execution().run_id,
+        facts: vec![LoadedMemory::from_record(&scope.location, &record)],
+        scope,
+    })
+    .await?;
+    Ok(())
+}
+
+async fn check_compacted_steering(reads_personal_memory: bool) {
     use crate::contract::ForkResult;
     use maka_agent_engine::{DriverExit, Engine, ports::Preparation};
     use maka_agent_facts::{
         context::{CheckpointContent, CheckpointMode, CompactedContext, ContextCheckpoint},
         history::{HistoryRowAddress, RowPosition},
         history_snapshot::RequestSource,
+        memory::MemoryReplay,
         message::MessageOrigin,
         session::ForkPosition,
     };
@@ -9619,6 +9679,9 @@ async fn compaction_resumes_with_steering_indexed_at_its_original_delivery() {
             item_index: 0,
         };
         let summary_text = "The earlier turn is ready to continue.";
+        if reads_personal_memory {
+            seed_personal_memory_read(&rig, summary_text).await?;
+        }
         let (summary, _) = rig
             .record_model_reply(Preparation::Summary, Some(summary_text))
             .await?;
@@ -9629,7 +9692,12 @@ async fn compaction_resumes_with_steering_indexed_at_its_original_delivery() {
                 .await?,
         )?;
         let baseline = ContentBlob::json(&CompactedContext {
-            memory_replay: maka_agent_facts::memory::MemoryReplay::Run(run),
+            // Older checkpoints can carry Run even when the producer read no memory.
+            memory_replay: if reads_personal_memory {
+                summary.memory_replay
+            } else {
+                MemoryReplay::Run(run)
+            },
             summary_origin: None,
             source_capture: summary.source_capture,
             checkpoint: ContextCheckpoint {
@@ -9668,7 +9736,10 @@ async fn compaction_resumes_with_steering_indexed_at_its_original_delivery() {
         .await?;
         let external_history = String::from_utf8(external_history)?;
         assert!(external_history.contains(steering_text));
-        assert!(!external_history.contains(summary_text));
+        assert_eq!(
+            external_history.contains(summary_text),
+            !reads_personal_memory
+        );
         let context = recall
             .context(
                 session.clone(),
@@ -9682,11 +9753,15 @@ async fn compaction_resumes_with_steering_indexed_at_its_original_delivery() {
                 stop,
             )
             .await?;
-        assert!(
-            context
-                .messages
-                .iter()
-                .all(|msg| msg.role != maka_agent_state::recall::Role::Compaction)
+        let summaries: Vec<_> = context
+            .messages
+            .iter()
+            .filter(|msg| msg.role == maka_agent_state::recall::Role::Compaction)
+            .map(|msg| msg.body.as_str())
+            .collect();
+        assert_eq!(
+            summaries,
+            (!reads_personal_memory).then_some(summary_text).as_slice()
         );
         let original = model_recovery::call(rig.client.as_ref().unwrap(), "agent", "history", json!({
             "sessionId":session, "position":{"kind":"tail"}, "view":"text", "includeThinking":false
