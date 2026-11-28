@@ -17,8 +17,8 @@
  * under the License.
  */
 
-import { LoadingIndicator } from './Loading';
-import { SidebarTitleRow, textTooltip } from './ui';
+import { LoadingIndicator, SidebarListSkeleton } from './Loading';
+import { radius, SidebarTitleRow, textTooltip } from './ui';
 import { InlineCallout, RegionEmptyError } from './Feedback';
 import { message, renderText } from './text';
 import { toast } from './toastStore';
@@ -36,9 +36,10 @@ import {
   Image,
   List,
   platform,
+  reduceMotion,
 } from 'nsh';
 import type { JSX, ListRef, Signal, ViewRef } from 'nsh';
-import { Button, ContextMenu, Menu, Popover, Switch } from 'nsh/base';
+import { Button, ContextMenu, Menu, Popover, Switch, Tab, Tabs } from 'nsh/base';
 import logo from './assets/maka.png';
 import { keymap } from 'nsh';
 import {
@@ -50,6 +51,9 @@ import {
   controlFocusStyle,
   controlDisabledStyle,
   floatingStyle,
+  isDark,
+  menuDetailTextStyle,
+  quietFocusStyle,
 } from './ui';
 import { Icon } from './Icon';
 import type { Browsing, BrowserProject, BrowserScope, BrowserWorkspace } from './browsing';
@@ -57,17 +61,18 @@ import { SessionActions } from './SessionActions';
 import { SessionMenuItems, type SessionMenuAction } from './SessionMenu';
 import { Automations } from './Automations';
 import {
+  desktopSidebarGroups,
   groupWorkspace,
-  groupConversations,
-  groupConversationsByTime,
-  foldableFamilies,
   projectSessionLimit,
   topLevelCount,
   withinLimit,
-  unfoldedSessions,
   type ConversationGroup,
 } from './conversationGroups';
-import { sidebarPreferences, type SidebarFeature } from './sidebarPreferences';
+import {
+  sidebarPreferences,
+  type SidebarFeature,
+  type SidebarSortMode,
+} from './sidebarPreferences';
 import { workspaceSessions } from './sessionNesting';
 import type { AgentSession } from '../../../../packages/plugin-sdk/src/index.js';
 import {
@@ -111,6 +116,12 @@ export type WorkspaceBrowserProps = {
   botSession?(): string | null | undefined;
   /** The conversations the Bot created; the running and waiting ones show under its entry. */
   botWorkers?(): readonly AgentSession[];
+  /** Waiting (and currently viewed sticky) children eligible to bubble under their parent. */
+  bubbledChildren?(): readonly AgentSession[];
+  /** Pin a selected bubble row in place until the user navigates away. */
+  onSelectBubble?(bubble: AgentSession | null): void;
+  /** Top-level root of the currently open child conversation, highlighted without inserting a row. */
+  selectedRoot?(): string | null;
   settings(expectedSessionId: string | null): void;
   search(expectedSessionId: string | null): void;
   changeSession(action: SessionAction, expectedSessionId: string | null): Promise<void>;
@@ -125,8 +136,6 @@ export type WorkspaceBrowserProps = {
    */
   collapsedGroups?: Signal<ReadonlySet<string>>;
   expandedProjects?: Signal<ReadonlySet<string>>;
-  /** The conversations whose created ones are folded behind one row, kept by the owner. */
-  foldedFamilies?: Signal<ReadonlySet<string>>;
 };
 
 type WorkspaceGroup = ConversationGroup<BrowserProject> & { name: string };
@@ -148,7 +157,7 @@ function GuideLine(props: { last(): boolean; height(): number }) {
               height: props.height() / 2,
               borderLeftWidth: 1,
               borderBottomWidth: 1,
-              borderBottomLeftRadius: 6,
+              borderBottomLeftRadius: radius(6),
               borderColor: C.muted,
             }
           : {
@@ -167,6 +176,86 @@ function GuideLine(props: { last(): boolean; height(): number }) {
 }
 // At most this many of the Bot's running or waiting conversations show under it.
 const botWorkerCap = 5;
+
+function ConversationSortSwitch(props: {
+  value: SidebarSortMode;
+  onChange: (mode: SidebarSortMode) => void;
+}) {
+  const trackBg = () => (isDark() ? C.surface : C.raised);
+  const hoverBg = () => (isDark() ? C.raised : C.surface);
+  const selectedBg = () => (isDark() ? C.pressed : C.background);
+  const activeBg = () => (isDark() ? C.raised : C.pressed);
+  const options = (): readonly { value: SidebarSortMode; label: string }[] => [
+    { value: 'project', label: tr('Group conversations by project') },
+    { value: 'time', label: tr('Group conversations by time') },
+  ];
+  return (
+    <Tabs
+      orientation="horizontal"
+      accessibilityLabel={tr('Conversation grouping')}
+      style={{
+        flexDirection: 'row',
+        alignItems: 'center',
+        flexShrink: 0,
+        minHeight: 24,
+        padding: 2,
+        gap: 2,
+        borderRadius: radius(8),
+        backgroundColor: trackBg(),
+      }}
+      indicatorStyle={{
+        top: 2,
+        bottom: 2,
+        borderRadius: radius(6),
+        backgroundColor: selectedBg(),
+      }}
+    >
+      <Each of={options()} key={(option) => option.value}>
+        {(option) => {
+          const selected = () => props.value === option().value;
+          return (
+            <Tab
+              selected={selected()}
+              onPress={() => props.onChange(option().value)}
+              style={{
+                minHeight: 20,
+                // 2pt track inset + 6pt tab padding aligns the trailing label on the sidebar's 8pt spine.
+                paddingHorizontal: 6,
+                paddingVertical: 2,
+                borderRadius: radius(6),
+                flexShrink: 0,
+                justifyContent: 'center',
+                alignItems: 'center',
+                transitionProperty: 'background-color',
+                transitionDuration: reduceMotion() ? 0 : 120,
+                transitionTimingFunction: 'ease-out',
+              }}
+              hoverStyle={{ backgroundColor: selected() ? 'transparent' : hoverBg() }}
+              activeStyle={{
+                backgroundColor: selected() ? 'transparent' : activeBg(),
+                opacity: 0.72,
+              }}
+              focusVisibleStyle={quietFocusStyle()}
+            >
+              <Text
+                style={[
+                  {
+                    ...menuDetailTextStyle,
+                    fontWeight: '500',
+                    color: selected() ? C.text : C.secondary,
+                  },
+                  { numberOfLines: 1 },
+                ]}
+              >
+                {option().label}
+              </Text>
+            </Tab>
+          );
+        }}
+      </Each>
+    </Tabs>
+  );
+}
 
 /** What a branch is, for its row. Forks renamed or titled before the prefix still read as forks. */
 function branchCaption(session: AgentSession): string {
@@ -279,9 +368,17 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
         scope: { kind: 'project', projectId: project.reference.id } as BrowserScope,
       })),
   ]);
-  const sessionsById = computed(
-    () => new Map(visibleSessions().map((session) => [session.id, session])),
-  );
+  const bubbledChildren = () =>
+    platform.idiom === 'terminal' || browser.filter() !== 'all'
+      ? []
+      : (props.bubbledChildren?.() ?? []);
+  const sessionsById = computed(() => {
+    const map = new Map(visibleSessions().map((session) => [session.id, session]));
+    for (const child of bubbledChildren()) {
+      if (!map.has(child.id)) map.set(child.id, child);
+    }
+    return map;
+  });
   const scopesById = computed(() => new Map(scopes().map((scope) => [scope.id, scope])));
   const firstUnpinned = computed(() => visibleSessions().find((session) => !session.pinned)?.id);
   const hasPinned = () => visibleSessions()[0]?.pinned === true;
@@ -291,9 +388,11 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
     () => new Map(browser.projects().map((project) => [project.reference.id, project])),
   );
   const groups = computed(() => {
-    const raw = sortByTime()
-      ? groupConversationsByTime<BrowserProject>(visibleSessions())
-      : groupConversations(visibleSessions(), browser.projects(), browser.filter() === 'all');
+    const raw = desktopSidebarGroups(visibleSessions(), browser.projects(), bubbledChildren(), {
+      byTime: sortByTime(),
+      withEmpty: browser.filter() === 'all',
+      attachBubbles: browser.filter() === 'all' && platform.idiom !== 'terminal',
+    });
     return raw.map((group): WorkspaceGroup => {
       const name = group.pinned
         ? tr('Pinned')
@@ -320,39 +419,20 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
     return last;
   });
   const groupsById = computed(() => new Map(groups().map((group) => [group.key, group])));
-  const foldedFamilies = props.foldedFamilies ?? signal<ReadonlySet<string>>(new Set());
-  // Only the full project-grouped list folds created families.
-  const families = computed(() =>
-    browser.filter() === 'all' && !sortByTime()
-      ? new Map(groups().flatMap((group) => [...foldableFamilies(group)]))
-      : new Map<string, string[]>(),
+  const renderedSessionIds = computed(() =>
+    platform.idiom === 'terminal'
+      ? new Set(visibleSessions().map((session) => session.id))
+      : new Set(groups().flatMap((group) => group.sessions)),
   );
-  const familyOf = computed(() => {
-    const parents = new Map<string, string>();
-    for (const [parent, members] of families()) for (const id of members) parents.set(id, parent);
-    return parents;
-  });
-  const shownSessions = (group: WorkspaceGroup) =>
-    browser.filter() === 'all' ? unfoldedSessions(group, foldedFamilies()) : group.sessions;
-  const toggleFamily = (parent: string) => {
-    const next = new Set(foldedFamilies());
-    if (!next.delete(parent)) next.add(parent);
-    foldedFamilies.set(next);
-  };
-  // Opening a folded conversation, from search or a notice, unfolds its
-  // family once; folding it again afterwards is the user's call.
-  let unfoldedFor: string | null = null;
-  effect(() => {
+  // Highlight the open conversation only when it actually has a rendered row;
+  // otherwise highlight its visible root without inserting a row.
+  const highlightedId = computed(() => {
     const id = props.selected();
-    const parent = id ? familyOf().get(id) : undefined;
-    if (!id || !parent || id === unfoldedFor) return;
-    unfoldedFor = id;
-    untracked(() => {
-      if (!foldedFamilies().has(parent)) return;
-      const next = new Set(foldedFamilies());
-      next.delete(parent);
-      foldedFamilies.set(next);
-    });
+    if (!id) return null;
+    const rendered = renderedSessionIds();
+    if (rendered.has(id)) return id;
+    const root = props.selectedRoot?.() ?? null;
+    return root && rendered.has(root) ? root : null;
   });
   const rowIds = computed(() =>
     platform.idiom === 'terminal'
@@ -362,14 +442,12 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
       : groups().flatMap((group) => {
           const heading = `group:${group.key}`;
           if (collapsed().has(group.key)) return [heading];
-          const all = shownSessions(group);
+          const all = group.sessions;
           const limit = projectSessionLimit(group);
           const more = topLevelCount(group) > limit;
           const sessions =
             !more || expanded().has(group.key) ? all : withinLimit(group, all, limit);
-          // A folding family's row sits right under its creator, open or not.
-          const rows = sessions.flatMap((id) => (families().has(id) ? [id, `family:${id}`] : [id]));
-          return [heading, ...rows, ...(more ? [`show-more:${group.key}`] : [])];
+          return [heading, ...sessions, ...(more ? [`show-more:${group.key}`] : [])];
         }),
   );
   const toggleGroup = (key: string) => {
@@ -384,7 +462,9 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
   };
   const select = async ({ id, origin }: { id: string; origin: string | null }) => {
     if (!alive || props.selected() !== origin || props.switching()) return;
+    const bubble = nestedRows().has(id) ? (sessionsById().get(id) ?? null) : null;
     const opened = await props.selectSession(id, origin);
+    if (alive && opened) props.onSelectBubble?.(bubble);
     // In Desktop docked mode the conversation stays visible and reports draft blocks directly.
     if (alive && !opened && id !== origin && props.selected() === origin && !props.docked()) {
       toast.show({
@@ -650,7 +730,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
             paddingHorizontal: 8,
             paddingVertical: 8,
             alignItems: 'center',
-            borderRadius: 8,
+            borderRadius: radius(8),
           }}
           hoverStyle={{ backgroundColor: C.raised }}
           focusStyle={{ backgroundColor: C.pressed }}
@@ -667,7 +747,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
               focusBrowser();
             }}
             onPress={inputAction(toggleScopes, null)}
-            style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 8 }}
+            style={{ ...controlStyle(), flexDirection: 'row', alignItems: 'center', gap: 8 }}
             hoverStyle={{ backgroundColor: C.raised }}
             focusStyle={{ backgroundColor: C.pressed }}
           >
@@ -683,14 +763,14 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
           tooltip={textTooltip(() => `${tr('Search conversations')} · ${keymap.label('mod+o')}`)}
           onPress={inputAction(props.search, props.selected())}
           style={{
-            ...controlStyle,
+            ...controlStyle(),
             flexDirection: 'row',
             alignItems: 'center',
             paddingHorizontal: 8,
             gap: 8,
             height: 32,
             backgroundColor: platform.idiom === 'terminal' ? C.background : 'transparent',
-            borderRadius: 8,
+            borderRadius: radius(8),
           }}
           hoverStyle={
             platform.idiom === 'terminal' ? controlHoverStyle() : { backgroundColor: C.raised }
@@ -733,7 +813,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
               paddingHorizontal: 8,
               paddingVertical: 8,
               alignItems: 'center',
-              borderRadius: 8,
+              borderRadius: radius(8),
             }}
             hoverStyle={{ backgroundColor: C.raised }}
             focusStyle={{ backgroundColor: C.pressed }}
@@ -764,7 +844,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                     alignItems: 'center',
                     gap: 8,
                     paddingHorizontal: 8,
-                    borderRadius: 8,
+                    borderRadius: radius(8),
                     backgroundColor: props.selected() === worker().id ? C.raised : 'transparent',
                   }}
                   hoverStyle={{ backgroundColor: C.raised }}
@@ -805,7 +885,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                   flex: 1,
                   justifyContent: 'center',
                   paddingHorizontal: 8,
-                  borderRadius: 8,
+                  borderRadius: radius(8),
                 }}
                 hoverStyle={{ backgroundColor: C.raised }}
                 focusStyle={{ backgroundColor: C.raised }}
@@ -823,13 +903,13 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
             disabled={props.connectionLost()}
             onPress={() => automationsOpen.set(true)}
             style={{
-              ...controlStyle,
+              ...controlStyle(),
               flexDirection: 'row',
               alignItems: 'center',
               gap: 8,
               paddingHorizontal: 8,
               height: navigationRowHeight(),
-              borderRadius: 8,
+              borderRadius: radius(8),
             }}
             hoverStyle={controlHoverStyle()}
             focusStyle={controlFocusStyle()}
@@ -845,13 +925,13 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
             disabled={props.switching()}
             onPress={() => props.openRooms?.()}
             style={{
-              ...controlStyle,
+              ...controlStyle(),
               flexDirection: 'row',
               alignItems: 'center',
               gap: 8,
               paddingHorizontal: 8,
               height: navigationRowHeight(),
-              borderRadius: 8,
+              borderRadius: radius(8),
             }}
             hoverStyle={controlHoverStyle()}
             focusStyle={controlFocusStyle()}
@@ -870,13 +950,13 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
               browser.filter() === 'needs_you' ? 'all' : 'needs_you',
             )}
             style={{
-              ...controlStyle,
+              ...controlStyle(),
               flexDirection: 'row',
               alignItems: 'center',
               gap: 8,
               paddingHorizontal: 8,
               height: navigationRowHeight(),
-              borderRadius: 8,
+              borderRadius: radius(8),
             }}
             selectedStyle={{ backgroundColor: C.raised }}
             hoverStyle={controlHoverStyle()}
@@ -907,13 +987,13 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                 accessibilityLabel={tr('More features')}
                 selected={moreFeaturesOpen()}
                 style={{
-                  ...controlStyle,
+                  ...controlStyle(),
                   flexDirection: 'row',
                   alignItems: 'center',
                   gap: 8,
                   paddingHorizontal: 8,
                   height: navigationRowHeight(),
-                  borderRadius: 8,
+                  borderRadius: radius(8),
                 }}
                 selectedStyle={{ backgroundColor: C.raised }}
                 hoverStyle={controlHoverStyle()}
@@ -950,7 +1030,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                       alignItems: 'center',
                       gap: 8,
                       paddingHorizontal: 8,
-                      borderRadius: 8,
+                      borderRadius: radius(8),
                     }}
                     hoverStyle={{ backgroundColor: C.floatingRaised }}
                     focusStyle={{ backgroundColor: C.floatingRaised }}
@@ -970,11 +1050,13 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                       paddingHorizontal: 8,
                       alignItems: 'center',
                       justifyContent: 'center',
-                      borderRadius: 8,
+                      borderRadius: radius(8),
                     }}
                     trackClass="w-[32px] h-[16px] p-[3px] rounded-full flex-row items-center checked:justify-end"
                     trackStyle={{
-                      backgroundColor: sidebarPreferences.isPinned(item().id) ? C.accent : C.line,
+                      backgroundColor: sidebarPreferences.isPinned(item().id)
+                        ? C.accent
+                        : C.pressed,
                     }}
                     thumbClass="size-[10px] rounded-full"
                     thumbStyle={{
@@ -997,43 +1079,31 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
           style={{
             flexDirection: 'row',
             alignItems: 'center',
-            height: 32,
+            minHeight: 32,
             marginTop: 8,
+            gap: 4,
           }}
         >
           <Text
-            style={{
-              ...captionTextStyle,
-              fontWeight: '500',
-              color: C.secondary,
-              flex: 1,
-              paddingLeft: 8,
-            }}
+            role="header"
+            style={[
+              {
+                ...captionTextStyle,
+                fontWeight: '500',
+                color: C.secondary,
+                flex: 1,
+                minWidth: 0,
+                paddingLeft: 8,
+              },
+              { numberOfLines: 1, textOverflow: 'ellipsis' },
+            ]}
           >
             {tr('Conversations')}
           </Text>
-          <Button
-            accessibilityLabel={sortByTime() ? tr('Group by project') : tr('Sort by time')}
-            tooltip={textTooltip(() =>
-              sortByTime() ? tr('Group by project') : tr('Sort by time'),
-            )}
-            onPress={() => sidebarPreferences.toggleSortMode()}
-            style={{
-              height: 32,
-              flexDirection: 'row',
-              alignItems: 'center',
-              gap: 4,
-              paddingHorizontal: 8,
-              borderRadius: 8,
-            }}
-            hoverStyle={controlHoverStyle()}
-            focusStyle={controlFocusStyle()}
-          >
-            <Text style={{ ...captionTextStyle, color: C.muted }}>
-              {tr(sortByTime() ? 'By time' : 'By project')}
-            </Text>
-            <Icon name="down" size={14} color={C.muted} />
-          </Button>
+          <ConversationSortSwitch
+            value={sidebarPreferences.sortMode()}
+            onChange={(mode) => sidebarPreferences.setSortMode(mode)}
+          />
         </View>
       </If>
       <If when={platform.idiom === 'terminal'}>
@@ -1044,13 +1114,13 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
             gap: 4,
             padding: compact() ? 0 : 4,
             backgroundColor: C.background,
-            borderRadius: 8,
+            borderRadius: radius(8),
           }}
         >
           <Button
             selected={browser.filter() === 'all'}
             accessibilityLabel={tr('Show active conversations')}
-            style={{ ...controlStyle, flex: 1, alignItems: 'center', paddingHorizontal: 8 }}
+            style={{ ...controlStyle(), flex: 1, alignItems: 'center', paddingHorizontal: 8 }}
             selectedStyle={{ backgroundColor: C.raised }}
             hoverStyle={controlHoverStyle()}
             focusStyle={controlFocusStyle()}
@@ -1063,7 +1133,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
           <Button
             selected={browser.filter() === 'archived'}
             accessibilityLabel={tr('Show archived conversations')}
-            style={{ ...controlStyle, flex: 1, alignItems: 'center', paddingHorizontal: 8 }}
+            style={{ ...controlStyle(), flex: 1, alignItems: 'center', paddingHorizontal: 8 }}
             selectedStyle={{ backgroundColor: C.raised }}
             hoverStyle={controlHoverStyle()}
             focusStyle={controlFocusStyle()}
@@ -1080,7 +1150,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
           accessibilityLabel={tr('Show active conversations')}
           onPress={inputAction(chooseFilter, 'all')}
           style={{
-            ...controlStyle,
+            ...controlStyle(),
             flexDirection: 'row',
             justifyContent: 'flex-start',
             alignItems: 'center',
@@ -1116,12 +1186,16 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
         estimatedItemSize={rowHeight()}
         empty={() => (
           <View
-            style={{ height: viewportHeight(), alignItems: 'center', justifyContent: 'center' }}
+            style={{
+              height: viewportHeight(),
+              alignItems: browser.loading() ? 'stretch' : 'center',
+              justifyContent: browser.loading() ? 'flex-start' : 'center',
+            }}
           >
             <If
               when={!props.connectionLost() && Boolean(browser.error() || browser.projectError())}
               else={
-                <If when={!browser.loading()}>
+                <If when={!browser.loading()} else={<SidebarListSkeleton />}>
                   <Text style={{ color: C.muted }}>
                     {browser.filter() === 'archived'
                       ? tr('No archived conversations.')
@@ -1151,7 +1225,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                 height: 28,
                 justifyContent: 'center',
                 paddingHorizontal: 8,
-                borderRadius: 8,
+                borderRadius: radius(8),
               }}
               hoverStyle={controlHoverStyle()}
               focusStyle={controlFocusStyle()}
@@ -1189,7 +1263,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                         flex: 1,
                         paddingHorizontal: 8,
                         justifyContent: 'center',
-                        borderRadius: 8,
+                        borderRadius: radius(8),
                       }}
                       hoverStyle={controlHoverStyle()}
                       focusStyle={controlFocusStyle()}
@@ -1233,7 +1307,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                 const hiddenCount = () => {
                   const group = groupsById().get(groupKey);
                   if (!group) return 0;
-                  const all = shownSessions(group);
+                  const all = group.sessions;
                   return Math.max(
                     0,
                     all.length - withinLimit(group, all, projectSessionLimit(group)).length,
@@ -1255,7 +1329,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                         alignItems: 'center',
                         gap: 6,
                         paddingHorizontal: 8,
-                        borderRadius: 8,
+                        borderRadius: radius(8),
                       }}
                       hoverStyle={controlHoverStyle()}
                       focusStyle={controlFocusStyle()}
@@ -1266,93 +1340,6 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                           : tr('Show {count} more conversations', { count: hiddenCount() })}
                       </Text>
                       <Icon name={open() ? 'up' : 'down'} size={14} color={C.muted} />
-                    </Button>
-                  </View>
-                );
-              }
-              if (key().startsWith('family:')) {
-                const parent = key().slice('family:'.length);
-                const members = () =>
-                  (families().get(parent) ?? []).flatMap((id) => sessionsById().get(id) ?? []);
-                const open = () => !foldedFamilies().has(parent);
-                const activityKnown = () => !props.connectionLost() && !browser.error();
-                // While folded the row stands in for its members' activity.
-                const waiting = () =>
-                  !open() &&
-                  activityKnown() &&
-                  members().some((member) => member.activity === 'waiting');
-                const lane = () =>
-                  open()
-                    ? null
-                    : activityKnown() && members().some((member) => member.activity === 'working')
-                      ? 'working'
-                      : members().some((member) => member.hasUnread)
-                        ? 'unread'
-                        : null;
-                const title = () =>
-                  sessionsById().get(parent)?.title || tr('Untitled conversation');
-                return (
-                  <View
-                    style={{
-                      flexDirection: 'row',
-                      height: rowHeight(),
-                      paddingVertical: compact() ? 0 : 2,
-                      paddingLeft: nestInset,
-                    }}
-                  >
-                    <GuideLine last={() => !open()} height={rowHeight} />
-                    <Button
-                      accessibilityLabel={tr(
-                        open()
-                          ? 'Fold the conversations {title} created'
-                          : 'Show the conversations {title} created',
-                        { title: title() },
-                      )}
-                      onPress={inputAction(toggleFamily, parent)}
-                      style={{
-                        flex: 1,
-                        minWidth: 0,
-                        flexDirection: 'row',
-                        alignItems: 'center',
-                        gap: 4,
-                        paddingHorizontal: 8,
-                        borderRadius: 8,
-                      }}
-                      hoverStyle={controlHoverStyle()}
-                      focusStyle={controlFocusStyle()}
-                    >
-                      <Text style={[{ ...captionTextStyle, color: C.muted }, { numberOfLines: 1 }]}>
-                        {tr('{count} created conversations', { count: members().length })}
-                      </Text>
-                      <Icon name={open() ? 'down' : 'right'} color={C.muted} />
-                      <Text
-                        style={[
-                          { ...captionTextStyle, color: C.accentText, flex: 1, minWidth: 0 },
-                          { numberOfLines: 1 },
-                        ]}
-                      >
-                        {waiting() ? sessionStatusCaption.waiting : ''}
-                      </Text>
-                      <View
-                        style={[
-                          { width: 16, alignItems: 'center', justifyContent: 'center' },
-                          { pointerEvents: 'none' },
-                        ]}
-                      >
-                        <If when={lane() === 'working'}>
-                          <LoadingIndicator size={12} label={sessionStatusCaption.working} />
-                        </If>
-                        <If when={lane() === 'unread'}>
-                          <View
-                            style={{
-                              width: 6,
-                              height: 6,
-                              borderRadius: 3,
-                              backgroundColor: C.accent,
-                            }}
-                          />
-                        </If>
-                      </View>
                     </Button>
                   </View>
                 );
@@ -1400,7 +1387,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                         alignItems: 'center',
                         gap: 6,
                         paddingHorizontal: 8,
-                        borderRadius: 8,
+                        borderRadius: radius(8),
                       }}
                       hoverStyle={controlHoverStyle()}
                       focusStyle={controlFocusStyle()}
@@ -1433,7 +1420,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                           width: 32,
                           alignItems: 'center',
                           justifyContent: 'center',
-                          borderRadius: 8,
+                          borderRadius: radius(8),
                         }}
                         hoverStyle={controlHoverStyle()}
                         focusStyle={controlFocusStyle()}
@@ -1476,11 +1463,17 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                   />
                 );
               };
-              // The conversation that created this one, when the list shows it
-              // elsewhere rather than just above (the row has no room to say).
-              const creator = () => {
-                const parent = session()?.parentSessionId;
-                return parent && !nestedRows().has(key()) ? sessionsById().get(parent) : undefined;
+              // Title of the conversation that created this one, including when the
+              // immediate parent is an unpinned intermediate session outside the current page.
+              const creatorTitle = () => {
+                const current = session();
+                if (!current?.parentSessionId || nestedRows().has(key())) return '';
+                const listed = sessionsById().get(current.parentSessionId);
+                if (listed) return listed.title || tr('Untitled conversation');
+                if (current.parentTitle !== undefined) {
+                  return current.parentTitle || tr('Untitled conversation');
+                }
+                return '';
               };
               // The Bot is not in this list, so its workers cannot nest under it; mark them
               // with the Bot's own icon (a text caption would shorten the title).
@@ -1489,16 +1482,24 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                 return parent != null && parent === props.botSession?.();
               };
               const activityKnown = () => !props.connectionLost() && !browser.error();
-              // The desktop names the workspace only where the group does not.
+              const isBubble = () => platform.idiom !== 'terminal' && nestedRows().has(key());
+              const bubbleWaiting = () =>
+                isBubble() && activityKnown() && session()?.activity === 'waiting';
+              // Bubbled waiting rows show only the Waiting signal; explicitly pinned
+              // children show their parent; other rows name the workspace only when
+              // the group header does not.
               const desktopCaption = () => {
                 const current = session();
-                if (!current) return '';
+                if (!current || isBubble()) return '';
+                const parentLabel = current.pinned ? creatorTitle() : '';
+                const pinnedFrom = parentLabel ? tr('From {title}', { title: parentLabel }) : '';
                 return [
                   activityKnown() && current.activity === 'waiting'
                     ? sessionStatusCaption.waiting
                     : '',
                   branchCaption(current),
-                  current.pinned || sortByTime() ? workspaceLabel(current.workspace) : '',
+                  pinnedFrom ||
+                    (current.pinned || sortByTime() ? workspaceLabel(current.workspace) : ''),
                 ]
                   .filter(Boolean)
                   .join(' · ');
@@ -1507,13 +1508,14 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                 platform.idiom === 'terminal' ||
                 hovered() ||
                 menuOpen() ||
-                props.selected() === key() ||
+                highlightedId() === key() ||
                 actions()?.session.id === key();
-              const current = () => props.selected() === key();
+              const current = () => highlightedId() === key();
               // What the row's end shows while its More button is away: the
-              // desktop's one lane for a running conversation or an unread one.
+              // desktop's one lane for a running thread (self or active child) or unread.
               const lane = () =>
-                activityKnown() && session()?.activity === 'working'
+                activityKnown() &&
+                (session()?.activity === 'working' || session()?.hasActiveChildren)
                   ? 'working'
                   : session()?.hasUnread
                     ? 'unread'
@@ -1567,7 +1569,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                             flex: 1,
                             minWidth: 0,
                             flexDirection: 'row',
-                            borderRadius: 8,
+                            borderRadius: radius(8),
                             ...(platform.idiom === 'terminal'
                               ? {}
                               : {
@@ -1583,19 +1585,18 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                               title: session()?.title || tr('Untitled conversation'),
                             })}
                             disabled={props.switching() || !session()}
-                            selected={props.selected() === key()}
+                            selected={highlightedId() === key()}
                             tooltip={
                               platform.idiom === 'terminal'
                                 ? undefined
-                                : textTooltip(() =>
-                                    creator()
-                                      ? tr('From {title}', {
-                                          title: creator()!.title || tr('Untitled conversation'),
-                                        })
+                                : textTooltip(() => {
+                                    const parentLabel = creatorTitle();
+                                    return parentLabel
+                                      ? tr('From {title}', { title: parentLabel })
                                       : botWorker()
                                         ? tr('From {title}', { title: tr('Maka Bot') })
-                                        : undefined,
-                                  )
+                                        : undefined;
+                                  })
                             }
                             onPress={inputAction(select, { id: key(), origin: props.selected() })}
                             style={{
@@ -1603,7 +1604,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                               minWidth: 0,
                               paddingHorizontal: 8,
                               justifyContent: 'center',
-                              borderRadius: 8,
+                              borderRadius: radius(8),
                               backgroundColor:
                                 platform.idiom === 'terminal'
                                   ? props.selected() === key()
@@ -1640,6 +1641,21 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                               >
                                 {session()?.title || tr('Untitled conversation')}
                               </Text>
+                              <If when={bubbleWaiting()}>
+                                <Text
+                                  style={[
+                                    {
+                                      ...captionTextStyle,
+                                      color: C.accentText,
+                                      fontWeight: '500',
+                                      flexShrink: 0,
+                                    },
+                                    { numberOfLines: 1 },
+                                  ]}
+                                >
+                                  {sessionStatusCaption.waiting}
+                                </Text>
+                              </If>
                               <If when={platform.idiom !== 'terminal' && desktopCaption()}>
                                 <Text
                                   style={[
@@ -1666,10 +1682,11 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                               >
                                 {props.connectionLost() || browser.error()
                                   ? ''
-                                  : session()?.activity === 'working'
-                                    ? `${sessionStatusCaption.working} · `
-                                    : session()?.activity === 'waiting'
-                                      ? `${sessionStatusCaption.waiting} · `
+                                  : session()?.activity === 'waiting'
+                                    ? `${sessionStatusCaption.waiting} · `
+                                    : session()?.activity === 'working' ||
+                                        session()?.hasActiveChildren
+                                      ? `${sessionStatusCaption.working} · `
                                       : ''}
                                 {session() && branchCaption(session()!)
                                   ? `${branchCaption(session()!)} · `
@@ -1731,7 +1748,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                                   width: 32,
                                   alignItems: 'center',
                                   justifyContent: 'center',
-                                  borderRadius: 8,
+                                  borderRadius: radius(8),
                                   opacity: actionsShown() ? 1 : 0,
                                 }}
                                 hoverStyle={controlHoverStyle()}
@@ -1761,7 +1778,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
           </Each>
         )}
       </List>
-      <If when={browser.loading()}>
+      <If when={browser.loading() && rowIds().length > 0}>
         <LoadingIndicator />
       </If>
 
@@ -1784,7 +1801,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
           onPress={inputAction(props.settings, props.selected())}
           // Starts where New conversation's icon and label do, like the rows above it.
           style={{
-            ...controlStyle,
+            ...controlStyle(),
             flex: 1,
             flexDirection: 'row',
             justifyContent: 'flex-start',
@@ -1811,7 +1828,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
               chooseFilter,
               browser.filter() === 'archived' ? 'all' : 'archived',
             )}
-            style={{ ...controlStyle, width: 32, alignItems: 'center', justifyContent: 'center' }}
+            style={{ ...controlStyle(), width: 32, alignItems: 'center', justifyContent: 'center' }}
             selectedStyle={{ backgroundColor: C.raised }}
             hoverStyle={{ backgroundColor: C.raised }}
             focusStyle={{ backgroundColor: C.pressed }}

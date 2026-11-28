@@ -1,0 +1,272 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+name: Build Distribution Artifacts
+
+on:
+  workflow_call:
+    inputs:
+      channel:
+        description: Distribution channel (nightly or release)
+        required: true
+        type: string
+      version:
+        description: Exact package version
+        required: true
+        type: string
+      commit:
+        description: Exact commit SHA to check out and build
+        required: true
+        type: string
+      environment:
+        description: GitHub environment supplying signing secrets and updater public key
+        required: true
+        type: string
+      pack_npm:
+        description: Whether to build npm platform packages
+        required: true
+        type: boolean
+      v8_linux_arm64_key:
+        description: V8 cache key for aarch64-unknown-linux-gnu
+        required: true
+        type: string
+      v8_linux_arm64_pinned:
+        description: Whether the Linux ARM64 V8 prebuilt is pinned
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  v8-linux-arm64:
+    if: ${{ !cancelled() && inputs.v8_linux_arm64_pinned != 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.commit }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "26"
+
+      - name: Update Rust and add Linux ARM64 target
+        run: |
+          rustup update stable --no-self-update
+          rustup target add aarch64-unknown-linux-gnu
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.x"
+
+      - name: Install V8 bindgen dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config clang libclang-dev llvm-dev
+          echo "LIBCLANG_PATH=$(/usr/bin/llvm-config --libdir)" >> "$GITHUB_ENV"
+
+      - name: Restore Linux ARM64 V8 cache
+        id: v8-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: target/v8/${{ inputs.v8_linux_arm64_key }}
+          key: maka-v8-linux-arm64-gnu-${{ inputs.v8_linux_arm64_key }}
+
+      - name: Cross-compile V8 for aarch64-unknown-linux-gnu on linux/x64
+        run: |
+          node scripts/rust/build-v8.mjs --build             --target aarch64-unknown-linux-gnu             --cache target/v8             --export v8-staged
+
+      - name: Save Linux ARM64 V8 cache
+        uses: actions/cache/save@v6
+        if: ${{ !cancelled() && steps.v8-cache.outputs.cache-hit != 'true' && hashFiles(format('target/v8/{0}/receipt.json', inputs.v8_linux_arm64_key)) != '' }}
+        with:
+          path: target/v8/${{ inputs.v8_linux_arm64_key }}
+          key: maka-v8-linux-arm64-gnu-${{ inputs.v8_linux_arm64_key }}
+
+      - name: Upload staged Linux ARM64 V8 bundle for native ARM64 build and smoke
+        uses: actions/upload-artifact@v7
+        with:
+          name: v8-linux-arm64-staged
+          path: v8-staged/*
+          if-no-files-found: error
+          compression-level: 0
+
+  build:
+    runs-on: ${{ matrix.runner }}
+    environment: ${{ inputs.environment }}
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: darwin-arm64
+            runner: macos-latest
+          - target: win32-x64
+            runner: windows-latest
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+      MAKA_UPDATE_REPO: ${{ github.repository }}
+      MAKA_UPDATE_PUBLIC_KEY: ${{ vars.MAKA_UPDATE_PUBLIC_KEY }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.commit }}
+          persist-credentials: false
+
+      - uses: ./.github/actions/build-distribution-target
+        with:
+          channel: ${{ inputs.channel }}
+          version: ${{ inputs.version }}
+          target: ${{ matrix.target }}
+          pack_npm: ${{ inputs.pack_npm }}
+          csc_link: ${{ secrets.CSC_LINK }}
+          csc_key_password: ${{ secrets.CSC_KEY_PASSWORD }}
+          apple_api_key: ${{ secrets.APPLE_API_KEY }}
+          apple_api_key_id: ${{ secrets.APPLE_API_KEY_ID }}
+          apple_api_issuer: ${{ secrets.APPLE_API_ISSUER }}
+
+  build-linux-x64:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    timeout-minutes: 300
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+      MAKA_UPDATE_REPO: ${{ github.repository }}
+      MAKA_UPDATE_PUBLIC_KEY: ${{ vars.MAKA_UPDATE_PUBLIC_KEY }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.commit }}
+          persist-credentials: false
+
+      - uses: ./.github/actions/build-distribution-target
+        with:
+          channel: ${{ inputs.channel }}
+          version: ${{ inputs.version }}
+          target: linux-x64-gnu
+          pack_npm: ${{ inputs.pack_npm }}
+
+  build-linux-arm64:
+    needs: [v8-linux-arm64]
+    if: >-
+      !cancelled() &&
+      (needs.v8-linux-arm64.result == 'success' || needs.v8-linux-arm64.result == 'skipped')
+    runs-on: ubuntu-26.04-arm
+    environment: ${{ inputs.environment }}
+    timeout-minutes: 180
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+      MAKA_UPDATE_REPO: ${{ github.repository }}
+      MAKA_UPDATE_PUBLIC_KEY: ${{ vars.MAKA_UPDATE_PUBLIC_KEY }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.commit }}
+          persist-credentials: false
+
+      - uses: ./.github/actions/build-distribution-target
+        with:
+          channel: ${{ inputs.channel }}
+          version: ${{ inputs.version }}
+          target: linux-arm64-gnu
+          pack_npm: ${{ inputs.pack_npm }}
+          staged_v8_artifact: ${{ inputs.v8_linux_arm64_pinned != 'true' && 'v8-linux-arm64-staged' || '' }}
+          save_v8_cache: "false"
+
+  compat-gate:
+    needs: [build-linux-x64]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.commit }}
+          persist-credentials: false
+
+      - uses: ./.github/actions/ci-setup
+        with:
+          role: compat-gate
+          cache_role: root
+          dependencies: headless
+          javascript: "true"
+
+      - name: Verify immutable migration ledger
+        run: node scripts/ci.mjs check migrations
+
+      - name: Download built Linux x64 archive
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ inputs.channel }}-pkg-linux-x64-gnu
+          path: compat-pkg
+
+      - name: Extract release maka binary
+        id: extract-bin
+        env:
+          ARCHIVE_NAME: ${{ inputs.channel == 'release' && format('Maka-{0}-linux-x64.tar.gz', inputs.version) || 'Maka-nightly-linux-x64.tar.gz' }}
+        run: |
+          mkdir -p compat-bin
+          tar -xzf "compat-pkg/$ARCHIVE_NAME" -C compat-bin
+          bin_path="$(find compat-bin -maxdepth 3 -type f -name maka -perm -111 | head -n 1)"
+          if [[ -z "$bin_path" ]]; then
+            echo "::error::Could not find executable maka binary inside $ARCHIVE_NAME"
+            exit 1
+          fi
+          echo "bin=$bin_path" >> "$GITHUB_OUTPUT"
+          "$bin_path" --version
+
+      - name: Build upgrade compatibility harness
+        run: cargo test --locked -p maka-cli --test upgrade_compat --no-run
+
+      - name: Produce candidate time capsule and verify self-roundtrip
+        env:
+          MAKA_BIN: ${{ steps.extract-bin.outputs.bin }}
+          GITHUB_SHA: ${{ inputs.commit }}
+        run: |
+          node scripts/rust/compat-capsule.mjs produce \
+            --bin "$MAKA_BIN" \
+            --out compat-capsule.tar.gz
+          node scripts/rust/compat-capsule.mjs verify \
+            --bin "$MAKA_BIN" \
+            --capsule compat-capsule.tar.gz
+
+      - name: Verify upgrade from all retained historical time capsules
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MAKA_BIN: ${{ steps.extract-bin.outputs.bin }}
+        run: |
+          node scripts/rust/compat-capsule.mjs verify-release \
+            --bin "$MAKA_BIN" \
+            --repo "$GITHUB_REPOSITORY"
+
+      - name: Upload verified candidate time capsule
+        uses: actions/upload-artifact@v7
+        with:
+          name: compat-capsule-candidate
+          path: compat-capsule.tar.gz
+          if-no-files-found: error
+          compression-level: 0

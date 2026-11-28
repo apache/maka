@@ -28,7 +28,7 @@ impl Statement for Capture {
     type Output = ContentRef;
     fn execute(self, c: &Connection) -> Result<Prepared<Self::Value>, StoreError> {
         let owner = serde_json::to_string(&self.0.owner)?;
-        let original:Option<(String,String,String,u64)>=c.query_row("SELECT s.request_json,s.owner,b.content_sha256,length(b.payload) FROM agent_history_snapshots s JOIN contents b ON b.id=s.manifest_content_id WHERE s.snapshot=?",[self.1.id.to_string()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,read_u64(r,3)?))).optional()?;
+        let original:Option<(String,String,String,u64)>=c.query_row("SELECT s.request_json,s.owner,b.content_sha256,COALESCE(b.logical_bytes,length(b.payload)) FROM agent_history_snapshots s JOIN contents b ON b.id=s.manifest_content_id WHERE s.snapshot=?",[self.1.id.to_string()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,read_u64(r,3)?))).optional()?;
         if let Some((request, original_owner, digest, bytes)) = original {
             if original_owner != owner
                 || serde_json::from_str::<CaptureRequest>(&request)? != self.1
@@ -76,12 +76,14 @@ impl Statement for Capture {
                 })?;
             }
         }
+        let namespace_id = crate::namespace::find_owner_id(c, &self.0.owner, &self.0.session)?;
         let mut prefix = super::super::sql::seed(&self.0.owner, &self.0.session)?;
-        {
-            let mut statement=c.prepare_cached("SELECT h.run,h.sequence,h.admission_sequence,h.step,h.attempt,f.id,f.revision,f.body_content_id,h.prefix_digest,h.tool_use_id,h.fact_id,f.run FROM agent_session_history h JOIN agent_facts f ON f.sequence=h.sequence JOIN agent_run_specs s ON s.run=f.run AND s.owner=h.owner AND s.session=h.session WHERE h.owner=? AND h.session=? AND h.sequence<=? ORDER BY h.sequence")?;
+        if let Some(namespace_id) = namespace_id {
+            let mut statement=c.prepare_cached("SELECT h.run,h.sequence,h.admission_sequence,h.step,h.attempt,f.id,f.revision,f.body_content_id,h.prefix_digest,h.tool_use_id,h.fact_id,f.run FROM agent_session_history h JOIN agent_facts f ON f.sequence=h.sequence JOIN agent_run_specs s ON s.run=f.run AND s.owner=?1 AND s.session=?2 WHERE h.namespace_id=?3 AND h.sequence<=?4 ORDER BY h.sequence")?;
             let mut rows = statement.query(params![
                 owner,
                 self.0.session,
+                namespace_id,
                 bind_u64(self.1.cut.through_sequence)?
             ])?;
             while let Some(row) = rows.next()? {
@@ -193,7 +195,7 @@ impl Statement for Capture {
             )?;
             let mut runs = runs.query(params![owner, self.0.session])?;
             let mut members = c.prepare_cached(
-                "SELECT b.content_sha256,length(b.payload),r.first_sequence,
+                "SELECT b.content_sha256,COALESCE(b.logical_bytes,length(b.payload)),r.first_sequence,
                         r.inherited=1 OR EXISTS(SELECT 1 FROM agent_run_content p WHERE p.run=r.run AND p.content_id=r.content_id)
                  FROM agent_history_content r JOIN contents b ON b.id=r.content_id
                  WHERE r.owner=? AND r.session=? AND r.run=? AND r.first_sequence<=?
@@ -225,11 +227,10 @@ impl Statement for Capture {
                 }
             }
         }
-        {
-            let mut statement=c.prepare_cached("SELECT r.run,h.sequence,a.record_json,b.content_sha256,length(b.payload),EXISTS(SELECT 1 FROM agent_run_content p WHERE p.run=r.run AND p.content_id=a.content_id) FROM agent_artifact_run_bindings r JOIN agent_facts f ON f.id=r.fact JOIN agent_session_history h ON h.sequence=f.sequence JOIN agent_artifacts a ON a.session=r.session AND a.artifact=r.artifact JOIN contents b ON b.id=a.content_id WHERE h.owner=? AND h.session=? AND h.sequence<=? ORDER BY h.sequence,r.artifact")?;
+        if let Some(namespace_id) = namespace_id {
+            let mut statement=c.prepare_cached("SELECT r.run,h.sequence,a.record_json,b.content_sha256,COALESCE(b.logical_bytes,length(b.payload)),EXISTS(SELECT 1 FROM agent_run_content p WHERE p.run=r.run AND p.content_id=a.content_id) FROM agent_artifact_run_bindings r JOIN agent_facts f ON f.id=r.fact JOIN agent_session_history h ON h.sequence=f.sequence JOIN agent_artifacts a ON a.session=r.session AND a.artifact=r.artifact JOIN contents b ON b.id=a.content_id WHERE h.namespace_id=? AND h.sequence<=? ORDER BY h.sequence,r.artifact")?;
             let mut rows = statement.query(params![
-                owner,
-                self.0.session,
+                namespace_id,
                 bind_u64(self.1.cut.through_sequence)?
             ])?;
             while let Some(row) = rows.next()? {
@@ -297,7 +298,7 @@ impl Statement for Capture {
 
 pub(super) fn reference(c: &Connection, row: i64) -> Result<ContentRef, StoreError> {
     c.query_row(
-        "SELECT content_sha256,length(payload) FROM contents WHERE id=?",
+        "SELECT content_sha256,COALESCE(logical_bytes,length(payload)) FROM contents WHERE id=?",
         [row],
         |r| {
             Ok(ContentRef {
@@ -361,6 +362,9 @@ impl<'a> Builder<'a> {
     }
     pub(super) fn finish(mut self, origin: Origin) -> Result<Manifest, StoreError> {
         self.flush()?;
+        if matches!(origin, Origin::Canonical { .. }) {
+            index_memory_outputs(self.c, self.id)?;
+        }
         let objects: u64 = self.c.query_row(
             "SELECT count(*) FROM agent_history_snapshot_pins WHERE snapshot=?",
             [self.id.to_string()],
@@ -378,6 +382,14 @@ impl<'a> Builder<'a> {
         manifest.validate().map_err(invalid)?;
         Ok(manifest)
     }
+}
+pub(super) fn index_memory_outputs(c: &Connection, id: SnapshotId) -> Result<(), StoreError> {
+    crate::memory::recall::register_read_classifier(c)?;
+    c.prepare_cached(
+        "INSERT INTO agent_memory_indexed_snapshots VALUES(?) ON CONFLICT DO NOTHING",
+    )?
+    .execute([id.to_string()])?;
+    Ok(())
 }
 pub(super) fn index_page(
     c: &Connection,
@@ -398,8 +410,8 @@ pub(super) fn index_entry(
     entry: &Entry,
 ) -> Result<(), StoreError> {
     let (kind, run, sequence, position) = match entry {
-        Entry::Position { row } => {
-            super::positions::index(c, id, row)?;
+        Entry::Position { row, compact } => {
+            super::positions::index(c, id, row, *compact)?;
             match row {
                 maka_agent_facts::history_snapshot::SnapshotPosition::Canonical {
                     run,

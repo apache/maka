@@ -112,12 +112,13 @@ fn release_when_mounted(number: isize, deadline: Instant) {
         after(10, move || release_when_mounted(number, deadline));
     }
 }
-fn dispatch_events(ms: u64) {
+fn dispatch_until(done: impl Fn() -> bool, context: &str) {
     let app = NSApplication::sharedApplication(MainThreadMarker::new().unwrap());
-    let deadline = Instant::now() + Duration::from_millis(ms);
+    let deadline = Instant::now() + Duration::from_secs(5);
     // SAFETY: AppKit's immutable default run-loop mode.
     let mode = unsafe { NSDefaultRunLoopMode };
-    while Instant::now() < deadline {
+    loop {
+        assert!(Instant::now() < deadline, "{context}");
         if let Some(e) = app.nextEventMatchingMask_untilDate_inMode_dequeue(
             NSEventMask::Any,
             Some(&NSDate::dateWithTimeIntervalSinceNow(0.01)),
@@ -141,6 +142,8 @@ fn dispatch_events(ms: u64) {
                 });
             }
             app.sendEvent(&e);
+        } else if done() {
+            break;
         }
         app.updateWindows();
     }
@@ -195,16 +198,18 @@ fn check(scenario: &str) {
     let number = window.windowNumber();
     ARMED.store(true, Ordering::SeqCst);
     app.postEvent_atStart(&event(NSEventType::LeftMouseDown, number, 1.0), false);
-    dispatch_events(1000);
-    assert!(
-        CHANGED.load(Ordering::SeqCst),
-        "new native target must mount before release"
+    dispatch_until(
+        || CHANGED.load(Ordering::SeqCst),
+        "new native target must mount before release",
     );
     pump(200);
     let clicks = CLICKS.load(Ordering::SeqCst);
     app.postEvent_atStart(&event(NSEventType::LeftMouseDown, number, 3.0), false);
     app.postEvent_atStart(&event(NSEventType::LeftMouseUp, number, 3.1), false);
-    dispatch_events(200);
+    dispatch_until(
+        || CLICKS.load(Ordering::SeqCst) > clicks,
+        "a fresh click must reach the new control",
+    );
     pump(200);
     let control = CLICKS.load(Ordering::SeqCst) - clicks;
     assert_eq!(control, 1, "a fresh click must reach the new control");

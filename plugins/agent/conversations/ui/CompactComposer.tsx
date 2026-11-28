@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { signal, Text, View, type InputRef, type JSX } from 'nsh';
+import { Text, View, type InputRef, type JSX } from 'nsh';
 import type { ClientDraftAttachment } from '../../../../packages/plugin-sdk/src/generated/runtime.js';
 import type { ComposerSession } from '../../../../packages/plugin-sdk/src/workbench-views.js';
 import { hasComposerContent } from '../../../../packages/plugin-sdk/src/composer-view.js';
@@ -25,7 +25,7 @@ import { DraftQuotes } from '../../composer/ui/DraftQuotes';
 import { InlineCallout } from '../../../../products/maka/workbench/app/Feedback';
 import { tr } from '../../../../products/maka/workbench/app/locale';
 import { CompactInputBar } from '../../../../products/maka/workbench/app/QuickBar';
-import { C, IconButton } from '../../../../products/maka/workbench/app/ui';
+import { C, IconButton, radius } from '../../../../products/maka/workbench/app/ui';
 
 /** The conversation's input in the popup's top bar, where the launcher's input was. */
 export function CompactComposer(props: {
@@ -35,17 +35,17 @@ export function CompactComposer(props: {
   chooseModel(): void;
   attach(node: InputRef): void;
 }) {
-  const refused = signal('');
+  let editor: InputRef;
   const running = () => (props.session()?.run() ?? null) !== null;
   const unavailable = () => props.session()?.modelDetails().kind === 'unavailable';
   const failure = () => {
     const session = props.session();
     if (!session) return '';
-    return (
-      session.error() ||
-      session.sends().find((send) => send.state === 'failed')?.detail ||
-      refused()
-    );
+    return session.error() || session.sends().find((send) => send.state === 'failed')?.detail || '';
+  };
+  const blockWarning = () => {
+    const block = props.session()?.sendBlock() ?? null;
+    return block && (block.kind === 'attachments' || block.kind === 'draft') ? block.message : '';
   };
   const send = () => {
     const session = props.session();
@@ -57,27 +57,26 @@ export function CompactComposer(props: {
       props.expand();
       return;
     }
-    const reason = session.blockedReason();
-    refused.set(reason);
-    if (!reason) session.submit({ text });
+    if (session.sendBlock()) return;
+    session.submit({ text });
   };
   return (
     <View>
       <CompactInputBar
-        attach={props.attach}
+        attach={(node) => {
+          editor = node;
+          props.attach(node);
+        }}
         label={tr('Ask Maka')}
         placeholder={props.session()?.empty() === false ? tr('Ask a follow-up') : tr('Ask Maka')}
         value={props.session()?.draft() ?? ''}
         readonly={!(props.session()?.editable() ?? false)}
-        change={(value) => {
-          refused.set('');
-          props.session()?.changeDraft(value);
-        }}
+        change={(value) => props.session()?.changeDraft(value)}
         submit={send}
         extra={
           <>
             <If when={props.session() !== null}>
-              <DraftQuotes owner={props.session()!} />
+              <DraftQuotes owner={props.session()!} focusEditor={() => editor.focus()} />
             </If>
             <If when={(props.session()?.attachments.files().length ?? 0) > 0}>
               <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
@@ -90,7 +89,7 @@ export function CompactComposer(props: {
                       style={{
                         paddingHorizontal: 8,
                         paddingVertical: 4,
-                        borderRadius: 6,
+                        borderRadius: radius(6),
                         backgroundColor: C.raised,
                       }}
                     >
@@ -123,28 +122,31 @@ export function CompactComposer(props: {
           </>
         }
       />
-      <If when={unavailable() || failure() !== ''}>
+      <If when={unavailable() || failure() !== '' || blockWarning() !== ''}>
         <View style={{ paddingHorizontal: 12, paddingVertical: 8 }}>
           <If
             when={unavailable()}
             else={
-              <InlineCallout
-                tone="danger"
-                message={failure()}
-                onDismiss={() => {
-                  const session = props.session();
-                  if (session?.error()) {
-                    session.dismissError();
-                    return;
-                  }
-                  const failedSend = session?.sends().find((item) => item.state === 'failed');
-                  if (session && failedSend) {
-                    void session.dismissSend(failedSend.id);
-                    return;
-                  }
-                  refused.set('');
-                }}
-              />
+              <If
+                when={failure() !== ''}
+                else={<InlineCallout tone="warning" message={blockWarning()} />}
+              >
+                <InlineCallout
+                  tone="danger"
+                  message={failure()}
+                  onDismiss={() => {
+                    const session = props.session();
+                    if (session?.error()) {
+                      session.dismissError();
+                      return;
+                    }
+                    const failedSend = session?.sends().find((item) => item.state === 'failed');
+                    if (session && failedSend) {
+                      void session.dismissSend(failedSend.id);
+                    }
+                  }}
+                />
+              </If>
             }
           >
             <InlineCallout

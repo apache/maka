@@ -348,6 +348,7 @@ async fn describe_with(
         MessageRecipe::User {
             content,
             provider_options,
+            ..
         } => {
             measure.marker(b"user");
             measure.contents(content).await?;

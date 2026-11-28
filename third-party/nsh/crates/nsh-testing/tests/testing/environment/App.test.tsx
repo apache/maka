@@ -34,11 +34,22 @@ test("the defaults are a light iPhone in en-US", async () => {
   expect(app.shows("Motion: full")).toBe(true);
   expect(app.shows("OS: ios")).toBe(true);
   expect(app.shows("Size: 390x844")).toBe(true);
+  expect(app.shows("Reserved: none")).toBe(true);
   expect(app.shows("App: active")).toBe(true);
   expect(app.shows("Zone: UTC")).toBe(true);
   expect(app.shows("Intl agrees: true")).toBe(true);
   expect(app.shows("Languages: en-US")).toBe(true);
   expect(app.shows("Regional: h12 7 us fahrenheit")).toBe(true);
+});
+
+test("the reserved regions are what open asks for", async () => {
+  // A partly folded display laid out in landscape: its fold down the middle.
+  const app = await open("./App.tsx", {
+    width: 951,
+    height: 669,
+    reservedRegions: [{ kind: "division", bounds: { origin: { x: 460, y: 0 }, size: { width: 31, height: 669 } } }],
+  });
+  expect(app.shows("Reserved: division 460,0 31x669")).toBe(true);
 });
 
 test("the regional preferences follow the system's", async () => {

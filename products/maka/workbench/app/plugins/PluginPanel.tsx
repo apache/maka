@@ -53,7 +53,7 @@ export function PluginPanel(props: { docked: boolean; controller: WorkbenchPlugi
               <Button
                 accessibilityLabel={tr('Close panel')}
                 onPress={inputAction(plugins.closePanel, current.instance)}
-                style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
+                style={{ ...controlStyle(), width: 32, paddingHorizontal: 8, alignItems: 'center' }}
               >
                 <Icon name="close" color={C.secondary} />
               </Button>

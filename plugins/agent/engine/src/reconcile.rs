@@ -547,11 +547,9 @@ fn cell_action(view: &RunView, live: &Live, fenced: bool) -> Option<Action> {
                 )
             })
             || (interrupted && cell.children.values().any(|child| !child.known()));
-        let blocked = if fenced {
-            unknown || cell.children.values().any(|child| !child.known())
-        } else {
-            cell.blocks_effect_admission() || unknown
-        };
+        let blocked = cell.blocks_effect_admission()
+            || unknown
+            || (fenced && cell.children.values().any(|child| !child.known()));
         if blocked && !acknowledged {
             return Some(
                 if view

@@ -627,6 +627,7 @@ pub(crate) fn ComposerInput(
         .editor(session)
         .flex_1()
         .editable(move || !props.read_only.get())
+        .readonly_sink(true)
         .tab_navigation(true)
         .placeholder(move || Some(props.placeholder.get().into()))
         .accessibility_label(move || Some(props.accessibility_label.get().into()))

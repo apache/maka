@@ -9,6 +9,7 @@ import { createGestures } from "./gesture.js";
 import { createAnimation } from "./animation.js";
 import { createCanvas } from "./canvas.js";
 import { createNavigation } from "./navigation.js";
+import { createHot } from "./hot.js";
 import { createKeymap } from "./keymap.js";
 import { createEnvironment } from "./environment.js";
 import { createComponents } from "./components.js";
@@ -494,6 +495,50 @@ test("navigation keeps duplicate route entries and keymaps validate atomically",
 });
 
 
+test("a route's page made by nested hot components is the stack's own screen", { skip: !path }, async () => {
+  const f = await fixture();
+  // The nodes each parent shows: what the last insert (op 308) returned.
+  const shown = new Map(), screens = [];
+  const invoke = (op, args) => {
+    const result = f.invoke(op, args);
+    if (op === 300 && args[0] === "screen") screens.push(result);
+    if (op === 308) shown.set(args[0], result);
+    return result;
+  };
+  const dom = createDom(invoke, f.values, f.api, () => true, () => {});
+  const env = createEnvironment(f.api, f.invoke, dom);
+  const { createNavStack, NavStack, NavPage } = createNavigation(f.api, dom, env);
+  // A development bundle's components: each a proxy returning an accessor, here one around the next.
+  const { hot } = createHot(f.api, error => { throw error; });
+  let Screen;
+  const app = sig => () => {
+    const Page = hot.component("App.js", "Page", () => NavPage({ title: "Page" }), sig);
+    Screen = hot.component("App.js", "Screen", () => dom.rt.component(Page, {}), "screen");
+  };
+  hot.define("App.js", app("a"));
+  hot.start("App.js", {});
+  let dispose, nav, stack;
+  f.api.root(stop => {
+    dispose = stop;
+    nav = createNavStack(["home"]);
+    stack = NavStack({ state: nav, children: route => route === "home" ? NavPage({}) : dom.rt.component(Screen, {}) });
+  });
+  nav.push("page");
+  // One screen for each route, each the stack's child.
+  assert.equal(screens.length, 2);
+  assert.deepEqual(shown.get(stack), screens);
+
+  // An edit of the inner component renders the route's screen again.
+  hot.update({ "App.js": app("b") });
+  assert.equal(screens.length, 3);
+  assert.deepEqual(shown.get(stack), [screens[0], screens[2]]);
+
+  // A pop by the user removes the page's route.
+  dom.event(f.values.nodeIds.get(screens[2]), "onDismiss", {});
+  assert.deepEqual(nav.routes(), ["home"]);
+  dispose(); f.close();
+});
+
 test("touch dispatch captures, grants, tracks the Rust pan, and releases", { skip: !path }, async () => {
   const f=await fixture();const gestures=createGestures(f.invoke,f.values,f.api,f.dom,()=>!f.values.closed,()=>{});f.dom.setTouches(gestures);
   const seen=[];let child,parent,dispose;
@@ -861,6 +906,22 @@ test("Rust renderer getters retain their error boundary owner", { skip: !path },
   dispose(); close();
 });
 
+test("a Rust renderer of a pair gets the pair as two arguments", { skip: !path }, async () => {
+  const { api, values, components, close } = await fixture();
+  const Component = components.make({ name: "Fixture", id: 0, props: [], events: [], methods: [], hostProps: [] }, () => {});
+  const calls = [];
+  let node, dispose;
+  api.root(stop => {
+    dispose = stop;
+    node = Component({ cell: (...args) => { calls.push(args); return null; } });
+  });
+  const id = values.nodeIds.get(node);
+  components.render(id, "cell", "a", { src: "x" }, false);
+  components.render(id, "cell", "b", [{ src: "x" }, { link: { url: "u" } }], true);
+  assert.deepEqual(calls, [[{ src: "x" }], [{ src: "x" }, { link: { url: "u" } }]]);
+  dispose(); close();
+});
+
 test("cleanup returns its callback and permits an unowned registration", { skip: !path }, async () => {
   const { api, close } = await fixture();
   let calls = 0;
@@ -893,7 +954,7 @@ test("native touch payloads keep each point's pointer type, pressure and tilt", 
     const pointers = [["mouse", 0.5, 0, 0], ["pen", 0.25, 30, -15], ["touch", 0.5, 0, 0]];
     assert.deepEqual(f.touchEvents(), pointers.map(([pointerType, pressure, tiltX, tiltY]) => ({
       phase: "move", timestamp: 10, activated: undefined,
-      points: [{ identifier: 1, target: 2, path: [2, 1], pageX: 30, pageY: 40, locationX: 3, locationY: 4, changed: true, timestamp: 10, pointerType, pressure, tiltX, tiltY }],
+      points: [{ identifier: 1, target: 2, path: [2, 1], pageX: 30, pageY: 40, locationX: 3, locationY: 4, changed: true, timestamp: 10, pointerType, pressure, tiltX, tiltY, eraser: false, barrel: false, coalesced: [] }],
     })));
   } finally { f.close(); }
 });

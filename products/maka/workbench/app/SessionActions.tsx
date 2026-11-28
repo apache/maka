@@ -25,7 +25,7 @@ import type { SessionMenuAction } from './SessionMenu';
 import { useHost } from './host';
 import { forkTitle, sessionActionTarget, SessionRevisionConflict } from './sessionLifecycle';
 import type { SessionAction, SessionActionTarget } from './sessionLifecycle';
-import { C, inputTextStyle, inputBorderRadius } from './ui';
+import { C, inputBorderRadius, inputTextStyle, lineWidth } from './ui';
 import { DialogFooter, DialogHeader, ModalDialog } from './ModalDialog';
 import { SettingsButton } from './SettingsPage';
 import { AppliedPresetDialog } from './AppliedPresetDetails';
@@ -196,9 +196,9 @@ export function SessionActions(props: {
               color: C.text,
               backgroundColor: C.background,
               paddingHorizontal: 8,
-              borderWidth: 1,
+              borderWidth: lineWidth(),
               borderColor: C.line,
-              borderRadius: inputBorderRadius,
+              borderRadius: inputBorderRadius(),
               ...inputTextStyle,
             }}
             focusStyle={{ borderColor: C.accent }}

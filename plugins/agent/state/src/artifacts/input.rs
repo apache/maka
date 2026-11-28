@@ -32,6 +32,15 @@ fn material(
     session: &str,
     attachment: &AttachmentRef,
 ) -> Result<Option<read::Material>, StoreError> {
+    material_with_encoding(c, owner, session, attachment, true)
+}
+fn material_with_encoding(
+    c: &Connection,
+    owner: &RunOwner,
+    session: &str,
+    attachment: &AttachmentRef,
+    encoded: bool,
+) -> Result<Option<read::Material>, StoreError> {
     let StorageRef::SessionFile {
         session_id,
         relative_path,
@@ -50,7 +59,7 @@ fn material(
         owner: owner.clone(),
         session: session.into(),
     };
-    let material = read::lookup(c, &scope.into(), relative_path)?
+    let material = read::lookup_with_encoding(c, &scope.into(), relative_path, encoded)?
         .ok_or_else(|| invalid("input attachment has no canonical session registration"))?;
     material
         .record
@@ -59,10 +68,11 @@ fn material(
         .map_err(invalid)?;
     Ok(Some(material))
 }
-pub(crate) fn pin_request(
+pub(crate) fn pin_request_with_encoding(
     c: &Connection,
     request: &crate::queue::PreparedRequest,
     source: &RootSourceMessage,
+    encoded: bool,
 ) -> Result<(), StoreError> {
     let mut ids = BTreeSet::new();
     for attachment in source
@@ -73,8 +83,13 @@ pub(crate) fn pin_request(
         .flatten()
         .chain(source.unprepared_content.attachments.iter().flatten())
     {
-        let Some(material) =
-            material(c, &request.spec.owner, &request.spec.session_id, attachment)?
+        let Some(material) = material_with_encoding(
+            c,
+            &request.spec.owner,
+            &request.spec.session_id,
+            attachment,
+            encoded,
+        )?
         else {
             continue;
         };

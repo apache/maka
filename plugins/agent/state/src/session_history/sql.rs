@@ -81,7 +81,7 @@ fn spec(
     history: &HistoryNamespace,
     run: RunId,
 ) -> Result<(RunSpec, ContentRef), StoreError> {
-    let row:Option<(u32,String,Vec<u8>)>=c.query_row("SELECT s.schema_version,b.content_sha256,b.payload FROM agent_run_specs s JOIN contents b ON b.id=s.spec_content_id WHERE s.owner=? AND s.session=? AND s.run=?",params![scope_key(history)?,history.session,run.to_string()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
+    let row:Option<(u32,String,Vec<u8>)>=c.query_row("SELECT s.schema_version,b.content_sha256,maka_content_bytes(b.payload,b.encoding) FROM agent_run_specs s JOIN contents b ON b.id=s.spec_content_id WHERE s.owner=? AND s.session=? AND s.run=?",params![scope_key(history)?,history.session,run.to_string()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
     let (version, digest, bytes) =
         row.ok_or_else(|| invalid("Run is not owned by this session namespace"))?;
     let value: RunSpec = serde_json::from_slice(&bytes)?;
@@ -127,7 +127,7 @@ pub(super) fn run_source(
     run: RunId,
 ) -> Result<RunSource, StoreError> {
     let (spec, spec_ref) = spec(c, history, run)?;
-    let (sequence,version,bytes,digest,id):(u64,u32,Vec<u8>,String,String)=c.query_row("SELECT f.sequence,f.schema_version,b.payload,b.content_sha256,f.id FROM agent_facts f JOIN contents b ON b.id=f.body_content_id WHERE f.run=? AND f.revision=1",[run.to_string()],|r|Ok((read_u64(r,0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)))?;
+    let (sequence,version,bytes,digest,id):(u64,u32,Vec<u8>,String,String)=c.query_row("SELECT f.sequence,f.schema_version,maka_content_bytes(b.payload,b.encoding),b.content_sha256,f.id FROM agent_facts f JOIN contents b ON b.id=f.body_content_id WHERE f.run=? AND f.revision=1",[run.to_string()],|r|Ok((read_u64(r,0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)))?;
     check_bytes(&bytes, &digest)?;
     let admission = decode_record(version, &bytes)?;
     if admission.run != run
@@ -222,7 +222,7 @@ fn validate_tail(
     }
     Ok(())
 }
-pub(super) fn check_bytes(bytes: &[u8], digest: &str) -> Result<(), StoreError> {
+pub(crate) fn check_bytes(bytes: &[u8], digest: &str) -> Result<(), StoreError> {
     if content_digest(bytes) != digest {
         return Err(invalid("canonical history bytes corrupt"));
     }
@@ -242,7 +242,16 @@ pub(super) fn capture(
     } else {
         i64::MAX as u64
     };
-    let row:Option<(u64,String)>=c.query_row("SELECT sequence,prefix_digest FROM agent_session_history WHERE owner=? AND session=? AND sequence<=? ORDER BY sequence DESC LIMIT 1",params![owner,history.session,bind_u64(bound)?],|r|Ok((read_u64(r,0)?,r.get(1)?))).optional()?;
+    let row: Option<(u64, String)> = match crate::namespace::find_id(c, &owner, &history.session)? {
+        Some(ns_id) => c
+            .query_row(
+                "SELECT sequence,prefix_digest FROM agent_session_history WHERE namespace_id=? AND sequence<=? ORDER BY sequence DESC LIMIT 1",
+                params![ns_id, bind_u64(bound)?],
+                |r| Ok((read_u64(r, 0)?, r.get(1)?)),
+            )
+            .optional()?,
+        None => None,
+    };
     validate_tail(c, history, bound, row.as_ref().map_or(0, |row| row.0))?;
     let (through_sequence, digest) = match row {
         Some(row) => row,
@@ -259,7 +268,7 @@ fn check_cut(
     c: &Connection,
     history: &HistoryNamespace,
     cut: &HistoryCut,
-) -> Result<String, StoreError> {
+) -> Result<(String, Option<crate::namespace::NamespaceId>), StoreError> {
     let owner = scope_key(history)?;
     if cut.owner != history.owner
         || cut.session != history.session
@@ -267,15 +276,27 @@ fn check_cut(
     {
         return Err(invalid("foreign or invalid history cut"));
     }
+    let ns_id = crate::namespace::find_id(c, &owner, &history.session)?;
     let expected = if cut.through_sequence == 0 {
         seed(&history.owner, &history.session)?
     } else {
-        c.query_row("SELECT prefix_digest FROM agent_session_history WHERE owner=? AND session=? AND sequence=?",params![owner,history.session,bind_u64(cut.through_sequence)?],|r|r.get(0)).optional()?.ok_or_else(||invalid("history cut is not retained; explicit rebuild required"))?
+        let Some(ns_id) = ns_id else {
+            return Err(invalid(
+                "history cut is not retained; explicit rebuild required",
+            ));
+        };
+        c.query_row(
+            "SELECT prefix_digest FROM agent_session_history WHERE namespace_id=? AND sequence=?",
+            params![ns_id, bind_u64(cut.through_sequence)?],
+            |r| r.get(0),
+        )
+        .optional()?
+        .ok_or_else(|| invalid("history cut is not retained; explicit rebuild required"))?
     };
     if cut.digest != expected {
         return Err(StoreError::EventConflict);
     }
-    Ok(owner)
+    Ok((owner, ns_id))
 }
 type HistoryRow = (
     u64,
@@ -348,24 +369,25 @@ pub(super) fn window_items(
     cut: &HistoryCut,
     sequences: &[u64],
 ) -> Result<std::collections::BTreeMap<u64, HistoryItem>, StoreError> {
-    let owner = check_cut(c, history, cut)?;
+    let (_, Some(ns_id)) = check_cut(c, history, cut)? else {
+        return Ok(std::collections::BTreeMap::new());
+    };
     let seed = seed(&history.owner, &history.session)?;
     let mut statement = c.prepare_cached(
         "
-        SELECT h.sequence,h.admission_sequence,h.step,h.attempt,f.schema_version,b.payload,
+        SELECT h.sequence,h.admission_sequence,h.step,h.attempt,f.schema_version,maka_content_bytes(b.payload,b.encoding),
                b.content_sha256,h.prefix_digest,h.run,h.fact_id,
                (SELECT p.prefix_digest FROM agent_session_history p
-                WHERE p.owner=h.owner AND p.session=h.session AND p.sequence<h.sequence
+                WHERE p.namespace_id=h.namespace_id AND p.sequence<h.sequence
                 ORDER BY p.sequence DESC LIMIT 1)
         FROM json_each(?1) ids
         CROSS JOIN agent_session_history h ON h.sequence=ids.value
         JOIN agent_facts f ON f.sequence=h.sequence JOIN contents b ON b.id=f.body_content_id
-        WHERE h.owner=?2 AND h.session=?3 AND h.sequence<=?4",
+        WHERE h.namespace_id=?2 AND h.sequence<=?3",
     )?;
     let mut rows = statement.query(params![
         serde_json::to_string(sequences)?,
-        owner,
-        history.session,
+        ns_id,
         bind_u64(cut.through_sequence)?
     ])?;
     let mut items = std::collections::BTreeMap::new();
@@ -384,14 +406,20 @@ pub(super) fn page(
     after: u64,
     size: u32,
 ) -> Result<HistoryPage, StoreError> {
-    let owner = check_cut(c, history, cut)?;
+    let (_, ns_id) = check_cut(c, history, cut)?;
     let size = limit(size)?;
     if after > cut.through_sequence {
         return Err(invalid("history cursor exceeds captured cut"));
     }
-    let rows: Vec<HistoryRow> = c.prepare_cached("SELECT h.sequence,h.admission_sequence,h.step,h.attempt,f.schema_version,b.payload,b.content_sha256,h.prefix_digest,h.run,h.fact_id FROM agent_session_history h LEFT JOIN agent_facts f ON f.sequence=h.sequence LEFT JOIN contents b ON b.id=f.body_content_id WHERE h.owner=? AND h.session=? AND h.sequence>? AND h.sequence<=? ORDER BY h.sequence LIMIT ?")?.query_map(params![owner,history.session,bind_u64(after)?,bind_u64(cut.through_sequence)?,size+1], history_row)?.collect::<Result<_,_>>()?;
+    let Some(ns_id) = ns_id else {
+        return Ok(HistoryPage {
+            items: vec![],
+            next: None,
+        });
+    };
+    let rows: Vec<HistoryRow> = c.prepare_cached("SELECT h.sequence,h.admission_sequence,h.step,h.attempt,f.schema_version,maka_content_bytes(b.payload,b.encoding),b.content_sha256,h.prefix_digest,h.run,h.fact_id FROM agent_session_history h LEFT JOIN agent_facts f ON f.sequence=h.sequence LEFT JOIN contents b ON b.id=f.body_content_id WHERE h.namespace_id=? AND h.sequence>? AND h.sequence<=? ORDER BY h.sequence LIMIT ?")?.query_map(params![ns_id,bind_u64(after)?,bind_u64(cut.through_sequence)?,size+1], history_row)?.collect::<Result<_,_>>()?;
     let more = rows.len() > size as usize;
-    let prior: Option<String> = c.query_row("SELECT prefix_digest FROM agent_session_history WHERE owner=? AND session=? AND sequence<=? ORDER BY sequence DESC LIMIT 1", params![owner,history.session,bind_u64(after)?], |r|r.get(0)).optional()?;
+    let prior: Option<String> = c.query_row("SELECT prefix_digest FROM agent_session_history WHERE namespace_id=? AND sequence<=? ORDER BY sequence DESC LIMIT 1", params![ns_id,bind_u64(after)?], |r|r.get(0)).optional()?;
     let mut prefix = match prior {
         Some(prior) => prior,
         None => seed(&history.owner, &history.session)?,
@@ -423,17 +451,19 @@ pub(super) fn request_preparation(
     run: RunId,
     step: StepId,
 ) -> Result<(RequestSpec, UnixMillis), StoreError> {
-    let owner = check_cut(c, history, cut)?;
+    let (_, ns_id) = check_cut(c, history, cut)?;
     spec(c, history, run)?;
+    let Some(ns_id) = ns_id else {
+        return Err(invalid("request Step is outside captured source cut"));
+    };
     let sequence = c
         .query_row(
             "SELECT sequence FROM agent_session_history INDEXED BY agent_session_history_run
-             WHERE owner=? AND session=? AND run=? AND step=?
+             WHERE namespace_id=? AND run=? AND step=?
                AND kind IN ('step_prepared','proactive_summary_prepared') AND sequence<=?
              ORDER BY sequence LIMIT 1",
             params![
-                owner,
-                history.session,
+                ns_id,
                 run.to_string(),
                 step.to_string(),
                 bind_u64(cut.through_sequence)?
@@ -485,11 +515,11 @@ pub(super) fn validate_source_record(
             "canonical history header scope differs from its original fact",
         ));
     }
-    let (owner,session,actual_owner,actual_session,kind,actual_kind,locator):(String,String,String,String,String,String,Option<String>)=c.prepare_cached("SELECT h.owner,h.session,s.owner,s.session,h.kind,json_extract(b.payload,'$.fact.kind'),h.tool_use_id FROM agent_facts f JOIN agent_session_history h ON h.sequence=f.sequence JOIN agent_run_specs s ON s.run=f.run JOIN contents b ON b.id=f.body_content_id WHERE f.id=? AND f.run=?")?.query_row(params![record.id.to_string(),record.run.to_string()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?)))?;
+    let (owner,session,actual_owner,actual_session,kind,actual_kind,locator):(String,String,String,String,String,String,Option<String>)=c.prepare_cached("SELECT ns.owner,ns.session,s.owner,s.session,h.kind,json_extract(maka_content_text(b.payload,b.encoding),'$.fact.kind'),h.tool_use_id FROM agent_facts f JOIN agent_session_history h ON h.sequence=f.sequence JOIN agent_namespaces ns ON ns.id=h.namespace_id JOIN agent_run_specs s ON s.run=f.run JOIN contents b ON b.id=f.body_content_id WHERE f.id=? AND f.run=?")?.query_row(params![record.id.to_string(),record.run.to_string()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?)))?;
     if owner != actual_owner
         || session != actual_session
         || kind != actual_kind
-        || locator != tool_locator(c, record)?.map(|value| value.0)
+        || locator != tool_locator(record).map(|value| value.0)
     {
         return Err(invalid(
             "canonical history header kind/locator/namespace differs from its original fact",
@@ -524,22 +554,32 @@ fn blocker_attempt(reason: &BlockerKind) -> Option<ModelAttemptId> {
     }
 }
 fn fact_scope(c: &Connection, record: &RecordedFact) -> Result<HistoryScope, StoreError> {
+    fact_scope_with_cell_encoding(c, record, true)
+}
+fn fact_scope_with_cell_encoding(
+    c: &Connection,
+    record: &RecordedFact,
+    encoded_cell_body: bool,
+) -> Result<HistoryScope, StoreError> {
     let attempt = match &record.fact {
         Fact::Cell { event } => {
             use maka_agent_facts::cells::{CellEvent, CellOwner};
             let owner = match event {
                 CellEvent::Started { owner, .. } => owner.clone(),
                 _ => {
-                    let owner: String = c
-                        .prepare_cached(
-                            "SELECT json_extract(c.body,'$.owner') FROM agent_cells c
+                    let sql = if encoded_cell_body {
+                        "SELECT json_extract(maka_content_text(c.body,c.body_encoding),'$.owner') FROM agent_cells c
                          JOIN agent_run_specs s ON s.run=c.run AND s.session=c.session
-                         WHERE c.cell=? AND c.run=?",
-                        )?
-                        .query_row(
-                            params![event.cell().to_string(), record.run.to_string()],
-                            |row| row.get(0),
-                        )?;
+                         WHERE c.cell=? AND c.run=?"
+                    } else {
+                        "SELECT json_extract(c.body,'$.owner') FROM agent_cells c
+                         JOIN agent_run_specs s ON s.run=c.run AND s.session=c.session
+                         WHERE c.cell=? AND c.run=?"
+                    };
+                    let owner: String = c.prepare_cached(sql)?.query_row(
+                        params![event.cell().to_string(), record.run.to_string()],
+                        |row| row.get(0),
+                    )?;
                     serde_json::from_str(&owner)?
                 }
             };
@@ -610,7 +650,7 @@ fn fact_scope(c: &Connection, record: &RecordedFact) -> Result<HistoryScope, Sto
 /// the same transaction. Only index data is written; no new semantic fact.
 pub(crate) fn index(c: &Connection, record: &RecordedFact) -> Result<(), StoreError> {
     let (sequence, owner, session, digest, kind): (u64, String, String, String, String) = c
-        .prepare_cached("SELECT f.sequence,s.owner,s.session,b.content_sha256,json_extract(b.payload,'$.fact.kind') FROM agent_facts f JOIN agent_run_specs s ON s.run=f.run JOIN contents b ON b.id=f.body_content_id WHERE f.id=? AND f.run=?")?
+        .prepare_cached("SELECT f.sequence,s.owner,s.session,b.content_sha256,json_extract(maka_content_text(b.payload,b.encoding),'$.fact.kind') FROM agent_facts f JOIN agent_run_specs s ON s.run=f.run JOIN contents b ON b.id=f.body_content_id WHERE f.id=? AND f.run=?")?
         .query_row(params![record.id.to_string(), record.run.to_string()], |r| {
             Ok((read_u64(r, 0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
         })?;
@@ -624,7 +664,7 @@ pub(crate) fn index(c: &Connection, record: &RecordedFact) -> Result<(), StoreEr
         Option<String>,
     );
     let existing: Option<IndexedHistoryRow> = c
-        .prepare_cached("SELECT owner,session,run,fact_id,admission_sequence,step,attempt FROM agent_session_history WHERE sequence=?")?
+        .prepare_cached("SELECT ns.owner,ns.session,h.run,h.fact_id,h.admission_sequence,h.step,h.attempt FROM agent_session_history h JOIN agent_namespaces ns ON ns.id=h.namespace_id WHERE h.sequence=?")?
         .query_row([bind_u64(sequence)?], |r| {
             Ok((
                 r.get(0)?,
@@ -657,9 +697,10 @@ pub(crate) fn index(c: &Connection, record: &RecordedFact) -> Result<(), StoreEr
         return Ok(());
     }
     let owner_value: RunOwner = serde_json::from_str(&owner)?;
+    let ns_id = crate::namespace::ensure_id(c, &owner, &session)?;
     let previous: Option<(u64, String)> = c
-        .prepare_cached("SELECT sequence,prefix_digest FROM agent_session_history WHERE owner=? AND session=? ORDER BY sequence DESC LIMIT 1")?
-        .query_row(params![owner, session], |r| Ok((read_u64(r, 0)?, r.get(1)?)))
+        .prepare_cached("SELECT sequence,prefix_digest FROM agent_session_history WHERE namespace_id=? ORDER BY sequence DESC LIMIT 1")?
+        .query_row([ns_id], |r| Ok((read_u64(r, 0)?, r.get(1)?)))
         .optional()?;
     let previous = match previous {
         Some((prior, digest)) if prior < sequence => digest,
@@ -680,7 +721,7 @@ pub(crate) fn index(c: &Connection, record: &RecordedFact) -> Result<(), StoreEr
     // are hashed rather than today's reserialized/redacted semantic projection.
     let prefix = chain(&previous, sequence, &digest)?;
     let scope = fact_scope(c, record)?;
-    let locator = tool_locator(c, record)?;
+    let locator = tool_locator(record);
     let historical = if let Fact::RunAdmitted { spec: expected } = &record.fact {
         let (value, reference) = spec(
             c,
@@ -693,6 +734,93 @@ pub(crate) fn index(c: &Connection, record: &RecordedFact) -> Result<(), StoreEr
         if &reference != expected {
             return Err(invalid("history admission names another Run specification"));
         }
+        historical_backend(&value)?
+    } else {
+        false
+    };
+    c.prepare_cached(
+        "INSERT INTO agent_session_history(namespace_id,sequence,run,admission_sequence,step,attempt,kind,prefix_digest,tool_use_id,tool_start,opening_message,fact_id,result_source,historical) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+    )?
+    .execute(params![
+        ns_id,
+        bind_u64(sequence)?,
+        record.run.to_string(),
+        bind_u64(admission_sequence(c, record.run)?)?,
+        scope.step.map(|v| v.to_string()),
+        scope.attempt.map(|v| v.to_string()),
+        kind,
+        prefix,
+        locator.as_ref().map(|value| value.0.as_str()),
+        locator.as_ref().is_some_and(|value| value.1),
+        false,
+        record.id.to_string(),
+        result_source(&record.fact),
+        historical,
+    ])?;
+    Ok(())
+}
+#[cfg(test)]
+pub(crate) fn index_legacy_owner_session(
+    c: &Connection,
+    record: &RecordedFact,
+) -> Result<(), StoreError> {
+    let (sequence, owner, session, digest, kind): (u64, String, String, String, String) = c
+        .prepare_cached("SELECT f.sequence,s.owner,s.session,b.content_sha256,json_extract(b.payload,'$.fact.kind') FROM agent_facts f JOIN agent_run_specs s ON s.run=f.run JOIN contents b ON b.id=f.body_content_id WHERE f.id=? AND f.run=?")?
+        .query_row(params![record.id.to_string(), record.run.to_string()], |r| {
+            Ok((read_u64(r, 0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+        })?;
+    let owner_value: RunOwner = serde_json::from_str(&owner)?;
+    let previous: Option<(u64, String)> = c
+        .prepare_cached("SELECT sequence,prefix_digest FROM agent_session_history WHERE owner=? AND session=? ORDER BY sequence DESC LIMIT 1")?
+        .query_row(params![owner, session], |r| Ok((read_u64(r, 0)?, r.get(1)?)))
+        .optional()?;
+    let previous = match previous {
+        Some((prior, digest)) if prior < sequence => digest,
+        Some(_) => return Err(invalid("history index requires canonical commit order")),
+        None => seed(&owner_value, &session)?,
+    };
+    let prefix = chain(&previous, sequence, &digest)?;
+    let scope = fact_scope_with_cell_encoding(c, record, false)?;
+    let locator = if let Fact::ExternalEffect { event } = &record.fact {
+        let key = event.key();
+        let original = match event {
+            maka_agent_facts::external_effects::ExternalEffectEvent::Prepared {
+                descriptor,
+                ..
+            } => descriptor.clone(),
+            _ => crate::external_effects::read_original(c, record.run, &key)?.descriptor,
+        };
+        let bytes: Vec<u8> = c.query_row(
+            "SELECT c.payload FROM agent_run_content p JOIN contents c ON c.id=p.content_id WHERE p.run=? AND c.content_sha256=? AND length(c.payload)=?",
+            params![record.run.to_string(), original.digest, bind_u64(original.bytes)?],
+            |r| r.get(0),
+        )?;
+        let descriptor: maka_agent_facts::external_effects::StoredExternalEffectDescriptor =
+            serde_json::from_slice(&bytes)?;
+        Some((
+            maka_agent_facts::tool_call::tool_use_id(record.run, &descriptor.operation_id),
+            matches!(
+                event,
+                maka_agent_facts::external_effects::ExternalEffectEvent::Prepared { .. }
+            ),
+        ))
+    } else {
+        tool_locator(record)
+    };
+    let historical = if let Fact::RunAdmitted { spec: expected } = &record.fact {
+        let (digest, bytes): (String, Vec<u8>) = c.query_row(
+            "SELECT b.content_sha256,b.payload FROM agent_run_specs s JOIN contents b ON b.id=s.spec_content_id WHERE s.owner=? AND s.session=? AND s.run=?",
+            params![&owner, &session, record.run.to_string()],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        let reference = ContentRef {
+            digest,
+            bytes: bytes.len() as u64,
+        };
+        if &reference != expected {
+            return Err(invalid("history admission names another Run specification"));
+        }
+        let value: RunSpec = serde_json::from_slice(&bytes)?;
         historical_backend(&value)?
     } else {
         false
@@ -720,8 +848,15 @@ pub(crate) fn index(c: &Connection, record: &RecordedFact) -> Result<(), StoreEr
     Ok(())
 }
 pub(crate) fn index_retained(c: &Connection, record: &RecordedFact) -> Result<(), StoreError> {
+    index_retained_with_external(c, record, None)
+}
+pub(crate) fn index_retained_with_external(
+    c: &Connection,
+    record: &RecordedFact,
+    external: Option<&crate::external_effects::PersistedExternalEffect>,
+) -> Result<(), StoreError> {
     let (sequence, owner, session): (u64, String, String) = c
-        .prepare_cached("SELECT h.sequence,h.owner,h.session FROM agent_session_history h JOIN agent_facts f ON f.sequence=h.sequence WHERE f.id=? AND h.run=?")?
+        .prepare_cached("SELECT h.sequence,ns.owner,ns.session FROM agent_session_history h JOIN agent_namespaces ns ON ns.id=h.namespace_id JOIN agent_facts f ON f.sequence=h.sequence WHERE f.id=? AND h.run=?")?
         .query_row(params![record.id.to_string(), record.run.to_string()], |r| {
             Ok((read_u64(r, 0)?, r.get(1)?, r.get(2)?))
         })?;
@@ -731,6 +866,7 @@ pub(crate) fn index_retained(c: &Connection, record: &RecordedFact) -> Result<()
         &session,
         record,
         sequence,
+        external,
     )
 }
 fn index_refs(
@@ -739,6 +875,7 @@ fn index_refs(
     session: &str,
     record: &RecordedFact,
     sequence: u64,
+    external: Option<&crate::external_effects::PersistedExternalEffect>,
 ) -> Result<(), StoreError> {
     let mut references = record
         .fact
@@ -771,7 +908,7 @@ fn index_refs(
                         return Err(invalid("local Run has a historical adoption receipt"));
                     }
                 };
-                let reference:ContentRef=c.query_row("SELECT b.content_sha256,length(b.payload) FROM agent_history_snapshots s JOIN contents b ON b.id=s.manifest_content_id WHERE s.snapshot=?",[&snapshot],|row|Ok(ContentRef {digest:row.get(0)?,bytes:read_u64(row,1)?}))?;
+                let reference:ContentRef=c.query_row("SELECT b.content_sha256,COALESCE(b.logical_bytes,length(b.payload)) FROM agent_history_snapshots s JOIN contents b ON b.id=s.manifest_content_id WHERE s.snapshot=?",[&snapshot],|row|Ok(ContentRef {digest:row.get(0)?,bytes:read_u64(row,1)?}))?;
                 if fact != record.id.to_string()
                     || original != &reference
                     || !historical_backend(&spec)?
@@ -825,14 +962,44 @@ fn index_refs(
             event:
                 maka_agent_facts::external_effects::ExternalEffectEvent::Prepared { key, descriptor },
         } => {
-            let original =
-                crate::external_effects::read_descriptor(c, record.run, key, descriptor)?;
-            references.extend(original.resources.into_iter().filter_map(
-                |resource| match resource {
-                    ResourceRecovery::Reference { descriptor } => Some(descriptor),
-                    _ => None,
-                },
-            ));
+            if let Some(crate::external_effects::PersistedExternalEffect::Prepared { extra_refs }) =
+                external
+            {
+                references.extend(extra_refs.iter().cloned());
+            } else {
+                let (original, definition_ref) =
+                    crate::external_effects::read_descriptor_with_definition_ref(
+                        c, record.run, key, descriptor,
+                    )?;
+                references.extend(definition_ref);
+                references.extend(original.resources.into_iter().filter_map(|resource| {
+                    match resource {
+                        ResourceRecovery::Reference { descriptor } => Some(descriptor),
+                        _ => None,
+                    }
+                }));
+            }
+        }
+        Fact::ExternalTaskPrepared { descriptor, .. }
+        | Fact::ExternalTaskBound { descriptor, .. } => {
+            if let Some(instr_ref) =
+                crate::sql::external_task_instructions_ref(c, record.run, descriptor)?
+            {
+                references.push(instr_ref);
+            }
+        }
+        Fact::ExternalEffect {
+            event: maka_agent_facts::external_effects::ExternalEffectEvent::Returned { output, .. },
+        } => {
+            if let Some(crate::external_effects::PersistedExternalEffect::Returned { returned }) =
+                external
+            {
+                references.extend(returned.completed_cell_result().cloned());
+            } else {
+                let returned: maka_agent_facts::external_effects::StoredExternalReturn =
+                    owned_metadata(c, record.run, output)?;
+                references.extend(returned.completed_cell_result().cloned());
+            }
         }
         _ => {}
     }
@@ -841,7 +1008,7 @@ fn index_refs(
     let bound_sequence = bind_u64(sequence)?;
     if !references.is_empty() {
         let mut find_content = c.prepare_cached(
-            "SELECT b.id FROM agent_run_content p JOIN contents b ON b.id=p.content_id WHERE p.run=? AND b.content_sha256=? AND length(b.payload)=?",
+            "SELECT b.id FROM agent_run_content p JOIN contents b ON b.id=p.content_id WHERE p.run=? AND b.content_sha256=? AND COALESCE(b.logical_bytes,length(b.payload))=?",
         )?;
         let mut insert_ref = c.prepare_cached(
             "INSERT OR IGNORE INTO agent_history_content_refs(run,content_id,first_sequence) VALUES(?,?,?)",
@@ -864,7 +1031,7 @@ fn index_refs(
     Ok(())
 }
 pub(crate) fn index_queue(c: &Connection, session: &str, revision: u64) -> Result<(), StoreError> {
-    let (id,bytes,digest):(String,Vec<u8>,String)=c.query_row("SELECT e.id,b.payload,b.content_sha256 FROM agent_queue_events e JOIN contents b ON b.id=e.body_content_id WHERE e.session=? AND e.revision=?",params![session,bind_u64(revision)?],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
+    let (id,bytes,digest):(String,Vec<u8>,String)=c.query_row("SELECT e.id,maka_content_bytes(b.payload,b.encoding),b.content_sha256 FROM agent_queue_events e JOIN contents b ON b.id=e.body_content_id WHERE e.session=? AND e.revision=?",params![session,bind_u64(revision)?],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
     check_bytes(&bytes, &digest)?;
     let event: Event = serde_json::from_slice(&bytes)?;
     if let Event::Consumed {
@@ -911,7 +1078,7 @@ fn consumed(
         .ok_or_else(|| invalid("source fact outside session namespace"))?;
     let run = original.recorded.run;
     let fact = original.recorded.id;
-    let event:Option<(u64,Vec<u8>,String)>=c.query_row("SELECT e.revision,b.payload,b.content_sha256 FROM agent_queue_events e JOIN contents b ON b.id=e.body_content_id WHERE e.session=? AND e.id=?",params![history.session,fact.to_string()],|r|Ok((read_u64(r,0)?,r.get(1)?,r.get(2)?))).optional()?;
+    let event:Option<(u64,Vec<u8>,String)>=c.query_row("SELECT e.revision,maka_content_bytes(b.payload,b.encoding),b.content_sha256 FROM agent_queue_events e JOIN contents b ON b.id=e.body_content_id WHERE e.session=? AND e.id=?",params![history.session,fact.to_string()],|r|Ok((read_u64(r,0)?,r.get(1)?,r.get(2)?))).optional()?;
     let Some((revision, bytes, digest)) = event else {
         return Ok(None);
     };
@@ -965,7 +1132,7 @@ pub(super) fn sources(
     let mut sources = Vec::with_capacity((end - start) as usize);
     for position in start..end {
         let id = &consumption.requests[position as usize];
-        let row:Option<(u64,Vec<u8>,String)>=c.query_row("SELECT q.revision,b.payload,b.content_sha256 FROM agent_history_queue_requests q JOIN agent_queue_events e ON e.session=q.session AND e.revision=q.revision JOIN contents b ON b.id=e.body_content_id WHERE q.session=? AND q.request=? AND q.revision<? ORDER BY q.revision DESC LIMIT 1",params![history.session,id.0,bind_u64(consumed_revision)?],|r|Ok((read_u64(r,0)?,r.get(1)?,r.get(2)?))).optional()?;
+        let row:Option<(u64,Vec<u8>,String)>=c.query_row("SELECT q.revision,maka_content_bytes(b.payload,b.encoding),b.content_sha256 FROM agent_history_queue_requests q JOIN agent_queue_events e ON e.session=q.session AND e.revision=q.revision JOIN contents b ON b.id=e.body_content_id WHERE q.session=? AND q.request=? AND q.revision<? ORDER BY q.revision DESC LIMIT 1",params![history.session,id.0,bind_u64(consumed_revision)?],|r|Ok((read_u64(r,0)?,r.get(1)?,r.get(2)?))).optional()?;
         let (revision, bytes, digest) = row.ok_or_else(|| {
             invalid("consumed queue snapshot index missing; explicit rebuild required")
         })?;
@@ -993,7 +1160,7 @@ pub(super) fn sources(
         match &delivery {
             DeliveryTarget::Run => {
                 let (spec, _) = spec(c, history, run)?;
-                if frozen.spec != spec {
+                if !frozen.matches_run_input(spec) {
                     return Err(invalid("original Run input differs from consumed request"));
                 }
             }
@@ -1083,7 +1250,7 @@ pub(super) fn with_source<T>(
         ));
     }
     let row: Option<i64> = c.query_row(
-        "SELECT b.id FROM agent_queue_content_pins p JOIN contents b ON b.id=p.content_id WHERE p.session=? AND p.request=? AND b.content_sha256=? AND length(b.payload)=?",
+        "SELECT b.id FROM agent_queue_content_pins p JOIN contents b ON b.id=p.content_id WHERE p.session=? AND p.request=? AND b.content_sha256=? AND COALESCE(b.logical_bytes,length(b.payload))=?",
         params![history.session, source.request.id.0, reference.digest, bind_u64(reference.bytes)?],
         |row| row.get(0),
     ).optional()?;
@@ -1096,10 +1263,12 @@ pub(super) fn rebuild(
     history: &HistoryNamespace,
 ) -> Result<HistoryCut, StoreError> {
     let owner = scope_key(history)?;
-    c.execute(
-        "DELETE FROM agent_session_history WHERE owner=? AND session=?",
-        params![owner, history.session],
-    )?;
+    if let Some(ns_id) = crate::namespace::find_id(c, &owner, &history.session)? {
+        c.execute(
+            "DELETE FROM agent_session_history WHERE namespace_id=?",
+            [ns_id],
+        )?;
+    }
     {
         let mut runs =
             c.prepare_cached("SELECT run FROM agent_run_specs WHERE owner=? AND session=?")?;
@@ -1117,7 +1286,7 @@ pub(super) fn rebuild(
     {
         // One ordered cursor over only this namespace; do not repeatedly scan
         // every Run for each repair page or retain the complete history in RAM.
-        let mut statement = c.prepare_cached("SELECT f.schema_version,b.payload,b.content_sha256 FROM agent_run_specs s JOIN agent_facts f ON f.run=s.run JOIN contents b ON b.id=f.body_content_id WHERE s.owner=? AND s.session=? ORDER BY f.sequence")?;
+        let mut statement = c.prepare_cached("SELECT f.schema_version,maka_content_bytes(b.payload,b.encoding),b.content_sha256 FROM agent_run_specs s JOIN agent_facts f ON f.run=s.run JOIN contents b ON b.id=f.body_content_id WHERE s.owner=? AND s.session=? ORDER BY f.sequence")?;
         let mut rows = statement.query(params![owner, history.session])?;
         while let Some(row) = rows.next()? {
             let bytes: Vec<u8> = row.get(1)?;
@@ -1153,16 +1322,16 @@ pub(super) fn with_content<T>(
     reference: &ContentRef,
     consume: impl FnOnce(&mut CheckedBlob<'_, '_>) -> Result<T, StoreError>,
 ) -> Result<T, StoreError> {
-    let owner = check_cut(c, history, cut)?;
+    let (owner, _) = check_cut(c, history, cut)?;
     reference.validate().map_err(invalid)?;
-    let row: Option<i64> = c.prepare_cached("SELECT b.id FROM contents b WHERE b.content_sha256=?5 AND length(b.payload)=?6 AND EXISTS(SELECT 1 FROM agent_history_content h WHERE h.owner=?1 AND h.session=?2 AND h.run=?3 AND h.content_id=b.id AND h.first_sequence<=?4 AND (h.inherited=1 OR EXISTS(SELECT 1 FROM agent_run_content p WHERE p.run=h.run AND p.content_id=b.id)))")?.query_row(params![owner,history.session,run.to_string(),bind_u64(cut.through_sequence)?,reference.digest,bind_u64(reference.bytes)?], |r|r.get(0)).optional()?;
+    let row: Option<i64> = c.prepare_cached("SELECT b.id FROM contents b WHERE b.content_sha256=?5 AND COALESCE(b.logical_bytes,length(b.payload))=?6 AND EXISTS(SELECT 1 FROM agent_history_content h WHERE h.owner=?1 AND h.session=?2 AND h.run=?3 AND h.content_id=b.id AND h.first_sequence<=?4 AND (h.inherited=1 OR EXISTS(SELECT 1 FROM agent_run_content p WHERE p.run=h.run AND p.content_id=b.id)))")?.query_row(params![owner,history.session,run.to_string(),bind_u64(cut.through_sequence)?,reference.digest,bind_u64(reference.bytes)?], |r|r.get(0)).optional()?;
     let row = row.ok_or_else(|| {
         invalid("content is not owned by this Run within the captured source cut")
     })?;
     read_blob(c, row, reference, consume)
 }
 pub(super) struct CheckedBlob<'a, 'c> {
-    blob: &'a mut rusqlite::blob::Blob<'c>,
+    blob: &'a mut maka_event_log::content::ContentReader<'c>,
     reference: &'a ContentRef,
     hash: Option<Sha256>,
     position: u64,
@@ -1222,10 +1391,8 @@ pub(super) fn read_blob<T>(
     reference: &ContentRef,
     consume: impl FnOnce(&mut CheckedBlob<'_, '_>) -> Result<T, StoreError>,
 ) -> Result<T, StoreError> {
-    let mut blob = c.blob_open("main", "contents", "payload", row, true)?;
-    let result = if u64::try_from(blob.len()).map_err(|_| invalid("Blob length overflow"))?
-        != reference.bytes
-    {
+    let mut blob = maka_event_log::content::open_by_id(c, row)?;
+    let result = if blob.len() != reference.bytes {
         Err(invalid("canonical source Blob length changed"))
     } else {
         let mut checked = CheckedBlob {
@@ -1278,7 +1445,7 @@ pub(super) fn previous(
     before: Option<u64>,
     size: u32,
 ) -> Result<HistoryPage, StoreError> {
-    let owner = check_cut(c, history, cut)?;
+    let (_, ns_id) = check_cut(c, history, cut)?;
     let size = limit(size)?;
     let bound = match before {
         Some(0) => {
@@ -1291,8 +1458,17 @@ pub(super) fn previous(
         Some(_) => return Err(invalid("reverse history cursor exceeds captured cut")),
         None => cut.through_sequence,
     };
-    let mut positions:Vec<u64>=c.prepare_cached("SELECT sequence FROM agent_session_history WHERE owner=? AND session=? AND sequence<=? ORDER BY sequence DESC LIMIT ?")?
-        .query_map(params![owner,history.session,bind_u64(bound)?,size+1],|row|read_u64(row,0))?
+    let Some(ns_id) = ns_id else {
+        if before.is_none() {
+            validate_tail(c, history, bound, 0)?;
+        }
+        return Ok(HistoryPage {
+            items: vec![],
+            next: None,
+        });
+    };
+    let mut positions:Vec<u64>=c.prepare_cached("SELECT sequence FROM agent_session_history WHERE namespace_id=? AND sequence<=? ORDER BY sequence DESC LIMIT ?")?
+        .query_map(params![ns_id,bind_u64(bound)?,size+1],|row|read_u64(row,0))?
         .collect::<Result<_,_>>()?;
     if before.is_none() {
         validate_tail(c, history, bound, positions.first().copied().unwrap_or(0))?;
@@ -1306,7 +1482,11 @@ pub(super) fn previous(
         });
     };
     let first = *positions.last().unwrap();
-    let digest=c.query_row("SELECT prefix_digest FROM agent_session_history WHERE owner=? AND session=? AND sequence=?",params![owner,history.session,bind_u64(last)?],|row|row.get(0))?;
+    let digest = c.query_row(
+        "SELECT prefix_digest FROM agent_session_history WHERE namespace_id=? AND sequence=?",
+        params![ns_id, bind_u64(last)?],
+        |row| row.get(0),
+    )?;
     let selected = HistoryCut {
         through_sequence: last,
         digest,
@@ -1329,7 +1509,7 @@ pub(super) fn run_revision_through(
     run: RunId,
     through: u64,
 ) -> Result<u64, StoreError> {
-    let owner = check_cut(c, history, cut)?;
+    let (owner, _) = check_cut(c, history, cut)?;
     if through > cut.through_sequence {
         return Err(invalid("history cursor exceeds captured cut"));
     }
@@ -1364,7 +1544,18 @@ pub(crate) fn capture_at(
     let digest = if through == 0 {
         seed(owner, session)?
     } else {
-        c.query_row("SELECT prefix_digest FROM agent_session_history WHERE owner=? AND session=? AND sequence=?",params![key,session,bind_u64(through)?],|r|r.get(0)).optional()?.ok_or_else(||invalid("history cut is not an exact boundary in this namespace"))?
+        let Some(ns_id) = crate::namespace::find_id(c, &key, session)? else {
+            return Err(invalid(
+                "history cut is not an exact boundary in this namespace",
+            ));
+        };
+        c.query_row(
+            "SELECT prefix_digest FROM agent_session_history WHERE namespace_id=? AND sequence=?",
+            params![ns_id, bind_u64(through)?],
+            |r| r.get(0),
+        )
+        .optional()?
+        .ok_or_else(|| invalid("history cut is not an exact boundary in this namespace"))?
     };
     let cut = HistoryCut {
         owner: owner.clone(),
@@ -1454,8 +1645,10 @@ pub(super) fn latest(
     history: &HistoryNamespace,
     cut: &HistoryCut,
 ) -> Result<Option<RunSource>, StoreError> {
-    let owner = check_cut(c, history, cut)?;
-    let run:Option<String>=c.query_row("SELECT run FROM agent_session_history WHERE owner=? AND session=? AND kind='run_admitted' AND sequence<=? ORDER BY sequence DESC LIMIT 1",params![owner,history.session,bind_u64(cut.through_sequence)?],|r|r.get(0)).optional()?;
+    let (_, Some(ns_id)) = check_cut(c, history, cut)? else {
+        return Ok(None);
+    };
+    let run:Option<String>=c.query_row("SELECT run FROM agent_session_history WHERE namespace_id=? AND kind='run_admitted' AND sequence<=? ORDER BY sequence DESC LIMIT 1",params![ns_id,bind_u64(cut.through_sequence)?],|r|r.get(0)).optional()?;
     run.map(|run| run_source(c, history, identity(run)?))
         .transpose()
 }
@@ -1479,7 +1672,7 @@ pub(super) fn recovery_failure_at(
     sequence: u64,
     mask_evidence: bool,
 ) -> Result<Option<String>, StoreError> {
-    let owner = check_cut(c, history, cut)?;
+    let (owner, _) = check_cut(c, history, cut)?;
     let head: Option<u64> = c
         .query_row(
             "SELECT revision FROM agent_runs WHERE run=? AND owner=? AND session=?
@@ -1566,7 +1759,7 @@ fn view_through(
         return Err(invalid("Run was not admitted within the captured cut"));
     }
     let mut view = crate::fold::RunView::admitted(run, source.spec)?;
-    let mut statement=c.prepare_cached("SELECT f.schema_version,b.payload,b.content_sha256,f.sequence FROM agent_facts f JOIN contents b ON b.id=f.body_content_id WHERE f.run=? AND f.sequence<=? ORDER BY f.revision")?;
+    let mut statement=c.prepare_cached("SELECT f.schema_version,maka_content_bytes(b.payload,b.encoding),b.content_sha256,f.sequence FROM agent_facts f JOIN contents b ON b.id=f.body_content_id WHERE f.run=? AND f.sequence<=? ORDER BY f.revision")?;
     let mut rows = statement.query(params![run.to_string(), bind_u64(through_sequence)?])?;
     while let Some(row) = rows.next()? {
         let bytes: Vec<u8> = row.get(1)?;
@@ -1580,10 +1773,7 @@ fn view_through(
     }
     Ok(view)
 }
-fn tool_locator(
-    c: &Connection,
-    record: &RecordedFact,
-) -> Result<Option<(String, bool)>, StoreError> {
+fn tool_locator(record: &RecordedFact) -> Option<(String, bool)> {
     use maka_agent_facts::{
         cells::CellEvent, external_effects::ExternalEffectEvent, model::ModelPart,
     };
@@ -1641,7 +1831,7 @@ fn tool_locator(
             | CellEvent::ChildObserved {
                 cell, operation, ..
             } => (format!("cell:{cell}:{operation}"), false),
-            _ => return Ok(None),
+            _ => return None,
         },
         Fact::ExternalTaskObserved { task, output, .. } => {
             use maka_agent_facts::executor::Output;
@@ -1651,28 +1841,24 @@ fn tool_locator(
                 | Output::ToolResult { tool_call_id, .. } => {
                     (format!("{task}:{tool_call_id}"), false)
                 }
-                _ => return Ok(None),
+                _ => return None,
             }
         }
         Fact::ExternalEffect { event } => {
             let key = event.key();
-            let original = match event {
-                ExternalEffectEvent::Prepared { descriptor, .. } => descriptor.clone(),
-                _ => crate::external_effects::read_original(c, record.run, &key)?.descriptor,
-            };
-            let descriptor =
-                crate::external_effects::read_descriptor(c, record.run, &key, &original)?;
+            // external_effects::persist enforces descriptor.operation_id == "external:{task}:{operation}"
+            // within the same transaction, so tool_locator does not need to re-decode the descriptor.
             (
-                descriptor.operation_id,
+                format!("external:{}:{}", key.task, key.operation),
                 matches!(event, ExternalEffectEvent::Prepared { .. }),
             )
         }
-        _ => return Ok(None),
+        _ => return None,
     };
-    Ok(Some((
+    Some((
         maka_agent_facts::tool_call::tool_use_id(record.run, &operation),
         start,
-    )))
+    ))
 }
 pub(crate) fn captured_tool_call(
     c: &Connection,
@@ -1695,9 +1881,13 @@ pub(super) fn tool_call(
     key: &ToolKey,
 ) -> Result<maka_agent_facts::model::ModelToolCall, StoreError> {
     use maka_agent_facts::model::ModelPart;
-    let owner = check_cut(c, history, cut)?;
+    let (_, Some(ns_id)) = check_cut(c, history, cut)? else {
+        return Err(invalid(
+            "original model tool call missing or ambiguous in captured cut",
+        ));
+    };
     let use_id = maka_agent_facts::tool_call::tool_use_id(run, &crate::fold::tool_key(key));
-    let mut rows: Vec<(u32, Vec<u8>, String, String)> = c.prepare_cached("SELECT f.schema_version,b.payload,b.content_sha256,f.id FROM agent_session_history h INDEXED BY agent_session_history_tool JOIN agent_facts f ON f.id=h.fact_id AND f.sequence=h.sequence AND f.run=h.run JOIN contents b ON b.id=f.body_content_id WHERE h.owner=? AND h.session=? AND h.tool_use_id=? AND h.run=? AND h.attempt=? AND h.tool_start=1 AND h.sequence<=? ORDER BY h.sequence LIMIT 2")?.query_map(params![owner,history.session,use_id,run.to_string(),key.attempt.to_string(),bind_u64(cut.through_sequence)?],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))?.collect::<Result<_,_>>()?;
+    let mut rows: Vec<(u32, Vec<u8>, String, String)> = c.prepare_cached("SELECT f.schema_version,maka_content_bytes(b.payload,b.encoding),b.content_sha256,f.id FROM agent_session_history h INDEXED BY agent_session_history_tool JOIN agent_facts f ON f.id=h.fact_id AND f.sequence=h.sequence AND f.run=h.run JOIN contents b ON b.id=f.body_content_id WHERE h.namespace_id=? AND h.tool_use_id=? AND h.run=? AND h.attempt=? AND h.tool_start=1 AND h.sequence<=? ORDER BY h.sequence LIMIT 2")?.query_map(params![ns_id,use_id,run.to_string(),key.attempt.to_string(),bind_u64(cut.through_sequence)?],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))?.collect::<Result<_,_>>()?;
     if rows.len() != 1 {
         return Err(invalid(
             "original model tool call missing or ambiguous in captured cut",
@@ -1724,8 +1914,10 @@ pub(super) fn tool_position(
     cut: &HistoryCut,
     id: &str,
 ) -> Result<Option<maka_agent_facts::history::RowPosition>, StoreError> {
-    let owner = check_cut(c, history, cut)?;
-    let rows:Vec<u64>=c.prepare_cached("SELECT sequence FROM agent_session_history WHERE owner=? AND session=? AND tool_use_id=? AND tool_start=1 AND sequence<=? ORDER BY sequence LIMIT 2")?.query_map(params![owner,history.session,id,bind_u64(cut.through_sequence)?],|r|read_u64(r,0))?.collect::<Result<_,_>>()?;
+    let (_, Some(ns_id)) = check_cut(c, history, cut)? else {
+        return Ok(None);
+    };
+    let rows:Vec<u64>=c.prepare_cached("SELECT sequence FROM agent_session_history WHERE namespace_id=? AND tool_use_id=? AND tool_start=1 AND sequence<=? ORDER BY sequence LIMIT 2")?.query_map(params![ns_id,id,bind_u64(cut.through_sequence)?],|r|read_u64(r,0))?.collect::<Result<_,_>>()?;
     if rows.len() > 1 {
         return Err(invalid(
             "tool display identity has multiple original call sources",
@@ -1746,12 +1938,18 @@ pub(super) fn tool_page(
     after: u64,
     size: u32,
 ) -> Result<HistoryPage, StoreError> {
-    let owner = check_cut(c, history, cut)?;
+    let (_, ns_id) = check_cut(c, history, cut)?;
     let size = limit(size)?;
     if after > cut.through_sequence {
         return Err(invalid("tool history cursor exceeds captured cut"));
     }
-    let mut positions:Vec<u64>=c.prepare_cached("SELECT sequence FROM agent_session_history WHERE owner=? AND session=? AND tool_use_id=? AND sequence>? AND sequence<=? ORDER BY sequence LIMIT ?")?.query_map(params![owner,history.session,id,bind_u64(after)?,bind_u64(cut.through_sequence)?,size+1],|r|read_u64(r,0))?.collect::<Result<_,_>>()?;
+    let Some(ns_id) = ns_id else {
+        return Ok(HistoryPage {
+            items: vec![],
+            next: None,
+        });
+    };
+    let mut positions:Vec<u64>=c.prepare_cached("SELECT sequence FROM agent_session_history WHERE namespace_id=? AND tool_use_id=? AND sequence>? AND sequence<=? ORDER BY sequence LIMIT ?")?.query_map(params![ns_id,id,bind_u64(after)?,bind_u64(cut.through_sequence)?,size+1],|r|read_u64(r,0))?.collect::<Result<_,_>>()?;
     let more = positions.len() > size as usize;
     positions.truncate(size as usize);
     let next = if more {
@@ -1796,7 +1994,7 @@ pub(super) fn chunk(
 }
 
 fn mark_message(c: &Connection, session: &str, run: RunId, fact: &str) -> Result<(), StoreError> {
-    let (version,bytes):(u32,Vec<u8>)=c.query_row("SELECT s.schema_version,b.payload FROM agent_run_specs s JOIN contents b ON b.id=s.spec_content_id WHERE s.run=? AND s.session=?",params![run.to_string(),session],|r|Ok((r.get(0)?,r.get(1)?)))?;
+    let (version,bytes):(u32,Vec<u8>)=c.query_row("SELECT s.schema_version,maka_content_bytes(b.payload,b.encoding) FROM agent_run_specs s JOIN contents b ON b.id=s.spec_content_id WHERE s.run=? AND s.session=?",params![run.to_string(),session],|r|Ok((r.get(0)?,r.get(1)?)))?;
     let spec: RunSpec = serde_json::from_slice(&bytes)?;
     if version != SCHEMA_VERSION || spec.schema_version != SCHEMA_VERSION {
         return Err(invalid("unsupported message Run schema"));
@@ -1804,9 +2002,11 @@ fn mark_message(c: &Connection, session: &str, run: RunId, fact: &str) -> Result
     if !matches!(spec.trigger, Trigger::Message { .. }) {
         return Ok(());
     }
-    let is_message:bool=c.query_row("SELECT json_extract(b.payload,'$.kind')='message' FROM agent_run_content p JOIN contents b ON b.id=p.content_id WHERE p.run=? AND b.content_sha256=? AND length(b.payload)=?",params![run.to_string(),spec.input.digest,bind_u64(spec.input.bytes)?],|r|r.get(0))?;
+    let is_message:bool=c.query_row("SELECT json_extract(maka_content_text(b.payload,b.encoding),'$.kind')='message' FROM agent_run_content p JOIN contents b ON b.id=p.content_id WHERE p.run=? AND b.content_sha256=? AND COALESCE(b.logical_bytes,length(b.payload))=?",params![run.to_string(),spec.input.digest,bind_u64(spec.input.bytes)?],|r|r.get(0))?;
     if is_message {
-        let changed=c.execute("UPDATE agent_session_history SET opening_message=1 WHERE owner=? AND session=? AND run=? AND kind='run_admitted' AND sequence=(SELECT sequence FROM agent_facts WHERE id=? AND run=? AND revision=1)",params![serde_json::to_string(&spec.owner)?,session,run.to_string(),fact,run.to_string()])?;
+        let ns_id = crate::namespace::find_owner_id(c, &spec.owner, session)?
+            .ok_or_else(|| invalid("opening consumption has no original indexed Run admission"))?;
+        let changed=c.execute("UPDATE agent_session_history SET opening_message=1 WHERE namespace_id=? AND run=? AND kind='run_admitted' AND sequence=(SELECT sequence FROM agent_facts WHERE id=? AND run=? AND revision=1)",params![ns_id,run.to_string(),fact,run.to_string()])?;
         if changed != 1 {
             return Err(invalid(
                 "opening consumption has no original indexed Run admission",
@@ -1820,8 +2020,10 @@ pub(super) fn first_message(
     history: &HistoryNamespace,
     cut: &HistoryCut,
 ) -> Result<Option<RunSource>, StoreError> {
-    let owner = check_cut(c, history, cut)?;
-    let run:Option<String>=c.query_row("SELECT run FROM agent_session_history WHERE owner=? AND session=? AND opening_message=1 AND sequence<=? ORDER BY sequence LIMIT 1",params![owner,history.session,bind_u64(cut.through_sequence)?],|r|r.get(0)).optional()?;
+    let (_, Some(ns_id)) = check_cut(c, history, cut)? else {
+        return Ok(None);
+    };
+    let run:Option<String>=c.query_row("SELECT run FROM agent_session_history WHERE namespace_id=? AND opening_message=1 AND sequence<=? ORDER BY sequence LIMIT 1",params![ns_id,bind_u64(cut.through_sequence)?],|r|r.get(0)).optional()?;
     run.map(|run| run_source(c, history, identity(run)?))
         .transpose()
 }
@@ -1832,7 +2034,7 @@ fn owned_metadata<T: DeserializeOwned>(
     reference: &ContentRef,
 ) -> Result<T, StoreError> {
     reference.validate().map_err(invalid)?;
-    let row:i64=c.query_row("SELECT b.id FROM agent_run_content p JOIN contents b ON b.id=p.content_id WHERE p.run=? AND b.content_sha256=? AND length(b.payload)=?",params![run.to_string(),reference.digest,bind_u64(reference.bytes)?],|r|r.get(0))?;
+    let row:i64=c.query_row("SELECT b.id FROM agent_run_content p JOIN contents b ON b.id=p.content_id WHERE p.run=? AND b.content_sha256=? AND COALESCE(b.logical_bytes,length(b.payload))=?",params![run.to_string(),reference.digest,bind_u64(reference.bytes)?],|r|r.get(0))?;
     decode_original(c, row, reference)
 }
 pub(super) fn decode_original<T: DeserializeOwned>(
@@ -1855,8 +2057,10 @@ pub(super) fn fact_sequence(
     run: RunId,
     fact: FactId,
 ) -> Result<Option<u64>, StoreError> {
-    let owner = check_cut(c, history, cut)?;
-    let sequence:Option<u64>=c.query_row("SELECT h.sequence FROM agent_facts f JOIN agent_session_history h ON h.sequence=f.sequence WHERE f.id=? AND f.run=? AND h.owner=? AND h.session=? AND h.sequence<=?",params![fact.to_string(),run.to_string(),owner,history.session,bind_u64(cut.through_sequence)?],|r|read_u64(r,0)).optional()?;
+    let (_, Some(ns_id)) = check_cut(c, history, cut)? else {
+        return Ok(None);
+    };
+    let sequence:Option<u64>=c.query_row("SELECT h.sequence FROM agent_facts f JOIN agent_session_history h ON h.sequence=f.sequence WHERE f.id=? AND f.run=? AND h.namespace_id=? AND h.sequence<=?",params![fact.to_string(),run.to_string(),ns_id,bind_u64(cut.through_sequence)?],|r|read_u64(r,0)).optional()?;
     let Some(sequence) = sequence else {
         return Ok(None);
     };
@@ -1890,20 +2094,17 @@ pub(super) fn tool_result_metadata(
     cut: &HistoryCut,
     sequence: u64,
 ) -> Result<Option<ToolResultMetadata>, StoreError> {
-    let owner = check_cut(c, history, cut)?;
+    let (_, Some(ns_id)) = check_cut(c, history, cut)? else {
+        return Ok(None);
+    };
     let row = c
         .prepare_cached(
             "SELECT m.is_error,m.image,m.images,m.external_settlement
          FROM agent_session_history h JOIN agent_history_tool_metadata m ON m.sequence=h.sequence
-         WHERE h.owner=? AND h.session=? AND h.sequence=? AND h.sequence<=?",
+         WHERE h.namespace_id=? AND h.sequence=? AND h.sequence<=?",
         )?
         .query_row(
-            params![
-                owner,
-                history.session,
-                bind_u64(sequence)?,
-                bind_u64(cut.through_sequence)?
-            ],
+            params![ns_id, bind_u64(sequence)?, bind_u64(cut.through_sequence)?],
             |row| {
                 Ok((
                     row.get(0)?,
@@ -1937,8 +2138,12 @@ pub(super) fn resolve_tool_result(
     if locator.is_empty() || locator.contains('\0') {
         return Err(invalid("invalid opaque tool result locator"));
     }
-    let owner = serde_json::to_string(&scope.namespace.owner)?;
-    let exact:Option<u64>=c.query_row("SELECT sequence FROM agent_session_history WHERE owner=? AND session=? AND result_source=1 AND fact_id=? AND sequence<=?",params![owner,scope.namespace.session,locator,bind_u64(cut.through_sequence)?],|r|read_u64(r,0)).optional()?;
+    let Some(ns_id) =
+        crate::namespace::find_owner_id(c, &scope.namespace.owner, &scope.namespace.session)?
+    else {
+        return Ok(None);
+    };
+    let exact:Option<u64>=c.query_row("SELECT sequence FROM agent_session_history WHERE namespace_id=? AND result_source=1 AND fact_id=? AND sequence<=?",params![ns_id,locator,bind_u64(cut.through_sequence)?],|r|read_u64(r,0)).optional()?;
     let sequence = if let Some(exact) = exact {
         exact
     } else {
@@ -1953,7 +2158,7 @@ pub(super) fn resolve_tool_result(
                 bound
             })
         });
-        let rows:Vec<u64>=c.prepare_cached("SELECT sequence FROM agent_session_history WHERE owner=? AND session=? AND result_source=1 AND fact_id>=? AND (?4 IS NULL OR fact_id<?4) AND sequence<=?5 ORDER BY fact_id LIMIT 2")?.query_map(params![owner,scope.namespace.session,locator,upper,bind_u64(cut.through_sequence)?],|r|read_u64(r,0))?.collect::<Result<_,_>>()?;
+        let rows:Vec<u64>=c.prepare_cached("SELECT sequence FROM agent_session_history WHERE namespace_id=? AND result_source=1 AND fact_id>=? AND (?3 IS NULL OR fact_id<?3) AND sequence<=?4 ORDER BY fact_id LIMIT 2")?.query_map(params![ns_id,locator,upper,bind_u64(cut.through_sequence)?],|r|read_u64(r,0))?.collect::<Result<_,_>>()?;
         match rows.as_slice() {
             [] => return Ok(None),
             [only] => *only,
@@ -1972,18 +2177,17 @@ pub(super) fn resolve_tool_result(
             "tool result index does not reference an original retained result fact",
         ));
     }
-    let (use_id, _) = tool_locator(c, &item.recorded)?
+    let (use_id, _) = tool_locator(&item.recorded)
         .ok_or_else(|| invalid("tool result has no original tool identity"))?;
     let starts: Vec<u64> = c
         .prepare_cached(
             "SELECT sequence FROM agent_session_history
-             WHERE owner=? AND session=? AND run=? AND attempt IS ? AND tool_use_id=?
+             WHERE namespace_id=? AND run=? AND attempt IS ? AND tool_use_id=?
                AND tool_start=1 AND sequence<? ORDER BY sequence LIMIT 2",
         )?
         .query_map(
             params![
-                owner,
-                scope.namespace.session,
+                ns_id,
                 item.recorded.run.to_string(),
                 item.scope.attempt.map(|id| id.to_string()),
                 use_id,

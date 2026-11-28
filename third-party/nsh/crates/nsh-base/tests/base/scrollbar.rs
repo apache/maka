@@ -19,7 +19,7 @@ use nsh_core::{
     MountItem, NodeId, PointerEvents, Size, Transform,
     animation::{AnimationOp, AnimationProp, Driver},
     geometry::point,
-    platform::Os,
+    platform::{Idiom, Os},
     prelude::*,
 };
 use nsh_engine::EngineConfig;
@@ -157,6 +157,17 @@ fn start(mode: ScrollbarMode, content: f32) -> (Headless, Seen) {
 
 /// [`start`] with `motion`.
 fn start_with(mode: ScrollbarMode, motion: ScrollbarMotion, content: f32) -> (Headless, Seen) {
+    start_env(mode, motion, content, Os::MacOs, Idiom::Desktop)
+}
+
+/// [`start_with`] on `os` and `idiom`.
+fn start_env(
+    mode: ScrollbarMode,
+    motion: ScrollbarMotion,
+    content: f32,
+    os: Os,
+    idiom: Idiom,
+) -> (Headless, Seen) {
     // A manual clock: the bar hides only when the test moves it.
     let mut config = EngineConfig {
         viewport: Size::new(px(400.0), px(844.0)),
@@ -169,7 +180,8 @@ fn start_with(mode: ScrollbarMode, motion: ScrollbarMotion, content: f32) -> (He
             }
         }))
     };
-    config.environment.os = Os::MacOs;
+    config.environment.os = os;
+    config.environment.idiom = idiom;
     let mut app = Headless::start(config).expect("the engine starts");
     let seen = Seen::default();
     let record = seen.clone();
@@ -258,6 +270,22 @@ fn a_press_on_the_track_centers_the_thumb_there_and_a_drag_goes_on() {
     )
     .unwrap();
     app.wait_for("text:Offset 800").unwrap();
+}
+
+#[test]
+fn on_a_phone_a_tap_on_the_track_passes_through_and_does_not_scroll() {
+    // iOS's and Android's indicators take no taps: a tap by the edge,
+    // where nothing shows, reaches the content and leaves it where it is.
+    let mut motion = ScrollbarMotion::default();
+    motion.idle = 500.0;
+    let (mut app, seen) = start_env(ScrollbarMode::Always, motion, 1000.0, Os::Ios, Idiom::Phone);
+    assert!(seen.shown());
+    // The track itself takes no touches (only the thumb in it does), so
+    // a tap by the edge reaches the content.
+    assert_eq!(seen.pointer(), Some(PointerEvents::BoxNone));
+    app.press("id:edge").unwrap();
+    app.wait_for("text:Presses 1").unwrap();
+    app.wait_for("text:Offset 0").unwrap();
 }
 
 #[test]

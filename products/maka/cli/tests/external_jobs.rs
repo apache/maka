@@ -507,6 +507,61 @@ impl Rig {
         {
             return self.controller.resource(pid);
         }
+        if let Some(pending) = events
+            .iter()
+            .find(|e| e["kind"] == "resume_pending" && e["pid"] == pid)
+            && !events
+                .iter()
+                .any(|e| e["kind"] == "ready" && e["pid"] == pid)
+        {
+            let thread = pending["thread"].as_str().unwrap().to_owned();
+            let path = self.sandbox.root.join("runtime-rust.sqlite");
+            return phase("locate pre-bind ACP resource", async {
+                let mut tick = tokio::time::interval(Duration::from_millis(20));
+                loop {
+                    tick.tick().await;
+                    let path = path.clone();
+                    let thread = thread.clone();
+                    let resource = tokio::task::spawn_blocking(move || {
+                        let db = rusqlite::Connection::open_with_flags(
+                            path,
+                            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+                        )?;
+                        maka_event_log::content::register_sql_functions(&db)
+                            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                        let mut stmt = db.prepare(
+                            "SELECT json_extract(maka_content_text(c.payload, c.encoding), '$.payload.privateResource.resourceRef')
+                               FROM agent_runs r JOIN contents c
+                                 ON c.content_sha256 = json_extract(r.external, '$.descriptor.digest')
+                              WHERE json_extract(r.external, '$.binding') IS NULL
+                              ORDER BY r.rowid DESC",
+                        )?;
+                        let rows = stmt.query_map([], |row| row.get::<_, Option<String>>(0))?;
+                        for row in rows {
+                            if let Some(resource_ref) = row? {
+                                let stdin = PathBuf::from(&resource_ref).join("owner/stdin.bin");
+                                if let Ok(body) = std::fs::read_to_string(&stdin)
+                                    && body.contains("\"session/resume\"")
+                                    && body.contains(&thread)
+                                {
+                                    return Ok(Some(resource_ref));
+                                }
+                            }
+                        }
+                        Ok::<_, rusqlite::Error>(None)
+                    })
+                    .await
+                    .map_err(|error| error.to_string())?
+                    .map_err(|error| error.to_string())?;
+                    if let Some(resource) = resource {
+                        return Ok(Descriptor {
+                            resource_ref: resource.into(),
+                        });
+                    }
+                }
+            })
+            .await;
+        }
         let ready = events
             .iter()
             .find(|e| e["kind"] == "ready" && e["pid"] == pid)
@@ -527,12 +582,14 @@ impl Rig {
                     let db = rusqlite::Connection::open_with_flags(
                         path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
                     )?;
+                    maka_event_log::content::register_sql_functions(&db)
+                        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
                     db.query_row(
-                        "SELECT json_extract(CAST(c.payload AS TEXT), '$.payload.privateResource.resourceRef')
+                        "SELECT json_extract(maka_content_text(c.payload, c.encoding), '$.payload.privateResource.resourceRef')
                            FROM agent_runs r JOIN contents c
                              ON c.content_sha256 = json_extract(r.external, '$.binding.digest')
-                          WHERE json_extract(CAST(c.payload AS TEXT), '$.payload.recovery.binding.task.session') = ?1
-                            AND instr(json_extract(CAST(c.payload AS TEXT), '$.payload.request.content.text'), ?2) > 0
+                          WHERE json_extract(maka_content_text(c.payload, c.encoding), '$.payload.recovery.binding.task.session') = ?1
+                            AND instr(json_extract(maka_content_text(c.payload, c.encoding), '$.payload.request.content.text'), ?2) > 0
                           ORDER BY r.rowid DESC LIMIT 1",
                         rusqlite::params![thread, label],
                         |row| row.get::<_, String>(0),
@@ -1280,6 +1337,11 @@ async fn composed_acp_setup_checks_a_provider_without_exposing_state_root()
     #[cfg(windows)]
     let sandbox_guard = WindowsSandboxGuard::setup(&sandbox.root).await?;
     let mut serve = host::command(&sandbox)?;
+    // Account isolation walks the denied native-task directory under the Host's TEMP.
+    #[cfg(windows)]
+    serve
+        .env("TMP", sandbox.directory.path())
+        .env("TEMP", sandbox.directory.path());
     serve
         .args(["application", "serve", "--root"])
         .arg(&sandbox.root)
@@ -1302,6 +1364,13 @@ async fn composed_acp_setup_checks_a_provider_without_exposing_state_root()
             json!({"executor":"probe","action":{"kind":"check"}}),
         )
         .await?;
+        if checked != json!({
+            "kind": "checked",
+            "info": {"title": null, "name": "isolated-probe", "version": "1"},
+            "methods": []
+        }) {
+            return Err(format!("ACP provider check: {checked}"));
+        }
         let created = mutate(&client, "agent", "create", json!({
             "title":"ACP child permission", "automaticTitle":false, "labels":[],
             "workspace":{"kind":"directory","path":sandbox.workspace},
@@ -1332,16 +1401,13 @@ async fn composed_acp_setup_checks_a_provider_without_exposing_state_root()
         terminal_state(&client, session, &run, "completed").await?;
         client.close().await?;
         host.quit(&mut anchor).await?;
-        Ok(checked)
+        Ok(())
     })
     .await;
     host.cleanup().await?;
     #[cfg(windows)]
     sandbox_guard.teardown().await?;
-    assert_eq!(
-        result?,
-        json!({"kind":"checked","info":{"title":null,"name":"isolated-probe","version":"1"},"methods":[]})
-    );
+    result?;
     Ok(())
 }
 
@@ -1627,6 +1693,56 @@ async fn installed_program_runs_with_private_inputs_and_publishes_its_snapshot()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pinned_memory_is_skipped_for_external_executor_without_blocking_send() {
+    let mut rig = Rig::new().await.expect("owned external job fixture");
+    let outcome = AssertUnwindSafe(async {
+        let (mut anchor, bootstrap) = phase("start Host", rig.start()).await?;
+        rig.configure(&mut anchor, &bootstrap, "codex").await?;
+        bootstrap.close().await?;
+        rig.clients.pop();
+        let sdk = connect_sdk(&mut rig, &anchor).await?;
+        let prefs = query(&sdk, "settings", "assistantPreferences", json!({})).await?;
+        mutate(&sdk, "settings", "updateAssistantPreferences", json!({
+            "expectedRevision": prefs["revision"], "mutation": {"kind":"memory","value":{"enabled":true,"agentReadEnabled":true}}
+        })).await?;
+        let scope = json!({"kind":"personal"});
+        let entry = mutate(&sdk,"agent","changeMemory",json!({"scope":scope,"edit":{"kind":"create","body":"External boundary fixture"}})).await?;
+        let pin = mutate(&sdk,"agent","changeMemory",json!({"scope":scope,"edit":{"kind":"set_always","id":entry["id"],"expectedRevision":entry["revision"],"always":true}})).await?;
+        assert_eq!(pin["kind"], "saved", "{pin}");
+        let session = mutate(&sdk,"agent","create",json!({
+            "title":"External memory boundary","automaticTitle":false,"labels":[],
+            "workspace":{"kind":"directory","path":rig.sandbox.workspace},
+            "backend":{"kind":"executor","selection":{"executor":"external","settings":{"runtime":"codex","model":"gpt-fixture"}}}
+        })).await?;
+        assert_eq!(session["kind"],"created","{session}");
+        let session_id = session["session"]["id"].as_str().ok_or("missing session id")?;
+        let run = send_native(&sdk, session_id, "B", "External memory boundary", false).await?;
+        let ready = rig.controller.event("B", "ready").await?;
+        let pid = ready["pid"].as_u64().unwrap();
+        rig.controller.send(pid, json!({"action":"complete"}))?;
+        terminal_state(&sdk, session_id, &run, "completed").await?;
+        let loaded = query(&sdk, "agent", "loadedMemories", json!({"sessionId": session_id, "runId": run})).await?;
+        assert_eq!(loaded, json!([]), "external executor should skip pinned memories: {loaded}");
+        let wire = rig.transcript(pid).await?;
+        assert!(
+            !wire.input.iter().any(|row| row.to_string().contains("External boundary fixture")),
+            "pinned memory leaked into external executor prompt: {:?}",
+            wire.input
+        );
+        sdk.close().await?;
+        rig.clients.pop();
+        rig.hosts[0].quit(&mut anchor).await?;
+        Ok::<_, String>(())
+    }).catch_unwind().await;
+    let cleanup = rig.cleanup().await;
+    match outcome {
+        Err(panic) => std::panic::resume_unwind(panic),
+        Ok(Err(error)) => panic!("{error}; cleanup={cleanup:?}"),
+        Ok(Ok(())) => assert!(cleanup.is_empty(), "{cleanup:?}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn quitting_host_reaps_the_active_original_external_process() {
     let mut rig = Rig::new().await.expect("owned external job fixture");
     let outcome = AssertUnwindSafe(async {
@@ -1736,41 +1852,182 @@ async fn antigravity_keeps_the_peer_alive_while_a_worker_fails_to_close() {
         )
         .await?;
         let peer = phase("B is live", rig.controller.event("ACP-peer", "ready")).await?;
-        assert_eq!(first["front"], peer["front"]);
+        assert_ne!(first["front"], peer["front"]);
         assert_ne!(first["pid"], peer["pid"]);
 
-        let stop = mutate(&sdk, "agent", "stop", json!({"sessionId":a,"runId":run_a}));
-        let check = async {
-            phase(
-                "A's close is outstanding",
-                rig.controller.event("ACP-stuck-close", "close_pending"),
-            )
-            .await?;
-            let original = rig.resource(first["pid"].as_u64().unwrap()).await?;
-            assert!(
-                isolated::cleanup_evidence(&original)
-                    .await
-                    .map_err(|e| e.to_string())?
-                    .is_none()
-            );
-            rig.controller.send(
-                peer["pid"].as_u64().unwrap(),
-                json!({"action":"complete","promptId":peer["promptId"]}),
-            )?;
-            phase("B completes", terminal_state(&sdk, &b, &run_b, "completed")).await?;
-            phase("A has original closure evidence", sealed(original)).await?;
-            Ok::<_, String>(())
-        };
-        let (stopped, ()) = tokio::try_join!(stop, check)?;
+        let original_a = rig.resource(first["pid"].as_u64().unwrap()).await?;
+        let original_b = rig.resource(peer["pid"].as_u64().unwrap()).await?;
+
+        let stopped = phase(
+            "stop A while B stays active",
+            mutate(&sdk, "agent", "stop", json!({"sessionId":a,"runId":run_a})),
+        )
+        .await?;
         assert_eq!(stopped["requested"], true);
         phase(
-            "A is cancelled",
+            "A's close is outstanding",
+            rig.controller.event("ACP-stuck-close", "close_pending"),
+        )
+        .await?;
+        // A must seal and cancel without waiting for peer B to finish.
+        phase("A seals independently of B", sealed(original_a)).await?;
+        phase(
+            "A is cancelled while B is still running",
             terminal_state(&sdk, &a, &run_a, "cancelled"),
         )
         .await?;
+        assert!(
+            isolated::cleanup_evidence(&original_b)
+                .await
+                .map_err(|e| e.to_string())?
+                .is_none(),
+            "B must stay physically live while A's stuck worker is reaped"
+        );
+        rig.controller.send(
+            peer["pid"].as_u64().unwrap(),
+            json!({"action":"complete","promptId":peer["promptId"]}),
+        )?;
+        phase("B completes", terminal_state(&sdk, &b, &run_b, "completed")).await?;
+        phase("B seals on completion", sealed(original_b)).await?;
         sdk.close().await?;
         rig.clients.pop();
         rig.hosts[0].quit(&mut anchor).await?;
+        Ok::<_, String>(())
+    })
+    .catch_unwind()
+    .await;
+    let cleanup = rig.cleanup().await;
+    match outcome {
+        Err(panic) => std::panic::resume_unwind(panic),
+        Ok(Err(error)) => panic!("{error}; cleanup={cleanup:?}"),
+        Ok(Ok(())) => assert!(cleanup.is_empty(), "{cleanup:?}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn antigravity_stop_cancels_stuck_session_resume_without_blocking_peer() {
+    let mut rig = Rig::new().await.expect("isolated ACP Host");
+    let outcome = AssertUnwindSafe(async {
+        let (mut anchor, bootstrap) = rig.start().await?;
+        rig.configure(&mut anchor, &bootstrap, "antigravity")
+            .await?;
+        bootstrap.close().await?;
+        rig.clients.pop();
+        let sdk = connect_sdk(&mut rig, &anchor).await?;
+
+        // Establish a native Antigravity session on A first so turn 2 uses session/resume.
+        let (a, run_a1) = phase(
+            "launch A turn 1",
+            launch(
+                &sdk,
+                &rig.sandbox.workspace,
+                "ACP-steer-1",
+                "A-resume",
+                true,
+                "antigravity",
+            ),
+        )
+        .await?;
+        let first = phase(
+            "A turn 1 is live",
+            rig.controller.event("ACP-steer-1", "ready"),
+        )
+        .await?;
+        phase(
+            "A turn 1 completes",
+            terminal_state(&sdk, &a, &run_a1, "completed"),
+        )
+        .await?;
+
+        // Start a long-running peer session B that stays active across A's stuck resume.
+        let (b, run_b) = phase(
+            "launch peer B",
+            launch(
+                &sdk,
+                &rig.sandbox.workspace,
+                "ACP-peer",
+                "B-active",
+                true,
+                "antigravity",
+            ),
+        )
+        .await?;
+        let peer = phase("peer B is live", rig.controller.event("ACP-peer", "ready")).await?;
+        let original_b = rig.resource(peer["pid"].as_u64().unwrap()).await?;
+
+        // Hang A's session/resume without replying, mirroring an upstream loadCodeAssist stall.
+        let hold_resume = rig.sandbox.workspace.join("hold-acp-resume");
+        tokio::fs::write(&hold_resume, "hold")
+            .await
+            .map_err(|e| e.to_string())?;
+        let run_a2 = phase(
+            "send A turn 2 with hung session/resume",
+            send_native(&sdk, &a, "ACP-hung", "A-resume", false),
+        )
+        .await?;
+        phase(
+            "A's session/resume is hung",
+            rig.controller.event("ACP-handoff", "resume_pending"),
+        )
+        .await?;
+
+        let stopped = phase(
+            "stop hung session/resume on A",
+            mutate(&sdk, "agent", "stop", json!({"sessionId":a,"runId":run_a2})),
+        )
+        .await?;
+        assert_eq!(stopped["requested"], true);
+        phase(
+            "A turn 2 cancels immediately without waiting for B",
+            terminal_state(&sdk, &a, &run_a2, "cancelled"),
+        )
+        .await?;
+
+        // A can immediately resume and complete a new turn while B is still running.
+        tokio::fs::remove_file(&hold_resume)
+            .await
+            .map_err(|e| e.to_string())?;
+        let run_a3 = phase(
+            "send A turn 3 while B is still active",
+            send_native(&sdk, &a, "ACP-wake", "A-resume", false),
+        )
+        .await?;
+        let recovered = phase(
+            "A turn 3 resumes",
+            rig.controller.event("ACP-wake", "ready"),
+        )
+        .await?;
+        assert_eq!(recovered["thread"], first["thread"]);
+        phase(
+            "A turn 3 completes",
+            terminal_state(&sdk, &a, &run_a3, "completed"),
+        )
+        .await?;
+
+        // Peer B remained untouched the entire time and still completes cleanly.
+        assert!(
+            isolated::cleanup_evidence(&original_b)
+                .await
+                .map_err(|e| e.to_string())?
+                .is_none()
+        );
+        rig.controller.send(
+            peer["pid"].as_u64().unwrap(),
+            json!({"action":"complete","promptId":peer["promptId"]}),
+        )?;
+        phase("B completes", terminal_state(&sdk, &b, &run_b, "completed")).await?;
+        phase("B seals on completion", sealed(original_b)).await?;
+
+        sdk.close().await?;
+        rig.clients.pop();
+        rig.hosts[0].quit(&mut anchor).await?;
+        let facts = rig.inspect(&a, &run_a2).await?;
+        assert!(
+            facts.iter().any(|f| {
+                f["kind"] == "external_task_cleanup_observed" && f["cleanup"]["kind"] == "confirmed"
+            }),
+            "hung session/resume run must confirm cleanup independently of peer B: {facts:?}"
+        );
         Ok::<_, String>(())
     })
     .catch_unwind()
@@ -2688,12 +2945,13 @@ async fn antigravity_resumes_from_a_room_mention_and_replies_in_the_room() {
         })).await?;
             assert_eq!(room["kind"], "created", "{room}");
             let room = &room["session"]["id"];
+            let post = format!("{}The patch is ready.", "details ".repeat(1200));
             let first = mutate(
                 &sdk,
                 "agent",
                 "send",
                 json!({
-                    "sessionId":room,"message":"The patch is ready."
+                    "sessionId":room,"message":post
                 }),
             )
             .await?;

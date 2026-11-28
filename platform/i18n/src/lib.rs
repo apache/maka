@@ -271,19 +271,18 @@ pub fn resolve_translation<'a>(
                 }
             }
         }
-        if let Some((lang, _)) = normalized.split_once('-') {
-            if !lang.eq_ignore_ascii_case("zh") && !lang.eq_ignore_ascii_case("yue") {
-                if let Some(found) = lookup_ci(translations, lang) {
-                    return found;
-                }
-            }
+        if let Some((lang, _)) = normalized.split_once('-')
+            && !lang.eq_ignore_ascii_case("zh")
+            && !lang.eq_ignore_ascii_case("yue")
+            && let Some(found) = lookup_ci(translations, lang)
+        {
+            return found;
         }
-        if let Some(b) = builtin {
-            if b.fallbacks().contains(&BuiltinLocale::En) {
-                if let Some(found) = lookup_ci(translations, BuiltinLocale::En.tag()) {
-                    return found;
-                }
-            }
+        if let Some(b) = builtin
+            && b.fallbacks().contains(&BuiltinLocale::En)
+            && let Some(found) = lookup_ci(translations, BuiltinLocale::En.tag())
+        {
+            return found;
         }
     }
     fallback

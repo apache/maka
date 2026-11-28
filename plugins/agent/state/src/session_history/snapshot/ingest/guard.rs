@@ -68,15 +68,19 @@ impl RestoreBasis {
         read::authorize(c, &self.source)?;
         sql::validate_cut(c, &self.namespace.owner, &self.namespace.session, &self.cut)?;
         let current = sql::capture_at(c, &self.namespace.owner, &self.namespace.session, None)?;
-        let owner = serde_json::to_string(&self.namespace.owner)?;
         let mut after = self.cut.through_sequence;
-        let mut next=c.prepare_cached("SELECT h.sequence,h.run,h.kind,h.fact_id,f.revision FROM agent_session_history h JOIN agent_facts f ON f.sequence=h.sequence WHERE h.owner=?1 AND h.session=?2 AND h.sequence>?3 AND h.sequence<=?4 ORDER BY h.sequence LIMIT 1")?;
+        if after >= current.through_sequence {
+            return Ok(());
+        }
+        let namespace_id =
+            crate::namespace::find_owner_id(c, &self.namespace.owner, &self.namespace.session)?
+                .ok_or_else(|| invalid("workspace restore source namespace is missing"))?;
+        let mut next=c.prepare_cached("SELECT h.sequence,h.run,h.kind,h.fact_id,f.revision FROM agent_session_history h JOIN agent_facts f ON f.sequence=h.sequence WHERE h.namespace_id=?1 AND h.sequence>?2 AND h.sequence<=?3 ORDER BY h.sequence LIMIT 1")?;
         while after < current.through_sequence {
             let (sequence, run, kind, fact, revision): (u64, String, String, String, u64) = next
                 .query_row(
                     params![
-                        owner,
-                        self.namespace.session,
+                        namespace_id,
                         bind_u64(after)?,
                         bind_u64(current.through_sequence)?
                     ],
@@ -132,8 +136,7 @@ impl RestoreBasis {
             let (sequence, terminal_run, kind, _, revision): (u64, String, String, String, u64) =
                 next.query_row(
                     params![
-                        owner,
-                        self.namespace.session,
+                        namespace_id,
                         bind_u64(sequence)?,
                         bind_u64(current.through_sequence)?
                     ],

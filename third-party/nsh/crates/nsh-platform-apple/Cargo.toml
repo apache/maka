@@ -1,6 +1,6 @@
 [package]
 name = "nsh-platform-apple"
-description = "Code shared by the macOS and iOS backends: sound playback, offscreen canvas bitmaps and their encoding, which images of a decoded file to show, the notification center, the network path monitor, the URL schemes web views serve from the app, web views' script evaluation and the unified log as the release runners' logger."
+description = "Code shared by the macOS and iOS backends: sound playback, offscreen canvas bitmaps and their encoding, which images of a decoded file to show, the notification center, the network path monitor, the URL schemes web views serve from the app, web views' script evaluation, whether a view shows through the ancestors that clip it and the unified log as the release runners' logger."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -30,6 +30,7 @@ objc2-core-graphics.workspace = true
 objc2-core-text.workspace = true
 objc2-foundation.workspace = true
 objc2-image-io.workspace = true
+rustc-hash.workspace = true
 serde_json.workspace = true
 unicode-bidi.workspace = true
 

@@ -15,6 +15,7 @@ test("closing the last window reaches the app's lastWindowClosed listeners", asy
   await app.waitUntil(() => app.window("main").state() === null);
   // macOS's default policy leaves the app running, so the app still reads
   // the storage its listener wrote.
+  expect(app.quit()).toBe(false);
   const storage = await app.storage();
   expect(storage["flow.lastWindowClosed"]).toBe("yes");
 });

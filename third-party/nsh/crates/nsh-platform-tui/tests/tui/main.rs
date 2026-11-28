@@ -29,6 +29,7 @@ mod pointer;
 mod popup;
 mod scroll;
 mod search;
+mod stand_in;
 mod tooltip;
 
 /// The platform's accent in a terminal of true color on a dark page (the

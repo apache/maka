@@ -110,7 +110,7 @@ jobs:
         with:
           components: clippy
 
-      # The self-hosted runner is shared: install the toolchain without
+      # The self-hosted runners are shared: install the toolchain without
       # making it the machine's default (RUSTUP_TOOLCHAIN picks it).
       - name: Setup Rust (self-hosted)
         if: runner.environment == 'self-hosted'
@@ -147,6 +147,12 @@ jobs:
       - name: Check without optional features
         working-directory: crates/gpui
         run: cargo clippy -p nsh-platform-gpui --no-default-features --features js -- -D warnings
+
+      # An embedding app's development build: the dev server client without
+      # the optional parts.
+      - name: Check dev without optional features
+        working-directory: crates/gpui
+        run: cargo clippy -p nsh-platform-gpui --no-default-features --features js,dev -- -D warnings
 
       # Tests need no display: they open no window.
       - name: Test

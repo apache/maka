@@ -103,7 +103,7 @@ async fn observe(id: &RootId) -> Result<Observation, HostError> {
         }
         Err(error) => return Err(error),
     };
-    let observation = match store::read(&directory).await? {
+    let observation = match store::read_compatible(&directory).await? {
         store::Installation::Missing => Observation::NotInstalled,
         store::Installation::Incomplete => Observation::Incomplete,
         store::Installation::Installed(deployment) => {
@@ -118,7 +118,7 @@ async fn observe(id: &RootId) -> Result<Observation, HostError> {
             );
             // Only configuration is bracketed. OS and Host observations can
             // differ in time, including a restart that keeps this revision.
-            match store::read(&directory).await? {
+            match store::read_compatible(&directory).await? {
                 store::Installation::Installed(after) if after == deployment => {}
                 _ => return Err("deployment changed during observation; query again".into()),
             }

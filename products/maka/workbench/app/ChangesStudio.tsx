@@ -94,6 +94,7 @@ import {
   quietActiveStyle,
   quietFocusStyle,
   quietHoverStyle,
+  radius,
   textTooltip,
 } from './ui';
 import type { WorkspaceFileTarget } from './workspaceFileState';
@@ -1149,7 +1150,7 @@ export function ChangesStudio(props: {
             flex: 1,
             minWidth: 0,
             height: 28,
-            borderRadius: 4,
+            borderRadius: radius(4),
             flexDirection: 'row',
             alignItems: 'center',
             justifyContent: 'flex-start',
@@ -1234,7 +1235,7 @@ export function ChangesStudio(props: {
               style={{
                 width: 24,
                 height: 24,
-                borderRadius: 4,
+                borderRadius: radius(4),
                 alignItems: 'center',
                 justifyContent: 'center',
                 backgroundColor: isViewed() ? `${C.success}22` : 'transparent',
@@ -1266,7 +1267,7 @@ export function ChangesStudio(props: {
               style={{
                 width: 24,
                 height: 24,
-                borderRadius: 4,
+                borderRadius: radius(4),
                 alignItems: 'center',
                 justifyContent: 'center',
               }}
@@ -1418,7 +1419,7 @@ export function ChangesStudio(props: {
                   style={{
                     height: 28,
                     paddingHorizontal: 8,
-                    borderRadius: 8,
+                    borderRadius: radius(8),
                     backgroundColor: C.card,
                     flexDirection: 'row',
                     alignItems: 'center',
@@ -1518,7 +1519,7 @@ export function ChangesStudio(props: {
                       minWidth: 0,
                       height: 28,
                       paddingHorizontal: 8,
-                      borderRadius: 8,
+                      borderRadius: radius(8),
                       backgroundColor: C.card,
                       flexDirection: 'row',
                       alignItems: 'center',
@@ -1643,7 +1644,7 @@ export function ChangesStudio(props: {
                       minWidth: 0,
                       height: 28,
                       paddingHorizontal: 8,
-                      borderRadius: 8,
+                      borderRadius: radius(8),
                       backgroundColor: C.card,
                       flexDirection: 'row',
                       alignItems: 'center',
@@ -1766,7 +1767,7 @@ export function ChangesStudio(props: {
                 style={{
                   height: 28,
                   paddingHorizontal: 8,
-                  borderRadius: 8,
+                  borderRadius: radius(8),
                   backgroundColor: `${C.accent}22`,
                   flexDirection: 'row',
                   alignItems: 'center',
@@ -1845,7 +1846,7 @@ export function ChangesStudio(props: {
           style={{
             height: 28,
             paddingHorizontal: 2,
-            borderRadius: 8,
+            borderRadius: radius(8),
             backgroundColor: C.card,
             flexDirection: 'row',
             alignItems: 'center',
@@ -1867,7 +1868,7 @@ export function ChangesStudio(props: {
                 style={{
                   width: 24,
                   height: 24,
-                  borderRadius: 4,
+                  borderRadius: radius(4),
                   alignItems: 'center',
                   justifyContent: 'center',
                 }}
@@ -1955,7 +1956,7 @@ export function ChangesStudio(props: {
               style={{
                 width: 24,
                 height: 24,
-                borderRadius: 4,
+                borderRadius: radius(4),
                 alignItems: 'center',
                 justifyContent: 'center',
               }}
@@ -1982,7 +1983,7 @@ export function ChangesStudio(props: {
             style={{
               width: 24,
               height: 24,
-              borderRadius: 4,
+              borderRadius: radius(4),
               alignItems: 'center',
               justifyContent: 'center',
               backgroundColor: studio().diffLayout === 'split' ? C.raised : 'transparent',
@@ -2006,7 +2007,7 @@ export function ChangesStudio(props: {
             style={{
               width: 24,
               height: 24,
-              borderRadius: 4,
+              borderRadius: radius(4),
               alignItems: 'center',
               justifyContent: 'center',
             }}
@@ -2024,7 +2025,7 @@ export function ChangesStudio(props: {
             style={{
               width: 24,
               height: 24,
-              borderRadius: 4,
+              borderRadius: radius(4),
               alignItems: 'center',
               justifyContent: 'center',
               backgroundColor: fileTreeOpen() ? C.raised : 'transparent',
@@ -2088,7 +2089,7 @@ export function ChangesStudio(props: {
                       style={{
                         width: 48,
                         height: 48,
-                        borderRadius: 12,
+                        borderRadius: radius(12),
                         backgroundColor: C.card,
                         alignItems: 'center',
                         justifyContent: 'center',
@@ -2155,7 +2156,7 @@ export function ChangesStudio(props: {
                       style={{
                         width: 24,
                         height: 24,
-                        borderRadius: 4,
+                        borderRadius: radius(4),
                         alignItems: 'center',
                         justifyContent: 'center',
                       }}
@@ -2182,7 +2183,7 @@ export function ChangesStudio(props: {
                       style={{
                         width: 24,
                         height: 24,
-                        borderRadius: 4,
+                        borderRadius: radius(4),
                         alignItems: 'center',
                         justifyContent: 'center',
                       }}
@@ -2307,7 +2308,7 @@ export function ChangesStudio(props: {
                 style={{
                   height: 28,
                   paddingHorizontal: 8,
-                  borderRadius: 8,
+                  borderRadius: radius(8),
                   backgroundColor: C.card,
                   flexDirection: 'row',
                   alignItems: 'center',
@@ -2334,7 +2335,7 @@ export function ChangesStudio(props: {
                     style={{
                       width: 20,
                       height: 20,
-                      borderRadius: 4,
+                      borderRadius: radius(4),
                       alignItems: 'center',
                       justifyContent: 'center',
                     }}

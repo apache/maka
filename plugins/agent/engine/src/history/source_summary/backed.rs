@@ -705,6 +705,7 @@ impl RecipeCursor<MessageMetadata> for MetadataCursor {
             )
             .await?;
             Ok(Some(MessageMetadata {
+                is_pinned_memory: false,
                 message_index: position,
                 logical_identity: hex::encode(&record[8..]).into(),
                 role: MessageRole::System,
@@ -1069,6 +1070,7 @@ pub(super) async fn fit(
                 _owner: owner.clone(),
             });
             let user = MessageRecipe::User {
+                is_pinned_memory: false,
                 content: Arc::new(Contents {
                     view: view.clone(),
                     length,
@@ -1079,6 +1081,7 @@ pub(super) async fn fit(
                 .await
                 .map_err(failure)?;
             let user_metadata = MessageMetadata {
+                is_pinned_memory: false,
                 message_index: systems,
                 logical_identity: descriptor.logical_identity.clone(),
                 role: MessageRole::User,

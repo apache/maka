@@ -86,3 +86,7 @@ echo 'await app.wait(100); for (let i = 0; i < 40; i++) await app.press("id:more
 
 Compare the presses' commits and every mount item. The core's own control is
 `cargo test --release -p nsh-core bench_each_update -- --ignored --nocapture`. Results: `docs/dev/performance.md`.
+
+`jank/` is the end-to-end jank benchmark: startup to the first frame, and the frame gaps while animations run and a
+10,000-row List scrolls, on the desktop's development host (`python3 examples/bench/jank/jank.py`). It fails over the
+budgets in `docs/dev/performance.md` (End-to-end jank), where its baselines are.

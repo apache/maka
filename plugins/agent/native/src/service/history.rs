@@ -155,7 +155,15 @@ pub(crate) async fn read_with_result_visibility(
         input.view = wire::HistoryView::Conversation;
     }
     let cut = cut(&history, input.through).await?;
-    let (page, restricted_result_rows) = window(owner, scope, &history, &cut, &input).await?;
+    let (page, restricted_result_rows) = window(
+        owner,
+        scope,
+        &history,
+        &cut,
+        &input,
+        scope.identity.agent().is_some(),
+    )
+    .await?;
     authorize(owner, scope, &input.session_id).await?;
     Ok((page.into(), restricted_result_rows))
 }
@@ -206,6 +214,71 @@ async fn restrictions(
         })
         .await
         .map_err(|e| e.to_string())
+}
+
+pub(super) async fn images(
+    owner: &Owner,
+    scope: &Scope,
+    input: ui::HistoryImagesRead,
+) -> Result<ui::HistoryImages, String> {
+    use maka_agent_state::session_history::source_tree::{SourceItem, SourceTree};
+    const LIMIT: u32 = 24;
+    let history = open(owner, scope, &input.session_id).await?;
+    let cut = cut(&history, Some(input.through)).await?;
+    let tree = SourceTree::live(&history, &cut)
+        .await
+        .map_err(|error| error.to_string())?;
+    let item = tree
+        .item(&input.position)
+        .await
+        .map_err(|error| error.to_string())?;
+    let SourceItem::Canonical(item) = item else {
+        authorize(owner, scope, &input.session_id).await?;
+        return Ok(ui::HistoryImages {
+            tools: Vec::new(),
+            next: None,
+        });
+    };
+    let data = tree
+        .source_for_path(input.position.path(), source::snapshot_id(&input.position))
+        .await
+        .map_err(|error| error.to_string())?;
+    let mut sources = data
+        .image_sources(item.recorded.run, input.after.unwrap_or(0), LIMIT + 1)
+        .await
+        .map_err(|error| error.to_string())?;
+    let next = if sources.len() > LIMIT as usize {
+        sources.truncate(LIMIT as usize);
+        match sources.last() {
+            Some(wire::HistoryRowAddress::Live { sequence, .. }) => Some(*sequence),
+            _ => return Err("agent_history_source_missing".into()),
+        }
+    } else {
+        None
+    };
+    let mut cache = source::Cache::default();
+    let mut tools = Vec::new();
+    for position in sources {
+        if scope.cancellation.is_cancelled() {
+            return Err("agent_history_cancelled".into());
+        }
+        let selected = source::selected(&tree, &position, &mut cache, &scope.cancellation).await?;
+        if let Some(tool) = selected.row.chunk.tool
+            && tool
+                .result
+                .as_ref()
+                .is_some_and(|result| result.image || result.images > 0)
+        {
+            tools.push(tool);
+        }
+    }
+    if scope.identity.agent().is_some() {
+        let positions = tools.iter().flat_map(tool_positions).cloned().collect();
+        let restricted = restrictions(owner, scope, &tree, positions).await?;
+        tools.retain_mut(|tool| !filter_tool(tool, &restricted));
+    }
+    authorize(owner, scope, &input.session_id).await?;
+    Ok(ui::HistoryImages { tools, next })
 }
 
 pub(super) async fn requests(
@@ -322,7 +395,7 @@ pub(super) async fn requests(
     })
 }
 
-pub(crate) async fn read_page(
+pub(crate) async fn model_text_page(
     owner: &Owner,
     scope: &Scope,
     input: wire::Read,
@@ -338,7 +411,7 @@ pub(crate) async fn read_page(
         view: wire::HistoryView::Text,
         thought: None,
     };
-    let (page, _) = window(owner, scope, &history, &cut, &input).await?;
+    let (page, _) = window(owner, scope, &history, &cut, &input, true).await?;
     authorize(owner, scope, &input.session_id).await?;
     Ok(page)
 }
@@ -402,8 +475,8 @@ async fn window(
     history: &SessionHistory,
     cut: &HistoryCut,
     input: &ui::History,
+    mask_evidence: bool,
 ) -> Result<(wire::Page, RestrictedToolResultRows), String> {
-    let mask_evidence = scope.identity.agent().is_some();
     let tree = maka_agent_state::session_history::source_tree::SourceTree::live(history, cut)
         .await
         .map_err(|error| error.to_string())?;
@@ -603,7 +676,7 @@ async fn tree_window(
         &position,
         Position::Tail | Position::Before { .. } | Position::RowEnd { .. }
     );
-    let anchor = match &position {
+    let mut anchor = match &position {
         Position::Row { position, field } | Position::RowEnd { position, field } => {
             Some(wire::Cursor {
                 position: position.clone(),
@@ -629,6 +702,7 @@ async fn tree_window(
                     before: None,
                     after: None,
                     tail_thought: None,
+                    resolved_anchor: None,
                 });
             }
         },
@@ -656,7 +730,8 @@ async fn tree_window(
         source::Shape::Rows
     };
     let mut tail_thought_candidate = None;
-    if let Some(anchor) = &anchor {
+    let mut resolved_anchor = None;
+    if let Some(anchor) = &mut anchor {
         let selected = source::unpaired(tree, &anchor.position, None, &mut cache, stop).await?;
         if view == wire::HistoryView::Turn {
             use maka_agent_state::session_history::source_tree::SourceItem;
@@ -673,10 +748,31 @@ async fn tree_window(
         {
             return Err("agent_cursor_invalid".into());
         }
-        if matches!(
-            &position,
-            Position::Row { .. } | Position::RowEnd { .. } | Position::Event { .. }
-        ) && !selected.row.visible
+        if matches!(&position, Position::Row { .. }) {
+            use maka_agent_facts::executor::Output;
+            use maka_agent_state::session_history::source_tree::SourceItem;
+            if let Some(first) = selected.row.continuation {
+                anchor.position = first.clone();
+                resolved_anchor = Some(first);
+            } else if selected.row.visible
+                && matches!(
+                    &selected.item,
+                    SourceItem::Canonical(item)
+                        if matches!(
+                            item.recorded.fact,
+                            Fact::ExternalTaskObserved {
+                                output: Output::OutputDelta { .. },
+                                ..
+                            }
+                        )
+                )
+            {
+                resolved_anchor = Some(selected.row.chunk.position.clone());
+            } else if !selected.row.visible {
+                reverse = true;
+            }
+        } else if matches!(&position, Position::RowEnd { .. } | Position::Event { .. })
+            && !selected.row.visible
         {
             reverse = true;
         }
@@ -955,6 +1051,7 @@ async fn tree_window(
         before,
         after,
         tail_thought,
+        resolved_anchor,
     })
 }
 fn fragment_metadata(chunk: &mut wire::Chunk) {

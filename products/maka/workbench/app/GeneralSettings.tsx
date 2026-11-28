@@ -48,7 +48,7 @@ import {
 import { trayIconArtwork } from './trayIcon';
 import { unchanged } from './look';
 import { lookLabel, ThemeEditor, themeLabel } from './ThemeEditor';
-import { LoadingIndicator } from './Loading';
+import { LoadingIndicator, SettingsSkeleton } from './Loading';
 import { ProfileAvatar } from './ProfileAvatar';
 import { Icon } from './Icon';
 import {
@@ -65,15 +65,14 @@ import {
   SettingsTextArea,
 } from './SettingsPage';
 import {
-  IconButton,
-  C,
   bodyTextStyle,
+  C,
   captionTextStyle,
-  controlFocusStyle,
-  controlHoverStyle,
   floatingStyle,
+  IconButton,
   menuRowHoverStyle,
   menuRowStyle,
+  quietFocusStyle,
 } from './ui';
 
 const avatarChoices = [
@@ -160,7 +159,7 @@ function GeneralRoot(props: { owner: GeneralSettingsOwner; request: GeneralActio
         when={facts()}
         else={
           <If when={owner.loading()} else={<SettingsProblem retry={owner.refresh} />}>
-            <LoadingIndicator label={tr('Reading preferences…')} />
+            <SettingsSkeleton padded={false} rows={3} label={tr('Reading preferences…')} />
           </If>
         }
       >
@@ -401,8 +400,8 @@ function PreferenceEditor(props: { owner: GeneralSettingsOwner; request: General
                   accessibilityLabel={tr('Change avatar')}
                   disabled={owner.disabled()}
                   style={{ padding: 4, borderRadius: 24 }}
-                  hoverStyle={controlHoverStyle()}
-                  focusStyle={controlFocusStyle()}
+                  hoverStyle={{ backgroundColor: C.cardRaised }}
+                  focusStyle={quietFocusStyle()}
                 >
                   <ProfileAvatar name={name()} avatar={avatar()} size={40} />
                   <View
@@ -412,7 +411,7 @@ function PreferenceEditor(props: { owner: GeneralSettingsOwner; request: General
                       bottom: 0,
                       padding: 3,
                       borderRadius: 9,
-                      backgroundColor: C.raised,
+                      backgroundColor: C.cardRaised,
                       pointerEvents: 'none',
                     }}
                   >
@@ -503,8 +502,8 @@ function GlobalInstructionsEditor(props: { owner: GeneralSettingsOwner; request:
         />
       }
     >
-      <If when={owner.loading()}>
-        <LoadingIndicator label={tr('Reading global instructions…')} />
+      <If when={owner.loading() && !document()}>
+        <SettingsSkeleton padded={false} rows={2} label={tr('Reading global instructions…')} />
       </If>
       <If when={document()}>
         <SettingsSection

@@ -1254,7 +1254,7 @@ pub(crate) fn marks(ed: Ed) -> impl IntoElement {
             ed.text_rev.get();
             ed.sel_rev.get();
             let st = ed.st.borrow();
-            let caret = st.caret_point(st.primary_head());
+            let (caret, height) = st.caret_box(st.primary_head());
             let start = ed
                 .completion
                 .inner
@@ -1266,7 +1266,7 @@ pub(crate) fn marks(ed: Ed) -> impl IntoElement {
                 Some(start) => st.caret_point(start).x,
                 None => caret.x,
             };
-            (Point::new(x, caret.y), st.line_height())
+            (Point::new(x, caret.y), height)
         })
     };
     let anchor = view()
@@ -1305,7 +1305,8 @@ fn ghost(ed: Ed) -> impl IntoElement {
             };
             let head = st.primary_head();
             let mid_line = head < st.buffer.line_end(st.buffer.line_of(head));
-            (text_, st.caret_point(head), st.line_height(), mid_line)
+            let (at, lh) = st.caret_box(head);
+            (text_, at, lh, mid_line)
         };
         let (first, rest) = match text_.split_once('\n') {
             Some((first, rest)) => (first.to_owned(), Some(rest.to_owned())),

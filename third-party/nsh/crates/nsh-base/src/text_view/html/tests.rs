@@ -374,14 +374,58 @@ fn table_without_head_and_spans() {
     assert_eq!(
         blocks,
         vec![Block::Table(Table {
-            align: vec![ColumnAlign::Right, ColumnAlign::Right],
-            head: vec![cell("a"), cell("b")],
-            rows: vec![vec![TableCell {
-                colspan: Some(2),
-                ..cell("c")
-            }]],
+            align: vec![ColumnAlign::None, ColumnAlign::None],
+            head: vec![],
+            rows: vec![
+                vec![cell("a"), cell("b")],
+                vec![TableCell {
+                    colspan: Some(2),
+                    ..cell("c")
+                }]
+            ],
         })]
     );
+}
+
+/// A first row of `<td>` is a row, not a header (emails lay out their
+/// tables so); a first row of `<th>` alone is one.
+#[test]
+fn table_header_is_th_only() {
+    let rows = |blocks: Vec<Block>| match blocks.as_slice() {
+        [Block::Table(table)] => (table.head.clone(), table.rows.clone()),
+        other => panic!("not one table: {other:?}"),
+    };
+    let (head, body) = rows(doc(
+        "<table><tr><td>Item</td><td>Amount</td></tr><tr><td>A</td><td>1</td></tr></table>",
+    ));
+    assert!(head.is_empty());
+    assert_eq!(
+        body,
+        vec![
+            vec![cell("Item"), cell("Amount")],
+            vec![cell("A"), cell("1")]
+        ]
+    );
+
+    let (head, body) = rows(doc(
+        "<table><tr><th>Item</th><th>Amount</th></tr><tr><td>A</td><td>1</td></tr></table>",
+    ));
+    assert_eq!(head, vec![cell("Item"), cell("Amount")]);
+    assert_eq!(body, vec![vec![cell("A"), cell("1")]]);
+
+    // A row header (`<th>` then `<td>`) does not make a header row.
+    let (head, body) = rows(doc(
+        "<table><tr><th>Item</th><td>A</td></tr><tr><th>Total</th><td>1</td></tr></table>",
+    ));
+    assert!(head.is_empty());
+    assert_eq!(body.len(), 2);
+
+    // A `<thead>` is one, whatever its cells.
+    let (head, body) = rows(doc(
+        "<table><tbody><tr><td>A</td><td>1</td></tr></tbody><thead><tr><td>Item</td><td>Amount</td></tr></thead></table>",
+    ));
+    assert_eq!(head, vec![cell("Item"), cell("Amount")]);
+    assert_eq!(body, vec![vec![cell("A"), cell("1")]]);
 }
 
 #[test]

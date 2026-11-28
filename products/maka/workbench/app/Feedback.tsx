@@ -43,17 +43,19 @@ import {
   type ToastTone,
 } from './toastStore';
 import {
-  C,
   bodyTextStyle,
+  C,
   captionTextStyle,
   controlDisabledStyle,
   controlFocusStyle,
   controlHoverStyle,
   controlStyle,
   floatingStyle,
+  lineWidth,
   quietActiveStyle,
   quietFocusStyle,
   quietHoverStyle,
+  radius,
   textTooltip,
 } from './ui';
 
@@ -108,7 +110,7 @@ function CompactFeedbackButton(props: {
       style={{
         height: 24,
         paddingHorizontal: 8,
-        borderRadius: 6,
+        borderRadius: radius(6),
         justifyContent: 'center',
         alignItems: 'center',
         flexShrink: 0,
@@ -142,7 +144,7 @@ function CompactDismissButton(props: { label?: string; inert?: boolean; onPress:
       style={{
         width: 24,
         height: 24,
-        borderRadius: 6,
+        borderRadius: radius(6),
         justifyContent: 'center',
         alignItems: 'center',
         flexShrink: 0,
@@ -366,7 +368,7 @@ export function Toaster(props: {
                 style={{
                   height: 24,
                   paddingHorizontal: 8,
-                  borderRadius: 6,
+                  borderRadius: radius(6),
                   justifyContent: 'center',
                   alignItems: 'center',
                 }}
@@ -391,7 +393,7 @@ export function Toaster(props: {
                 style={{
                   height: 24,
                   paddingHorizontal: 8,
-                  borderRadius: 6,
+                  borderRadius: radius(6),
                   flexDirection: 'row',
                   alignItems: 'center',
                   gap: 4,
@@ -546,7 +548,7 @@ export function Toaster(props: {
                   <View
                     style={{
                       width: '100%',
-                      borderRadius: 11,
+                      borderRadius: radius(11),
                       ...(isCollapsedBack()
                         ? { height: frontInnerHeight(), overflow: 'hidden' as const }
                         : {}),
@@ -682,9 +684,9 @@ export function RegionEmptyError(props: {
           style={{
             width: compact() ? 36 : 48,
             height: compact() ? 36 : 48,
-            borderRadius: compact() ? 10 : 12,
+            borderRadius: compact() ? radius(10) : radius(12),
             backgroundColor: props.surface === 'chrome' ? C.raised : C.card,
-            borderWidth: 1,
+            borderWidth: lineWidth(),
             borderColor: C.line,
             alignItems: 'center',
             justifyContent: 'center',
@@ -730,13 +732,13 @@ export function RegionEmptyError(props: {
               disabled={props.secondaryAction!.disabled}
               onPress={props.secondaryAction!.onPress}
               style={{
-                ...controlStyle,
+                ...controlStyle(),
                 height: compact() ? 28 : 32,
                 paddingHorizontal: 12,
-                borderRadius: 8,
+                borderRadius: radius(8),
                 justifyContent: 'center',
                 alignItems: 'center',
-                borderWidth: platform.idiom === 'terminal' ? 0 : 1,
+                borderWidth: platform.idiom === 'terminal' ? 0 : lineWidth(),
                 borderColor: C.line,
                 backgroundColor: props.surface === 'chrome' ? C.raised : C.card,
               }}
@@ -755,13 +757,13 @@ export function RegionEmptyError(props: {
               disabled={primaryAction()!.disabled}
               onPress={primaryAction()!.onPress}
               style={{
-                ...controlStyle,
+                ...controlStyle(),
                 height: compact() ? 28 : 32,
                 paddingHorizontal: 12,
-                borderRadius: 8,
+                borderRadius: radius(8),
                 justifyContent: 'center',
                 alignItems: 'center',
-                borderWidth: platform.idiom === 'terminal' ? 0 : 1,
+                borderWidth: platform.idiom === 'terminal' ? 0 : lineWidth(),
                 borderColor: C.line,
                 backgroundColor: props.surface === 'chrome' ? C.raised : C.card,
               }}
@@ -821,12 +823,12 @@ export function InlineCallout(props: {
         gap: 8,
         paddingHorizontal: platform.idiom === 'terminal' ? 8 : 10,
         paddingVertical: platform.idiom === 'terminal' ? 4 : 6,
-        borderRadius: 8,
+        borderRadius: radius(8),
         ...(platform.idiom === 'terminal'
           ? {}
           : {
               backgroundColor: props.surface === 'chrome' ? C.raised : C.card,
-              borderWidth: 1,
+              borderWidth: lineWidth(),
               borderColor: C.line,
             }),
         ...props.style,
@@ -888,7 +890,12 @@ export function ComposerShelf(props: {
         backgroundColor: C.card,
         overflow: 'hidden',
         ...(platform.idiom === 'terminal'
-          ? { marginBottom: 16, borderWidth: 1, borderColor: C.line, borderRadius: 12 }
+          ? {
+              marginBottom: 16,
+              borderWidth: lineWidth(),
+              borderColor: C.line,
+              borderRadius: radius(12),
+            }
           : {
               // A docked lip on the composer card rather than a second card stacked above it.
               marginHorizontal: inset(),
@@ -897,8 +904,8 @@ export function ComposerShelf(props: {
               borderRightWidth: 1,
               borderBottomWidth: 0,
               borderColor: C.line,
-              borderTopLeftRadius: 12,
-              borderTopRightRadius: 12,
+              borderTopLeftRadius: radius(12),
+              borderTopRightRadius: radius(12),
             }),
         ...props.style,
       }}

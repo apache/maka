@@ -230,7 +230,7 @@ impl Install {
             Ok::<_, HostError>((root, directory, lease))
         })
         .await??;
-        let existing = store::read(&directory).await?;
+        let existing = store::read_for_update(&directory, &lease).await?;
         if let store::Installation::Installed(existing) = &existing
             && existing.admission == Admission::Active
         {

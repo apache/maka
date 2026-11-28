@@ -29,7 +29,11 @@ import {
 } from 'nsh';
 import { Button, Input } from 'nsh/base';
 import type { AgentSession, QuoteRef } from '../../../../packages/plugin-sdk/src/index.js';
-import type { ComposerSession } from '../../../../packages/plugin-sdk/src/composer-view.js';
+import {
+  hasComposerContent,
+  type ComposerSession,
+} from '../../../../packages/plugin-sdk/src/composer-view.js';
+import { DraftQuotes } from '../../../../plugins/agent/composer/ui/DraftQuotes';
 import { Icon } from './Icon';
 import { LoadingIndicator } from './Loading';
 import { tr } from './locale';
@@ -44,7 +48,9 @@ import {
   captionTextStyle,
   controlDisabledStyle,
   IconButton,
+  lineWidth,
   quietFocusStyle,
+  radius,
   textTooltip,
 } from './ui';
 
@@ -64,8 +70,8 @@ export function SideCardFrame(props: { children: JSX.Element }) {
       style={{
         flexShrink: 1,
         minHeight: 0,
-        borderRadius: 14,
-        borderWidth: 1,
+        borderRadius: radius(14),
+        borderWidth: lineWidth(),
         borderColor: C.line,
         // Beside the conversation, in the tone of what stands beside it (the
         // sidebar's); what is said inside steps back up to the panel's.
@@ -121,9 +127,9 @@ export function SideQuoteTray(props: {
         paddingVertical: 4,
         paddingLeft: 12,
         paddingRight: 4,
-        borderWidth: 1,
+        borderWidth: lineWidth(),
         borderColor: C.line,
-        borderRadius: 14,
+        borderRadius: radius(14),
         backgroundColor: C.chrome,
         opacity: shown,
         transform: [{ translateY: shown.interpolate({ inputRange: [0, 1], outputRange: [6, 0] }) }],
@@ -170,7 +176,12 @@ function TrayButton(props: { label: string; color: string; onPress(): void }) {
     <Button
       accessibilityLabel={props.label}
       onPress={props.onPress}
-      style={{ height: 28, paddingHorizontal: 8, borderRadius: 8, justifyContent: 'center' }}
+      style={{
+        height: 28,
+        paddingHorizontal: 8,
+        borderRadius: radius(8),
+        justifyContent: 'center',
+      }}
       hoverStyle={{ backgroundColor: C.card }}
       focusStyle={quietFocusStyle()}
     >
@@ -388,9 +399,9 @@ function Reaction(props: {
           height: 28,
           paddingHorizontal: props.labelled ? 10 : 7,
           borderRadius: 14,
-          backgroundColor: props.labelled ? C.panel : 'transparent',
+          backgroundColor: props.labelled ? C.card : 'transparent',
         }}
-        hoverStyle={{ backgroundColor: C.card }}
+        hoverStyle={{ backgroundColor: props.labelled ? C.cardRaised : C.card }}
         activeStyle={{ backgroundColor: C.pressed }}
         focusStyle={quietFocusStyle()}
         disabledStyle={controlDisabledStyle}
@@ -437,8 +448,12 @@ export function SideReactions(props: {
         alignItems: 'center',
         gap: 6,
         paddingHorizontal: INSET - 4,
-        paddingTop: 4,
+        paddingTop: 8,
         paddingBottom: 8,
+        // With the input under it, a band apart from the answer that scrolls above.
+        borderTopWidth: 1,
+        borderTopColor: C.line,
+        backgroundColor: C.panel,
       }}
     >
       <Each of={sideFollowUps()} key={(item) => item.emoji}>
@@ -471,38 +486,48 @@ export function SideComposer(props: {
   stop(): void;
   attach(node: InputRef): void;
 }) {
-  const refused = signal('');
+  let editor: InputRef;
   const running = () => (props.session()?.run() ?? null) !== null;
   const failure = () => {
     const session = props.session();
     if (!session) return '';
+    return session.error() || session.sends().find((send) => send.state === 'failed')?.detail || '';
+  };
+  const blockWarning = () => {
+    const block = props.session()?.sendBlock() ?? null;
+    return block && (block.kind === 'attachments' || block.kind === 'draft') ? block.message : '';
+  };
+  const notice = () => failure() || blockWarning();
+  const canSend = () => {
+    const session = props.session();
     return (
-      session.error() ||
-      session.sends().find((send) => send.state === 'failed')?.detail ||
-      refused()
+      session !== null &&
+      session.sendBlock() === null &&
+      hasComposerContent(session.draft().trim(), session.attachments.files(), session.quotes())
     );
   };
   const send = () => {
     const session = props.session();
-    if (!session) return;
-    const text = session.draft();
-    if (text.trim() === '') return;
-    const reason = session.blockedReason();
-    refused.set(reason);
-    if (!reason) session.submit({ text });
+    if (!session || !canSend()) return;
+    session.submit({ text: session.draft() });
   };
   return (
-    <View style={{ borderTopWidth: 1, borderTopColor: C.line }}>
+    <View style={{ borderTopWidth: 1, borderTopColor: C.line, backgroundColor: C.panel }}>
+      <If when={(props.session()?.quotes().length ?? 0) > 0}>
+        <View style={{ paddingHorizontal: INSET, paddingTop: 10 }}>
+          <DraftQuotes owner={props.session()!} focusEditor={() => editor.focus()} />
+        </View>
+      </If>
       <InputRow
-        attach={props.attach}
+        attach={(node) => {
+          editor = node;
+          props.attach(node);
+        }}
         label={tr('Ask in the side question')}
         placeholder={tr('Ask a follow-up')}
         value={props.session()?.draft() ?? ''}
         readonly={!(props.session()?.editable() ?? false)}
-        change={(value) => {
-          refused.set('');
-          props.session()?.changeDraft(value);
-        }}
+        change={(value) => props.session()?.changeDraft(value)}
         submit={send}
         action={
           <If
@@ -511,7 +536,7 @@ export function SideComposer(props: {
               <IconButton
                 label={tr('Send message')}
                 icon="send"
-                disabled={(props.session()?.draft() ?? '').trim() === ''}
+                disabled={!canSend()}
                 onPress={send}
               />
             }
@@ -520,14 +545,19 @@ export function SideComposer(props: {
           </If>
         }
       />
-      <If when={failure() !== ''}>
+      <If when={notice() !== ''}>
         <Text
           style={[
-            { ...captionTextStyle, color: C.danger, paddingHorizontal: INSET, paddingBottom: 12 },
+            {
+              ...captionTextStyle,
+              color: failure() ? C.danger : C.warning,
+              paddingHorizontal: INSET,
+              paddingBottom: 12,
+            },
             { userSelect: 'text' },
           ]}
         >
-          {failure()}
+          {notice()}
         </Text>
       </If>
     </View>
@@ -564,7 +594,7 @@ export function SideNotes(props: {
                 maxWidth: '100%',
                 height: 28,
                 paddingHorizontal: 8,
-                borderRadius: 8,
+                borderRadius: radius(8),
                 backgroundColor: props.shown() === item().id ? C.card : 'transparent',
               }}
               hoverStyle={{ backgroundColor: C.card }}

@@ -120,6 +120,13 @@ pub(crate) fn attach(surface: &Rc<Surface>, overlay: &gtk::Overlay, slot: &gtk::
 
 /// The box above the app holding the menu bar (the menus it opens are
 /// inside it), once the `AppView` is made.
+/// The main window's buttons over a hidden title bar, if any.
+pub(crate) fn window_controls(
+    surface: &Surface,
+) -> Option<(gtk::WindowControls, gtk::WindowControls)> {
+    surface.chrome.controls.borrow().clone()
+}
+
 pub(crate) fn menu_bar_slot(surface: &Surface) -> Option<gtk::Box> {
     surface.chrome.slot.borrow().as_ref()?.upgrade()
 }
@@ -271,6 +278,7 @@ fn apply_title_bar(surface: &Rc<Surface>, window: &gtk::Window) {
                 controls.set_valign(gtk::Align::Start);
                 controls.set_margin_start(MARGIN);
                 controls.set_margin_end(MARGIN);
+                crate::window::controls_scheme(&controls, crate::window::main_dark(surface));
                 overlay.add_overlay(&controls);
                 // The decoration layout changed (or first known).
                 let weak = Rc::downgrade(surface);
@@ -509,12 +517,23 @@ pub(crate) fn begin_move(surface: &Surface, event: &gdk::Event) {
 
 // --- Menus ------------------------------------------------------------------------------
 
-/// The roles Linux has no use for.
+/// The roles Linux has no counterpart for: hiding the other apps and
+/// showing them again are macOS's. Their items are left out, with a warning
+/// so the app knows why. `About` stays (the app hears it, and shows its own
+/// panel) and `Hide` minimizes the window.
 fn unsupported(role: Option<MenuRole>) -> bool {
-    matches!(
-        role,
-        Some(MenuRole::About | MenuRole::Hide | MenuRole::HideOthers | MenuRole::ShowAll)
-    )
+    let skip = matches!(role, Some(MenuRole::HideOthers | MenuRole::ShowAll));
+    // Once per role: menus are rebuilt and searched for shortcuts often.
+    static WARNED: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+    let bit = if role == Some(MenuRole::ShowAll) {
+        2
+    } else {
+        1
+    };
+    if skip && WARNED.fetch_or(bit, std::sync::atomic::Ordering::Relaxed) & bit == 0 {
+        log::warn!("nsh: menu role {role:?} has no Linux equivalent; the item is left out");
+    }
+    skip
 }
 
 /// The shortcut as a GTK accelerator (`<Control><Shift>n`).
@@ -907,7 +926,7 @@ pub(crate) fn choose(surface: &Rc<Surface>, id: u32, role: Option<MenuRole>) {
                 });
             }
         }
-        Some(MenuRole::Minimize) => {
+        Some(MenuRole::Minimize | MenuRole::Hide) => {
             if let Some(window) = window(surface) {
                 window.minimize();
             }

@@ -146,7 +146,9 @@ In Rust, give the count as a signal or a closure (`move || posts.with(Vec::len)`
 
 In TSX, pass a new array to change the items: `posts.set([...posts(), ...more])`. The list compares the old and the new array **by item identity** (`===`), or by the keys `keyExtractor` returns.
 
-In both, a row that stays keeps its cell, its content and its measured size wherever it moves (an item sorted to the top once it changes), and so do the rows it passes: a focused field or an open menu in them stays open. Only new items get new rows. When rows are inserted above the rows on screen, the visible rows stay where they are instead of jumping. A row only partly scrolled into view at the top counts as above them, so rows inserted right after it leave the rows being read in place.
+In both, a row that stays keeps its cell, its content and its measured size wherever it moves (an item sorted to the top once it changes), and so do the rows it passes: a focused field or an open menu in them stays open. Only new items get new rows. When rows are inserted above the rows on screen, the visible rows stay where they are instead of jumping. A row only partly scrolled into view at the top counts as above them, so rows inserted right after it leave the rows being read in place, also when they are then measured at a height other than the estimate.
+
+A list hidden with `display: none`, such as a page kept alive under another tab, keeps its rows. Shown again, it puts them back without rendering any of them anew. `DataTable` does the same.
 
 - In TSX, update immutably: a new array, with the unchanged item objects reused. Mutating the array in place (`push`) is not seen.
 - A changed item should be a new object (`{ ...post, title }`), so its row shows the change.
@@ -167,7 +169,7 @@ A list takes every scrolling prop of the scroll view that makes sense for a list
 | `viewport` | `.viewport(ListViewport::..)` | `"own" \| "parent"` | `"own"` | `"own"`: the list scrolls in a scroll view of its own. `"parent"`: it lies at its full length in the scroll view around it, which scrolls it with the rest of the page (see [lists in a page](#lists-in-a-page-viewportparent)). Chosen when the list is made. |
 | `numColumns` | `.columns(n)` | `number` | `1` | Items per row (vertical lists). |
 | `inverted` | `.inverted()` | `boolean` | `false` | Item 0 at the bottom (chat); starts at the end and keeps its distance from the end. |
-| `maintainVisibleContentPosition` | `.follow_end(px(..))` | `{ autoscrollToBottomThreshold?: number }` | | A list that is not inverted stays at the end while it is within that many points of it, as content grows (see below). |
+| `maintainVisibleContentPosition` | `.follow_end(px(..))`, `.follow_end_animated(..)` | `{ autoscrollToBottomThreshold?: number; animated?: boolean }` | | A list that is not inverted stays at the end while it is within that many points of it, as content grows; with `animated`, large steps of the end scroll there smoothly (see below). |
 | `alignment` | `.alignment(ListAlignment::..)` | `"top" \| "bottom"` | `"top"` | Where the list rests. `"bottom"`: it opens at the end and stays there as content grows, with rows in reading order (see below). |
 | `stickyHeaderIndices` | `.sticky_header_indices(..)` | `number[]` | | Items that stick to the top while scrolled past (one column, not inverted). |
 | `stickyHeaderOffset` | `.sticky_header_offset(px(..))`, `.bind_sticky_header_offset(&node)` | `number \| AnimatedNode` | `0` | How far below the top the sticky items stick, as CSS `position: sticky`'s `top`; the content scrolls on under the space above them. An animated value moves them every frame. |
@@ -500,6 +502,8 @@ virtual_list(move || messages.with(Vec::len), move |at| bubble(messages, at))
 ### Following the end of a list that is not inverted
 
 A list in reading order (oldest first) can follow its end too: with `.follow_end(px(40.0))` in Rust or `maintainVisibleContentPosition={{ autoscrollToBottomThreshold: 40 }}` in TSX, while the user is at the end (or within 40 points of it), the list stays at the end as the content grows: a reply streaming into the last item, a new message appended, the keyboard shrinking the list. Scrolled further up, the visible content stays where it is and the new content grows below it. Items inserted above the visible ones never move them, with or without the option.
+
+With `animated: true` (`.follow_end_animated(true)` in Rust), when the end moves away by a large step at once (a quarter of the list's height or more, such as a chart or card appearing in a reply), the list scrolls there with an animation instead of jumping, and the animation keeps up as the content goes on growing. Smaller steps, such as text streaming in, still follow at once. Dragging the list away stops the following as without it.
 
 ```tsx tabs
 <List each={messages()} keyExtractor={(m) => m.id} maintainVisibleContentPosition={{ autoscrollToBottomThreshold: 40 }} style={{ flex: 1 }}>

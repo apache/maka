@@ -71,12 +71,14 @@ const session = (id, title = id) => ({
 
 function setup() {
   const streams = [];
+  const subscribeInputs = [];
   let projectReads = 0;
   let projects = [{ reference: { id: 'p1' }, name: 'Alpha', path: '/alpha', archived: false }];
   const host = {
-    subscribe: async (endpoint, method) => {
+    subscribe: async (endpoint, method, input) => {
       assert.equal(endpoint, 'agent');
       assert.equal(method, 'catalog');
+      subscribeInputs.push(input);
       let pending = null;
       const queued = [];
       const stream = {
@@ -126,6 +128,7 @@ function setup() {
   return {
     host,
     streams,
+    subscribeInputs,
     get projectReads() {
       return projectReads;
     },
@@ -206,4 +209,28 @@ test('non-cancellation catalog failures remain visible for explicit browser refr
   await flush();
   assert.equal(harness.streams.length, 1);
   assert.equal(browser.error(), 'Connection interrupted. Your draft is kept.');
+});
+
+test('rootsOnly applies only to the ordinary agent thread list, keeping archived children and agent-created rooms visible', async () => {
+  const agentHarness = setup();
+  const agentBrowser = createBrowsing(agentHarness.host, 'agent');
+  await flush();
+  assert.equal(agentHarness.subscribeInputs.at(-1).rootsOnly, true);
+
+  agentBrowser.setFilter('archived');
+  await flush();
+  assert.equal(agentHarness.subscribeInputs.at(-1).rootsOnly, false);
+
+  agentBrowser.setFilter('needs_you');
+  await flush();
+  assert.equal(agentHarness.subscribeInputs.at(-1).rootsOnly, false);
+
+  const roomHarness = setup();
+  const roomBrowser = createBrowsing(roomHarness.host, 'room');
+  await flush();
+  assert.equal(roomHarness.subscribeInputs.at(-1).rootsOnly, false);
+
+  roomBrowser.setFilter('archived');
+  await flush();
+  assert.equal(roomHarness.subscribeInputs.at(-1).rootsOnly, false);
 });

@@ -62,6 +62,8 @@ pub(super) struct Args {
 impl Args {
     pub(super) async fn run(self) -> Result<ExitCode, HostError> {
         let stop = CancellationToken::new();
+        #[cfg(windows)]
+        crate::windows::detach_private_desktop_console()?;
         let _signals = crate::signals::watch(stop.clone())?;
         #[cfg(windows)]
         if let Some(distro) = self.wsl {
@@ -203,6 +205,7 @@ fn desktop_shell_path(launcher: &std::path::Path) -> PathBuf {
 pub(super) fn exec_shell(
     mode: &str,
     options: &[(&str, Option<&std::ffi::OsStr>)],
+    flags: &[(&str, bool)],
 ) -> Result<(), HostError> {
     use std::os::unix::process::CommandExt;
 
@@ -222,6 +225,11 @@ pub(super) fn exec_shell(
             argument.push("=");
             argument.push(value);
             command.arg(argument);
+        }
+    }
+    for &(name, enabled) in flags {
+        if enabled {
+            command.arg(name);
         }
     }
     let error = command.exec();

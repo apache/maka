@@ -43,7 +43,6 @@ import {
 import { createJumpHighlightValue, runJumpHighlight, useLiveMessageStyle } from './roomMotion';
 import {
   C,
-  bodyTextStyle,
   captionTextStyle,
   controlFocusStyle,
   controlStyle,
@@ -51,6 +50,9 @@ import {
   inputTextStyle,
   menuRowHoverStyle,
   menuRowStyle,
+  radius,
+  raisedShadow,
+  readingTextStyle,
   textTooltip,
 } from './ui';
 
@@ -141,7 +143,7 @@ export function RoomMessageRow(props: {
           borderLeftColor: isHuman() ? C.accent + '88' : C.line,
           paddingLeft: 8,
           paddingVertical: 2,
-          borderRadius: 4,
+          borderRadius: radius(4),
           alignSelf: 'stretch',
         }}
         hoverStyle={{ backgroundColor: C.surface }}
@@ -178,7 +180,7 @@ export function RoomMessageRow(props: {
               ...inputTextStyle,
               color: C.text,
               backgroundColor: C.raised,
-              borderRadius: 8,
+              borderRadius: radius(8),
               padding: 10,
               minHeight: 36,
               maxHeight: 220,
@@ -188,14 +190,14 @@ export function RoomMessageRow(props: {
             <Button
               accessibilityLabel={tr('Save')}
               onPress={props.onSaveEdit}
-              style={{ ...controlStyle, backgroundColor: C.surface }}
+              style={{ ...controlStyle(), backgroundColor: C.surface }}
             >
               <Text style={{ ...captionTextStyle, color: C.accentText }}>{tr('Save')}</Text>
             </Button>
             <Button
               accessibilityLabel={tr('Cancel')}
               onPress={props.onCancelEdit}
-              style={controlStyle}
+              style={controlStyle()}
             >
               <Text style={{ ...captionTextStyle, color: C.secondary }}>{tr('Cancel')}</Text>
             </Button>
@@ -233,7 +235,7 @@ export function RoomMessageRow(props: {
                   />
                 }
               >
-                <Text style={{ ...bodyTextStyle, color: C.text }}>
+                <Text style={{ ...readingTextStyle(), color: C.text }}>
                   {props.message().content.text}
                 </Text>
               </If>
@@ -282,7 +284,7 @@ export function RoomMessageRow(props: {
                 style={{
                   width: 28,
                   height: 28,
-                  borderRadius: 6,
+                  borderRadius: radius(6),
                   alignItems: 'center',
                   justifyContent: 'center',
                 }}
@@ -386,7 +388,7 @@ export function RoomMessageRow(props: {
             onPress={handleDoubleClick}
             style={{
               position: 'relative',
-              borderRadius: 12,
+              borderRadius: radius(12),
               paddingVertical: props.isContinuation() ? 2 : 5,
               paddingHorizontal: 8,
               backgroundColor: highlight.interpolate({
@@ -565,10 +567,11 @@ export function RoomMessageRow(props: {
                       maxWidth: '78%',
                       paddingHorizontal: 15,
                       paddingVertical: 10,
-                      borderRadius: 18,
-                      borderTopRightRadius: props.isContinuation() ? 8 : 18,
+                      borderRadius: radius(18),
+                      borderTopRightRadius: props.isContinuation() ? radius(8) : radius(18),
                       backgroundColor: isDeleted() ? C.surface : C.card,
                       gap: 6,
+                      ...raisedShadow(),
                     }}
                   >
                     {replyQuoteBlock()}

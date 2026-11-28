@@ -98,7 +98,8 @@ Its columns set `fitPadding: 16` for this app-owned spacing; fits add this to th
 `Columns` keeps each column's *base* width (its spec's, or what a drag, a fit or the app set) apart from the width it
 shows: the base plus its share of the room the columns leave free (`grow`, `Columns::grow`), given in whole points so
 they fill the room exactly. `Dt::sync_room` gives it the room (the viewport less the row header and a terminal's bar)
-whenever that changes. A width set by a drag, `setColumnWidth` or `fitColumn` settles the column: it keeps that width
+whenever that changes; a layout with no area (`display: none` around the table) changes neither, so a hidden table
+keeps its rows and shows them again as they were. A width set by a drag, `setColumnWidth` or `fitColumn` settles the column: it keeps that width
 and no longer grows. `autoFit` (`Dt::auto_fit`, run when the columns or the rows change) measures as `fitColumn` does
 and sets the base without settling or reporting, once per column; `Columns::updated` carries the bases, the settled
 and the fitted columns over by key, as it does the widths the user dragged.
@@ -141,8 +142,8 @@ The table is one stop of Tab, as gpui-component's (a `tab_stop` focus handle): i
 are `focusable(false)`, and so are its columns' resize handles in a terminal, where a lone `ResizeHandle` is a stop
 (`PointerOnly`, provided around them: resizing is the mouse's, as gpui-component's). While it has the keyboard Tab moves the selection, as gpui-component's, and Escape gives it
 back; Enter / Return activates the selection's row (`onRowActivate`), bound like a list's (`for_focus`) and not while a
-text input edits or a control inside the table has the focus. In a terminal Tab and Shift+Tab are not bound and move
-the focus on, out of the table, the arrows moving between the columns (`docs/dev/tui.md` "Interaction"). A press,
+text input edits or a control inside the table has the focus; a terminal binds them the same (`docs/dev/tui.md`
+"Interaction"). A press,
 `focus()` and `blur()` set the same flag. Tab stops at pressables and `focusable(true)` views on macOS and the web
 (`ViewProps::focus_stop`).
 

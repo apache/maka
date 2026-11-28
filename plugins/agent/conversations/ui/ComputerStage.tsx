@@ -37,6 +37,8 @@ import {
   C,
   controlFocusStyle,
   controlHoverStyle,
+  floatingShadow,
+  radius,
 } from '../../../../products/maka/workbench/app/ui';
 import { errorMessage } from '../../../../products/maka/workbench/app/text';
 import type {
@@ -171,14 +173,14 @@ export function ComputerStage(props: {
       maxWidth: Math.max(0, card.width - 16),
     };
   };
-  const iconButton: ViewStyle = {
+  const iconButton = (): ViewStyle => ({
     width: 28,
     height: 28,
     padding: 5,
-    borderRadius: 7,
+    borderRadius: radius(7),
     alignItems: 'center',
     justifyContent: 'center',
-  };
+  });
   return (
     <View
       accessibilityLabel={tr('computer.title')}
@@ -286,8 +288,8 @@ export function ComputerStage(props: {
                           padding: 0,
                           alignItems: 'stretch',
                           backgroundColor: C.background,
-                          borderRadius: 16,
-                          boxShadow: `0 6px 20px ${C.shadow}`,
+                          borderRadius: radius(16),
+                          boxShadow: floatingShadow(`0 6px 20px ${C.shadow}`),
                           transitionProperty: 'opacity',
                           transitionDuration: reduceMotion() ? 0 : 200,
                           transitionTimingFunction: 'ease-out',
@@ -298,7 +300,7 @@ export function ComputerStage(props: {
                         <View
                           style={{
                             flexGrow: 1,
-                            borderRadius: 16,
+                            borderRadius: radius(16),
                             overflow: 'hidden',
                             filter: visible() || reduceMotion() ? 'blur(0px)' : 'blur(18px)',
                             transitionProperty: 'filter',
@@ -325,7 +327,7 @@ export function ComputerStage(props: {
               ...toolbarPosition(),
               zIndex: 6,
               padding: 4,
-              borderRadius: 10,
+              borderRadius: radius(10),
               backgroundColor: C.raised,
               opacity: stage.hidden() || error() || ready().length === 0 || controls() ? 1 : 0,
               transitionProperty: 'opacity',
@@ -341,7 +343,7 @@ export function ComputerStage(props: {
                   maxWidth: 300,
                   gap: 4,
                   padding: 8,
-                  borderRadius: 10,
+                  borderRadius: radius(10),
                   backgroundColor: C.raised,
                 }}
               >
@@ -365,7 +367,7 @@ export function ComputerStage(props: {
               <Button
                 accessibilityLabel={tr('computer.retry_live_view')}
                 onPress={stage.retry}
-                style={iconButton}
+                style={iconButton()}
                 hoverStyle={controlHoverStyle()}
                 focusStyle={controlFocusStyle()}
               >
@@ -390,7 +392,7 @@ export function ComputerStage(props: {
                   stage.pinned() ? 'computer.unpin_target' : 'computer.pin_target',
                 )}
                 onPress={inputAction(stage.togglePin, null)}
-                style={iconButton}
+                style={iconButton()}
                 hoverStyle={controlHoverStyle()}
                 focusStyle={controlFocusStyle()}
               >
@@ -400,7 +402,7 @@ export function ComputerStage(props: {
                 <Button
                   accessibilityLabel={tr('computer.follow_agent')}
                   onPress={inputAction(stage.follow, null)}
-                  style={iconButton}
+                  style={iconButton()}
                   hoverStyle={controlHoverStyle()}
                   focusStyle={controlFocusStyle()}
                 >
@@ -413,7 +415,7 @@ export function ComputerStage(props: {
                 stage.hidden() ? 'computer.show_live_view' : 'computer.hide_live_view',
               )}
               onPress={inputAction(() => stage.hidden.set(!stage.hidden()), null)}
-              style={iconButton}
+              style={iconButton()}
               hoverStyle={controlHoverStyle()}
               focusStyle={controlFocusStyle()}
             >

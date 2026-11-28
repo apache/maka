@@ -19,9 +19,14 @@ A menu is a list of actions its trigger opens. One structure serves every device
 An iPad follows UIKit's horizontal size class, as the system's own menus do: resizing its window across it presents
 the menu the other way.
 
-Choosing an item, a press outside, Escape, the Android back button and VoiceOver's escape gesture close it. `ContextMenu` is the same menu opened
-by the secondary button (a right click) at the pointer, by a finger held on its trigger on touch screens, or below its
-trigger by the keyboard in the browser and on Linux, and by screen readers on macOS and Windows.
+Choosing an item, a press outside, Escape, the Android back button and VoiceOver's escape gesture close it.
+
+`ContextMenu` is the same menu with other ways to open it:
+
+- the secondary button (a right click), at the pointer;
+- a finger held on the trigger, on touch screens;
+- the keyboard, below the trigger, in the browser and on Linux;
+- screen readers on macOS and Windows.
 
 Return, Space or Down on the focused trigger opens the menu with the keyboard focus on its first enabled item, and Up
 with it on its last; the arrow keys then move between the items. A press opens it with no item focused; in a popup Down or Home then

@@ -37,7 +37,8 @@ import {
   type Signal,
   type JSX,
 } from 'nsh';
-import { Button, Dialog, TextView } from 'nsh/base';
+import { Button, TextView } from 'nsh/base';
+import { WindowDialog } from '../../../../products/maka/workbench/app/ModalDialog';
 import { CompactComposer } from './CompactComposer';
 import { currentWindow, isAvailable as desktopAvailable } from 'nsh/desktop';
 import {
@@ -119,10 +120,11 @@ import { settingsValue } from '../../../../products/maka/workbench/app/settingsO
 import {
   bodyTextStyle,
   C,
-  Header,
-  controlStyle,
-  controlHoverStyle,
   controlFocusStyle,
+  controlHoverStyle,
+  controlStyle,
+  Header,
+  radius,
   textTooltip,
   type BrowserHeader,
 } from '../../../../products/maka/workbench/app/ui';
@@ -166,8 +168,8 @@ import {
 } from '../../../../products/maka/workbench/app/browsing';
 import {
   browserOrder,
-  groupConversations,
-  groupConversationsByTime,
+  desktopSidebarGroups,
+  selectBubbledChildren,
 } from '../../../../products/maka/workbench/app/conversationGroups';
 import { workspaceSessions } from '../../../../products/maka/workbench/app/sessionNesting';
 import { sidebarPreferences } from '../../../../products/maka/workbench/app/sidebarPreferences';
@@ -176,6 +178,7 @@ import {
   type WorkspaceBrowserProps,
 } from '../../../../products/maka/workbench/app/WorkspaceBrowser';
 import { createBotWorkers } from '../../../../products/maka/workbench/app/botWorkers';
+import { createScopedCatalog } from '../../../../products/maka/workbench/app/scopedCatalog';
 import { appUpdater } from '../../../../products/maka/workbench/app/appUpdater';
 import {
   applicationMenu,
@@ -902,8 +905,15 @@ export function createConversationUi(
   const open = (request: OverlayTarget) => {
     const { sessionId } = request;
     if (!alive || selected() !== sessionId) return;
+    const target: OverlayTarget =
+      request.kind === 'models' && sessionId === null ? { kind: 'settings', sessionId } : request;
+    if (target.kind === 'settings') {
+      overlay.set(null);
+      shell()?.openSettings(target.model, target.page);
+      return;
+    }
     if (!(shell()?.visible() ?? false) && !shell()?.dismissRoute()) return;
-    if (request.kind === 'sessions') {
+    if (target.kind === 'sessions') {
       resources.hide();
       status.set('');
       if (overlay()?.kind === 'sessions') {
@@ -916,15 +926,6 @@ export function createConversationUi(
         browserFocus.set(true);
         return;
       }
-    }
-    const target =
-      request.kind === 'models' && sessionId === null
-        ? { kind: 'settings' as const, sessionId }
-        : request;
-    if (target.kind === 'settings') {
-      overlay.set(null);
-      shell()?.openSettings(target.model, target.page);
-      return;
     }
     status.set('');
     browserFocus.set(target.kind === 'sessions');
@@ -1583,6 +1584,98 @@ export function createConversationUi(
     () => botSession() ?? null,
     () => platform.idiom !== 'terminal',
   );
+  // Memoized boolean keeps the waiting subscription steady when needsYouCount changes (e.g. 1 -> 2).
+  const hasWaitingSessions = computed(
+    () =>
+      platform.idiom !== 'terminal' && browsing.filter() === 'all' && browsing.needsYouCount() > 0,
+  );
+  // Waiting conversations across all depths, subscribed only while needsYouCount > 0,
+  // so waiting children can bubble under their visible parent row without extra cost at rest.
+  const waitingChildren = createScopedCatalog(
+    host,
+    () => (hasWaitingSessions() ? { kind: 'all' } : null),
+    { filter: 'needs_you', rootsOnly: false },
+  );
+  // A waiting bubble the user clicked into stays anchored in place until they navigate
+  // away, while its live waiting badge clears immediately once approved.
+  const stickyBubble = signal<AgentSession | null>(null);
+  effect(() => {
+    const id = selected();
+    const sticky = untracked(() => stickyBubble());
+    if (!sticky) return;
+    if (id !== sticky.id) {
+      stickyBubble.set(null);
+      return;
+    }
+    const fresh = waitingChildren().find((session) => session.id === sticky.id);
+    if (fresh && fresh.revision !== sticky.revision) stickyBubble.set(fresh);
+  });
+  const visibleWorkspaceSessions = computed(() =>
+    workspaceSessions(
+      browsing.sessions(),
+      botSession() ?? null,
+      browsing.filter(),
+      platform.idiom !== 'terminal',
+    ),
+  );
+  const bubbledChildren = computed(() => {
+    if (platform.idiom === 'terminal' || browsing.filter() !== 'all') return [];
+    return selectBubbledChildren(
+      waitingChildren(),
+      visibleWorkspaceSessions(),
+      botSession() ?? null,
+      stickyBubble(),
+    );
+  });
+  // Explicit ancestor ids of the selected conversation, resolved once per selection change
+  // rather than re-querying on every catalog revision.
+  const selectedAncestors = signal<readonly string[]>([]);
+  effect(() => {
+    const id = selected();
+    if (!id) {
+      selectedAncestors.set([]);
+      return;
+    }
+    const known =
+      untracked(browsing.sessions).find((session) => session.id === id) ??
+      untracked(waitingChildren).find((session) => session.id === id);
+    if (known) {
+      selectedAncestors.set(
+        known.ancestorIds?.length
+          ? known.ancestorIds
+          : known.parentSessionId
+            ? [known.parentSessionId]
+            : [],
+      );
+      return;
+    }
+    let cancelled = false;
+    void host
+      .query('agent', 'observe', { sessionId: id })
+      .then((observed) => {
+        if (!alive || cancelled) return;
+        selectedAncestors.set(
+          observed.session.ancestorIds?.length
+            ? observed.session.ancestorIds
+            : observed.session.parentSessionId
+              ? [observed.session.parentSessionId]
+              : [],
+        );
+      })
+      .catch(() => {
+        if (alive && !cancelled) selectedAncestors.set([]);
+      });
+    cleanup(() => {
+      cancelled = true;
+    });
+  });
+  const selectedRoot = computed(() => {
+    const id = selected();
+    if (!id) return null;
+    const listed = new Set(browsing.sessions().map((session) => session.id));
+    if (listed.has(id)) return id;
+    return selectedAncestors().find((ancestor) => listed.has(ancestor)) ?? null;
+  });
   const refreshBotSession = async () => {
     const head = await host.query('agent', 'botOutbox', { limit: 0 });
     if (alive) botSession.set(head.sessionId ?? null);
@@ -1948,8 +2041,19 @@ export function createConversationUi(
     for (const unbind of [...unbindKeys.splice(0), ...unbindEditorKeys.splice(0)]) unbind();
   });
   const bindKeys = (within?: ViewRef, input?: ComposerFocusHandle) => {
-    if (input)
+    if (input) {
       unbindEditorKeys.push(input.bindKey('ctrl+c', interrupt.interrupt, { fallback: true }));
+      unbindEditorKeys.push(
+        input.bindKey('mod+[', () => {
+          if (overlay() === null) handle()?.stepSibling?.(-1);
+        }),
+      );
+      unbindEditorKeys.push(
+        input.bindKey('mod+]', () => {
+          if (overlay() === null) handle()?.stepSibling?.(1);
+        }),
+      );
+    }
     const options = within ? { when: 'always' as const, within } : { when: 'always' as const };
     const bind = (key: string, action: () => void) => {
       const unbind = input ? input.bindKey(key, action) : keymap.bind(key, action, options);
@@ -1969,13 +2073,20 @@ export function createConversationUi(
       bind('mod+shift+[', () => stepSession(-1));
     }
   };
-  let sideKeys: ViewRef | undefined;
+  let paneKeys: ViewRef | undefined;
   let paneRoot: ViewRef | undefined;
   const computerViewport = signal({ width: 0, height: 0 });
+  const notificationSessions = computed(() => {
+    const roots = browsing.sessions();
+    const waiting = waitingChildren();
+    if (!waiting.length) return roots;
+    const seen = new Set(roots.map((session) => session.id));
+    return [...roots, ...waiting.filter((session) => !seen.has(session.id))];
+  });
   if (!side) {
     bindKeys();
     watchNotifications({
-      sessions: browsing.sessions,
+      sessions: notificationSessions,
       foreground,
       open: (sessionId) => void selectBrowsed(sessionId, selected()),
     });
@@ -2174,35 +2285,30 @@ export function createConversationUi(
   // and stepping between conversations skips them as the browser does.
   const collapsedGroups = signal<ReadonlySet<string>>(new Set());
   const expandedProjects = signal<ReadonlySet<string>>(new Set());
-  const foldedFamilies = signal<ReadonlySet<string>>(new Set());
   const stepSession = (step: 1 | -1) => {
     const current = overlay();
     if (switching() || busy() || (current && current.kind !== 'sessions')) return;
-    const bot = botSession() ?? null;
-    const visible = workspaceSessions(
-      browsing.sessions(),
-      bot,
-      browsing.filter(),
-      platform.idiom !== 'terminal',
-    );
+    const visible = visibleWorkspaceSessions();
     const byTime =
       platform.idiom !== 'terminal' &&
       browsing.filter() === 'all' &&
       sidebarPreferences.sortMode() === 'time';
+    const groups = desktopSidebarGroups(visible, browsing.projects(), bubbledChildren(), {
+      byTime,
+      withEmpty: false,
+      attachBubbles: platform.idiom !== 'terminal' && browsing.filter() === 'all',
+    });
+    const rendered = new Set(groups.flatMap((group) => group.sessions));
+    const anchor = rendered.has(selected() ?? '') ? selected() : selectedRoot();
     const rows = browserOrder(
-      byTime
-        ? groupConversationsByTime(visible)
-        : groupConversations(visible, browsing.projects(), false),
+      groups,
       collapsedGroups(),
-      selected(),
+      anchor,
       platform.idiom === 'terminal' ? undefined : expandedProjects(),
-      platform.idiom === 'terminal' || browsing.filter() !== 'all' || byTime
-        ? undefined
-        : foldedFamilies(),
     );
     // A side question opens beside its conversation, so stepping onto one would step back.
     const sides = new Set(visible.filter((session) => session.branch?.side).map(({ id }) => id));
-    const index = rows.indexOf(selected() ?? '');
+    const index = rows.indexOf(anchor ?? '');
     const direction = index === -1 ? 1 : step;
     let at = index === -1 ? 0 : index + step;
     while (at >= 0 && at < rows.length && sides.has(rows[at])) at += direction;
@@ -2295,6 +2401,9 @@ export function createConversationUi(
     openBot: (sessionId) => invokeCommand({ id: 'bot', sessionId }),
     botSession,
     botWorkers: botWorkers.sessions,
+    bubbledChildren,
+    onSelectBubble: (bubble) => stickyBubble.set(bubble),
+    selectedRoot,
     settings: (sessionId) => invokeCommand({ id: 'settings', sessionId }),
     search: (sessionId) => invokeCommand({ id: 'sessions', sessionId }),
     canOpenBeside: () => !!shell()?.openBeside,
@@ -2302,7 +2411,6 @@ export function createConversationUi(
     openBeside: (sessionId) => shell()?.openBeside?.(sessionId),
     collapsedGroups,
     expandedProjects,
-    foldedFamilies,
   };
   let wasDocked = shell()?.sidebarDocked();
   let previousWidth = windowSize().width;
@@ -2516,7 +2624,7 @@ export function createConversationUi(
                             maxWidth: '85%',
                             paddingHorizontal: 12,
                             paddingVertical: 8,
-                            borderRadius: 12,
+                            borderRadius: radius(12),
                             backgroundColor: C.card,
                           }}
                         >
@@ -2919,12 +3027,29 @@ export function createConversationUi(
           <View
             ref={(node) => {
               paneRoot = node;
-              if (!side || sideKeys === node) return;
-              sideKeys = node;
+              if (paneKeys === node) return;
+              paneKeys = node;
               if (!input.compact) {
-                bindKeys(node);
+                unbindKeys.push(
+                  keymap.bind(
+                    'mod+[',
+                    () => {
+                      if (overlay() === null) handle()?.stepSibling?.(-1);
+                    },
+                    { when: 'always', within: node },
+                  ),
+                  keymap.bind(
+                    'mod+]',
+                    () => {
+                      if (overlay() === null) handle()?.stepSibling?.(1);
+                    },
+                    { when: 'always', within: node },
+                  ),
+                );
+                if (side) bindKeys(node);
                 return;
               }
+              if (!side) return;
               unbindKeys.push(
                 keymap.bind(
                   'escape',
@@ -3116,9 +3241,6 @@ export function createConversationUi(
                     resources.selectWorktree({ sessionId: id(), worktreePath })
                   }
                   sources={() => resources.sources(id())}
-                  childSessions={() =>
-                    browsing.sessions().filter((s) => s.parentSessionId === id())
-                  }
                   openChangesWithWorktree={
                     workspace()
                       ? (worktreePath) => resources.openChanges({ sessionId: id(), worktreePath })
@@ -3180,7 +3302,7 @@ export function createConversationUi(
                 <SideReactions
                   followUp={(item) => {
                     const session = composerSession();
-                    if (session && !session.blockedReason()) session.submit({ text: item.message });
+                    if (session && !session.sendBlock()) session.submit({ text: item.message });
                   }}
                   attached={sideAttached}
                   attach={() => {
@@ -3380,7 +3502,7 @@ export function createConversationUi(
                   );
                 if (current.kind === 'sessions')
                   return (
-                    <Dialog
+                    <WindowDialog
                       animation="none"
                       onOpenChange={() => closeOverlay(current.instance)}
                       style={{
@@ -3419,7 +3541,7 @@ export function createConversationUi(
                           close={() => closeOverlay(current.instance)}
                         />
                       </View>
-                    </Dialog>
+                    </WindowDialog>
                   );
                 if (current.kind === 'workspaces' || current.kind === 'change-workspace')
                   return (
@@ -3484,7 +3606,7 @@ export function createConversationUi(
           owner.connected() &&
           owner.editable() &&
           owner.run() !== null &&
-          !owner.blockedReason() &&
+          !owner.sendBlock() &&
           hasComposerContent(owner.draft().trim(), owner.attachments.files(), owner.quotes()) &&
           !matchComposerCommand(
             commandCandidates().map((entry) => entry.metadata),
@@ -3646,7 +3768,7 @@ function projectComposerSession(
     previewImage: owner.previewImage,
     editable: owner.editable,
     loading: owner.loading,
-    blockedReason: owner.blockedReason,
+    sendBlock: owner.sendBlock,
     backend: owner.backend,
     modelDetails: owner.modelDetails,
     refreshModel: owner.refreshModel,

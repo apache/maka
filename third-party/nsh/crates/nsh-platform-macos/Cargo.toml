@@ -54,7 +54,7 @@ crypto = ["js", "nsh-engine/crypto"]
 
 # The native WebSocket client (tokio-tungstenite, rustls). Without it
 # `connect` of `websocket` rejects with ERR_FEATURE_UNAVAILABLE_ON_PLATFORM.
-websocket = ["nsh-core/websocket"]
+websocket = ["nsh-engine/websocket"]
 # App self-updates (`nsh/updater`). Without it a check finds no update.
 updater = ["nsh-core/updater"]
 
@@ -106,6 +106,8 @@ required-features = ["terminal", "js"]
 [dev-dependencies]
 # Exercise standalone engine replacement through a real development session.
 nsh-dev = { workspace = true, features = ["server"] }
+# A GPU view's renderer (`tests/native/gpu_view.rs`).
+nsh-gpu.workspace = true
 
 [[test]]
 name = "accessibility"
@@ -117,4 +119,8 @@ harness = false
 
 [[test]]
 name = "draw_on_show"
+harness = false
+
+[[test]]
+name = "live_resize_text"
 harness = false

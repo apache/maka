@@ -42,6 +42,8 @@ use tokio::sync::{Notify, watch};
 
 #[path = "desktop_new_session/rooms.rs"]
 mod rooms;
+#[path = "desktop_new_session/settings.rs"]
+mod settings;
 
 macro_rules! native {
     ($ty:path { $($field:ident: $value:expr),* $(,)? }) => {{
@@ -499,6 +501,20 @@ impl Desktop {
         .await
     }
 
+    async fn wait_for_toc_landing(&self, marker: &str) {
+        // Cross-row jumps mount the row before its TextView aligns the heading.
+        self.until(
+            &format!("{marker} should land near the top of the viewport"),
+            || {
+                let [bounds] = self.controls(marker)[..] else {
+                    return None;
+                };
+                (bounds.origin.y < px(320.)).then_some(())
+            },
+        )
+        .await;
+    }
+
     /// Opens the one folded step group and returns where `step` is in it.
     async fn open_group(&self, step: &str) -> Bounds<nsh_terminal::Pixels> {
         self.press("Process group").await;
@@ -843,8 +859,6 @@ async fn desktop_composer_click_and_ime_follow_the_text_after_a_mention() {
     let referenced = referenced["session"]["id"].as_str().unwrap();
     client.close().await.unwrap();
     let desktop = Desktop::open(&fixture, &fixture.address).await;
-    let composer = desktop.control("Focus message composer").await;
-    desktop.press_at(composer.center());
     desktop.paste("@删过度").await;
     desktop.press("删过度设计").await;
     let mention = format!("[@删过度设计](maka://session/{referenced}) ");
@@ -855,6 +869,7 @@ async fn desktop_composer_click_and_ime_follow_the_text_after_a_mention() {
     desktop.paste(before_ah).await;
     desktop.expect_text(&prefix).await;
     desktop.key("right", false);
+    let composer = desktop.control("Focus message composer").await;
     let insertion = desktop
         .until("the caret did not reach the end of the first part", || {
             desktop
@@ -936,99 +951,30 @@ async fn desktop_composer_previews_markdown_and_sends_its_source() {
     let previous = desktop.platform.text_input_target();
     desktop.press("Open conversation Markdown preview").await;
     desktop.target_after(previous).await;
-    let source = "# 发布说明\n\n这是**重点：**先看[文档](https://example.org/docs)，再看 https://example.org/status。\n\n- 检查构建\n- 提交结果";
-    desktop.press("Focus message composer").await;
+    let source = "- 检查构建\n- 提交结果\n\n# 发布说明\n\n这是**重点：**先看[文档](https://example.org/docs)，再看 https://example.org/status。";
     desktop.paste(source).await;
     desktop.expect_text(source).await;
-    let selected = desktop
-        .until("the composer did not settle its select-all anchor", || {
-            let &[composer] = desktop.controls("Focus message composer").as_slice() else {
-                return None;
-            };
-            desktop.platform.input_caret_bounds().filter(|bounds| {
-                bounds.left() < composer.left() + px(32.) && bounds.top() < composer.top() + px(32.)
-            })
-        })
-        .await;
-    let mut collapsed = None::<std::time::Instant>;
-    let mut settled = None;
-    let tail = desktop
-        .until("the caret did not collapse to the draft end", || {
-            if collapsed.is_some()
-                && !desktop.platform.has_pending()
-                && let Some(bounds) = desktop.platform.input_caret_bounds()
-                && bounds.left() > selected.left() + px(24.)
-                && bounds.top() > selected.top()
-            {
-                if settled == Some(bounds) {
-                    return Some(bounds);
-                }
-                settled = Some(bounds);
-                return None;
-            }
-            settled = None;
-            if collapsed.is_none_or(|at| at.elapsed() >= Duration::from_millis(200)) {
-                desktop.key("right", false);
-                collapsed = Some(std::time::Instant::now());
-            }
-            None
-        })
-        .await;
     desktop.artifact("composer-markdown-draft");
 
-    let mut homed = None::<std::time::Instant>;
-    let mut home_tries = 0usize;
-    let marker = desktop
-        .until("the caret did not reach the list marker", || {
-            let cur = desktop.platform.input_caret_bounds();
-            if home_tries >= 6 {
-                panic!("PROBE_CARET selected={selected:?} tail={tail:?} after_home={cur:?}");
-            }
-            if let Some(bounds) = cur
-                && bounds.left() < tail.left() - px(24.)
-                && bounds.top() == tail.top()
-            {
-                return Some(bounds);
-            }
-            if homed.is_none_or(|at| at.elapsed() >= Duration::from_millis(200)) {
-                desktop.key("home", false);
-                homed = Some(std::time::Instant::now());
-                home_tries += 1;
-            }
-            None
-        })
-        .await;
-    let mut ended = None::<std::time::Instant>;
-    desktop
-        .until("the caret did not leave the list marker", || {
-            if let Some(bounds) = desktop.platform.input_caret_bounds()
-                && bounds.left() > marker.left() + px(24.)
-            {
-                return Some(());
-            }
-            if ended.is_none_or(|at| at.elapsed() >= Duration::from_millis(200)) {
-                desktop.key("end", false);
-                ended = Some(std::time::Instant::now());
-            }
-            None
-        })
-        .await;
-    desktop.press_at(point(marker.left() + px(1.), marker.center().y));
-    desktop.artifact("composer-markdown-edit-list-marker");
+    // expect_text copied the entire draft, leaving it selected.
+    desktop.key("left", false);
     desktop.key_with("right", native!(Modifiers { shift: true }));
+    desktop.key("c", true);
+    let marker = desktop
+        .until("the list marker was not copied", || {
+            desktop.platform.take_clipboard_write()
+        })
+        .await;
+    assert_eq!(marker, "-");
     desktop.paste("+").await;
-    assert_eq!(
-        desktop.copy_input().await,
-        source.replace("- 提交结果", "+ 提交结果")
-    );
-    desktop.key("z", true);
-    desktop.expect_text(source).await;
+    let edited = source.replacen('-', "+", 1);
+    desktop.expect_text(&edited).await;
 
     desktop.press("Send message").await;
     let mut request = desktop.request(&mut fixture).await;
     let message = request.body["messages"].as_array().unwrap().last().unwrap();
     assert_eq!(message["role"], "user");
-    assert_eq!(message["content"].as_str(), Some(source));
+    assert_eq!(message["content"].as_str(), Some(edited.as_str()));
     request.delta("Release notes received.").await;
     desktop
         .wait("the response did not finish", request.finish())
@@ -1053,7 +999,7 @@ async fn desktop_composer_previews_markdown_and_sends_its_source() {
     let copied = desktop
         .copy_at("the sent message was not copied", copy.center())
         .await;
-    assert_eq!(copied, source);
+    assert_eq!(copied, edited);
     desktop.close().await;
     fixture.finish().await;
 }
@@ -1684,6 +1630,254 @@ async fn desktop_asks_a_side_question_beside_a_reply() {
             .then_some(())
         })
         .await;
+    desktop.close().await;
+    fixture.finish().await;
+}
+
+async fn desktop_quotes_a_message_into_the_current_session() {
+    let mut fixture = Fixture::open().await;
+    let (_, appearance, _, _, _) = visual_case();
+    let desktop = Desktop::open_at(
+        &fixture,
+        &fixture.address,
+        size(
+            nsh_terminal::DevicePixels(1440),
+            nsh_terminal::DevicePixels(820),
+        ),
+        appearance,
+    )
+    .await;
+    desktop.new_draft().await;
+    desktop.type_text("PREFIX_WORD SELECTED_SPAN").await;
+    desktop.submit().await;
+    let indented_reply = "    indented_first_line();\nCACHE_INVALIDATION_RULE";
+    let mut reply = desktop.request(&mut fixture).await;
+    reply.delta(indented_reply).await;
+    desktop
+        .wait("the reply did not finish", reply.finish())
+        .await;
+    let listed = desktop.sessions().await.len();
+
+    // Select only the second word of a multi-word user message and right-click on the
+    // selection itself: the app context menu must open with Quote selection and quote only
+    // that selected word (not fall back to the full message on menu-item mouse-down).
+    let copy_user = desktop.control("Copy user message").await;
+    let selected_word = point(copy_user.right() + px(24.), copy_user.top() - px(32.));
+    for click_count in [1, 2] {
+        for input in [
+            PlatformInput::MouseMove(native!(MouseMoveEvent {
+                position: selected_word,
+                pressed_button: None,
+                modifiers: Modifiers::default(),
+            })),
+            PlatformInput::MouseDown(native!(MouseDownEvent {
+                button: MouseButton::Left,
+                position: selected_word,
+                modifiers: Modifiers::default(),
+                click_count: click_count,
+            })),
+            PlatformInput::MouseUp(native!(MouseUpEvent {
+                button: MouseButton::Left,
+                position: selected_word,
+                modifiers: Modifiers::default(),
+                click_count: click_count,
+            })),
+        ] {
+            desktop.platform.dispatch_input(input).unwrap();
+            desktop.pump();
+        }
+    }
+    desktop.control("Quote selection").await;
+    desktop.click_at(selected_word, MouseButton::Right);
+    let menu_quote = desktop
+        .until(
+            "right-clicking selected user text did not open Quote selection in the menu",
+            || {
+                let controls = desktop.controls("Quote selection");
+                // One button under the message + one MenuItem inside the opened context menu.
+                (controls.len() >= 2).then(|| controls[controls.len() - 1])
+            },
+        )
+        .await;
+    desktop.press_at(menu_quote.center());
+    desktop.control("Remove quote").await;
+
+    // Quote the full assistant reply (which has leading indentation) into the same draft,
+    // then also quote the full user message and remove that third quote to verify removal.
+    desktop.press("Quote message").await;
+    desktop
+        .until("the second quote did not appear in the draft", || {
+            (desktop.controls("Remove quote").len() == 2).then_some(())
+        })
+        .await;
+    desktop.press("Quote user message").await;
+    desktop
+        .until("the third quote did not appear in the draft", || {
+            (desktop.controls("Remove quote").len() == 3).then_some(())
+        })
+        .await;
+    // Quoting into the current session stays here without creating a side question.
+    assert_eq!(desktop.sessions().await.len(), listed);
+
+    // Removing the third quote leaves the right-clicked user selection and indented reply.
+    let third_remove = desktop.controls("Remove quote")[2];
+    desktop.press_at(third_remove.center());
+    desktop
+        .until("removing the third quote did not leave two quotes", || {
+            (desktop.controls("Remove quote").len() == 2).then_some(())
+        })
+        .await;
+    desktop.artifact("quote-current-session-draft");
+
+    // Send and verify decoded message content holds ONLY the right-clicked word and the
+    // indented reply verbatim, without the unselected prefix or the removed full quote.
+    desktop.type_text("Can you give a concrete example?").await;
+    desktop.submit().await;
+    let mut follow_up = desktop.request(&mut fixture).await;
+    let last_user = follow_up.body["messages"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap();
+    assert_eq!(last_user["role"], "user");
+    let content = last_user["content"]
+        .as_str()
+        .expect("last user message content should be a decoded string");
+    let expected_reply_excerpt = format!("<quoted_excerpt>\n{indented_reply}\n</quoted_excerpt>");
+    assert!(
+        content.contains("<quoted_excerpt>\nSELECTED_SPAN\n</quoted_excerpt>"),
+        "right-clicking Quote selection must quote only the selected word: {content:?}"
+    );
+    assert!(
+        content.contains(&expected_reply_excerpt)
+            && content.contains("Can you give a concrete example?"),
+        "expected exact indented quoted excerpt and follow-up in last user message: {content:?}"
+    );
+    assert!(
+        !content.contains("PREFIX_WORD"),
+        "unselected prefix and removed full-message quote must not appear: {content:?}"
+    );
+    desktop
+        .until("quotes did not clear after sending", || {
+            desktop.controls("Remove quote").is_empty().then_some(())
+        })
+        .await;
+    follow_up.delta("Here is a concrete example.").await;
+    desktop
+        .wait("the follow-up reply did not finish", follow_up.finish())
+        .await;
+
+    // A single-line user message with a session-reference token renders via read-only
+    // SkillInput. Selecting one word inside it and clicking Quote selection must quote only
+    // that selected word rather than falling back to the full message.
+    let token_msg = "[@Ref](maka://session/s_ref_1) TARGET_TOKEN_WORD";
+    desktop.type_text(token_msg).await;
+    desktop.press("Send message").await;
+    let mut token_reply = desktop.request(&mut fixture).await;
+    token_reply.delta("Checked.").await;
+    desktop
+        .wait(
+            "the token-message reply did not finish",
+            token_reply.finish(),
+        )
+        .await;
+    // Wait until the third reply's actions are laid out and scrolled into place before
+    // sampling the token user message's screen position.
+    desktop
+        .until("the token reply actions did not settle", || {
+            (desktop.controls("Copy message").len() >= 3).then_some(())
+        })
+        .await;
+    let copy_token_user = desktop
+        .until("the token user message action row did not appear", || {
+            let controls = desktop.controls("Copy user message");
+            (controls.len() >= 3).then(|| *controls.last().unwrap())
+        })
+        .await;
+    let _ = copy_token_user;
+    // Double-click TARGET_TOKEN_WORD on the right half of the token bubble (vertical center
+    // of the text line is 4pt gap + 16pt bubble padding + 12pt half line = 32pt above actions).
+    // Re-sample the action row each time because adding a draft quote shifts the transcript.
+    let select_token_word = || {
+        let copy = *desktop.controls("Copy user message").last().unwrap();
+        let token_word = point(copy.right() + px(24.), copy.top() - px(32.));
+        for click_count in [1, 2] {
+            for input in [
+                PlatformInput::MouseMove(native!(MouseMoveEvent {
+                    position: token_word,
+                    pressed_button: None,
+                    modifiers: Modifiers::default(),
+                })),
+                PlatformInput::MouseDown(native!(MouseDownEvent {
+                    button: MouseButton::Left,
+                    position: token_word,
+                    modifiers: Modifiers::default(),
+                    click_count: click_count,
+                })),
+                PlatformInput::MouseUp(native!(MouseUpEvent {
+                    button: MouseButton::Left,
+                    position: token_word,
+                    modifiers: Modifiers::default(),
+                    click_count: click_count,
+                })),
+            ] {
+                desktop.platform.dispatch_input(input).unwrap();
+                desktop.pump();
+            }
+        }
+    };
+    // First select TARGET_TOKEN_WORD and then blur the read-only SkillInput by focusing
+    // the composer: the stale selection must clear so quoting captures the full token line.
+    select_token_word();
+    desktop.control("Quote selection").await;
+    desktop.press("Focus message composer").await;
+    desktop
+        .until(
+            "blurring the token message did not clear Quote selection",
+            || desktop.controls("Quote selection").is_empty().then_some(()),
+        )
+        .await;
+    let quote_token_full = *desktop.controls("Quote user message").last().unwrap();
+    desktop.press_at(quote_token_full.center());
+    desktop.control("Remove quote").await;
+
+    // Now select TARGET_TOKEN_WORD again and immediately click Quote selection: this second
+    // quote must contain only the selected word rather than falling back to the full line.
+    select_token_word();
+    desktop.press("Quote selection").await;
+    desktop
+        .until(
+            "the token selection quote did not appear in the draft",
+            || (desktop.controls("Remove quote").len() == 2).then_some(()),
+        )
+        .await;
+    desktop.type_text("Focus on this word.").await;
+    desktop.submit().await;
+    let mut token_quote_req = desktop.request(&mut fixture).await;
+    let last_token_user = token_quote_req.body["messages"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap();
+    assert_eq!(last_token_user["role"], "user");
+    let token_content = last_token_user["content"]
+        .as_str()
+        .expect("token follow-up content should be a decoded string");
+    let expected_full_token = format!("<quoted_excerpt>\n{token_msg}\n</quoted_excerpt>");
+    assert!(
+        token_content.contains(&expected_full_token),
+        "after blurring the token message, quoting must capture the full line: {token_content:?}"
+    );
+    assert!(
+        token_content.contains("<quoted_excerpt>\nTARGET_TOKEN_WORD\n</quoted_excerpt>"),
+        "expected only the selected word from the token message in quoted_excerpt: {token_content:?}"
+    );
+    token_quote_req.delta("Focused.").await;
+    desktop
+        .wait("the final reply did not finish", token_quote_req.finish())
+        .await;
+
+    assert_eq!(desktop.sessions().await.len(), listed);
     desktop.close().await;
     fixture.finish().await;
 }
@@ -3020,18 +3214,15 @@ async fn desktop_external_agent_satisfies_new_session_connection_prompt() {
     desktop.control("Add a model connection").await;
 
     desktop.press("Add a model connection").await;
-    desktop.control("Enable Antigravity").await;
-    desktop.press("Enable Antigravity").await;
-    desktop
-        .control("I understand and accept the external agent permissions")
-        .await;
+    desktop.press("Antigravity").await;
     desktop
         .press("I understand and accept the external agent permissions")
         .await;
     desktop.press("Confirm permissions and enable").await;
-    desktop.control("Disable Antigravity").await;
+    // The switch keeps its name in both states. Refresh appears for enabled agents.
+    desktop.control("Refresh").await;
 
-    desktop.press("Close settings").await;
+    desktop.press("Back to app").await;
     desktop.control("Focus message composer").await;
     desktop
         .until(
@@ -3046,11 +3237,16 @@ async fn desktop_external_agent_satisfies_new_session_connection_prompt() {
         .await;
 
     desktop.press("Open settings").await;
-    desktop.control("Disable Antigravity").await;
-    desktop.press("Disable Antigravity").await;
-    desktop.control("Enable Antigravity").await;
+    desktop.control("Refresh").await;
+    desktop.press("Antigravity").await;
+    desktop
+        .until("the last enabled external agent did not turn off", || {
+            (desktop.controls("Antigravity").len() == 1 && desktop.controls("Refresh").is_empty())
+                .then_some(())
+        })
+        .await;
 
-    desktop.press("Close settings").await;
+    desktop.press("Back to app").await;
     desktop.control("Add a model connection").await;
 
     // Enabling an external agent from another client on the same Host updates
@@ -3189,20 +3385,12 @@ async fn desktop_markdown_toc_follows_active_turn_and_jumps_to_headings() {
 
     // Clicking the first heading scrolls the top section into the viewport.
     desktop.press("Jump to section: Turn One Overview").await;
-    let overview_marker = desktop.control("▸ Overview Marker").await;
-    assert!(
-        overview_marker.origin.y < px(320.),
-        "Overview Marker should land near the top of the viewport: {overview_marker:?}"
-    );
+    desktop.wait_for_toc_landing("▸ Overview Marker").await;
     desktop.artifact("toc-turn1-overview");
 
     // Clicking a distant virtualized heading across 28 paragraphs + wide JSON lands on Deep Dive.
     desktop.press("Jump to section: Deep Dive").await;
-    let deep_marker = desktop.control("▸ Deep Dive Marker").await;
-    assert!(
-        deep_marker.origin.y < px(320.),
-        "Deep Dive Marker should land near the top of the viewport: {deep_marker:?}"
-    );
+    desktop.wait_for_toc_landing("▸ Deep Dive Marker").await;
     desktop.artifact("toc-turn1-deep-dive");
 
     // Turn 2: short Markdown reply with a heading that fits inside the viewport -> TOC hides.
@@ -3266,8 +3454,7 @@ async fn desktop_markdown_toc_follows_active_turn_and_jumps_to_headings() {
 
     // Jump to top of Turn 3, then Return to latest restores bottom section visibility.
     desktop.press("Jump to section: Rollout Plan").await;
-    let rollout_marker = desktop.control("▸ Rollout Marker").await;
-    assert!(rollout_marker.origin.y < px(320.));
+    desktop.wait_for_toc_landing("▸ Rollout Marker").await;
     desktop.press("Return to latest").await;
     desktop.control("▸ Verify Marker").await;
 
@@ -3475,11 +3662,7 @@ async fn desktop_markdown_toc_tracks_multi_row_turns_and_long_outline() {
 
     // Clicking unmounted Chapter 01 jumps across outer rows to Start 01 and activates Chapter 01.
     desktop.press("Jump to section: Chapter 01").await;
-    let start01 = desktop.control("▸ Start 01").await;
-    assert!(
-        start01.origin.y < px(320.),
-        "Start 01 should land near top of viewport: {start01:?}"
-    );
+    desktop.wait_for_toc_landing("▸ Start 01").await;
     desktop
         .until(
             "Chapter 01 should become active after cross-row jump",
@@ -3498,11 +3681,7 @@ async fn desktop_markdown_toc_tracks_multi_row_turns_and_long_outline() {
 
     // Clicking now-unmounted Chapter 07 jumps back across outer rows to Start 07 and activates Chapter 07.
     desktop.press("Jump to section: Chapter 07").await;
-    let start07 = desktop.control("▸ Start 07").await;
-    assert!(
-        start07.origin.y < px(320.),
-        "Start 07 should land near top of viewport: {start07:?}"
-    );
+    desktop.wait_for_toc_landing("▸ Start 07").await;
     desktop
         .until("Chapter 07 should become active after return jump", || {
             let [ch1] = desktop.controls("Jump to section: Chapter 01")[..] else {
@@ -3571,7 +3750,6 @@ async fn desktop_markdown_toc_tracks_multi_row_turns_and_long_outline() {
             desktop.controls("Stop response").is_empty().then_some(())
         })
         .await;
-    desktop.control("▸ Section 48 End").await;
 
     // Without hovering the TOC, Section 48 is immediately scrolled into view and highlighted.
     let sec48 = desktop.control("Jump to section: Section 48").await;
@@ -3916,6 +4094,7 @@ async fn desktop_scrolling_up_past_tall_markdown_reply_does_not_jump_to_bottom()
 pub(crate) const CASES: &[&str] = &[
     "desktop_external_agent_satisfies_new_session_connection_prompt",
     "desktop_room_reply_wakes_an_agent_without_mixing_drafts",
+    "desktop_settings_page_shell_preserves_state_and_overlays",
     "desktop_remembers_folders_without_restoring_unsent_drafts",
     "desktop_remembers_home_model_across_reopen_and_unavailable_fallback",
     "desktop_composer_click_and_ime_follow_the_text_after_a_mention",
@@ -3929,6 +4108,7 @@ pub(crate) const CASES: &[&str] = &[
     "desktop_scrolling_up_past_tall_markdown_reply_does_not_jump_to_bottom",
     "desktop_edits_a_message_in_place_and_forks_only_when_sent",
     "desktop_asks_a_side_question_beside_a_reply",
+    "desktop_quotes_a_message_into_the_current_session",
     "desktop_steering_freezes_each_message_and_queue_is_one_shot",
     "desktop_file_gestures_preserve_drafts_and_stage_an_image",
     "desktop_composer_large_paste_keeps_controls_on_screen",
@@ -3951,6 +4131,9 @@ pub(crate) fn run(name: &str) {
         }
         "desktop_room_reply_wakes_an_agent_without_mixing_drafts" => {
             runtime.block_on(rooms::desktop_room_reply_wakes_an_agent_without_mixing_drafts())
+        }
+        "desktop_settings_page_shell_preserves_state_and_overlays" => {
+            runtime.block_on(settings::desktop_settings_page_shell_preserves_state_and_overlays())
         }
         "desktop_remembers_folders_without_restoring_unsent_drafts" => {
             runtime.block_on(desktop_remembers_folders_without_restoring_unsent_drafts())
@@ -3986,6 +4169,9 @@ pub(crate) fn run(name: &str) {
         }
         "desktop_asks_a_side_question_beside_a_reply" => {
             runtime.block_on(desktop_asks_a_side_question_beside_a_reply())
+        }
+        "desktop_quotes_a_message_into_the_current_session" => {
+            runtime.block_on(desktop_quotes_a_message_into_the_current_session())
         }
         "desktop_steering_freezes_each_message_and_queue_is_one_shot" => {
             runtime.block_on(desktop_steering_freezes_each_message_and_queue_is_one_shot())

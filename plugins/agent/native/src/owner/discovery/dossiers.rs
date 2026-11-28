@@ -766,7 +766,7 @@ impl Owner {
         &self,
         session: &str,
         request: &mut maka_agent_state::queue::PreparedRequest,
-        summary: String,
+        summary: &str,
         elevated: bool,
         contents: &mut Vec<maka_agent_state::ContentBlob>,
     ) -> Result<(), String> {
@@ -872,43 +872,18 @@ mod schema_tests {
         }
     }
 
-    #[test]
-    fn all_discovery_tool_schemas_avoid_boolean_subschemas() {
-        let schemas: [(&str, serde_json::Value); 10] = [
-            (UPSERT, schemars::schema_for!(Upsert).into()),
-            (
-                STAGE,
-                schemars::schema_for!(artifacts::StageArtifact).into(),
-            ),
-            (
-                REGISTER,
-                schemars::schema_for!(watches::RegisterWatch).into(),
-            ),
-            (
-                PENDING,
-                schemars::schema_for!(actions::StagePendingAction).into(),
-            ),
-            (
-                WATCH_SCOPE,
-                schemars::schema_for!(watch_scope::Update).into(),
-            ),
-            (
-                WORKSPACE_MAP,
-                schemars::schema_for!(workspace_map::Update).into(),
-            ),
-            (
-                PREFERENCES,
-                schemars::schema_for!(preferences::Update).into(),
-            ),
-            (FINISH, schemars::schema_for!(Finish).into()),
-            (LIST, schemars::schema_for!(DossiersRead).into()),
-            (READ, schemars::schema_for!(ReadTopic).into()),
-        ];
-        for (name, raw_schema) in schemas {
-            let inlined = maka_tool_catalog::input::inline_refs(raw_schema);
+    #[tokio::test]
+    async fn all_discovery_tool_schemas_avoid_boolean_subschemas() {
+        let (_dir, root, _) = test_store().await;
+        let scheduler = Arc::new(scheduler::Scheduler::new(root, String::new()));
+        for tool in scheduler.dossier_tools() {
+            let ToolDefinition {
+                name, input_schema, ..
+            } = tool.definition;
+            let inlined = maka_tool_catalog::input::inline_refs(input_schema);
             let (_, projected) = maka_tool_catalog::input::Projection::project(inlined);
             let mut booleans = Vec::new();
-            find_boolean_subschema(&projected, name, &mut booleans);
+            find_boolean_subschema(&projected, &name, &mut booleans);
             assert!(
                 booleans.is_empty(),
                 "tool {name} emitted boolean JSON subschemas: {booleans:?}\nschema: {projected}"

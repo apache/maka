@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { tr } from '../../locale';
 import type { ServiceMethods } from '../../../../../../packages/plugin-sdk/src/generated/methods';
 import type {
   ModelSelection,
@@ -50,7 +51,9 @@ export async function savePreset(rpc: SettingsRpc, draft: PresetDraft, original:
       })
     : await rpc.mutate('agent', 'createPreset', draft);
   if (result.kind !== 'saved')
-    throw new Error('reason' in result ? String(result.reason) : result.kind);
+    throw new Error(tr('Could not read or update settings.'), {
+      cause: 'reason' in result ? result.reason : result.kind,
+    });
 }
 
 export async function deletePreset(rpc: SettingsRpc, original: Preset) {
@@ -58,5 +61,6 @@ export async function deletePreset(rpc: SettingsRpc, original: Preset) {
     id: original.id,
     expectedRevision: original.revision,
   });
-  if (result.kind !== 'deleted') throw new Error(result.kind);
+  if (result.kind !== 'deleted')
+    throw new Error(tr('Could not read or update settings.'), { cause: result.kind });
 }

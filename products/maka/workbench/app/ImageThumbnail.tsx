@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { textTooltip } from './ui';
+import { lineWidth, radius, textTooltip } from './ui';
 import { Tooltip } from 'nsh/base';
 import { createText } from './text';
 import { cleanup, inputAction, signal, Text, View, Image } from 'nsh';
@@ -26,7 +26,6 @@ import { windowSize } from 'nsh';
 import type { ViewRef } from 'nsh';
 import { C, captionTextStyle, controlStyle, richTooltipStyle, tooltipTextStyle } from './ui';
 import { Icon } from './Icon';
-import { ImageViewer } from './ImageViewer';
 import { tr } from './locale';
 import type {
   AgentToolImageRead,
@@ -72,14 +71,8 @@ export function ImageThumbnail(props: {
   });
   const owns = (selected: typeof action) =>
     selected.sessionId === action.sessionId && selected.uri === action.uri;
-  // A mini thumbnail opens the image over the window, leaving the side panels as they are.
-  const viewing = signal(false);
   const preview = (selected: typeof action) => {
     const originalButton = button;
-    if (props.mini) {
-      if (alive && owns(selected) && size()) viewing.set(true);
-      return;
-    }
     if (alive && owns(selected) && size())
       props.preview({
         source,
@@ -164,9 +157,9 @@ export function ImageThumbnail(props: {
                 ...box,
                 flexShrink: 0,
                 backgroundColor: C.surface,
-                borderWidth: 1,
+                borderWidth: lineWidth(),
                 borderColor: C.line,
-                borderRadius: props.mini ? 4 : 8,
+                borderRadius: props.mini ? radius(4) : radius(8),
                 overflow: 'hidden',
               }
             : {
@@ -236,15 +229,6 @@ export function ImageThumbnail(props: {
           </View>
         </If>
       </Button>
-      <If when={viewing() && size()}>
-        <ImageViewer
-          image={{ uri, ...size()!, title: tr('Original image') }}
-          close={() => {
-            viewing.set(false);
-            if (alive) button?.focus();
-          }}
-        />
-      </If>
       <If when={!props.mini && error()}>
         <View
           style={{
@@ -262,7 +246,7 @@ export function ImageThumbnail(props: {
           <Text style={[{ color: C.danger }, { userSelect: 'text' }]}>{error()}</Text>
           <Button
             onPress={inputAction(retry, action)}
-            style={controlStyle}
+            style={controlStyle()}
             hoverStyle={{ backgroundColor: C.raised }}
             focusStyle={{ backgroundColor: C.pressed }}
           >

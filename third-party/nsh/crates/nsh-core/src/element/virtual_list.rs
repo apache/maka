@@ -95,6 +95,18 @@ pub trait ListLayout: Sized {
         })
     }
 
+    /// With [`Self::follow_end`]: an end that moves away by a large step at
+    /// once (a card or chart appearing in the last row) is followed by an
+    /// animated scroll whose target keeps up with the end, rather than a
+    /// jump; small steps (text streaming in) follow at once either way
+    /// (TS: `maintainVisibleContentPosition={{ animated: true }}`). Off by
+    /// default.
+    fn follow_end_animated(self, animated: impl IntoReactive<bool>) -> Self {
+        self.layout(animated, |c, animated| {
+            c.follow_end_animated = Some(animated)
+        })
+    }
+
     /// Where the list rests (TS: `alignment`): [`ListAlignment::Bottom`]
     /// opens at the end and stays there as the content grows, the rows in
     /// reading order (a chat, GPUI's `ListAlignment::Bottom`). Rows keep

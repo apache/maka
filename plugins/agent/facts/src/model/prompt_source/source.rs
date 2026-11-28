@@ -606,6 +606,7 @@ pub enum MessageRecipe {
         provider_options: Option<JsonSource>,
     },
     User {
+        is_pinned_memory: bool,
         content: Arc<dyn RecipeSource<ContentRecipe>>,
         provider_options: Option<JsonSource>,
     },
@@ -619,6 +620,18 @@ pub enum MessageRecipe {
     },
 }
 
+impl MessageRecipe {
+    pub fn is_pinned_memory(&self) -> bool {
+        matches!(
+            self,
+            Self::User {
+                is_pinned_memory: true,
+                ..
+            }
+        )
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MessageRole {
     System,
@@ -630,6 +643,7 @@ pub enum MessageRole {
 #[derive(Clone)]
 pub struct MessageMetadata {
     pub message_index: usize,
+    pub is_pinned_memory: bool,
     pub logical_identity: Arc<str>,
     pub role: MessageRole,
     pub last_is_tool_result: bool,

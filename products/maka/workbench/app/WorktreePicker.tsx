@@ -42,6 +42,7 @@ import {
   menuRowStyle,
   menuSeparatorStyle,
   quietFocusStyle,
+  radius,
   textTooltip,
 } from './ui';
 
@@ -133,7 +134,7 @@ export function WorktreePicker(props: {
               minHeight: 44,
               paddingHorizontal: 10,
               paddingVertical: 8,
-              borderRadius: 8,
+              borderRadius: radius(8),
               backgroundColor: C.raised,
               flexDirection: 'row',
               alignItems: 'center',
@@ -198,7 +199,7 @@ export function WorktreePicker(props: {
               minWidth: 0,
               height: 28,
               paddingHorizontal: 8,
-              borderRadius: 8,
+              borderRadius: radius(8),
               backgroundColor: C.card,
               flexDirection: 'row',
               alignItems: 'center',

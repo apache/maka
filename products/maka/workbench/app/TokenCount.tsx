@@ -21,7 +21,7 @@ import { signal, Text } from 'nsh';
 import { Button } from 'nsh/base';
 import { tr } from './locale';
 import { formatCompactCount, formatCount } from './numberFormat';
-import { C, bodyTextStyle, quietFocusStyle, quietHoverStyle, textTooltip } from './ui';
+import { bodyTextStyle, C, quietFocusStyle, quietHoverStyle, radius, textTooltip } from './ui';
 
 export function TokenCount(props: {
   value: number;
@@ -49,7 +49,7 @@ export function TokenCount(props: {
         accessibilityLabel={`${name()} · ${action()}`}
         tooltip={textTooltip(action)}
         onPress={() => exact.set(!exact())}
-        style={{ borderRadius: 4, cursor: 'pointer' }}
+        style={{ borderRadius: radius(4), cursor: 'pointer' }}
         hoverStyle={quietHoverStyle()}
         focusStyle={quietFocusStyle()}
       >

@@ -26,7 +26,10 @@ pub mod host;
 #[cfg(feature = "relay-server")]
 pub mod server;
 
-pub use peer::{HOST_ALPN, PathSummary, PeerConnection, PeerEndpoint, PeerStream, Relay};
+pub use peer::{
+    HOST_ALPN, PathSummary, PeerAccessRevoked, PeerConnection, PeerEndpoint, PeerStream, Relay,
+    RelayAuthRejected,
+};
 pub use tls::TlsTrust;
 
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;

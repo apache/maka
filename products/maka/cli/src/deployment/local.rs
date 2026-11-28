@@ -129,50 +129,77 @@ async fn connect_inner(
         }
         let directory = directory(&root_id)?;
         root::private_directory(&directory)?;
+        let mut recovered_pending = false;
         let lease = loop {
-            match FileLease::acquire(&directory.join("executor.lock")) {
-                Ok(lease) => break Arc::new(lease),
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                    if let Some(connection) =
-                        live(&path, &root_id, selection, &mut update_attempt).await?
-                    {
-                        return Ok(connection);
+            let lease = loop {
+                match FileLease::acquire(&directory.join("executor.lock")) {
+                    Ok(lease) => break Arc::new(lease),
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                        if let Some(connection) =
+                            live(&path, &root_id, selection, &mut update_attempt).await?
+                        {
+                            return Ok(connection);
+                        }
+                        pause().await;
                     }
-                    pause().await;
+                    Err(error) => return Err(error.into()),
                 }
-                Err(error) => return Err(error.into()),
+            };
+            lease.validate()?;
+            if let Some(connection) = live(&path, &root_id, selection, &mut update_attempt).await? {
+                return Ok(connection);
+            }
+            match store::read_for_update(&directory, &lease).await? {
+                store::Installation::Installed(deployment) => {
+                    let root = root::resolve(&path)?;
+                    deployment.validate(&root, &directory)?;
+                    deployment.require_active()?;
+                    if super::query::pending(&directory, &deployment)
+                        .await?
+                        .is_some()
+                    {
+                        if recovered_pending {
+                            return Err(
+                                "pending Host update did not complete; run `maka host reconcile`"
+                                    .into(),
+                            );
+                        }
+                        recovered_pending = true;
+                        drop(lease);
+                        super::update::recover_pending(&super::RootId(root_id.clone())).await?;
+                        continue;
+                    }
+                    prepare_application(&path, &root_id, selection, &mut update_attempt).await?;
+                    loop {
+                        let (probe, _) =
+                            activation::connect_or_launch(&deployment, lease.clone()).await?;
+                        // Reuse this launcher's residency session for admission, so
+                        // it cannot block its own idle retirement as another client.
+                        let anchor = probe.anchor().await?;
+                        match observe_live(
+                            &path,
+                            &root_id,
+                            selection,
+                            &mut update_attempt,
+                            Some(anchor),
+                        )
+                        .await?
+                        {
+                            Live::Ready(connection) => {
+                                lease.validate()?;
+                                return Ok(*connection);
+                            }
+                            Live::Retired => continue,
+                            Live::Missing => return Err("Activated Host is unavailable".into()),
+                        }
+                    }
+                }
+                store::Installation::Incomplete => {
+                    return Err("Host deployment installation is incomplete".into());
+                }
+                store::Installation::Missing => break lease,
             }
         };
-        lease.validate()?;
-        if let Some(connection) = live(&path, &root_id, selection, &mut update_attempt).await? {
-            return Ok(connection);
-        }
-        match store::read(&directory).await? {
-            store::Installation::Installed(deployment) => {
-                let root = root::resolve(&path)?;
-                deployment.validate(&root, &directory)?;
-                deployment.require_active()?;
-                prepare_application(&path, &root_id, selection, &mut update_attempt).await?;
-                loop {
-                    let (probe, _) = activation::connect_or_launch(&deployment, lease.clone()).await?;
-                    // Reuse this launcher's residency session for admission, so
-                    // it cannot block its own idle retirement as another client.
-                    let anchor = probe.anchor().await?;
-                    match observe_live(&path, &root_id, selection, &mut update_attempt, Some(anchor)).await? {
-                        Live::Ready(connection) => {
-                            lease.validate()?;
-                            return Ok(*connection);
-                        }
-                        Live::Retired => continue,
-                        Live::Missing => return Err("Activated Host is unavailable".into()),
-                    }
-                }
-            }
-            store::Installation::Incomplete => {
-                return Err("Host deployment installation is incomplete".into());
-            }
-            store::Installation::Missing => {}
-        }
         prepare_application(&path, &root_id, selection, &mut update_attempt).await?;
         loop {
             lease.validate()?;
@@ -395,7 +422,7 @@ async fn observe_live(
         && status.lifecycle_mode == maka_host_runtime::application::host::LifecycleMode::Ephemeral
         && cli_owned
         && matches!(
-            store::read(&directory(expected_root)?).await?,
+            store::read_compatible(&directory(expected_root)?).await?,
             store::Installation::Missing
         );
     let code_changed = if launcher_owned {

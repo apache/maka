@@ -277,6 +277,7 @@ impl Owner {
                 session_id,
                 Some(route.backend.preference()),
                 identity.to_owned(),
+                crate::owner::send::PinCapture::Excluded,
                 native.scope(),
             )
             .await;

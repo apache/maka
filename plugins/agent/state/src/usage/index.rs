@@ -65,12 +65,27 @@ fn evidence(
     run: RunId,
     attempt: ModelAttemptId,
 ) -> Result<(StepId, ModelEvidence), StoreError> {
-    let (step,body):(String,String)=c.query_row("SELECT a.step,json_extract(CAST(b.payload AS TEXT),'$.accounting') FROM agent_attempt_ids a JOIN agent_request_specs r ON r.step=a.step AND r.run=a.run JOIN contents b ON b.id=r.content_id WHERE a.run=? AND a.attempt=?",params![run.to_string(),attempt.to_string()],|r|Ok((r.get(0)?,r.get(1)?)))?;
+    let (step,body):(String,String)=c.query_row("SELECT a.step,json_extract(maka_content_text(b.payload,b.encoding),'$.accounting') FROM agent_attempt_ids a JOIN agent_request_specs r ON r.step=a.step AND r.run=a.run JOIN contents b ON b.id=r.content_id WHERE a.run=? AND a.attempt=?",params![run.to_string(),attempt.to_string()],|r|Ok((r.get(0)?,r.get(1)?)))?;
     Ok((
         StepId::try_from(Uuid::parse_str(&step).map_err(|e| invalid(e.to_string()))?)
             .map_err(invalid)?,
         serde_json::from_str(&body)?,
     ))
+}
+fn intern_usage_json(c: &Connection, body: &str) -> Result<i64, StoreError> {
+    if let Some(id) = c
+        .prepare_cached("SELECT id FROM agent_usage_json_blobs WHERE body=?1")?
+        .query_row([body], |r| r.get::<_, i64>(0))
+        .optional()?
+    {
+        return Ok(id);
+    }
+    c.prepare_cached("INSERT OR IGNORE INTO agent_usage_json_blobs(body) VALUES(?1)")?
+        .execute([body])?;
+    Ok(
+        c.prepare_cached("SELECT id FROM agent_usage_json_blobs WHERE body=?1")?
+            .query_row([body], |r| r.get(0))?,
+    )
 }
 fn insert_model(
     c: &Connection,
@@ -87,7 +102,14 @@ fn insert_model(
         sequence,
         at,
     } = position;
-    c.execute("INSERT INTO agent_usage_calls(request,source,kind,owner,session,run,admission_sequence,started_at,model_id,provider_id,purpose,binding_json,quote_json,origin_json) VALUES(?,?,'model',?,?,?,?,?,?,?,?,?,?,?)",params![id,source,json(owner)?,session,run.map(|r|r.to_string()),integer(sequence)?,at.0,evidence.model_id,evidence.quote.as_ref().map(|q|q.provider_id.as_str()),json(&evidence.purpose)?,json(&evidence.binding)?,evidence.quote.as_ref().map(json).transpose()?,json(origin)?])?;
+    let ns_id = crate::namespace::ensure_id(c, &json(owner)?, session)?;
+    let binding_id = intern_usage_json(c, &json(&evidence.binding)?)?;
+    let quote_id = evidence
+        .quote
+        .as_ref()
+        .map(|q| intern_usage_json(c, &json(q)?))
+        .transpose()?;
+    c.execute("INSERT INTO agent_usage_calls(request,source,kind,namespace_id,standalone_session,run,admission_sequence,started_at,model_id,provider_id,purpose,binding_id,quote_id,origin_json) VALUES(?,?,'model',?,NULL,?,?,?,?,?,?,?,?,?)",params![id,source,ns_id,run.map(|r|r.to_string()),integer(sequence)?,at.0,evidence.model_id,evidence.quote.as_ref().map(|q|q.provider_id.as_str()),json(&evidence.purpose)?,binding_id,quote_id,json(origin)?])?;
     Ok(())
 }
 fn insert_tool(
@@ -106,7 +128,17 @@ fn insert_tool(
         sequence,
         at,
     } = position;
-    c.execute("INSERT INTO agent_usage_calls(request,source,kind,owner,session,run,admission_sequence,started_at,name,binding_json,origin_json) VALUES(?,?,'tool',?,?,?,?,?,?,?,?) ON CONFLICT(request) DO NOTHING",params![id,source,owner.map(json).transpose()?,session,run.map(|r|r.to_string()),integer(sequence)?,at.0,name,binding.map(json).transpose()?,json(origin)?])?;
+    let (ns_id, standalone_session) = match owner {
+        Some(owner) => (
+            Some(crate::namespace::ensure_id(c, &json(owner)?, session)?),
+            None,
+        ),
+        None => (None, Some(session)),
+    };
+    let binding_id = binding
+        .map(|b| intern_usage_json(c, &json(b)?))
+        .transpose()?;
+    c.execute("INSERT INTO agent_usage_calls(request,source,kind,namespace_id,standalone_session,run,admission_sequence,started_at,name,binding_id,origin_json) VALUES(?,?,'tool',?,?,?,?,?,?,?,?) ON CONFLICT(request) DO NOTHING",params![id,source,ns_id,standalone_session,run.map(|r|r.to_string()),integer(sequence)?,at.0,name,binding_id,json(origin)?])?;
     Ok(())
 }
 #[derive(Default)]
@@ -158,7 +190,7 @@ fn version(
     mut result: ResultVersion,
 ) -> Result<(), StoreError> {
     let quote: Option<String> = c.query_row(
-        "SELECT quote_json FROM agent_usage_calls WHERE request=?",
+        "SELECT q.body FROM agent_usage_calls c LEFT JOIN agent_usage_json_blobs q ON q.id=c.quote_id WHERE c.request=?",
         [id],
         |r| r.get(0),
     )?;
@@ -381,6 +413,15 @@ pub(crate) fn index_fact(
     record: &RecordedFact,
     sequence: u64,
 ) -> Result<(), StoreError> {
+    index_fact_with_external(c, spec, record, sequence, None)
+}
+pub(crate) fn index_fact_with_external(
+    c: &Connection,
+    spec: &RunSpec,
+    record: &RecordedFact,
+    sequence: u64,
+    external: Option<&crate::external_effects::PersistedExternalEffect>,
+) -> Result<(), StoreError> {
     if !matches!(spec.origin, RunOrigin::Local) {
         return Ok(());
     }
@@ -492,7 +533,9 @@ pub(crate) fn index_fact(
             },
             event,
         )?,
-        Fact::ExternalEffect { event } => external::index(c, spec, record, sequence, event)?,
+        Fact::ExternalEffect { event } => {
+            external::index(c, spec, record, sequence, event, external)?
+        }
         _ => {}
     }
     Ok(())
@@ -542,10 +585,10 @@ pub(crate) fn rebuild_run(c: &Connection, run: RunId) -> Result<(), StoreError> 
         "DELETE FROM agent_usage_calls WHERE run=? AND source='fact'",
         [run.to_string()],
     )?;
-    let spec:RunSpec=c.query_row("SELECT b.payload FROM agent_run_specs s JOIN contents b ON b.id=s.spec_content_id WHERE s.run=?",[run.to_string()],|r|r.get::<_,Vec<u8>>(0)).map(|bytes|serde_json::from_slice(&bytes))??;
+    let spec:RunSpec=c.query_row("SELECT maka_content_bytes(b.payload,b.encoding) FROM agent_run_specs s JOIN contents b ON b.id=s.spec_content_id WHERE s.run=?",[run.to_string()],|r|r.get::<_,Vec<u8>>(0)).map(|bytes|serde_json::from_slice(&bytes))??;
     let mut after = 0i64;
     loop {
-        let page:Vec<(i64,Vec<u8>)>=c.prepare_cached("SELECT f.sequence,b.payload FROM agent_facts f JOIN contents b ON b.id=f.body_content_id WHERE f.run=? AND f.sequence>? ORDER BY f.sequence LIMIT 128")?.query_map(params![run.to_string(),after],|r|Ok((r.get(0)?,r.get(1)?)))?.collect::<Result<_,_>>()?;
+        let page:Vec<(i64,Vec<u8>)>=c.prepare_cached("SELECT f.sequence,maka_content_bytes(b.payload,b.encoding) FROM agent_facts f JOIN contents b ON b.id=f.body_content_id WHERE f.run=? AND f.sequence>? ORDER BY f.sequence LIMIT 128")?.query_map(params![run.to_string(),after],|r|Ok((r.get(0)?,r.get(1)?)))?.collect::<Result<_,_>>()?;
         if page.is_empty() {
             break;
         }

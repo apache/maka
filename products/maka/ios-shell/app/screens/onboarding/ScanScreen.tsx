@@ -148,7 +148,8 @@ export function ScanScreen(props: { onBack: () => void; onTicketReady: () => voi
               else if (code === 'restricted') status.set('restricted');
               else {
                 status.set('error');
-                scanError.set(message || tr('Camera could not start.'));
+                console.warn('Could not start the camera', message);
+                scanError.set(tr('Camera could not start.'));
               }
             }}
             style={{

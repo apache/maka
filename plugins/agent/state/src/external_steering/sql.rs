@@ -24,7 +24,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 fn content_id(c: &Connection, reference: &ContentRef) -> Result<i64, StoreError> {
     reference.validate().map_err(invalid)?;
     Ok(c.query_row(
-        "SELECT id FROM contents WHERE content_sha256=? AND length(payload)=?",
+        "SELECT id FROM contents WHERE content_sha256=? AND COALESCE(logical_bytes,length(payload))=?",
         params![
             reference.digest,
             i64::try_from(reference.bytes)
@@ -40,12 +40,40 @@ pub(crate) fn read_spec(
     key: &ExternalSteeringKey,
     descriptor: &ContentRef,
 ) -> Result<ExternalSteeringSpec, StoreError> {
-    let spec: ExternalSteeringSpec =
-        serde_json::from_slice(&crate::sql::owned_content(c, run, descriptor)?)?;
-    let (session,run_bytes):(String,Vec<u8>) = c.query_row(
-        "SELECT s.session,c.payload FROM agent_run_specs s JOIN contents c ON c.id=s.spec_content_id WHERE s.run=?",
+    read_spec_with_encoding(c, run, key, descriptor, true)
+}
+
+pub(crate) fn read_spec_legacy(
+    c: &Connection,
+    run: RunId,
+    key: &ExternalSteeringKey,
+    descriptor: &ContentRef,
+) -> Result<ExternalSteeringSpec, StoreError> {
+    read_spec_with_encoding(c, run, key, descriptor, false)
+}
+
+fn read_spec_with_encoding(
+    c: &Connection,
+    run: RunId,
+    key: &ExternalSteeringKey,
+    descriptor: &ContentRef,
+    has_encoding: bool,
+) -> Result<ExternalSteeringSpec, StoreError> {
+    let spec: ExternalSteeringSpec = if has_encoding {
+        serde_json::from_slice(&crate::sql::owned_content(c, run, descriptor)?)?
+    } else {
+        crate::sql::with_owned_content_legacy(c, run, descriptor, |bytes| {
+            Ok(serde_json::from_slice(bytes)?)
+        })?
+    };
+    let (session, run_bytes): (String, Vec<u8>) = c.query_row(
+        if has_encoding {
+            "SELECT s.session,maka_content_bytes(c.payload,c.encoding) FROM agent_run_specs s JOIN contents c ON c.id=s.spec_content_id WHERE s.run=?"
+        } else {
+            "SELECT s.session,c.payload FROM agent_run_specs s JOIN contents c ON c.id=s.spec_content_id WHERE s.run=?"
+        },
         [run.to_string()],
-        |r| Ok((r.get(0)?,r.get(1)?)),
+        |r| Ok((r.get(0)?, r.get(1)?)),
     )?;
     let run_spec: RunSpec = serde_json::from_slice(&run_bytes)?;
     if spec.execution.turn_id != run_spec.turn_id {
@@ -73,16 +101,42 @@ pub(crate) fn read_spec(
         ));
     }
     for reference in spec.content_refs() {
-        content_id(c, reference)?;
+        if has_encoding {
+            content_id(c, reference)?;
+        } else {
+            reference.validate().map_err(invalid)?;
+            let expected_len = i64::try_from(reference.bytes)
+                .map_err(|_| invalid("content byte count exceeds SQLite range"))?;
+            let exists: Option<i64> = c
+                .prepare_cached(
+                    "SELECT id FROM contents WHERE content_sha256=? AND length(payload)=?",
+                )?
+                .query_row(params![reference.digest, expected_len], |r| r.get(0))
+                .optional()?;
+            if exists.is_none() {
+                return Err(invalid("missing canonical external steering content"));
+            }
+        }
     }
+    let read_raw = |digest: &str| -> Result<Option<Vec<u8>>, StoreError> {
+        if has_encoding {
+            maka_event_log::content::read(c, digest)
+        } else {
+            Ok(
+                c.prepare_cached("SELECT payload FROM contents WHERE content_sha256=?")?
+                    .query_row([digest], |r| r.get(0))
+                    .optional()?,
+            )
+        }
+    };
     let input: MessageInput = serde_json::from_slice(
-        &maka_event_log::content::read(c, &spec.input.digest)?
+        &read_raw(&spec.input.digest)?
             .ok_or_else(|| invalid("missing frozen external steering input"))?,
     )?;
     let mut source_inputs = Vec::with_capacity(spec.sources.len());
     for source in &spec.sources {
         let original: maka_agent_facts::message::RootSourceMessage = serde_json::from_slice(
-            &maka_event_log::content::read(c, &source.source.digest)?
+            &read_raw(&source.source.digest)?
                 .ok_or_else(|| invalid("missing original steering source"))?,
         )?;
         original.validate().map_err(invalid)?;
@@ -102,7 +156,7 @@ pub(crate) fn read_original(
     key: &ExternalSteeringKey,
 ) -> Result<ExternalSteering, StoreError> {
     let raw:Option<(String,String,i64,bool)>=c.query_row(
-        "SELECT e.task,c.content_sha256,length(c.payload),e.admitted_fact IS NOT NULL FROM agent_external_steering e JOIN contents c ON c.id=e.descriptor_content_id WHERE e.run=? AND e.steering=?",
+        "SELECT e.task,c.content_sha256,COALESCE(c.logical_bytes,length(c.payload)),e.admitted_fact IS NOT NULL FROM agent_external_steering e JOIN contents c ON c.id=e.descriptor_content_id WHERE e.run=? AND e.steering=?",
         params![run.to_string(),key.steering.to_string()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))
     ).optional()?;
     let (task, digest, bytes, admitted) =

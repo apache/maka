@@ -65,7 +65,7 @@ fn signed(value: u64) -> Result<i64, StoreError> {
 fn content_id(c: &Connection, reference: &ContentRef) -> Result<i64, StoreError> {
     reference.validate().map_err(invalid)?;
     Ok(c.query_row(
-        "SELECT id FROM contents WHERE content_sha256=? AND length(payload)=?",
+        "SELECT id FROM contents WHERE content_sha256=? AND COALESCE(logical_bytes,length(payload))=?",
         params![reference.digest, signed(reference.bytes)?],
         |r| r.get(0),
     )?)
@@ -78,7 +78,7 @@ fn pin(c: &Connection, run: RunId, reference: &ContentRef) -> Result<(), StoreEr
     Ok(())
 }
 fn spec(c: &Connection, run: RunId) -> Result<RunSpec, StoreError> {
-    let bytes:Vec<u8>=c.query_row("SELECT c.payload FROM agent_run_specs s JOIN contents c ON c.id=s.spec_content_id WHERE s.run=?",[run.to_string()],|r|r.get(0))?;
+    let bytes:Vec<u8>=c.query_row("SELECT maka_content_bytes(c.payload,c.encoding) FROM agent_run_specs s JOIN contents c ON c.id=s.spec_content_id WHERE s.run=?",[run.to_string()],|r|r.get(0))?;
     let spec: RunSpec = serde_json::from_slice(&bytes)?;
     if spec.schema_version != SCHEMA_VERSION {
         return Err(invalid("unsupported publication Run schema"));

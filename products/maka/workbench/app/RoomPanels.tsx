@@ -40,13 +40,15 @@ import {
 } from './roomMessage';
 import { motionEnabled, popupMotionProps, useBreathingStyle } from './roomMotion';
 import {
-  C,
   bodyTextStyle,
+  C,
   captionTextStyle,
   controlFocusStyle,
   controlStyle,
   floatingStyle,
   inputTextStyle,
+  lineWidth,
+  radius,
   textTooltip,
 } from './ui';
 
@@ -231,7 +233,7 @@ export function RoomHeaderControls(props: {
               accessibilityLabel={tr('Pinned messages')}
               tooltip={textTooltip(() => tr('Pinned messages'))}
               style={{
-                ...controlStyle,
+                ...controlStyle(),
                 minHeight: 26,
                 height: 26,
                 width: 26,
@@ -282,7 +284,7 @@ export function RoomHeaderControls(props: {
                       borderLeftColor: C.accent,
                       paddingLeft: 8,
                       paddingVertical: 4,
-                      borderRadius: 4,
+                      borderRadius: radius(4),
                     }}
                     hoverStyle={{ backgroundColor: C.surface }}
                   >
@@ -293,7 +295,7 @@ export function RoomHeaderControls(props: {
                   <Button
                     accessibilityLabel={tr('Unpin message')}
                     onPress={() => props.onUnpin(msg().id)}
-                    style={{ ...controlStyle, minHeight: 22, width: 22, paddingHorizontal: 0 }}
+                    style={{ ...controlStyle(), minHeight: 22, width: 22, paddingHorizontal: 0 }}
                     hoverStyle={{ backgroundColor: C.surface }}
                   >
                     <Icon name="close" size={11} color={C.muted} />
@@ -328,7 +330,7 @@ export function RoomHeaderControls(props: {
             accessibilityLabel={tr('Search messages')}
             tooltip={textTooltip(() => tr('Search messages'))}
             style={{
-              ...controlStyle,
+              ...controlStyle(),
               minHeight: 26,
               height: 26,
               width: 26,
@@ -363,7 +365,7 @@ export function RoomHeaderControls(props: {
             <Button
               accessibilityLabel={tr('Room actions')}
               style={{
-                ...controlStyle,
+                ...controlStyle(),
                 minHeight: 26,
                 height: 26,
                 width: 26,
@@ -428,7 +430,7 @@ function RoomSearchPopoverBody(props: {
           gap: 6,
           paddingHorizontal: 8,
           height: 30,
-          borderRadius: 8,
+          borderRadius: radius(8),
           backgroundColor: C.surface,
         }}
       >
@@ -466,7 +468,7 @@ function RoomSearchPopoverBody(props: {
                   gap: 6,
                   paddingHorizontal: 8,
                   paddingVertical: 5,
-                  borderRadius: 6,
+                  borderRadius: radius(6),
                 }}
                 hoverStyle={{ backgroundColor: C.surface }}
               >
@@ -666,7 +668,7 @@ export function RoomEmptySeating(props: {
                     width: 38,
                     height: 38,
                     borderRadius: 19,
-                    borderWidth: 1,
+                    borderWidth: lineWidth(),
                     borderStyle: 'dashed',
                     borderColor: C.line,
                     alignItems: 'center',
@@ -846,7 +848,7 @@ export function RoomMembersModal(props: {
                 gap: 8,
                 paddingHorizontal: 8,
                 paddingVertical: 6,
-                borderRadius: 8,
+                borderRadius: radius(8),
                 backgroundColor: C.raised,
               }}
             >
@@ -883,7 +885,7 @@ export function RoomMembersModal(props: {
                 accessibilityLabel={tr('Remove member')}
                 disabled={busy()}
                 onPress={() => void removeMember(member().sessionId)}
-                style={{ ...controlStyle, minHeight: 24 }}
+                style={{ ...controlStyle(), minHeight: 24 }}
                 hoverStyle={{ backgroundColor: C.surface }}
               >
                 <Icon name="close" size={13} color={C.muted} />
@@ -905,7 +907,7 @@ export function RoomMembersModal(props: {
               ...inputTextStyle,
               color: C.text,
               backgroundColor: C.raised,
-              borderRadius: 8,
+              borderRadius: radius(8),
               padding: 8,
             }}
           />
@@ -921,7 +923,7 @@ export function RoomMembersModal(props: {
                   gap: 8,
                   paddingHorizontal: 8,
                   paddingVertical: 6,
-                  borderRadius: 8,
+                  borderRadius: radius(8),
                 }}
                 hoverStyle={{ backgroundColor: C.surface }}
               >
@@ -949,9 +951,9 @@ export function RoomMembersModal(props: {
                   gap: 4,
                   paddingHorizontal: 8,
                   paddingVertical: 3,
-                  borderRadius: 6,
+                  borderRadius: radius(6),
                   backgroundColor: useWorktree() ? C.surface : 'transparent',
-                  borderWidth: 1,
+                  borderWidth: lineWidth(),
                   borderColor: useWorktree() ? C.accent : C.line,
                 }}
               >
@@ -979,7 +981,7 @@ export function RoomMembersModal(props: {
                       gap: 5,
                       paddingHorizontal: 10,
                       paddingVertical: 6,
-                      borderRadius: 8,
+                      borderRadius: radius(8),
                       backgroundColor: C.raised,
                     }}
                     hoverStyle={{ backgroundColor: C.surface }}
@@ -1002,7 +1004,7 @@ export function RoomMembersModal(props: {
           accessibilityLabel={tr('Close')}
           onPress={props.onClose}
           disabled={busy()}
-          style={controlStyle}
+          style={controlStyle()}
         >
           <Text style={{ color: C.secondary }}>{tr('Close')}</Text>
         </Button>

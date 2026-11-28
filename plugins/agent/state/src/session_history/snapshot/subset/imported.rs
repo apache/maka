@@ -201,7 +201,8 @@ pub(super) fn copy(
             if !matches!(
                 entry,
                 Entry::Position {
-                    row: SnapshotPosition::Imported { .. }
+                    row: SnapshotPosition::Imported { .. },
+                    ..
                 }
             ) {
                 return Err(invalid("imported source has non-imported positions"));

@@ -18,7 +18,7 @@
  */
 
 import type { HistoryRowAddress } from '../../../../packages/plugin-sdk/src/index.js';
-import { textTooltip } from './ui';
+import { lineWidth, radius, textTooltip } from './ui';
 import { tr } from './locale';
 import { Image, inputAction, Scroll, signal, Text, View } from 'nsh';
 import type { JSX, ViewRef } from 'nsh';
@@ -50,9 +50,9 @@ const fileTileStyle = () =>
     alignItems: 'center',
     gap: 8,
     paddingHorizontal: 12,
-    borderWidth: 1,
+    borderWidth: lineWidth(),
     borderColor: C.line,
-    borderRadius: 8,
+    borderRadius: radius(8),
     backgroundColor: C.surface,
   }) as const;
 const removeStyle = () =>
@@ -66,7 +66,7 @@ const removeStyle = () =>
     justifyContent: 'center',
     borderRadius: 12,
     backgroundColor: C.raised,
-    borderWidth: 1,
+    borderWidth: lineWidth(),
     borderColor: C.line,
   }) as const;
 
@@ -124,9 +124,9 @@ export function StagedAttachments(props: {
                         width: 64,
                         height: 64,
                         backgroundColor: C.surface,
-                        borderWidth: 1,
+                        borderWidth: lineWidth(),
                         borderColor: C.line,
-                        borderRadius: 8,
+                        borderRadius: radius(8),
                         overflow: 'hidden',
                       }}
                       hoverStyle={{ borderColor: C.secondary }}
@@ -141,7 +141,7 @@ export function StagedAttachments(props: {
                     </Button>
                     <If when={viewing() && loaded()}>
                       <ImageViewer
-                        image={{ uri: original.imageUri!, ...loaded()!, title: original.name }}
+                        images={[{ uri: original.imageUri!, ...loaded()!, title: original.name }]}
                         close={() => {
                           viewing.set(false);
                           opener?.focus();
@@ -185,7 +185,7 @@ export function DraftAttachments(props: {
           <Button
             accessibilityLabel={tr('Close attachment picker')}
             onPress={inputAction(owner.open, { owner: owner.sessionId, value: false })}
-            style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 8 }}
+            style={{ ...controlStyle(), flexDirection: 'row', alignItems: 'center', gap: 8 }}
             hoverStyle={{ backgroundColor: C.pressed }}
             focusStyle={{ backgroundColor: C.pressed }}
           >
@@ -255,7 +255,7 @@ export function DraftAttachments(props: {
       </If>
       <Each of={owner.rows()} key={(row) => row.id}>
         {(row) => (
-          <View style={{ backgroundColor: C.surface, borderRadius: 8, padding: 8, gap: 8 }}>
+          <View style={{ backgroundColor: C.surface, borderRadius: radius(8), padding: 8, gap: 8 }}>
             <Text style={[{ color: C.text }, { userSelect: 'text' }]}>{row().name}</Text>
             <Text
               style={{
@@ -286,7 +286,7 @@ export function DraftAttachments(props: {
                     owner: owner.sessionId,
                     id: row().id,
                   })}
-                  style={controlStyle}
+                  style={controlStyle()}
                   hoverStyle={{ backgroundColor: C.pressed }}
                   focusStyle={{ backgroundColor: C.pressed }}
                 >

@@ -4,9 +4,11 @@
 // grant, and never granted unless declared) and a window beyond the fourth
 // reject with `ERR_ACCESS_DENIED` (`permission: "windows"`, `resource`: the
 // window's id); `currentWindow()` outside a component (a handler) throws a
-// `TypeError`.
-import { Text, View, signal } from "nsh";
-import { Window, currentWindow } from "nsh/desktop";
+// `TypeError`, while `titleBar()` and `windowState()` safely fall back to the
+// open `"main"` window (and an effect reading them while a window closes does
+// not throw).
+import { Text, View, effect, signal } from "nsh";
+import { Window, currentWindow, titleBar, windowState } from "nsh/desktop";
 
 const describe = (e: unknown) => {
   const error = e as { name?: string; code?: string; permission?: string; resource?: string };
@@ -60,12 +62,29 @@ function App() {
       <View
         testID="outside"
         onPress={() => {
+          let current = "returned";
           try {
             currentWindow();
-            result.set("outside returned");
           } catch (e) {
-            result.set(`outside ${describe(e)}`);
+            current = describe(e);
           }
+          const bar = titleBar();
+          const state = windowState();
+          const transient = Window.open(() => {
+            effect(() => {
+              void windowState();
+              void titleBar();
+            });
+            return <Text>Transient</Text>;
+          }, { id: "transient", kind: "popup" });
+          transient.close();
+          Promise.resolve().then(() => {
+            const asyncBar = titleBar();
+            const asyncState = windowState();
+            result.set(
+              `outside ${current}, bar ${bar.height} ${asyncBar.height}, state ${state} ${asyncState}`,
+            );
+          });
         }}
       >
         <Text>Outside</Text>

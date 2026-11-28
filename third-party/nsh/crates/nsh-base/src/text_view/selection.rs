@@ -97,17 +97,19 @@ pub(crate) fn selected(
     })
     .plain_text();
     debug_assert_eq!(formulas.len(), plain.len());
-    let found = locate(&plain, &shown(&plain), &unmarked, reported.start)
-        .or_else(|| {
-            locate(
-                &plain,
-                &sourced(&plain, &formulas),
-                &unmarked,
-                reported.start,
-            )
-        })
-        .or_else(|| locate(&plain, &shown(&masked), &unmarked, reported.start))
-        .map(|(from, to)| widen(&masked, &unmarked, from, to));
+    let find = |text: &str| {
+        locate(&plain, &shown(&plain), text, reported.start)
+            .or_else(|| locate(&plain, &sourced(&plain, &formulas), text, reported.start))
+            .or_else(|| locate(&plain, &shown(&masked), text, reported.start))
+            .map(|(from, to)| widen(&masked, text, from, to))
+    };
+    // The text as copied first: a paragraph of the document may itself
+    // start with what reads as a marker (`2. place`, #3284).
+    let found = if unmarked == text {
+        find(text)
+    } else {
+        find(text).or_else(|| find(&unmarked))
+    };
     let Some((from, to)) = found else {
         // Not found (text the document does not have, such as custom
         // rendered content or a marker made selectable by the app): the
@@ -142,7 +144,8 @@ pub(crate) fn selected(
 /// (`view.rs` puts the marker first in the item).
 fn without_list_markers(text: &str) -> std::borrow::Cow<'_, str> {
     fn marker(line: &str) -> Option<usize> {
-        let (cell, _) = line.split_once('\t')?;
+        // `•\tItem` (a marker cell) or `• Item` (a copy's marker, #3284).
+        let (cell, _) = line.split_once('\t').or_else(|| line.split_once(' '))?;
         let cell_trimmed = cell.trim_end();
         let is_marker = matches!(cell_trimmed, "•" | "◦" | "▪" | "☐" | "☑")
             || cell_trimmed
@@ -512,8 +515,8 @@ impl Cut {
                 })
             }
             Block::Table(table) => {
-                let rows: Vec<&Vec<TableCell>> =
-                    std::iter::once(&table.head).chain(&table.rows).collect();
+                let has_head = !table.head.is_empty();
+                let rows: Vec<&Vec<TableCell>> = table.all_rows().collect();
                 let mut kept = Vec::new();
                 for (i, row) in rows.iter().enumerate() {
                     if i > 0 {
@@ -542,7 +545,7 @@ impl Cut {
                 // The header stays a header; rows without it keep the
                 // table's own header.
                 let mut kept = kept.into_iter();
-                let head = if kept.as_slice()[0].0 == 0 {
+                let head = if has_head && kept.as_slice()[0].0 == 0 {
                     kept.next().map(|(_, c)| c).unwrap_or_default()
                 } else {
                     table.head.clone()
@@ -668,7 +671,11 @@ fn md_blocks(blocks: &[Block], indent: &str, out: &mut String) {
 
 fn md_block(block: &Block, indent: &str, out: &mut String) {
     match block {
-        Block::Paragraph { content } => md_inlines(content, out),
+        Block::Paragraph { content } => {
+            let from = out.len();
+            md_inlines(content, out);
+            escape_block_start(out, from);
+        }
         Block::Heading { level, content, .. } => {
             out.push_str(&"#".repeat((*level).clamp(1, 6) as usize));
             out.push(' ');
@@ -757,7 +764,16 @@ fn md_block(block: &Block, indent: &str, out: &mut String) {
                     out.push_str(" |");
                 }
             };
-            row(&table.head, out);
+            // Markdown has no table without a header: a table with none
+            // takes its first row as one.
+            let (head, body) = match table.head.is_empty() {
+                true => table
+                    .rows
+                    .split_first()
+                    .map_or((&[][..], &[][..]), |(h, b)| (h.as_slice(), b)),
+                false => (table.head.as_slice(), table.rows.as_slice()),
+            };
+            row(head, out);
             out.push('\n');
             out.push_str(indent);
             out.push('|');
@@ -769,7 +785,7 @@ fn md_block(block: &Block, indent: &str, out: &mut String) {
                     ColumnAlign::Right => " --: |",
                 });
             }
-            for r in &table.rows {
+            for r in body {
                 out.push('\n');
                 out.push_str(indent);
                 row(r, out);
@@ -903,6 +919,23 @@ fn md_url(url: &str) -> String {
 }
 
 /// `text` with Markdown's markup characters escaped.
+/// Escapes what would make the paragraph written from `from` in `out` a
+/// list item: a number and `.` or `)` (`2. place`), or `-` or `+`, then a
+/// space or the end (#3284). Other marks are escaped where they are
+/// written ([`escape_markdown`]).
+fn escape_block_start(out: &mut String, from: usize) {
+    let line = &out[from..];
+    let digits = line.bytes().take_while(u8::is_ascii_digit).count();
+    let at = match line.as_bytes().get(digits) {
+        Some(b'.' | b')') if (1..=9).contains(&digits) => digits,
+        Some(b'-' | b'+') if digits == 0 => 0,
+        _ => return,
+    };
+    if matches!(line.as_bytes().get(at + 1), None | Some(b' ' | b'\t')) {
+        out.insert(from + at, '\\');
+    }
+}
+
 fn escape_markdown(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for c in text.chars() {
@@ -1033,9 +1066,12 @@ fn html_block(block: &Block, out: &mut String) {
                 }
                 out.push_str("</tr>");
             };
-            out.push_str("<table><thead>");
-            row(&table.head, "th", out);
-            out.push_str("</thead>");
+            out.push_str("<table>");
+            if !table.head.is_empty() {
+                out.push_str("<thead>");
+                row(&table.head, "th", out);
+                out.push_str("</thead>");
+            }
             if !table.rows.is_empty() {
                 out.push_str("<tbody>");
                 for r in &table.rows {
@@ -1304,9 +1340,48 @@ mod tests {
             sel(md, "two\n1.\tfirst", TextSelectionFormat::Html),
             "<ul><li>two</li></ul>\n<ol><li>first</li></ol>"
         );
+        // A copy's marker before the text, a space between (#3284).
+        assert_eq!(
+            sel(md, "• one\n• two", TextSelectionFormat::Markdown),
+            "- one\n- two"
+        );
+        assert_eq!(
+            sel(md, "rst\n2. sec", TextSelectionFormat::Markdown),
+            "1. rst\n2. sec"
+        );
         // A cell of a table row is no marker.
         assert_eq!(without_list_markers("1\t2"), "1\t2");
         assert_eq!(without_list_markers("1.5\tx"), "1.5\tx");
+    }
+
+    // A paragraph that starts as a list item would: its number is its
+    // text, not a marker (#3284).
+    #[test]
+    fn a_paragraph_starting_with_a_number_keeps_it() {
+        let md = "2\\. place\n\nNext • point";
+        assert_eq!(
+            sel(
+                md,
+                "2. place\n\nNext • point",
+                TextSelectionFormat::Markdown
+            ),
+            md
+        );
+        assert_eq!(sel(md, "2. pla", TextSelectionFormat::Markdown), "2\\. pla");
+        assert_eq!(
+            sel(md, "2. place\n\nNe", TextSelectionFormat::Html),
+            "<p>2. place</p>\n<p>Ne</p>"
+        );
+        assert_eq!(sel(md, "• point", TextSelectionFormat::Markdown), "• point");
+        assert_eq!(
+            sel("\\- dash\n\nx", "- da", TextSelectionFormat::Markdown),
+            "\\- da"
+        );
+        // A number that starts no list item stays as it is.
+        assert_eq!(
+            sel("2.5 kg\n\nx", "2.5 k", TextSelectionFormat::Markdown),
+            "2.5 k"
+        );
     }
 
     #[test]
@@ -1411,6 +1486,34 @@ mod tests {
         assert_eq!(
             sel(md, "3\t4", TextSelectionFormat::Markdown),
             "| a | b |\n| --- | --- |\n| 3 | 4 |"
+        );
+    }
+
+    /// A table without a header copies without one: no empty header row
+    /// in its HTML, its first row as Markdown's (which needs one), and
+    /// its plain text has no blank line first.
+    #[test]
+    fn headless_table_copies() {
+        let html = "<table><tr><td>a</td><td>b</td></tr><tr><td>1</td><td>2</td></tr></table>";
+        let doc = Parser::new().html(html);
+        assert_eq!(doc.plain_text(), "a\tb\n1\t2");
+        assert_eq!(
+            to_html(&doc),
+            "<table><tbody><tr><td>a</td><td>b</td></tr><tr><td>1</td><td>2</td></tr></tbody></table>"
+        );
+        assert_eq!(to_markdown(&doc), "| a | b |\n| --- | --- |\n| 1 | 2 |");
+        let reported = Reported {
+            text: "1\t2".to_owned(),
+            start: None,
+        };
+        assert_eq!(
+            selected(
+                &doc,
+                &Source::Html(html.to_owned()),
+                &reported,
+                TextSelectionFormat::Markdown
+            ),
+            "| 1 | 2 |\n| --- | --- |"
         );
     }
 

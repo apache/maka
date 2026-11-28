@@ -1,7 +1,11 @@
 //! Applies mount batches to UIKit views and owns the per-surface native
 //! state: views, animation graph, image loads and gesture recognizers.
 
-use std::{cell::RefCell, ptr::NonNull, sync::Arc};
+use std::{
+    cell::{Cell, RefCell},
+    ptr::NonNull,
+    sync::Arc,
+};
 
 use block2::RcBlock;
 use dispatch2::{DispatchQueue, MainThreadBound};
@@ -11,7 +15,7 @@ use nsh_core::{
     MountBatch, MountItem, NodeId, PayloadValue, Points, ResizeMode, StickyCell, SubmitBehavior,
     ViewKind, ViewProps, ViewStyle,
     animation::{AnimationProp, AnimationValue},
-    geometry::{DevicePixels, point, size},
+    geometry::{DevicePixels, Size, point, size},
     shader::ShaderRole,
     time::Instant,
 };
@@ -38,6 +42,7 @@ use crate::{
     decor::{self, Decor},
     image::{AssetBase, DecodedImage, ImageLoader, Request},
     input::Input,
+    interaction::{CoverageAnimation, coverage_animation},
     native_view::NshView,
     navigation::{ModalHost, ScreenHost, StackHost},
     press::{PressAt, PressRecognizer},
@@ -621,6 +626,8 @@ struct Slot {
     image_options: nsh_core::ImageOptions,
     /// The placeholder's load in flight.
     placeholder_key: Option<String>,
+    /// The video poster's load in flight.
+    poster_key: Option<String>,
     /// The image (not its placeholder) is shown.
     image_shown: bool,
     /// Interaction states the core wants reported (`tailwind::state`).
@@ -686,6 +693,7 @@ impl Slot {
             image_key: None,
             image_options: nsh_core::ImageOptions::default(),
             placeholder_key: None,
+            poster_key: None,
             image_shown: false,
             tracked: 0,
             states: 0,
@@ -709,6 +717,13 @@ struct LeavingScreen {
 pub(crate) struct Mounter {
     /// Indexed by node id (ids are dense).
     views: Vec<Option<Slot>>,
+    /// The viewport the engine has laid out, which can lag UIKit's bounds.
+    mounted_viewport: Size<Points>,
+    /// First mounted child if it animates the backdrop, with its last
+    /// eligible color. Animation frames never walk the UIKit hierarchy.
+    animated_backdrop: Option<(NodeId, Option<Color>)>,
+    /// The current backdrop candidate waiting for a finite native animation.
+    backdrop_waiting: Option<NodeId>,
     /// Views with animated bindings, re-evaluated when values change.
     animated: Vec<NodeId>,
     /// Image views waiting for their frame before loading.
@@ -753,13 +768,17 @@ pub(crate) struct Mounter {
     /// The scroll view edges views name (`ios={{ scrollEdgeElement }}`),
     /// with how many name each: soft while any does (`crate::scroll_edge`).
     soft_edges: Vec<(NodeId, nsh_core::ScrollEdge, u32)>,
-    /// One-shot display link for `requestAnimationFrame`.
+    /// Display link for JS frame requests and pending native backdrops.
     frame_link: Retained<objc2_quartz_core::CADisplayLink>,
+    frame_requested: Cell<bool>,
     /// Parents of screens, header items and modals (which are not
     /// subviews of their parent).
     hosts: rustc_hash::FxHashMap<NodeId, NodeId>,
     /// Stacks whose screens changed in the current batch.
     dirty_stacks: Vec<NodeId>,
+    /// Views whose transform went back to the identity: the stacks inside
+    /// them are laid out again ([`Mounter::lay_out_untransformed`]).
+    untransformed: Vec<NodeId>,
     /// A retained tab changed visibility; sync the newly visible stack.
     bottom_bar_dirty: bool,
     /// Stacks whose screens changed during a push or pop transition: they
@@ -839,6 +858,8 @@ pub(crate) struct Mounter {
     fps: Option<std::rc::Rc<crate::fps::Fps>>,
     /// Shader views and the GPU device they render with.
     shaders: crate::shader::Shaders,
+    /// GPU views and the display link they render on.
+    gpu: crate::gpu::SurfaceGpu,
     /// Texts whose color transitions.
     text_colors: crate::interaction::TextColors,
     /// The `transitionShader`s of pages and dialogs.
@@ -883,9 +904,13 @@ impl Mounter {
         let mut views = Vec::with_capacity(256);
         views.resize_with(2, || None);
         root.setTag(nsh_core::ROOT_ID as isize);
+        let mounted_viewport = viewport_size(root.bounds().size);
         views[nsh_core::ROOT_ID as usize] = Some(Slot::new(Native::Root(root)));
         Self {
             views,
+            mounted_viewport,
+            animated_backdrop: None,
+            backdrop_waiting: None,
             animated: Vec::new(),
             pending_images: Vec::new(),
             image_scale: 0.0,
@@ -925,7 +950,9 @@ impl Mounter {
             disappearing: Default::default(),
             soft_edges: Vec::new(),
             frame_link: crate::animation::frame_link(&target_for_link),
+            frame_requested: Cell::new(false),
             shaders,
+            gpu: crate::gpu::SurfaceGpu::new(&target_for_link),
             text_colors: crate::interaction::TextColors::new(&target_for_link),
             nav_shaders: rustc_hash::FxHashMap::default(),
             leaving_screens: rustc_hash::FxHashMap::default(),
@@ -935,6 +962,7 @@ impl Mounter {
             auth_session: Default::default(),
             hosts: Default::default(),
             dirty_stacks: Vec::new(),
+            untransformed: Vec::new(),
             bottom_bar_dirty: false,
             deferred_stacks: Vec::new(),
             orientations: None,
@@ -1002,7 +1030,9 @@ impl Mounter {
     fn apply_batch(&mut self, batch: MountBatch) {
         let initial_inputs = initial_input_layouts(&batch.items);
         let mut animation_changed = false;
+        let mut backdrop_changed = false;
         for item in batch.items {
+            backdrop_changed = backdrop_changed || self.affects_backdrop(&item);
             animation_changed |= self.apply_item(item, &initial_inputs);
         }
         if let Some(animation) = self.layout_animation.take() {
@@ -1011,9 +1041,14 @@ impl Mounter {
         self.created.clear();
         self.finish_navigation();
         self.apply_orientations();
+        if backdrop_changed {
+            self.animated_backdrop = None;
+            self.backdrop_waiting = None;
+        }
         if animation_changed {
             self.apply_animations();
         }
+        self.lay_out_untransformed();
         self.report_finished();
         self.start_image_loads();
         for (_, area) in &self.areas {
@@ -1027,6 +1062,111 @@ impl Mounter {
         if !self.keyboard_pending && self.keyboard > 0.0 && self.focused.is_some() {
             self.pan_for_keyboard(self.keyboard_motion);
         }
+        if backdrop_changed {
+            self.follow_background();
+        }
+    }
+
+    fn affects_backdrop(&self, item: &MountItem) -> bool {
+        let id = match *item {
+            MountItem::Insert { parent, child, .. } => {
+                if parent == nsh_core::ROOT_ID {
+                    return true;
+                }
+                child
+            }
+            MountItem::Remove { id }
+            | MountItem::Delete { id }
+            | MountItem::Frame { id, .. }
+            | MountItem::AnimationBindings { id, .. }
+            | MountItem::ViewStyle { id, .. } => id,
+            _ => return false,
+        };
+        id == nsh_core::ROOT_ID
+            || self
+                .slot(id)
+                .is_some_and(|s| s.parent == Some(nsh_core::ROOT_ID))
+    }
+
+    /// Keep the standalone backdrop in sync with the first mounted child
+    /// when it paints the whole viewport, not with overlays above it.
+    fn follow_background(&mut self) {
+        let Some(root) = self.slot(nsh_core::ROOT_ID) else {
+            return;
+        };
+        let view = root.native.view();
+        let Some((controller, window)) = crate::app::RootController::for_surface(view) else {
+            self.animated_backdrop = None;
+            self.backdrop_waiting = None;
+            return;
+        };
+        let viewport = view.bounds().size;
+        if viewport_size(viewport) != self.mounted_viewport {
+            return;
+        }
+        let candidate = root
+            .decor
+            .container(view)
+            .subviews()
+            .iter()
+            .find_map(|view| {
+                let id = view.tag() as NodeId;
+                let slot = self.slot(id)?;
+                (slot.parent == Some(nsh_core::ROOT_ID) && std::ptr::eq(slot.native.view(), &*view))
+                    .then_some((id, slot))
+            });
+        let (color, waiting) = candidate.map_or((None, None), |(id, slot)| {
+            let (color, pending) = backdrop_color(slot, viewport, &self.animator);
+            (color, pending.then_some(id))
+        });
+        self.animated_backdrop = candidate
+            .filter(|(_, slot)| {
+                slot.bindings.iter().any(|(prop, _)| {
+                    matches!(
+                        prop,
+                        AnimationProp::BackgroundColor
+                            | AnimationProp::Opacity
+                            | AnimationProp::Transform(_)
+                    )
+                })
+            })
+            .map(|(id, _)| (id, color));
+        self.wait_for_backdrop(waiting);
+        controller.set_backdrop(&window, color);
+    }
+
+    fn follow_animated_background(&mut self, id: NodeId, previous: Option<Color>) {
+        let Some(root) = self.slot(nsh_core::ROOT_ID) else {
+            return;
+        };
+        let view = root.native.view();
+        let viewport = view.bounds().size;
+        if viewport_size(viewport) != self.mounted_viewport {
+            return;
+        }
+        let (color, pending) = self.slot(id).map_or((None, false), |slot| {
+            backdrop_color(slot, viewport, &self.animator)
+        });
+        let owner = (color != previous)
+            .then(|| crate::app::RootController::for_surface(view))
+            .flatten();
+        self.wait_for_backdrop(pending.then_some(id));
+        if let Some((controller, window)) = owner {
+            self.animated_backdrop = Some((id, color));
+            controller.set_backdrop(&window, color);
+        }
+    }
+
+    fn wait_for_backdrop(&mut self, candidate: Option<NodeId>) {
+        if self.backdrop_waiting != candidate && candidate.is_some() {
+            self.frame_link.setPaused(false);
+        }
+        self.backdrop_waiting = candidate;
+    }
+
+    pub(crate) fn resized(&mut self, viewport: Size<Points>) {
+        self.mounted_viewport = viewport;
+        self.follow_background();
     }
 
     /// Narrows the content size of a vertical scroll view to its width when
@@ -1353,7 +1493,9 @@ impl Mounter {
                 {
                     // Back before its removal finished animating.
                     c.native.view().layer().removeAllAnimations();
-                    apply_dynamic(c, &self.animator);
+                    if apply_dynamic(c, &self.animator) {
+                        self.untransformed.push(child);
+                    }
                 }
                 if let (Some(p), Some(c)) = (self.slot(parent), self.slot(child)) {
                     let zoom = p.zoom_view();
@@ -1479,6 +1621,7 @@ impl Mounter {
                 if was_screen {
                     self.release_root_effect();
                 }
+                self.gpu.deleted(id);
                 self.nav_shaders.remove(&id);
                 if let Some((root, window)) = restore {
                     self.target.restore_root_focus(root, window);
@@ -1577,6 +1720,7 @@ impl Mounter {
                 if self.shaders.has(id) {
                     self.layout_shader(id);
                 }
+                self.layout_gpu(id);
             }
             MountItem::TrackStates { id, states } => self.track_states(id, states),
             MountItem::Overflow { id, extent } => {
@@ -1665,8 +1809,10 @@ impl Mounter {
                         .iter()
                         .map(|v| v.tag() as NodeId)
                         .collect();
-                    if let Some(s) = self.slot(id) {
-                        apply_dynamic(s, &self.animator);
+                    if let Some(s) = self.slot(id)
+                        && apply_dynamic(s, &self.animator)
+                    {
+                        self.untransformed.push(id);
                     }
                     for cell in cells {
                         self.set_in_mirrored(cell, mirrored);
@@ -1856,6 +2002,14 @@ impl Mounter {
                     self.nav_shaders.remove(&id);
                 }
             },
+            MountItem::GpuView { id, source } => {
+                let scale = self.display_scale();
+                if let Some(s) = self.views.get(id as usize).and_then(Option::as_ref) {
+                    self.gpu.set(id, s.native.view(), &s.style, scale, source);
+                    // Bindings that came before it, for the new renderer.
+                    self.gpu.rebound(id, &s.bindings, &self.animator);
+                }
+            }
             MountItem::Shader { id, layer } => {
                 let scale = self.display_scale();
                 let was_screen = self.shaders.draws_screen(id);
@@ -1913,8 +2067,10 @@ impl Mounter {
                     }
                     // Bound values apply now too (a canvas reads them when
                     // it draws next).
-                    if let Some(s) = self.slot(id) {
-                        apply_dynamic(s, &self.animator);
+                    if let Some(s) = self.slot(id)
+                        && apply_dynamic(s, &self.animator)
+                    {
+                        self.untransformed.push(id);
                     }
                     self.push_shader_args(id);
                     // A component gets what is bound again.
@@ -1923,6 +2079,10 @@ impl Mounter {
                     {
                         host.forget();
                         host.push(&s.bindings, &self.animator);
+                    }
+                    // A GPU view's renderer too.
+                    if let Some(s) = self.views.get(id as usize).and_then(Option::as_ref) {
+                        self.gpu.rebound(id, &s.bindings, &self.animator);
                     }
                     return true;
                 }
@@ -2039,12 +2199,13 @@ impl Mounter {
                 }
             }
             MountItem::ComponentPropSlots { id, names } => {
-                if let Some(Slot {
-                    native: Native::Component(host),
-                    ..
-                }) = self.slot_mut(id)
+                if !self.gpu.prop_slots(id, &names)
+                    && let Some(Slot {
+                        native: Native::Component(host),
+                        ..
+                    }) = self.slot_mut(id)
                 {
-                    host.slots = names;
+                    host.bound.slots = names;
                     host.forget();
                 }
             }
@@ -2056,10 +2217,11 @@ impl Mounter {
                 }
             }
             MountItem::ComponentProps { id, props } => {
-                if let Some(Slot {
-                    native: Native::Component(host),
-                    ..
-                }) = self.slot_mut(id)
+                if !self.gpu.props(id, &props)
+                    && let Some(Slot {
+                        native: Native::Component(host),
+                        ..
+                    }) = self.slot_mut(id)
                     && let Some(component) = host.component.as_mut()
                 {
                     for (name, value) in &props {
@@ -2929,8 +3091,10 @@ impl Mounter {
             && c.in_mirrored != mirrored
         {
             c.in_mirrored = mirrored;
-            if let Some(c) = self.slot(id) {
-                apply_dynamic(c, &self.animator);
+            if let Some(c) = self.slot(id)
+                && apply_dynamic(c, &self.animator)
+            {
+                self.untransformed.push(id);
             }
         }
     }
@@ -3129,15 +3293,19 @@ impl Mounter {
                     // the closure runs synchronously inside it.
                     let this = unsafe { &mut *this };
                     this.decorate_animated(id);
-                    if let Some(s) = this.slot(id) {
-                        apply_dynamic(s, &this.animator);
+                    if let Some(s) = this.slot(id)
+                        && apply_dynamic(s, &this.animator)
+                    {
+                        this.untransformed.push(id);
                     }
                 });
             }
             None => {
                 self.decorate(id);
-                if let Some(s) = self.slot(id) {
-                    apply_dynamic(s, &self.animator);
+                if let Some(s) = self.slot(id)
+                    && apply_dynamic(s, &self.animator)
+                {
+                    self.untransformed.push(id);
                 }
             }
         }
@@ -3185,10 +3353,11 @@ impl Mounter {
                 self.pending_images.push(id);
             }
         }
-        // Its corners clip the shader.
+        // Its corners clip the shader, or a GPU view's frames.
         if self.shaders.has(id) {
             self.layout_shader(id);
         }
+        self.layout_gpu(id);
     }
 
     /// Restyles with Core Animation's implicit animations on.
@@ -3476,10 +3645,12 @@ impl Mounter {
     }
 
     /// The surface moved to a window (or out of one): the shaders in it
-    /// take the pictures they missed.
+    /// take the pictures they missed, the GPU views render.
     pub(crate) fn window_changed(&mut self) {
         self.shaders.revisit();
+        self.gpu.reveal();
         self.restore_root_focus();
+        self.follow_background();
     }
 
     /// The surface's traits changed: on a screen of another scale (an
@@ -3487,6 +3658,7 @@ impl Mounter {
     pub(crate) fn traits_changed(&mut self) {
         let scale = self.display_scale();
         self.shaders.rescale(scale);
+        self.gpu.rescale(scale);
         if scale == self.image_scale {
             return;
         }
@@ -3691,6 +3863,30 @@ impl Mounter {
                     (Ok(decoded), Some(uri)) => view.set_image(uri.into(), decoded.image.clone()),
                     (Err(message), _) => log::warn!("canvas image failed: {message}"),
                     _ => {}
+                }
+                continue;
+            }
+            let video_poster = match self.slot(id) {
+                Some(s)
+                    if s.poster_key.as_deref() == Some(key)
+                        && matches!(&s.native, Native::Video(_)) =>
+                {
+                    match &s.native {
+                        Native::Video(v) => Some(v.poster_mode()),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            };
+            if let Some(mode) = video_poster {
+                if let Some(s) = self.slot_mut(id) {
+                    s.poster_key = None;
+                    if let (Native::Video(v), Ok(decoded)) = (&mut s.native, &result) {
+                        v.show_poster(decoded.image.clone(), mode);
+                    }
+                }
+                if let Err(message) = &result {
+                    log::warn!("video poster failed: {message}");
                 }
                 continue;
             }
@@ -4358,6 +4554,11 @@ impl Mounter {
                 }
             }
             screen.controller.follow_large_title();
+            // A header changed under a transform is laid out for where the
+            // stack is, not for the picture the transform shows.
+            if let Some(nav) = screen.controller.navigationController() {
+                crate::navigation::lay_out_header_in_place(&nav);
+            }
         }
         for (id, follows) in follows {
             self.following_scroll.retain(|&other| other != id);
@@ -4620,8 +4821,9 @@ impl Mounter {
         animated: bool,
     ) {
         // A page shown again is back in the window: the shaders in it take
-        // the pictures they missed.
+        // the pictures they missed, the GPU views render.
         self.shaders.revisit();
+        self.gpu.reveal();
         let Some(screen) = controller.downcast_ref::<crate::navigation::ScreenController>() else {
             return;
         };
@@ -4641,6 +4843,7 @@ impl Mounter {
     /// swipe) are reported so the app removes them.
     pub(crate) fn stack_did_show(&mut self, id: NodeId) {
         self.shaders.revisit();
+        self.gpu.reveal();
         if self.splits.contains_key(&id) {
             self.compact_did_show(id);
         } else {
@@ -5348,11 +5551,49 @@ impl Mounter {
     /// Properties of a web view or video.
     fn set_native_props(&mut self, id: NodeId, props: nsh_core::NativeProps) {
         use nsh_core::NativeProps as P;
-        let Some(s) = self.slot_mut(id) else { return };
-        match (&mut s.native, props) {
-            (Native::Web(v), P::WebView(p)) => v.configure(*p),
-            (Native::Video(v), P::Video(p)) => v.configure(*p),
-            _ => {}
+        let mut poster = None;
+        {
+            let Some(s) = self.slot_mut(id) else { return };
+            match (&mut s.native, props) {
+                (Native::Web(v), P::WebView(p)) => v.configure(*p),
+                (Native::Video(v), P::Video(p)) => {
+                    v.configure(*p);
+                    poster = v.take_poster_request();
+                }
+                _ => {}
+            }
+        }
+        if let Some(uri) = poster {
+            self.load_video_poster(id, &uri);
+        }
+    }
+
+    /// Loads video `id`'s poster at the video's display size.
+    fn load_video_poster(&mut self, id: NodeId, uri: &str) {
+        let (size, mode) = {
+            let Some(s) = self.slot(id) else { return };
+            let Native::Video(v) = &s.native else { return };
+            (v.view.bounds().size, v.poster_mode())
+        };
+        let scale = self.display_scale();
+        let max_pixels = (size.width.max(size.height) * scale).ceil() as u32;
+        let key = crate::image::ImageLoader::key(uri, max_pixels, Default::default());
+        match self
+            .images
+            .request(id, uri, None, max_pixels, scale, Default::default())
+        {
+            crate::image::Request::Ready(decoded) => {
+                if let Some(s) = self.slot_mut(id)
+                    && let Native::Video(v) = &mut s.native
+                {
+                    v.show_poster(decoded.image, mode);
+                }
+            }
+            crate::image::Request::Pending => {
+                if let Some(s) = self.slot_mut(id) {
+                    s.poster_key = Some(key);
+                }
+            }
         }
     }
 
@@ -5976,18 +6217,42 @@ impl Mounter {
 
     /// JS waits for a display frame (`requestAnimationFrame`).
     pub(crate) fn request_frame(&self) {
+        self.frame_requested.set(true);
         self.frame_link.setPaused(false);
     }
 
+    #[cfg(test)]
+    pub(crate) fn frame_link_paused(&self) -> bool {
+        self.frame_link.isPaused()
+    }
+
     /// The frame link fired.
-    pub(crate) fn frame(&self) {
+    pub(crate) fn frame(&mut self) {
         self.frame_link.setPaused(true);
-        self.control.frame();
+        if self.frame_requested.replace(false) {
+            self.control.frame();
+        }
+        if let Some(id) = self.backdrop_waiting.take()
+            && let Some(slot) = self.slot(id)
+            && slot.parent == Some(nsh_core::ROOT_ID)
+        {
+            let layer = slot.native.view().layer();
+            if coverage_animation(&layer) == Some(CoverageAnimation::Finite) {
+                self.wait_for_backdrop(Some(id));
+            } else {
+                self.follow_background();
+            }
+        }
     }
 
     /// The shaders' display link fired.
     pub(crate) fn shader_frame(&mut self) {
         self.shaders.frame();
+    }
+
+    /// The GPU views' display link fired.
+    pub(crate) fn gpu_frame(&mut self) {
+        self.gpu.frame(&self.control);
     }
 
     /// The GPU device the shaders asked for opened (`None`: there is none,
@@ -6008,6 +6273,17 @@ impl Mounter {
         let scale = self.display_scale();
         if let Some(s) = self.views.get(id as usize).and_then(Option::as_ref) {
             self.shaders.layout(id, &s.style, scale);
+        }
+    }
+
+    /// GPU view `id` (if it is one) follows its frame and corners.
+    fn layout_gpu(&mut self, id: NodeId) {
+        if !self.gpu.has(id) {
+            return;
+        }
+        let scale = self.display_scale();
+        if let Some(s) = self.views.get(id as usize).and_then(Option::as_ref) {
+            self.gpu.resized(id, &s.style, scale);
         }
     }
 
@@ -6242,6 +6518,10 @@ impl Mounter {
 
     fn follow_scroll(&mut self, id: NodeId, offset: CGPoint) {
         self.pin_sticky(id);
+        // Shader and GPU views scrolled back into sight render what fell
+        // due.
+        self.shaders.revisit();
+        self.gpu.reveal();
         if self.shaders.pictured()
             && let Some(s) = self.views.get(id as usize).and_then(Option::as_ref)
         {
@@ -6298,11 +6578,50 @@ impl Mounter {
         }
     }
 
+    /// Lays the stacks inside [`Mounter::untransformed`] out again.
+    ///
+    /// UIKit lays a stack out through the transforms around it: a header
+    /// that changes while a container shows the stack moved or scaled (a
+    /// push drawer) gets its bar laid out for that picture, which puts a bar
+    /// the device keeps along one side of the screen (the iPhone Duo's
+    /// vertical bar) on the side the picture is nearest. A transform going
+    /// back to the identity starts no layout pass, so the bar would stay
+    /// there, and the stack's safe area with what it was measured through
+    /// the transform, until something else lays it out.
+    fn lay_out_untransformed(&mut self) {
+        if self.untransformed.is_empty() {
+            return;
+        }
+        let views: Vec<Retained<UIView>> = std::mem::take(&mut self.untransformed)
+            .into_iter()
+            .filter_map(|id| self.slot(id).map(|s| s.native.view().retain()))
+            .collect();
+        let inside = |nav: &UINavigationController| {
+            nav.viewIfLoaded()
+                .is_some_and(|v| views.iter().any(|t| v.isDescendantOfView(t)))
+        };
+        for slot in self.views.iter().flatten() {
+            if let Native::Stack(stack) = &slot.native
+                && inside(&stack.nav)
+            {
+                crate::navigation::lay_out_in_place(&stack.nav);
+            }
+        }
+        // A collapsed split's pages are in its compact stack.
+        for split in self.splits.values() {
+            if inside(&split.compact.nav) {
+                crate::navigation::lay_out_in_place(&split.compact.nav);
+            }
+        }
+    }
+
     fn apply_animations(&mut self) {
         let animator = &self.animator;
         for &id in &self.animated {
-            if let Some(s) = self.views.get(id as usize).and_then(Option::as_ref) {
-                apply_dynamic(s, animator);
+            if let Some(s) = self.views.get(id as usize).and_then(Option::as_ref)
+                && apply_dynamic(s, animator)
+            {
+                self.untransformed.push(id);
             }
         }
         // Shaders get their bound uniforms; those that picture the views
@@ -6316,6 +6635,12 @@ impl Mounter {
                 if pictured {
                     self.shaders.ui_changed(s.native.view());
                 }
+            }
+        }
+        // GPU views' renderers get their bound props' changes.
+        for &id in &self.animated {
+            if let Some(s) = self.views.get(id as usize).and_then(Option::as_ref) {
+                self.gpu.animated(id, &s.bindings, animator);
             }
         }
         // Components get their bound props' changes (no view borrowed while
@@ -6332,6 +6657,10 @@ impl Mounter {
             if cells.iter().any(|c| c.offset.is_some()) {
                 self.pin_sticky(id);
             }
+        }
+        self.lay_out_untransformed();
+        if let Some((id, previous)) = self.animated_backdrop {
+            self.follow_animated_background(id, previous);
         }
     }
 
@@ -6475,6 +6804,50 @@ fn key_modifiers(flags: isize) -> nsh_core::keymap::Modifiers {
         cmd: has(20),
         alt_graph: false,
     }
+}
+
+fn viewport_size(size: CGSize) -> Size<Points> {
+    Size::new(Points(size.width as f32), Points(size.height as f32))
+}
+
+/// The backdrop color and whether a finite native animation temporarily blocks it.
+fn backdrop_color(slot: &Slot, viewport: CGSize, animator: &Animator) -> (Option<Color>, bool) {
+    let view = slot.native.view();
+    if !slot.style.radii().is_zero()
+        || slot.style.clip_path().is_some()
+        || slot
+            .style
+            .effects
+            .as_ref()
+            .is_some_and(|e| !e.mask_images.is_empty())
+        || slot.style.animation.is_some()
+        || view.isHidden()
+        || view.alpha() != 1.0
+    {
+        return (None, false);
+    }
+    let layer = view.layer();
+    if !layer.transform().is_identity() {
+        return (None, false);
+    }
+    let color = opaque_backdrop(view.frame(), viewport, dynamic_background(slot, animator));
+    match color.and_then(|_| coverage_animation(&layer)) {
+        Some(CoverageAnimation::Finite) => (None, true),
+        Some(CoverageAnimation::Persistent) => (None, false),
+        None => (color, false),
+    }
+}
+
+fn opaque_backdrop(frame: CGRect, viewport: CGSize, color: Color) -> Option<Color> {
+    let (width, height) = (viewport.width, viewport.height);
+    (color.0 & 0xff == 0xff
+        && width > 0.0
+        && height > 0.0
+        && frame.origin.x <= 0.0
+        && frame.origin.y <= 0.0
+        && frame.origin.x + frame.size.width >= width
+        && frame.origin.y + frame.size.height >= height)
+        .then_some(color)
 }
 
 /// Sets a frame through `bounds` + `center`: `frame` is undefined for
@@ -6649,8 +7022,9 @@ fn shader_args<'a>(
 }
 
 /// Opacity, background color and transform: static values overridden by
-/// animated bindings.
-fn apply_dynamic(slot: &Slot, animator: &Animator) {
+/// animated bindings. True when the view's transform went back to the
+/// identity, which UIKit lays nothing out for ([`Mounter::untransformed`]).
+fn apply_dynamic(slot: &Slot, animator: &Animator) -> bool {
     if let Native::Canvas(canvas) = &slot.native {
         canvas.set_values(slot.bindings.iter().filter_map(|&(prop, node)| match prop {
             AnimationProp::CanvasArg(k) => Some((k, animator.eval(node))),
@@ -6658,17 +7032,13 @@ fn apply_dynamic(slot: &Slot, animator: &Animator) {
         }));
     }
     let view = slot.native.view();
-    let mut background = slot.style.background_color;
-    for &(prop, node) in &slot.bindings {
-        if prop == AnimationProp::BackgroundColor
-            && let AnimationValue::Color(c) = animator.eval(node)
-        {
-            background = Color(c);
-        }
-    }
     view.setAlpha(dynamic_opacity(slot, animator) as CGFloat);
-    slot.decor.set_background(view, background);
-    view.layer().setTransform(dynamic_transform(slot, animator));
+    slot.decor
+        .set_background(view, dynamic_background(slot, animator));
+    let layer = view.layer();
+    let transform = dynamic_transform(slot, animator);
+    let untransformed = transform.is_identity() && !layer.transform().is_identity();
+    layer.setTransform(transform);
     apply_bound_decor(slot, animator);
     if let Native::Text(text) = &slot.native {
         let color = slot.bindings.iter().find_map(|&(prop, node)| match prop {
@@ -6680,6 +7050,7 @@ fn apply_dynamic(slot: &Slot, animator: &Animator) {
         });
         text.set_color(color);
     }
+    untransformed
 }
 
 /// Runs `f` in a UIKit animation of `view` following `t`; on the
@@ -6839,6 +7210,26 @@ mod tests {
     use nsh_core::geometry::px;
 
     use super::*;
+
+    #[test]
+    fn only_an_opaque_view_covering_the_viewport_supplies_a_backdrop() {
+        let viewport = CGSize::new(390.0, 844.0);
+        let full = CGRect::new(CGPoint::ZERO, viewport);
+        for color in [Color::BLACK, Color::rgba(242, 242, 247, 255)] {
+            assert_eq!(opaque_backdrop(full, viewport, color), Some(color));
+        }
+        assert_eq!(opaque_backdrop(full, viewport, Color::TRANSPARENT), None);
+        assert_eq!(
+            opaque_backdrop(full, viewport, Color::rgba(0, 0, 0, 254)),
+            None
+        );
+        let shifted = CGRect::new(CGPoint::new(1.0, 0.0), full.size);
+        assert_eq!(opaque_backdrop(shifted, viewport, Color::BLACK), None);
+        assert_eq!(
+            opaque_backdrop(full, CGSize::new(844.0, 390.0), Color::BLACK),
+            None
+        );
+    }
 
     #[test]
     fn a_new_input_has_its_layout_before_insertion() {

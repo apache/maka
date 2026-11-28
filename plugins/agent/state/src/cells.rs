@@ -27,6 +27,7 @@ use std::{
     sync::Arc,
 };
 mod loaded;
+pub(crate) mod migrate_v66;
 mod sql;
 pub(crate) use loaded::apply_tools_loaded;
 mod standalone;

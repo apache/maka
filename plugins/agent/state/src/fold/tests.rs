@@ -75,6 +75,8 @@ fn spec(backend: BackendSpec, reference: &ContentRef) -> RunSpec {
         allowed_tools: None,
         mcp_revision: None,
         compaction_prompt: None,
+        memory_admission: Default::default(),
+        memory_projection: None,
         system_prompt: reference.clone(),
         tool_selection: reference.clone(),
         input: reference.clone(),

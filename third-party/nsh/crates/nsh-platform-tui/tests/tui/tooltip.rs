@@ -1,7 +1,6 @@
-//! A tooltip in a terminal is a line, not a bubble: what it says shows at
-//! once on the bottom row of the viewport while the keyboard focus or the
-//! pointer is on its trigger, the pointer's over the focus's, and nothing
-//! takes Cells by the trigger.
+//! A tooltip in a terminal shows at once next to its trigger while the
+//! keyboard focus or the pointer is on it, the pointer's over the focus's,
+//! and leaves the bottom row (the toasts' status line) alone.
 
 use nsh_base::{button, tooltip};
 use nsh_core::prelude::*;
@@ -55,49 +54,37 @@ fn press_tab(view: &mut nsh_platform_tui::AppView, shift: bool) {
     });
 }
 
+/// The row holding `needle`, if any.
+fn row_of(terminal: &Terminal<TestBackend>, needle: &str) -> Option<u16> {
+    (0..terminal.backend().buffer().area.height).find(|&y| row(terminal, y).contains(needle))
+}
+
 #[test]
-fn a_tooltip_shows_on_the_bottom_row_for_the_focus_and_the_pointer() {
+fn a_tooltip_shows_next_to_its_trigger_for_the_focus_and_the_pointer() {
     let (mut view, rx) = surface();
     let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
     view.load(App::Rust(Root::new::<Toolbar>(|| ()))).unwrap();
     draw_until(&mut view, &mut terminal, &rx, "Quit");
     let bottom = 9;
 
-    // The focus on Save: its tooltip on the bottom row, from its start,
-    // and nothing by the button.
+    // The focus on Save: its tooltip next to the button, off the bottom
+    // row.
     press_tab(&mut view, false);
     draw_until(&mut view, &mut terminal, &rx, "Saves it");
+    let (_, buttons) = find(&terminal, "Save").unwrap();
+    let at = row_of(&terminal, "Saves it").unwrap();
+    assert!(at != bottom, "off the status line\n{}", dump(&terminal));
     assert!(
-        row(&terminal, bottom).starts_with("Saves it"),
-        "on the bottom row\n{}",
+        at.abs_diff(buttons) <= 3,
+        "next to its trigger\n{}",
         dump(&terminal)
     );
-    let (_, buttons) = find(&terminal, "Save").unwrap();
-    for y in 0..bottom {
-        assert!(
-            !row(&terminal, y).contains("Saves it"),
-            "only there\n{}",
-            dump(&terminal)
-        );
-        if y != buttons {
-            assert!(
-                row(&terminal, y).trim().is_empty() || row(&terminal, y).contains("ready"),
-                "no bubble by the trigger\n{}",
-                dump(&terminal)
-            );
-        }
-    }
 
-    // The pointer on Open, at once: its tooltip takes the line; off it,
+    // The pointer on Open, at once: its tooltip shows instead; off it,
     // the focus's comes back.
     let (open, y) = find(&terminal, "Open").unwrap();
     view.handle(mouse(MouseKind::Move, open + 1, y));
     draw_until(&mut view, &mut terminal, &rx, "Opens one");
-    assert!(
-        row(&terminal, bottom).starts_with("Opens one"),
-        "{}",
-        dump(&terminal)
-    );
     assert!(
         !dump(&terminal).contains("Saves it"),
         "one at a time\n{}",
@@ -111,19 +98,9 @@ fn a_tooltip_shows_on_the_bottom_row_for_the_focus_and_the_pointer() {
         dump(&terminal)
     );
 
-    // The focus on Open, then on Quit, which has none: the line clears.
+    // The focus on Open, then on Quit, which has none: it goes.
     press_tab(&mut view, false);
     draw_until(&mut view, &mut terminal, &rx, "Opens one");
-    assert!(
-        row(&terminal, bottom).starts_with("Opens one"),
-        "{}",
-        dump(&terminal)
-    );
     press_tab(&mut view, false);
     super::app::draw_until_gone(&mut view, &mut terminal, &rx, "Opens one");
-    assert!(
-        row(&terminal, bottom).trim().is_empty(),
-        "{}",
-        dump(&terminal)
-    );
 }

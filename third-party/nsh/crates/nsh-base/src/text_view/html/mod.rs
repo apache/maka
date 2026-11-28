@@ -595,12 +595,34 @@ impl<'p> Reader<'p> {
                 _ => {}
             }
         }
+        // Only header cells make a header: a `<thead>`'s first row, else a
+        // first row of `<th>` alone. A table of `<td>` (as most emails
+        // lay out theirs) has none.
+        let head_row = has_head
+            || rows.first().is_some_and(|row| {
+                let header: Vec<bool> = children(row)
+                    .iter()
+                    .filter_map(|c| match element_name(c) {
+                        Some("th") => Some(true),
+                        Some("td") => Some(false),
+                        _ => None,
+                    })
+                    .collect();
+                !header.is_empty() && header.iter().all(|&th| th)
+            });
         rows.extend(foot);
         let mut rows = rows.into_iter().map(|row| self.row(&row, depth + 1));
-        let Some((head, head_align)) = rows.next() else {
-            return;
+        let (head, head_align) = match head_row {
+            true => match rows.next() {
+                Some(head) => head,
+                None => return,
+            },
+            false => (Vec::new(), Vec::new()),
         };
         let rows: Vec<_> = rows.collect();
+        if head.is_empty() && rows.is_empty() {
+            return;
+        }
         // Columns by the cells' spans, not their count.
         let width = |row: &[TableCell]| row.iter().map(TableCell::span).sum::<usize>();
         let columns = rows
@@ -630,7 +652,8 @@ impl<'p> Reader<'p> {
         };
         let table = Table {
             align,
-            head: pad(head),
+            // No header stays none, not a row of empty cells.
+            head: if head.is_empty() { head } else { pad(head) },
             rows: rows.into_iter().map(|(row, _)| pad(row)).collect(),
         };
         self.push_block(flow, Block::Table(table));

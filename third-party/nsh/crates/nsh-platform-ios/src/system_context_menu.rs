@@ -70,6 +70,9 @@ pub(crate) struct Ivars {
     previews: Cell<bool>,
     /// The menu is up: from `willDisplay` to `willEnd`.
     shown: Cell<bool>,
+    /// Menus going away: from `willEnd` until their `close` is told, after
+    /// the dismissal animation. No menu opens meanwhile (#3158).
+    ending: Rc<Ending>,
     context: ComponentContext,
     /// The interaction and the view it is on.
     interaction: RefCell<Option<(Retained<UIContextMenuInteraction>, Weak<UIView>)>>,
@@ -206,6 +209,8 @@ define_class!(
         ) {
             let ivars = self.ivars();
             ivars.shown.set(false);
+            let ending = ivars.ending.clone();
+            ending.begin();
             // Told once the menu went, a turn later, by when a chosen
             // action's handler has run: its `select` goes first, in the same
             // turn, so JS always hears the choice before the dismissal. A
@@ -214,8 +219,11 @@ define_class!(
             let close = move || {
                 let context = context.clone();
                 let opening = MainThreadBound::new(opening.clone(), mtm);
+                let ending = MainThreadBound::new(ending.clone(), mtm);
                 DispatchQueue::main().exec_async(move || {
-                    let opening = opening.into_inner(MainThreadMarker::new().expect("main queue"));
+                    let mtm = MainThreadMarker::new().expect("main queue");
+                    let ending = ending.into_inner(mtm);
+                    let opening = opening.into_inner(mtm);
                     if let Some(opening) = opening {
                         opening.ended.set(true);
                         if let Some(choice) = opening.chosen.take() {
@@ -223,6 +231,7 @@ define_class!(
                         }
                     }
                     context.emit("close", JsonValue::Null);
+                    ending.finish();
                 });
             };
             match animator {
@@ -232,6 +241,29 @@ define_class!(
         }
     }
 );
+
+/// The dismissals under way: begun at `willEnd`, finished once their
+/// animation completed and `close` was told.
+///
+/// A hold while one is under way gets no menu: UIKit would ask for a lifted
+/// preview of the trigger the dismissal is still animating, and lift a black
+/// square around the touch instead. The hold after it opens as usual.
+#[derive(Default)]
+struct Ending(Cell<usize>);
+
+impl Ending {
+    fn begin(&self) {
+        self.0.set(self.0.get() + 1);
+    }
+
+    fn finish(&self) {
+        self.0.set(self.0.get().saturating_sub(1));
+    }
+
+    fn under_way(&self) -> bool {
+        self.0.get() > 0
+    }
+}
 
 impl Opening {
     /// The user chose: told now when the dismissal was, else with it.
@@ -252,6 +284,7 @@ impl NshContextMenu {
             disabled: Cell::new(false),
             previews: Cell::new(false),
             shown: Cell::new(false),
+            ending: Rc::default(),
             context,
             interaction: RefCell::default(),
             trigger: RefCell::default(),
@@ -325,14 +358,15 @@ impl NshContextMenu {
     }
 
     /// The menu about the trigger at `location` (in the interaction's view),
-    /// none when the menu is disabled or empty or nothing is there.
+    /// none when the menu is disabled or empty, the last one is still going
+    /// away, or nothing is there.
     fn configuration(
         &self,
         interaction: &UIContextMenuInteraction,
         location: CGPoint,
     ) -> Option<Retained<UIContextMenuConfiguration>> {
         let ivars = self.ivars();
-        if ivars.disabled.get() || ivars.entries.borrow().is_empty() {
+        if ivars.disabled.get() || ivars.ending.under_way() || ivars.entries.borrow().is_empty() {
             return None;
         }
         let host = interaction.view()?;
@@ -520,7 +554,25 @@ pub(crate) fn factory() -> ComponentFactory {
 mod tests {
     use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 
-    use super::contains;
+    use super::{Ending, contains};
+
+    #[test]
+    fn no_menu_opens_until_every_dismissal_finished() {
+        let ending = Ending::default();
+        assert!(!ending.under_way());
+        // A hold during the first menu's dismissal animation.
+        ending.begin();
+        assert!(ending.under_way());
+        // Two dismissals overlapping: the first finishing is not enough.
+        ending.begin();
+        ending.finish();
+        assert!(ending.under_way());
+        ending.finish();
+        assert!(!ending.under_way());
+        // A stray finish never leaves it stuck.
+        ending.finish();
+        assert!(!ending.under_way());
+    }
 
     #[test]
     fn a_frame_holds_its_start_but_not_its_end() {

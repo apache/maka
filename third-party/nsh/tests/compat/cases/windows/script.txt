@@ -13,3 +13,14 @@ tap id:backdrop-set
 prop id:backdrop-surface windows.backdrop material=blur
 covers [props] windows
 covers [props] windows.backdrop
+# mod-keymap-over-focused-pointer
+tap id:case-mod-keymap-over-focused-pointer
+# Chosen with the pointer, the trigger has the focus back: Space plays.
+tap id:quality
+expect HD
+tap text:HD
+absent SD
+key space
+expect Plays: 1
+absent SD
+covers [nsh] keymap

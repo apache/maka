@@ -325,6 +325,14 @@ pub(crate) fn root_began(target: &EventTarget, presses: &NSSet<UIPress>) -> bool
         {
             return false;
         }
+        // So did a selectable view's responder, on its area's raw key path.
+        Some(r)
+            if r.downcast_ref::<crate::selectable_view::AreaResponder>()
+                .and_then(|responder| responder.superview())
+                .is_some_and(|area| crate::keyboard::area_reports(&area)) =>
+        {
+            return false;
+        }
         Some(r) => {
             let text = <dyn objc2_ui_kit::UIKeyInput>::protocol()
                 .is_some_and(|p| r.class().conforms_to(p));

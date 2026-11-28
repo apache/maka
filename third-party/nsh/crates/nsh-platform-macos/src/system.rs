@@ -771,7 +771,7 @@ pub(crate) fn command(surface: &Rc<Surface>, id: NodeId, command: &Command) {
         | Command::SetStatusBar(_)
         | Command::LayoutAnimation(_)
         | Command::CancelPress => {}
-        other => log::debug!("macos: command {other:?} is not supported"),
+        other => nsh_core::platform::warn_unsupported("macos", &other),
     }
 }
 
@@ -1297,7 +1297,7 @@ pub(crate) fn answer_dialog(surface: &Rc<Surface>, button: Option<&str>) -> Resu
 
 /// The pasteboard types of images NSH reads and writes, by MIME type, in
 /// the order they are read: the first one the pasteboard holds wins.
-const IMAGE_TYPES: [(&str, &str); 6] = [
+pub(crate) const IMAGE_TYPES: [(&str, &str); 6] = [
     ("image/png", "public.png"),
     ("image/jpeg", "public.jpeg"),
     ("image/gif", "com.compuserve.gif"),
@@ -1438,7 +1438,7 @@ fn paste_item(item: &objc2_app_kit::NSPasteboardItem, paste: &mut nsh_core::Past
 
 /// Keep directories and special files as URLs. Opening a regular file
 /// checks the current process's read access without reading its contents.
-fn prefer_file_url(path: &std::path::Path) -> bool {
+pub(crate) fn prefer_file_url(path: &std::path::Path) -> bool {
     use std::os::unix::fs::OpenOptionsExt;
     if path.metadata().is_ok_and(|metadata| !metadata.is_file()) {
         return true;
@@ -1585,7 +1585,7 @@ pub(crate) fn has_pasted_files(pasteboard: &NSPasteboard) -> bool {
 }
 
 /// Encoded image `bytes` (a TIFF) encoded again as PNG.
-fn to_png(bytes: &[u8]) -> Option<Vec<u8>> {
+pub(crate) fn to_png(bytes: &[u8]) -> Option<Vec<u8>> {
     let rep = NSBitmapImageRep::imageRepWithData(&NSData::with_bytes(bytes))?;
     // SAFETY: an empty dictionary of properties is valid for every type.
     let png = unsafe {

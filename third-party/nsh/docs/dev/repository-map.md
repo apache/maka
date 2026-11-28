@@ -62,7 +62,10 @@ crates/
                        (`declarations.rs`, from the declaration next to each export and spec)
   nsh-engine/          Engine thread: drives nsh-js + nsh-core and hands one MountBatch per frame to the platform;
                        feature `shader`: the native backends' shader renderer (`shader.rs`: shader views' WGSL rendered with
-                       wgpu offscreen, read back asynchronously, never blocking the main thread; docs/dev/shaders.md)
+                       wgpu offscreen, read back asynchronously, never blocking the main thread; docs/dev/shaders.md), and
+                       GPU views' runtime (`gpu.rs`: apps' renderers on a render thread per surface; docs/dev/gpu-views.md)
+  nsh-gpu/             GPU views' app API: the `GpuRenderer` trait apps write with wgpu (re-exported), `GpuFrame`, registration
+                       by name on a UI set's `Registry` (docs/dev/gpu-views.md); the runtime is nsh-engine's `gpu.rs`
   nsh-package/         Signed packages (`.nshpkg`): Ed25519 keys, release-key certificates, revocation lists, the trust store
   nsh-updater/          App self-update: manifests and their signatures, verified downloads, replacing the installed app on the desktop (docs/dev/updater.md); `nsh-core`'s `runtime/updater.rs` is its JS face, `nsh/updater`
   nsh-extra/           NSH's official modules, an nshm apps install with `nsh add nsh-extra --features <name>`: one Cargo feature
@@ -111,7 +114,8 @@ crates/
   nsh-linux-host/      Development host on Linux (`nsh run --target linux`): connects to a dev server or runs a bundle
   nsh-linux-app/       Release runner on Linux: the executable of apps built by `nsh package --target linux`
   nsh-platform-apple/  Shared by the macOS and iOS backends: the notification center, how
-                       drawn text splits into screen reader elements around its links and inline views, and
+                       drawn text splits into screen reader elements around its links and inline views, whether a
+                       view shows through the ancestors that clip it (`sight`), and
                        `unified_log`, the logger of the release runners and the iOS SDK (the unified log; stderr too
                        wherever it goes but /dev/null)
   nsh-platform-macos/  AppKit backend (macOS): one flipped, layer-backed `NSView` per node decorated by Core Animation, CoreText text
@@ -204,6 +208,7 @@ are never linked into the CLI: it reads their UI sets as data (`nsh_core::elemen
 | scroll views, zooming, `List` | `docs/dev/scrolling-and-lists.md` |
 | animation, canvas, images | `docs/dev/animation.md`, `canvas.md`, `images.md` |
 | shaders: WGSL views, the renderer | `docs/dev/shaders.md` |
+| GPU views: app renderers on wgpu, their render thread | `docs/dev/gpu-views.md` |
 | VM limits, capabilities, signed packages | `docs/dev/sandbox.md`, `signed-packages.md` |
 | packaging, the iOS / Android SDKs, native components | `docs/dev/embedding.md` |
 | `.nsh/types`, the dev server, hot reload | `docs/dev/tooling.md` |

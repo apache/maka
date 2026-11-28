@@ -27,9 +27,12 @@ pub use maka_plugin_core::operation::OperationReply;
 
 mod acceptance;
 pub use acceptance::{
-    AcceptedToolResult, CellFinalEvidence, OperationProjection, ReturnedToolResult,
-    StoredOperationReturn, StoredToolResult, ended_unknown_diagnostic, ended_unknown_message,
+    AcceptedToolResult, CellFinalEvidence, OperationProjection, OutputProjection,
+    ReturnedToolResult, StoredCellCompletedReturn, StoredOperationReturn, StoredProjection,
+    StoredToolResult, completed_cell_text_projection, ended_unknown_diagnostic,
+    ended_unknown_message,
 };
+pub(crate) use acceptance::{resolve_projection, store_projection};
 pub mod audio;
 mod durable;
 mod mcp;

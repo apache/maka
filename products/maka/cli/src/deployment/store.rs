@@ -35,13 +35,22 @@ use std::{
 const DATABASE: &str = "deployment.sqlite";
 const APPLICATION_ID: i64 = 0x4d414b44;
 
-pub(super) static MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    description: "deployment",
-    sql: include_str!("../../migrations/deployment/0001_deployment.sql"),
-    configure: None,
-    data: None,
-}];
+pub(super) static MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        description: "deployment",
+        sql: include_str!("../../migrations/deployment/0001_deployment.sql"),
+        configure: None,
+        data: None,
+    },
+    Migration {
+        version: 2,
+        description: "retire_rust_preview_policy",
+        sql: include_str!("../../migrations/deployment/0002_retire_rust_preview_policy.sql"),
+        configure: None,
+        data: None,
+    },
+];
 
 pub(super) enum Installation {
     Missing,
@@ -127,10 +136,16 @@ fn read_connection(
     Ok(Installation::Installed(serde_json::from_str(&value)?))
 }
 
-/// No executor lock and no schema initialization: launchers can read while an
-/// operator waits for their Ready acknowledgement.
+/// Strict read requiring the complete current migration ledger.
+/// Used by admission, service startup, and policy configuration.
 pub(super) async fn read(directory: &Path) -> Result<Installation, HostError> {
     read_with(directory, MIGRATIONS, false).await
+}
+
+/// Strictly read-only inspection that accepts a verified historical migration
+/// prefix without opening a writer or mutating `deployment.sqlite`.
+pub(super) async fn read_compatible(directory: &Path) -> Result<Installation, HostError> {
+    read_with(directory, MIGRATIONS, true).await
 }
 
 /// Read under an active executor lease during update/reconcile so a verified
@@ -319,6 +334,17 @@ pub(super) async fn open_update_writer(
     open(directory, lease, None, false, migrations).await
 }
 
+/// Opens a writer without migrating on open so the caller can run `migrate_with`
+/// inside its own atomic takeover transaction (rolling back migration on conflict).
+pub(super) async fn open_deferred_writer(
+    directory: &Path,
+    lease: Arc<FileLease>,
+    root: Option<Arc<RootOwner>>,
+    migrations: &'static [Migration],
+) -> Result<OwnedConnection, HostError> {
+    open(directory, lease, root, false, migrations).await
+}
+
 async fn open(
     directory: &Path,
     lease: Arc<FileLease>,
@@ -387,10 +413,14 @@ pub(super) async fn change(
             target
         }
     };
-    let connection = open_writer(directory, lease, Some(owner)).await?;
+    let connection = open(directory, lease, Some(owner), false, MIGRATIONS).await?;
     let result = connection
         .run(move |connection| {
             let transaction = connection.transaction()?;
+            // Migrate inside the takeover transaction so a conflict or failure
+            // rolls back the schema upgrade too instead of stranding the prior
+            // deployment on a newer schema.
+            migrate_with(&transaction, MIGRATIONS)?;
             let (active, _) = super::updates::load(&transaction)?;
             if active != expected {
                 return Err(StoreError::InvalidTransition("deployment changed".into()));

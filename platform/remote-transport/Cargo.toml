@@ -24,13 +24,13 @@ publish.workspace = true
 
 [features]
 default = []
-host = ["dep:maka-host-runtime", "dep:tokio-util", "dep:tracing", "iroh/unstable-net-report"]
+host = ["dep:maka-host-runtime", "dep:tokio-util", "dep:tracing"]
 relay-server = ["iroh-relay/server", "dep:rcgen", "dep:subtle"]
 
 [dependencies]
 hex.workspace = true
 httparse = "1.10.1"
-iroh = { version = "=1.5.0", default-features = false, features = ["tls-aws-lc-rs", "platform-verifier"] }
+iroh = { version = "=1.5.0", default-features = false, features = ["tls-aws-lc-rs", "platform-verifier", "portmapper", "unstable-net-report"] }
 iroh-relay = { version = "=1.5.0", default-features = false, features = ["tls-aws-lc-rs", "platform-verifier"] }
 maka-host-runtime = { workspace = true, optional = true }
 maka-remote-pairing.workspace = true
@@ -42,9 +42,15 @@ tokio = { workspace = true, features = ["net"] }
 tokio-rustls = { version = "0.26.4", default-features = false }
 tokio-tungstenite = { workspace = true, features = ["__rustls-tls"] }
 tokio-util = { workspace = true, optional = true }
+# Match iroh-relay's native WebSocket dependency so downcasts use the same type.
+tokio-websockets = { version = "0.13", default-features = false, features = ["client"] }
 tracing = { workspace = true, optional = true }
 url = "2.5.9"
 x509-parser = { version = "0.18.1", default-features = false }
+
+# The optional sendmsg_x/recvmsg_x path is desktop-only, not an iOS app API.
+[target.'cfg(target_os = "macos")'.dependencies]
+iroh = { version = "=1.5.0", default-features = false, features = ["fast-apple-datapath"] }
 
 [dev-dependencies]
 futures-util.workspace = true

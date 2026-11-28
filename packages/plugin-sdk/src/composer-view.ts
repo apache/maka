@@ -245,6 +245,14 @@ export interface ComposerContinuation {
   };
 }
 
+export type ComposerSendBlockKind = 'transcript' | 'workspace' | 'attachments' | 'draft';
+
+/** Why sending is currently blocked, tagged with the surface that owns displaying it. */
+export interface ComposerSendBlock {
+  readonly kind: ComposerSendBlockKind;
+  readonly message: string;
+}
+
 /** A stable projection of the resident session, without its lifecycle or subscriptions. */
 export interface ComposerSession<Element = unknown> {
   quotes(): QuoteRef[];
@@ -263,7 +271,7 @@ export interface ComposerSession<Element = unknown> {
   previewImage(image: ComposerImagePreview): void;
   editable(): boolean;
   loading(): boolean;
-  blockedReason(): string;
+  sendBlock(): ComposerSendBlock | null;
   backend(): ComposerBackend;
   modelDetails(): ComposerModelDetails;
   refreshModel(): Promise<void>;

@@ -20,10 +20,17 @@
 use crate::{Result, TlsTrust, tls};
 use iroh::{
     Endpoint, EndpointAddr, EndpointId, RelayMap, RelayMode, RelayUrl, SecretKey, TransportAddr,
+    Watcher,
     dns::{DnsResolver, FallbackMode},
-    endpoint::{Connection, RecvStream, SendStream, presets},
+    endpoint::{
+        ConnectError, ConnectOptions, ConnectingError, Connection, ConnectionError, RecvStream,
+        SendStream, presets,
+    },
 };
-use iroh_relay::{RelayConfig, RelayQuicConfig};
+use iroh_relay::{
+    RelayConfig, RelayQuicConfig,
+    client::{ClientBuilder, ConnectError as RelayConnectError},
+};
 use maka_remote_pairing::{
     DeviceIdentity, DevicePublicKey, RelayEndpoint, SAS_EXPORTER_LABEL, SignedPairingTicket,
     derive_handshake_sas, parse_peer_id,
@@ -33,9 +40,16 @@ use std::{
     collections::{BTreeMap, HashMap},
     time::Duration,
 };
-use tokio::io::{Join, join};
+use tokio::{
+    io::{Join, join},
+    task::JoinSet,
+    time::timeout,
+};
 
 pub const HOST_ALPN: &[u8] = b"maka/host/v1";
+// A negotiated pre-redeem metadata query; the v1 ticket and redemption wire stay unchanged.
+pub(crate) const PAIRING_INFO_ALPN: &[u8] = b"maka/host/v1/pairing-info";
+pub(crate) const PEER_ACCESS_REVOKED_CODE: u32 = 1;
 
 pub struct Relay {
     config: RelayConfig,
@@ -90,6 +104,7 @@ pub struct PeerEndpoint {
     pub(crate) endpoint: Endpoint,
     pub(crate) local_key: DevicePublicKey,
     routes: BTreeMap<RelayUrl, RelayEndpoint>,
+    relay_map: RelayMap,
 }
 
 impl PeerEndpoint {
@@ -143,7 +158,7 @@ impl PeerEndpoint {
             .crypto_provider(tls::provider())
             .secret_key(SecretKey::from_bytes(identity.secret_bytes()))
             .alpns(alpns)
-            .relay_mode(RelayMode::Custom(map))
+            .relay_mode(RelayMode::Custom(map.clone()))
             .dns_resolver(
                 DnsResolver::builder()
                     .with_system_defaults()
@@ -158,27 +173,142 @@ impl PeerEndpoint {
             endpoint: builder.bind().await?,
             local_key: identity.public_key(),
             routes,
+            relay_map: map,
         })
     }
 
+    /// Prompt discovery to refresh after a route change or app suspension.
+    pub async fn network_change(&self) {
+        self.endpoint.network_change().await;
+    }
+
     pub async fn connect(&self, host_key: &DevicePublicKey) -> Result<PeerConnection> {
-        self.connect_via(
+        let dial = self.connect_via(
             host_key,
             self.routes.keys().cloned().map(TransportAddr::Relay),
-        )
-        .await
+            ConnectOptions::default(),
+        );
+        let mut home = self.endpoint.home_relay_status();
+        let mut rejected = BTreeMap::new();
+        let no_home = self.check_relays_without_home();
+        let result = async {
+            tokio::pin!(dial);
+            tokio::pin!(no_home);
+            let mut statuses = home.get();
+            let mut checked_without_home = false;
+            loop {
+                for status in &statuses {
+                    let url = status.url();
+                    if !self.routes.contains_key(url)
+                        || rejected.contains_key(url)
+                        || !relay_auth_denied(status)
+                    {
+                        continue;
+                    }
+                    if rejected.len() + 1 == self.routes.len() {
+                        return Err(Box::new(RelayAuthRejected) as _);
+                    }
+                    // iroh reports one home per transport. Remove only a
+                    // confirmed rejection so discovery can select the next home.
+                    if let Some(config) = self.endpoint.remove_relay(url).await {
+                        rejected.insert(url.clone(), config);
+                    }
+                }
+                tokio::select! {
+                    biased;
+                    update = home.updated() => statuses = update.map_err(|_| "relay status watcher closed")?,
+                    result = &mut dial => return result,
+                    denied = &mut no_home, if !checked_without_home => {
+                        if denied? {
+                            return Err(Box::new(RelayAuthRejected) as _);
+                        }
+                        checked_without_home = true;
+                    }
+                }
+            }
+        }.await;
+        for (url, config) in rejected {
+            self.endpoint.insert_relay(url, config).await;
+        }
+        result
+    }
+
+    async fn check_relays_without_home(&self) -> Result<bool> {
+        let mut reports = self.endpoint.net_report();
+        let mut report = reports.get();
+        while !report.is_some_and(|report| report.preferred_relay.is_none()) {
+            report = reports.updated().await?;
+        }
+        // iroh does not publish errors from non-home relay connections.
+        // Failed latency probes are not auth evidence: try an actual relay dial
+        // with the same credentials and TLS policy for each unconfirmed route.
+        let dns = self.endpoint.dns_resolver()?;
+        let relays = self.relay_map.relays::<Vec<_>>();
+        if relays.is_empty() {
+            return Ok(false);
+        }
+        let mut checks = JoinSet::new();
+        for relay in relays {
+            let mut client = ClientBuilder::new(
+                relay.url.clone(),
+                self.endpoint.secret_key().clone(),
+                dns.clone(),
+            )
+            .tls_client_config(self.endpoint.tls_config().clone());
+            if let Some(token) = &relay.auth_token {
+                client = client.auth_token(token);
+            }
+            checks.spawn(async move {
+                matches!(
+                    timeout(Duration::from_secs(10), client.connect()).await,
+                    Ok(Err(error)) if relay_http_auth_denied(&error)
+                        || matches!(
+                            error,
+                            RelayConnectError::Handshake {
+                                source: iroh_relay::protos::handshake::Error::ServerDeniedAuth { .. },
+                                ..
+                            }
+                        )
+                )
+            });
+        }
+        while let Some(denied) = checks.join_next().await {
+            if !denied? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     async fn connect_via(
         &self,
         host_key: &DevicePublicKey,
         addresses: impl IntoIterator<Item = TransportAddr>,
+        options: ConnectOptions,
     ) -> Result<PeerConnection> {
         let expected = EndpointId::from_bytes(host_key.as_bytes())?;
         let target = EndpointAddr::new(expected).with_addrs(addresses);
         // Dial immediately. Waiting for online here would serialize the relay
         // handshake behind local UDP address discovery on a cold endpoint.
-        let conn = self.endpoint.connect(target, HOST_ALPN).await?;
+        let dial = async {
+            let connecting = self
+                .endpoint
+                .connect_with_opts(target, HOST_ALPN, options)
+                .await?;
+            Ok::<_, ConnectError>(connecting.await?)
+        };
+        let conn = dial
+            .await
+            .map_err(|cause| -> Box<dyn std::error::Error + Send + Sync> {
+                match &cause {
+                    ConnectError::Connection { source, .. }
+                    | ConnectError::Connecting {
+                        source: ConnectingError::ConnectionError { source, .. },
+                        ..
+                    } if is_peer_access_revoked(source) => Box::new(PeerAccessRevoked),
+                    _ => Box::new(cause),
+                }
+            })?;
         if conn.remote_id() != expected {
             conn.close(0u32.into(), b"unexpected host identity");
             return Err("authenticated peer does not match the target Host".into());
@@ -213,8 +343,12 @@ impl PeerEndpoint {
         if routes.is_empty() {
             return Err("pairing ticket does not name a configured relay".into());
         }
-        self.connect_via(&parse_peer_id(&payload.host_peer_id)?, routes)
-            .await
+        self.connect_via(
+            &parse_peer_id(&payload.host_peer_id)?,
+            routes,
+            ConnectOptions::new().with_additional_alpns(vec![PAIRING_INFO_ALPN.to_vec()]),
+        )
+        .await
     }
 
     pub async fn close(&self) {
@@ -237,7 +371,6 @@ impl PeerEndpoint {
     /// do not require this startup step.
     #[cfg(feature = "host")]
     pub async fn wait_for_relay(&self) -> Result<Vec<RelayEndpoint>> {
-        use iroh::Watcher;
         let mut home = self.endpoint.home_relay_status();
         let mut reports = self.endpoint.net_report();
         let mut report = reports.get();
@@ -269,7 +402,7 @@ impl PeerEndpoint {
                     continue;
                 }
                 // Neither upstream error chains nor auth denial reasons are safe to display.
-                authentication_rejected |= status.auth_denied_reason().is_some();
+                authentication_rejected |= relay_auth_denied(status);
                 if self.routes.len() == rejected.len() + 1 {
                     break 'registration Err(if authentication_rejected {
                         relay_auth_rejected()
@@ -296,9 +429,48 @@ impl PeerEndpoint {
     }
 }
 
+fn relay_auth_denied(status: &iroh::endpoint::RelayStatus) -> bool {
+    status.auth_denied_reason().is_some()
+        || status
+            .last_error()
+            .is_some_and(|error| relay_http_auth_denied(error))
+}
+
+fn relay_http_auth_denied(error: &(dyn std::error::Error + 'static)) -> bool {
+    use tokio_websockets::upgrade::Error::DidNotSwitchProtocols;
+
+    // The WebSocket library can reject an upgrade before iroh sees a response.
+    let mut cause = Some(error);
+    while let Some(error) = cause {
+        if matches!(error.downcast_ref(), Some(DidNotSwitchProtocols(401 | 403)))
+            || matches!(
+                error.downcast_ref::<RelayConnectError>(),
+                Some(RelayConnectError::UnexpectedUpgradeStatus { code, .. })
+                    if matches!(code.as_u16(), 401 | 403)
+            )
+        {
+            return true;
+        }
+        cause = error.source();
+    }
+    false
+}
+
+/// The configured relay routes rejected the endpoint's authorization.
+#[derive(Debug)]
+pub struct RelayAuthRejected;
+
+impl std::fmt::Display for RelayAuthRejected {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("relay rejected authentication (missing or invalid relay Bearer token, or relay policy denied access)")
+    }
+}
+
+impl std::error::Error for RelayAuthRejected {}
+
 #[cfg(feature = "host")]
 fn relay_auth_rejected() -> Box<dyn std::error::Error + Send + Sync> {
-    "relay rejected authentication (missing or invalid relay Bearer token, or relay policy denied access)".into()
+    Box::new(RelayAuthRejected)
 }
 
 #[derive(Clone)]
@@ -323,6 +495,10 @@ impl PeerConnection {
         Ok(join(recv, send))
     }
 
+    pub fn supports_pairing_info(&self) -> bool {
+        self.conn.alpn() == PAIRING_INFO_ALPN
+    }
+
     pub fn export_sas(&self) -> Result<String> {
         export_sas(&self.conn, &self.host_key, &self.client_key)
     }
@@ -343,9 +519,38 @@ impl PeerConnection {
         self.conn.close(0u32.into(), b"");
     }
 
+    pub fn access_revoked(&self) -> bool {
+        self.conn
+            .close_reason()
+            .as_ref()
+            .is_some_and(is_peer_access_revoked)
+    }
+
     pub async fn closed(&self) -> iroh::endpoint::ConnectionError {
         self.conn.closed().await
     }
+}
+
+#[derive(Debug)]
+pub struct PeerAccessRevoked;
+
+impl std::fmt::Display for PeerAccessRevoked {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("peer access revoked")
+    }
+}
+
+impl std::error::Error for PeerAccessRevoked {}
+
+fn is_peer_access_revoked(error: &ConnectionError) -> bool {
+    let ConnectionError::ApplicationClosed(close) = error else {
+        return false;
+    };
+    let code = u64::from(close.error_code);
+    code == u64::from(PEER_ACCESS_REVOKED_CODE)
+        // Hosts predating the dedicated code used these exact application-close frames.
+        || (code == 0 && matches!(close.reason.as_ref(),
+            b"peer access revoked" | b"peer access revoked during handshake"))
 }
 
 pub(crate) fn export_sas(
@@ -408,7 +613,6 @@ impl PeerConnection {
 mod tests {
     use super::*;
     use std::net::SocketAddr;
-    use tokio::time::timeout;
 
     #[tokio::test]
     async fn wrong_route_is_rejected_by_the_quic_handshake() {
@@ -437,9 +641,13 @@ mod tests {
                     .unwrap(),
                 local_key: identity.public_key(),
                 routes: BTreeMap::new(),
+                relay_map: RelayMap::empty(),
             };
-            let dial =
-                client.connect_via(&target, [TransportAddr::Ip(imposter.bound_sockets()[0])]);
+            let dial = client.connect_via(
+                &target,
+                [TransportAddr::Ip(imposter.bound_sockets()[0])],
+                ConnectOptions::default(),
+            );
             let accept = async { imposter.accept().await.unwrap().await };
             let (client_result, server_result) = tokio::join!(dial, accept);
             assert!(

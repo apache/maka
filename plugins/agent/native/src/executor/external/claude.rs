@@ -428,6 +428,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn worker_progress_uses_claude_tool_results_to_settle_the_current_todo() {
+        let (sink, rows) = crate::owner::worker_progress::tests::worker();
+        let mut turn = StreamTurn::new("session".into(), true);
+        turn.sent("input".into());
+        for (row, expected) in [
+            (
+                json!({"type":"system","subtype":"init","session_id":"session"}),
+                "",
+            ),
+            (
+                json!({"type":"user","isReplay":true,"session_id":"session","uuid":"input","parent_tool_use_id":null}),
+                "",
+            ),
+            (
+                json!({"type":"assistant","session_id":"session","uuid":"a","message":{"id":"m","content":[{"type":"tool_use","id":"p","name":"TodoWrite","input":{"todos":[{"status":"in_progress","content":"Run suite","activeForm":"Running suite"}]}}]}}),
+                "TodoWrite",
+            ),
+            (
+                json!({"type":"user","session_id":"session","message":{"content":[{"type":"tool_result","tool_use_id":"p","content":"ok"}]}}),
+                "Running suite",
+            ),
+            (
+                json!({"type":"assistant","session_id":"session","uuid":"b","message":{"id":"n","content":[{"type":"tool_use","id":"c","name":"Bash","input":{"command":"cargo test"}}]}}),
+                "cargo test",
+            ),
+            (
+                json!({"type":"user","session_id":"session","message":{"content":[{"type":"tool_result","tool_use_id":"c","content":"ok"}]}}),
+                "Running suite",
+            ),
+        ] {
+            turn.row(row, sink.as_ref()).await.unwrap();
+            assert_eq!(rows.borrow()["child"].detail, expected);
+        }
+    }
+    #[tokio::test]
     async fn command_lifecycle_can_precede_claude_initialization() {
         let output = Sink::default();
         let mut turn = StreamTurn::new("session".into(), true);

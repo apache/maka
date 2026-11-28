@@ -60,7 +60,7 @@ impl RunAccess {
             *mode,
         ))
     }
-    pub(in crate::owner) async fn authorize_model_request(
+    pub(in crate::owner) async fn authorize_request_tools(
         self: &Arc<Self>,
         request: &RequestSpec,
         model: &PreparedModel,
@@ -106,6 +106,116 @@ impl RunAccess {
             mode,
         )
         .await
+    }
+
+    pub(in crate::owner) async fn authorize_request_memory(
+        &self,
+        request: &RequestSpec,
+        model: &PreparedModel,
+        budget: &maka_agent_facts::context::PreparedContextBreakdown,
+        memory: Option<&MemoryProjection>,
+    ) -> Result<(), RunError> {
+        use maka_agent_state::memory::{pinned::Authorize, reads::CheckReads};
+
+        fn memory_read_failure(error: maka_event_log::StoreError) -> RunError {
+            match error {
+                maka_event_log::StoreError::InvalidTransition(message) => {
+                    RunError::FrozenMemoryDenied(message)
+                }
+                error => source_authority_changed(error.to_string()),
+            }
+        }
+
+        let run = self.execution.run_id;
+        let data = self.data_writer().map_err(source_authority_changed)?;
+        let reads = data
+            .query(CheckReads(run))
+            .await
+            .map_err(memory_read_failure)?;
+        let spec = self.spec();
+        if spec.memory_projection.is_none() && !reads.facts {
+            return Ok(());
+        }
+
+        let owner = self.owner().map_err(RunError::InvalidInput)?;
+        // The policy and the Run ledger live in separate databases. An unchanged
+        // policy revision brackets the snapshot that authorizes all protected input.
+        let mut policy = owner
+            .configuration
+            .runtime_policy()
+            .await
+            .map_err(|e| source_authority_changed(e.to_string()))?;
+        const MAX_POLICY_CHECKS: usize = 3;
+        for _ in 0..MAX_POLICY_CHECKS {
+            if !policy.policy.memory.enabled || !policy.policy.memory.agent_read_enabled {
+                return Err(RunError::FrozenMemoryDenied(
+                    "admitted memory read permission revoked".into(),
+                ));
+            }
+            let current = self.current_configuration().await?;
+            if current.tools.is_some() {
+                return Err(RunError::FrozenMemoryDenied(
+                    "admitted memory read permission revoked".into(),
+                ));
+            }
+            let mut dependencies = Vec::new();
+            if let Some(memory) = memory {
+                if request.accounting.purpose == maka_agent_facts::context::ModelPurpose::Main {
+                    let limit = model.context.as_ref().and_then(|c| {
+                        maka_agent_facts::context::effective_input_limit(
+                            c.model_context_window,
+                            c.context_window,
+                        )
+                    });
+                    memory
+                        .check_window(limit, budget.fixed_tokens())
+                        .map_err(source_authority_changed)?;
+                }
+                dependencies = memory
+                    .entries
+                    .iter()
+                    .map(|entry| entry.loaded.clone())
+                    .collect();
+            }
+
+            let scope = if reads.project.is_some()
+                || dependencies.iter().any(|entry| entry.scope != "personal")
+            {
+                owner
+                    .project_memory_scope(&self.execution.session_id, &current)
+                    .await
+                    .map_err(source_authority_changed)?
+            } else {
+                let mut scope = owner
+                    .memory_scope(MemoryScope::Personal)
+                    .await
+                    .map_err(source_authority_changed)?;
+                scope.binding = Some((
+                    self.execution.session_id.clone(),
+                    current.permission_basis(),
+                ));
+                scope
+            };
+            data.query(Authorize {
+                run,
+                scope,
+                dependencies,
+            })
+            .await
+            .map_err(memory_read_failure)?;
+            let current_policy = owner
+                .configuration
+                .runtime_policy()
+                .await
+                .map_err(|e| source_authority_changed(e.to_string()))?;
+            if current_policy.revision == policy.revision {
+                return Ok(());
+            }
+            policy = current_policy;
+        }
+        Err(RunError::FrozenMemoryDenied(
+            "memory policy changed repeatedly during authorization; retry in a new Run".into(),
+        ))
     }
 
     pub(in crate::owner) async fn validate_model_tools(
@@ -166,19 +276,17 @@ impl RunAccess {
         };
         let code = mode == maka_agent_facts::execution::ToolMode::CodeMode;
         let contracts: BTreeMap<String, String> = if code {
-            let provenance: serde_json::Value =
-                owner.run_content(view.run, &request.provenance).await?;
-            serde_json::from_value(
-                provenance
-                    .get("toolContracts")
-                    .ok_or_else(|| {
-                        source_authority_changed(
-                            "original request-bound tool contracts are unavailable",
-                        )
-                    })?
-                    .clone(),
-            )
-            .map_err(RunError::Json)?
+            if let Some(reference) = &request.tool_contracts {
+                owner.run_content(view.run, reference).await?
+            } else {
+                let provenance: serde_json::Value =
+                    owner.run_content(view.run, &request.provenance).await?;
+                match provenance.get("toolContracts") {
+                    Some(value) => serde_json::from_value(value.clone()).map_err(RunError::Json)?,
+                    // Empty tool contracts are omitted instead of writing an empty "{}" blob.
+                    None => BTreeMap::new(),
+                }
+            }
         } else {
             BTreeMap::new()
         };

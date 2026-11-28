@@ -123,6 +123,8 @@ pub struct InventoryPage {
 pub enum Entry {
     Position {
         row: SnapshotPosition,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        compact: bool,
     },
     Run {
         run: RunId,

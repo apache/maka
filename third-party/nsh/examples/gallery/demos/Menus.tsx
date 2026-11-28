@@ -343,7 +343,7 @@ export function Menus() {
       </>
     );
     return (
-      <Card icon="photos" title="On the rows of a list" subtitle={platform.desktop ? "Right click a row, or its ⋯ button" : "Hold a finger on a row, or press its ⋯"}>
+      <Card icon="photos" title="On the rows of a list" subtitle={platform.desktop ? "Right click a row, its star, or its ⋯ button" : "Hold a finger on a row or its star, or press its ⋯"}>
         <If when={files().length > 0} else={<Caption label="No files left" />}>
           <View>
             <Each of={files()} key={(f) => f.id}>
@@ -354,8 +354,15 @@ export function Menus() {
                     {/* The star follows the name, so the kind's icon stays in its column. */}
                     <View style={{ flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", gap: 6 }}>
                       <Text style={{ numberOfLines: 1, flexShrink: 1, fontSize: 14, color: colors.text }}>{file().name}</Text>
+                      {/* The star has a menu of its own inside the row's: a hold on it opens this one alone. */}
                       <If when={file().starred}>
-                        <Icon name="star" size={12} tint={colors.accent} />
+                        <ContextMenu margin={8} {...menuPopup()} onOpenChange={changed(`${file().name} ★`)} trigger={
+                          <View accessibilityLabel={`Star on ${file().name}`} hitSlop={6}>
+                            <Icon name="star" size={12} tint={colors.accent} />
+                          </View>
+                        }>
+                          <Item label="Unstar" onSelect={() => update(file().id, (f) => ({ ...f, starred: false }))} />
+                        </ContextMenu>
                       </If>
                     </View>
                     <Menu align="end" offset={4} margin={8} {...menuPopup()} onOpenChange={changed(`${file().name} ⋯`)} trigger={

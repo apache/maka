@@ -29,7 +29,7 @@ use sha2::{Digest, Sha256};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct CoveredPrefix {
+pub(in crate::owner) struct CoveredPrefix {
     message_count: usize,
     digest: String,
 }
@@ -48,7 +48,7 @@ impl CoveredPrefix {
         let mut count = 0;
         let mut end = 0;
         while let Some(message) = cursor.next().await? {
-            if message.role == MessageRole::System {
+            if message.role == MessageRole::System || message.is_pinned_memory {
                 continue;
             }
             hash.update((message.logical_identity.len() as u64).to_le_bytes());
@@ -67,7 +67,7 @@ impl CoveredPrefix {
             end,
         ))
     }
-    pub(super) async fn capture(
+    pub(in crate::owner) async fn capture(
         prompt: &maka_agent_engine::prepared_prompt::PreparedPrompt,
     ) -> Result<Self, RunError> {
         let (covered, _) = Self::read(prompt, None).await?;
@@ -172,6 +172,12 @@ impl DriverModel {
         let main_input = self.frozen_input(&reader, view.run, &main).await?;
         let attempt = self.state.model_attempt(origin.run, origin.attempt).await?;
         let summary = reader.request(origin.run, attempt.step).await?;
+        if !reader
+            .can_replay_memory(summary.memory_replay, origin.run, view.run)
+            .await?
+        {
+            return Err(RunError::CompactionMismatch);
+        }
         let summary_input = self.frozen_input(&reader, origin.run, &summary).await?;
         let prompt = self
             .restore_frozen(&reader, view.run, &main, &main_input)
@@ -279,6 +285,12 @@ impl DriverModel {
         {
             return Err(unsupported("adopted-main-route-changed"));
         }
+        if !reader
+            .can_replay_memory(compacted.memory_replay, producer, view.run)
+            .await?
+        {
+            return Err(RunError::CompactionMismatch);
+        }
         if let Some(native) = &compacted.native {
             let main_context: RequestContextEvidence =
                 reader.decode(view.run, &request.provenance).await?;
@@ -369,9 +381,17 @@ impl DriverModel {
                     let mut system=directory.open(0);
                     while let Some(recipe)=system.next().await?{if matches!(recipe,MessageRecipe::System{..}){builder.append_recipe(&recipe).await?;}}
                 }
+                self.append_pinned(&mut builder).await?;
                 self.append_compacted_material(&reader,view.run,compacted,ReplayTarget::new(&model, frozen.operation),frozen.language,&mut builder).await?;
                 let mut tail=directory.open(start);
-                while let Some(recipe)=tail.next().await?{if !matches!(recipe,MessageRecipe::System{..})&& let Some(recipe)=ReplayTarget::new(&model,frozen.operation).recipe(recipe).await?{builder.append_recipe(&recipe).await?;}}
+                while let Some(recipe) = tail.next().await? {
+                    if recipe.is_pinned_memory() || matches!(recipe, MessageRecipe::System { .. }) {
+                        continue;
+                    }
+                    if let Some(recipe) = ReplayTarget::new(&model, frozen.operation).recipe(recipe).await? {
+                        builder.append_recipe(&recipe).await?;
+                    }
+                }
                 if cut_off{builder.append(maka_model::prompt::Message::user(cut_off_note(frozen.language))).await?;}
                 Ok::<(),RunError>(())
             }.await;
@@ -381,20 +401,26 @@ impl DriverModel {
                 preparation::prepare_wire(&settings,&mut prompt,&definitions,model.main_output_limit,&self.cancellation).await?;
                 let calibration=self.calibration(view,&capture,&model,Some(&checkpoint)).await?;
                 let prepared=preparation::prepare_request(&settings,prompt.clone(),definitions.clone(),preparation::OutputBudget::Compute(model.main_output_limit),ModelPurpose::Main,calibration)?;
+                self.check_pinned_window(&model, &prepared.context_breakdown)?;
                 let snapshot=preparation::snapshot_prompt(self.preparation_io()?,self.resources.clone(),&prepared.request.prompt,&self.cancellation).await?;
-                let (prompt,layout_chunks,layout,cleanup)=snapshot.into_parts();
+                let (prompt,layout_chunks,layout_media,layout,cleanup)=snapshot.into_parts();
                 let evidence=self.cleanup.clone();
                 self.workers.spawn(async move{if let Err(error)=cleanup.await{evidence.observe(&error);}});
-                frozen.prompt=prompt;frozen.prompt_chunks=layout_chunks.iter().map(|chunk| chunk.reference().clone()).collect();frozen.layout=layout;frozen.covered_prefix=None;
+                frozen.prompt=prompt;frozen.prompt_chunks=layout_chunks.iter().map(|chunk| chunk.reference().clone()).collect();frozen.prompt_media=layout_media.iter().map(|blob| blob.reference().clone()).collect();frozen.layout=layout;frozen.covered_prefix=None;
                 frozen.instructions=prepared.request.prompt.instructions().map(str::to_owned);
                 frozen.normalization=prepared.request.prompt.normalization().cloned();frozen.wire=FrozenWire::capture(&prepared.request.prompt)?;
                 let (body,texts)=frozen.seal()?;
                 let recovery=ContentBlob::json(&FrozenRecovery{protocol:format!("{PROTOCOL}/recovery"),version:VERSION,request:body.reference().clone(),adapter:frozen.adapter.clone(),contract:original_recovery_contract(&adapter,&model.provider,&definitions,frozen.operation)})?;
                 let projection=ContentBlob::json(&json!({"original":request.projection,"baseline":baseline,"checkpoint":checkpoint}))?;
                 let tool_contracts = driver.tool_contracts(&bound.catalog, &definitions)?;
+                let tool_contracts_blob = (!tool_contracts.is_empty())
+                    .then(|| ContentBlob::json(&tool_contracts))
+                    .transpose()?;
                 let fields=provenance.as_object_mut().ok_or_else(||unsupported("frozen-main-provenance"))?;
                 fields.insert("modelInputPolicy".into(), json!({"vision": model.supports_vision, "imageInput": model.provider.image_input}));
-                fields.insert("toolContracts".into(), json!(tool_contracts));
+                fields.remove("toolContracts");
+                fields.remove("notifications");
+                fields.remove("recoveredCells");
                 fields.remove("compactionRequest");
                 fields.insert("inputDigest".into(),json!(prepared.input_digest));fields.insert("routeIdentity".into(),json!(prepared.route_identity));fields.insert("breakdown".into(),json!(prepared.context_breakdown));fields.insert("estimatedInputTokens".into(),json!(prepared.estimated_input_tokens));fields.insert("previousCheckpointId".into(),json!(checkpoint));
                 let provenance=ContentBlob::json(&provenance)?;
@@ -406,9 +432,11 @@ impl DriverModel {
                 request.composition.tool_catalog_digest = maka_agent_engine::digest(&definitions)?;
                 surface.tools = definitions;
                 let surface_blob = ContentBlob::json(&surface)?;
-                request.adjudications.clear();request.request=body.reference().clone();request.request_contents=frozen.content_refs();request.recovery_contract=recovery.reference().clone();request.provenance=provenance.reference().clone();request.projection=Some(projection.reference().clone());request.effective_source_digest=projection.reference().digest.clone();request.composition.surface=surface_blob.reference().clone();request.composition.max_output_tokens=prepared.request.max_output_tokens;
+                request.adjudications.clear();request.request=body.reference().clone();request.request_contents=frozen.content_refs();request.recovery_contract=recovery.reference().clone();request.provenance=provenance.reference().clone();request.tool_contracts=tool_contracts_blob.as_ref().map(|blob|blob.reference().clone());request.projection=Some(projection.reference().clone());request.effective_source_digest=projection.reference().digest.clone();request.composition.surface=surface_blob.reference().clone();request.composition.max_output_tokens=prepared.request.max_output_tokens;
                 let mut contents=vec![body,recovery,projection,provenance,surface_blob];
+                if let Some(blob)=tool_contracts_blob{contents.push(blob);}
                 contents.extend(layout_chunks);
+                contents.extend(layout_media);
                 contents.extend(texts);
                 Ok(contents)
             }.await;
@@ -451,6 +479,22 @@ impl DriverModel {
         }))
     }
 
+    pub(super) async fn checkpoint_available(
+        &self,
+        reader: &HistorySource<'_>,
+        run: RunId,
+        reference: &ContentRef,
+    ) -> Result<bool, RunError> {
+        // A later Run can rebuild from filtered history instead of an opaque summary.
+        let context: CompactedContext = reader.decode(run, reference).await?;
+        reader
+            .can_replay_memory(
+                context.memory_replay,
+                context.summary_origin.map_or(run, |o| o.run),
+                self.execution.run_id,
+            )
+            .await
+    }
     pub(super) async fn append_compacted(
         &self,
         reader: &HistorySource<'_>,
@@ -474,6 +518,18 @@ impl DriverModel {
         language: Language,
         messages: &mut preparation::PromptBuilder,
     ) -> Result<RequestSource, RunError> {
+        if !reader
+            .can_replay_memory(
+                body.memory_replay,
+                body.summary_origin.map_or(run, |o| o.run),
+                self.execution.run_id,
+            )
+            .await?
+        {
+            return Err(unsupported(
+                "checkpoint contains memory admitted only to its original Run",
+            ));
+        }
         if matches!(
             &body.checkpoint.summary,
             CheckpointContent::CodexNative { .. }

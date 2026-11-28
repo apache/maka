@@ -1116,12 +1116,55 @@ pub enum CellObservation {
 
 /// Shared Cell child result body. The surrounding ToolReturn owns exact media
 /// manifests; standalone plain tools may omit a model projection entirely.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[derive(Clone, Debug)]
 pub struct CellReturnedResult {
     pub output: crate::tool_output::ToolOutput,
     pub projection: Option<crate::tool_output::DurableToolProjection>,
     pub is_error: bool,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct StoredCellReturnedResult<O, P> {
+    output: O,
+    projection: Option<crate::tool_output::StoredProjection<P>>,
+    is_error: bool,
+}
+
+impl Serialize for CellReturnedResult {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let projection = self
+            .projection
+            .as_ref()
+            .map(|projection| crate::tool_output::store_projection(&self.output, projection));
+        StoredCellReturnedResult {
+            output: &self.output,
+            projection,
+            is_error: self.is_error,
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for CellReturnedResult {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let StoredCellReturnedResult {
+            output,
+            projection,
+            is_error,
+        } = StoredCellReturnedResult::<
+            crate::tool_output::ToolOutput,
+            crate::tool_output::DurableToolProjection,
+        >::deserialize(deserializer)?;
+        let projection = projection
+            .map(|projection| crate::tool_output::resolve_projection(&output, projection))
+            .transpose()?;
+        Ok(Self {
+            output,
+            projection,
+            is_error,
+        })
+    }
 }
 
 /// Local and historical Cell returns use the original body. Host returns can
@@ -1139,5 +1182,54 @@ impl StoredCellReturn {
             Self::Operation(body) => body.is_error,
             Self::Inline(body) => body.is_error,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tool_output::{DurableToolProjection, ToolOutput};
+    use serde_json::json;
+
+    #[test]
+    fn cell_returned_result_shares_matching_json_projection_and_reads_legacy_inline() {
+        let value = json!({"status": "ok", "items": [1, 2, 3]});
+        let result = CellReturnedResult {
+            output: ToolOutput::Json(value.clone()),
+            projection: Some(DurableToolProjection::Json {
+                value: value.clone(),
+            }),
+            is_error: false,
+        };
+        let wire = serde_json::to_value(&result).unwrap();
+        assert_eq!(wire["projection"], json!({"kind": "from_output"}));
+
+        let roundtrip: CellReturnedResult = serde_json::from_value(wire).unwrap();
+        assert_eq!(roundtrip.output, ToolOutput::Json(value.clone()));
+        assert_eq!(
+            roundtrip.projection,
+            Some(DurableToolProjection::Json {
+                value: value.clone(),
+            })
+        );
+        assert!(!roundtrip.is_error);
+
+        let legacy = json!({
+            "output": { "format": "json", "value": value },
+            "projection": { "kind": "json", "value": value },
+            "isError": false
+        });
+        let from_legacy: CellReturnedResult = serde_json::from_value(legacy).unwrap();
+        assert_eq!(from_legacy.projection, roundtrip.projection);
+
+        let omitted = CellReturnedResult {
+            output: ToolOutput::Text("plain".into()),
+            projection: None,
+            is_error: true,
+        };
+        let omitted_roundtrip: CellReturnedResult =
+            serde_json::from_value(serde_json::to_value(&omitted).unwrap()).unwrap();
+        assert!(omitted_roundtrip.projection.is_none());
+        assert!(omitted_roundtrip.is_error);
     }
 }

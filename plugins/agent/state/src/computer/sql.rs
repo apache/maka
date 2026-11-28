@@ -53,7 +53,7 @@ fn execution(view: &RunView) -> ExecutionIdentity {
 }
 fn verify_execution(c: &Connection, actual: &ExecutionIdentity) -> Result<(), StoreError> {
     let (version, session, body_version, body_session, turn): (u32, String, u32, String, String) =
-        c.prepare_cached("SELECT s.schema_version,s.session,json_extract(CAST(b.payload AS TEXT),'$.schemaVersion'),json_extract(CAST(b.payload AS TEXT),'$.sessionId'),json_extract(CAST(b.payload AS TEXT),'$.turnId') FROM agent_run_specs s JOIN contents b ON b.id=s.spec_content_id WHERE s.run=?")?
+        c.prepare_cached("SELECT s.schema_version,s.session,json_extract(maka_content_text(b.payload,b.encoding),'$.schemaVersion'),json_extract(maka_content_text(b.payload,b.encoding),'$.sessionId'),json_extract(maka_content_text(b.payload,b.encoding),'$.turnId') FROM agent_run_specs s JOIN contents b ON b.id=s.spec_content_id WHERE s.run=?")?
             .query_row([actual.run_id.to_string()], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))?;
     if version != SCHEMA_VERSION
         || body_version != version
@@ -287,7 +287,7 @@ fn pin(c: &Connection, run: RunId, reference: &ContentRef) -> Result<(), StoreEr
     reference.validate().map_err(invalid)?;
     let content: Option<i64> = c
         .query_row(
-            "SELECT id FROM contents WHERE content_sha256=? AND length(payload)=?",
+            "SELECT id FROM contents WHERE content_sha256=? AND COALESCE(logical_bytes,length(payload))=?",
             params![reference.digest, sql_integer(reference.bytes)?],
             |r| r.get(0),
         )

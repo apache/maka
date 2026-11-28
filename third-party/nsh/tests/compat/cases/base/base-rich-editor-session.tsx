@@ -168,7 +168,13 @@ function App() {
       other.run(setTextSelection(1));
       other.run(insertContent("x"));
       other.insertContent("y");
-      return other.getText();
+      const markdownInsert = createRichEditor({ content: "ab", plugins: [starterKit()] });
+      markdownInsert.run(setTextSelection(2));
+      markdownInsert.insertContent("X", "markdown");
+      const jsonInsert = createRichEditor({ content: "ab", plugins: [starterKit()] });
+      jsonInsert.run(setTextSelection(2));
+      jsonInsert.insertContent({ type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "Z" }] }] });
+      return `${other.getText()} ${markdownInsert.getText()} ${jsonInsert.getText()}`;
     });
     step("Dispatch", () => {
       other.dispatch({ steps: [], selection: { type: "all" } });

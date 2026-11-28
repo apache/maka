@@ -335,6 +335,15 @@ async fn assert_peer_closed(mut stream: impl tokio::io::AsyncRead + Unpin) {
     );
 }
 
+async fn assert_peer_revoked(mut stream: wire::Reader<Channel>) {
+    let response = tokio::time::timeout(Duration::from_secs(5), stream.read::<Response>())
+        .await
+        .expect("Host did not report revoked peer access")
+        .unwrap();
+    assert!(matches!(response, Response::PeerAccessRevoked));
+    assert_peer_closed(stream.inner).await;
+}
+
 async fn assert_rejected(mut stream: wire::Reader<Channel>) {
     assert!(
         tokio::time::timeout(Duration::from_secs(5), stream.read::<Response>())
@@ -443,18 +452,14 @@ async fn native_peers_can_call_but_cannot_control_the_host_and_are_revocable() {
     let call = client.open_call_channel().await.unwrap();
     assert!(host.revoke_peer_access(peer.clone()).await.unwrap());
     assert_eq!(revoked.try_recv().unwrap(), peer);
-    assert_peer_closed(opening(&open, Request::Connect, None).await.inner).await;
+    assert_peer_revoked(opening(&open, Request::Connect, None).await).await;
     assert!(
         Client::status_channel(open().await.unwrap(), None)
             .await
             .is_err()
     );
     assert_peer_closed(call).await;
-    assert!(matches!(
-        raw_anchor.read::<Response>().await.unwrap(),
-        Response::PeerAccessRevoked
-    ));
-    assert_peer_closed(raw_anchor.inner).await;
+    assert_peer_revoked(raw_anchor).await;
     assert!(client.refresh().await.is_err());
     cancel.cancel();
     wait_for_server(server).await;
@@ -754,12 +759,7 @@ async fn websocket_and_native_principals_are_isolated_and_ingress_eof_keeps_othe
         .inner,
     )
     .await;
-    assert_peer_closed(
-        opening(&wrong_native, Request::Connect, claimed.clone())
-            .await
-            .inner,
-    )
-    .await;
+    assert_peer_revoked(opening(&wrong_native, Request::Connect, claimed.clone()).await).await;
 
     drop(sender);
     let mut local = Client::connect(&socket, None).await.unwrap();

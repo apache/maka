@@ -19,6 +19,7 @@
 
 import { Text, View, token } from 'nsh';
 import { Input } from 'nsh/base';
+import { tr } from '../locale';
 import { spacing, type } from '../theme/tokens';
 import { Icon } from './Icon';
 
@@ -27,7 +28,6 @@ export function SearchField(props: {
   placeholder: string;
   onChange: (value: string) => void;
   accessibilityLabel?: string;
-  clearLabel?: string;
 }) {
   return (
     <View
@@ -62,7 +62,7 @@ export function SearchField(props: {
       <If when={props.value.length > 0}>
         <View
           role="button"
-          accessibilityLabel={props.clearLabel ?? 'Clear'}
+          accessibilityLabel={tr('Clear search')}
           onPress={() => props.onChange('')}
           style={{
             width: 28,

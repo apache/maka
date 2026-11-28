@@ -443,7 +443,7 @@ fn report(
 /// Takes the keyboard focus away from inside `view` before it is hidden or
 /// detached (a text field of a screen that is gone would keep typing),
 /// giving it to the root of its window.
-fn drop_focus(surface: &Surface, view: &NSView) {
+pub(crate) fn drop_focus(surface: &Surface, view: &NSView) {
     let Some(window) = view.window() else { return };
     let Some(responder) = window.firstResponder() else {
         return;
@@ -535,17 +535,18 @@ fn restore_focus(surface: &Surface, scope: &NSView, view: Option<objc2::rc::Weak
 
 /// Hides `view` (a screen not on top, a header item other than `header`).
 fn hide(surface: &Surface, view: &NshView) {
-    if !view.ns().isHidden() {
+    if !view.state().nav_hidden {
         drop_focus(surface, view.ns());
-        view.ns().setHidden(true);
+        view.state_mut().nav_hidden = true;
+        view.sync_hidden();
     }
 }
 
-/// Shows `view` again (its layer's visibility follows its style).
+/// Shows `view` again, unless its style hides it (`visibility: hidden`).
 fn show(view: &NshView) {
-    if view.ns().isHidden() {
-        view.ns().setHidden(false);
-        view.place();
+    if view.state().nav_hidden {
+        view.state_mut().nav_hidden = false;
+        view.sync_hidden();
     }
 }
 

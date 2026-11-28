@@ -192,7 +192,14 @@ pub(crate) fn test(
                 verbose: ui::verbose(),
                 page_host,
             };
-            in_runner(&app, &request, release, &shown, &mut tally)?;
+            // A trace takes one file at a time.
+            let jobs = if trace {
+                1
+            } else {
+                jobs.or_else(|| std::thread::available_parallelism().ok())
+                    .map_or(1, std::num::NonZeroUsize::get)
+            };
+            in_runners(&app, &request, jobs, release, &shown, &mut tally)?;
         }
         None => {
             let run = TestRun {
@@ -452,17 +459,107 @@ fn xml(text: &str) -> String {
     out
 }
 
+/// What a runner said of a test file, kept until the file's turn to be
+/// shown.
+enum Said {
+    Log {
+        level: log::Level,
+        target: String,
+        message: String,
+    },
+    Plain(String),
+    Result(PathBuf, TestResult),
+    Failed(PathBuf, String),
+}
+
+impl Said {
+    fn show(self, shown: &dyn Fn(&Path) -> String, tally: &mut Tally) {
+        match self {
+            Said::Log {
+                level,
+                target,
+                message,
+            } => logger::forward(level, &target, &message),
+            Said::Plain(line) => ui::plain(line),
+            Said::Result(file, result) => tally.show(&shown(&file), &result),
+            Said::Failed(file, message) => tally.failed(&shown(&file), &message),
+        }
+    }
+}
+
 /// Runs `request` in the headless runner of the app with Rust crates
-/// `app`: builds the entries it asks for, shows its results and its log.
-fn in_runner(
+/// `app`, `jobs` files at a time: a runner process a file, as the files of
+/// an app without crates take an engine each. Their results show file by
+/// file, in order, a file's once those before it were shown.
+fn in_runners(
     app: &RustApp,
     request: &TestRequest,
+    jobs: usize,
     release: bool,
     shown: &dyn Fn(&Path) -> String,
     tally: &mut Tally,
 ) -> anyhow::Result<()> {
     let runner = app.test_runner()?;
-    let mut child = Command::new(&runner)
+    // The entries the runners ask for are numbered across the run: they
+    // share its work directory.
+    let builds = std::sync::atomic::AtomicUsize::new(0);
+    if jobs <= 1 || request.files.len() <= 1 {
+        return in_runner(&runner, request, &builds, release, &mut |said| {
+            said.show(shown, tally);
+        });
+    }
+    let files = &request.files;
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let (done, ended) = std::sync::mpsc::channel();
+    let mut failure = None;
+    std::thread::scope(|scope| {
+        for _ in 0..jobs.min(files.len()) {
+            let done = done.clone();
+            let (next, builds, runner) = (&next, &builds, &runner);
+            scope.spawn(move || {
+                loop {
+                    let n = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let Some(file) = files.get(n) else { break };
+                    let one = TestRequest {
+                        files: vec![file.clone()],
+                        ..request.clone()
+                    };
+                    let mut said = Vec::new();
+                    let ran = in_runner(runner, &one, builds, release, &mut |s| said.push(s));
+                    if done.send((n, said, ran)).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+        drop(done);
+        let mut waiting = HashMap::new();
+        let mut shown_up_to = 0;
+        for (n, said, ran) in ended {
+            waiting.insert(n, (said, ran));
+            while let Some((said, ran)) = waiting.remove(&shown_up_to) {
+                said.into_iter().for_each(|s| s.show(shown, tally));
+                if let Err(e) = ran {
+                    failure.get_or_insert(e);
+                }
+                shown_up_to += 1;
+            }
+        }
+    });
+    failure.map_or(Ok(()), Err)
+}
+
+/// Runs `request` in the runner process `runner`: builds the entries it
+/// asks for, numbered by `builds`, and hands `said` its results and its
+/// log.
+fn in_runner(
+    runner: &Path,
+    request: &TestRequest,
+    builds: &std::sync::atomic::AtomicUsize,
+    release: bool,
+    said: &mut dyn FnMut(Said),
+) -> anyhow::Result<()> {
+    let mut child = Command::new(runner)
         .arg(serde_json::to_string(request)?)
         .stdin(Stdio::piped())
         .stderr(Stdio::piped())
@@ -470,7 +567,6 @@ fn in_runner(
         .with_context(|| format!("run {}", runner.display()))?;
     let mut input = child.stdin.take().context("the runner's standard input")?;
     let stderr = child.stderr.take().context("the runner's standard error")?;
-    let mut builds = 0;
     for line in BufReader::new(stderr).lines() {
         let line = line?;
         match RunnerMessage::parse(&line) {
@@ -478,28 +574,27 @@ fn in_runner(
                 level,
                 target,
                 message,
-            }) => {
-                let level = level.parse().unwrap_or(log::Level::Info);
-                logger::forward(level, &target, &message);
-            }
+            }) => said(Said::Log {
+                level: level.parse().unwrap_or(log::Level::Info),
+                target,
+                message,
+            }),
             Some(RunnerMessage::Build { entry, kind }) => {
-                builds += 1;
-                let reply = build_for_runner(&entry, kind, &request.work_dir, builds, release);
+                let n = builds.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                let reply = build_for_runner(&entry, kind, &request.work_dir, n, release);
                 writeln!(input, "{}", serde_json::to_string(&reply)?)
                     .context("answer the runner")?;
             }
-            Some(RunnerMessage::Result { file, result }) => tally.show(&shown(&file), &result),
-            Some(RunnerMessage::Failed { file, message }) => {
-                tally.failed(&shown(&file), &message);
-            }
-            None => ui::plain(line),
+            Some(RunnerMessage::Result { file, result }) => said(Said::Result(file, result)),
+            Some(RunnerMessage::Failed { file, message }) => said(Said::Failed(file, message)),
+            None => said(Said::Plain(line)),
         }
     }
     let status = child.wait()?;
     if !status.success() {
         bail!(
             "the headless runner {} exited with {status}",
-            ui::path(&runner)
+            ui::path(runner)
         );
     }
     Ok(())

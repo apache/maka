@@ -23,7 +23,7 @@ import { Icon } from './Icon';
 import { ChoiceIndicator } from './ChoiceIndicator';
 import { C, captionTextStyle, controlStyle, controlDisabledStyle, floatingStyle } from './ui';
 import type { PresetSettingsOwner } from './presetSettingsState';
-import { LoadingIndicator } from './Loading';
+import { LoadingIndicator, SettingsSkeleton } from './Loading';
 import { tr } from './locale';
 import {
   SettingsBody,
@@ -73,33 +73,35 @@ export function SubagentSettings(props: { owner: PresetSettingsOwner }) {
           when={owner.editor()}
           else={
             <SettingsBody>
-              <SettingsSection>
-                <If when={owner.loading()}>
-                  <LoadingIndicator />
-                </If>
-                <If when={!owner.loading() && owner.rows() === null}>
-                  <SettingsProblem retry={owner.refresh} />
-                </If>
-                <SettingsButton
-                  label={tr('Refresh')}
-                  disabled={disabled()}
-                  onPress={owner.refresh}
-                />
-                <If when={owner.rows()?.length === 0}>
-                  <SettingsRow label={tr('No subagent presets.')} tone="muted" />
-                </If>
-                <Each of={owner.rows() ?? []} key={(row) => row.id}>
-                  {(row) => (
-                    <SettingsRow
-                      label={row().name}
-                      description={`${row().description} · ${row().model.connectionId} / ${row().model.modelId} · ${tr(row().availability.kind === 'available' ? 'Enabled' : row().availability.kind === 'disabled' ? 'Disabled' : row().availability.kind === 'modelUnavailable' ? 'The preset model is unavailable. Choose another model.' : 'The preset reasoning effort is unavailable.')}`}
-                      opens
-                      disabled={disabled()}
-                      onPress={() => void owner.open(row().id)}
-                    />
-                  )}
-                </Each>
-              </SettingsSection>
+              <If when={owner.loading() && owner.rows() === null}>
+                <SettingsSkeleton padded={false} rows={3} />
+              </If>
+              <If when={!owner.loading() && owner.rows() === null}>
+                <SettingsProblem retry={owner.refresh} />
+              </If>
+              <If when={owner.rows() !== null}>
+                <SettingsSection>
+                  <SettingsButton
+                    label={tr('Refresh')}
+                    disabled={disabled()}
+                    onPress={owner.refresh}
+                  />
+                  <If when={owner.rows()?.length === 0}>
+                    <SettingsRow label={tr('No subagent presets.')} tone="muted" />
+                  </If>
+                  <Each of={owner.rows() ?? []} key={(row) => row.id}>
+                    {(row) => (
+                      <SettingsRow
+                        label={row().name}
+                        description={`${row().description} · ${row().model.connectionId} / ${row().model.modelId} · ${tr(row().availability.kind === 'available' ? 'Enabled' : row().availability.kind === 'disabled' ? 'Disabled' : row().availability.kind === 'modelUnavailable' ? 'The preset model is unavailable. Choose another model.' : 'The preset reasoning effort is unavailable.')}`}
+                        opens
+                        disabled={disabled()}
+                        onPress={() => void owner.open(row().id)}
+                      />
+                    )}
+                  </Each>
+                </SettingsSection>
+              </If>
             </SettingsBody>
           }
         >
@@ -228,7 +230,7 @@ function PresetModelSelect(props: { owner: PresetSettingsOwner; disabled: boolea
         <Button
           accessibilityLabel={tr('Choose model')}
           disabled={props.disabled}
-          style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 8 }}
+          style={{ ...controlStyle(), flexDirection: 'row', alignItems: 'center', gap: 8 }}
           hoverStyle={{ backgroundColor: C.pressed }}
           focusStyle={{ backgroundColor: C.pressed }}
           disabledStyle={controlDisabledStyle}

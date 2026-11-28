@@ -62,9 +62,11 @@ The desktop shell forms an inverted L: the sidebar and top strip share the `chro
 
 Window chrome occupies a single `32 pt` top row: window controls and the sidebar toggle sit above the sidebar (moving into the panel header when the sidebar collapses), while each pane header aligns on the same vertical center—showing title, workspace badge, and a trailing segmented view switcher without repeating the title elsewhere.
 
-Sidebar navigation keeps core actions (`New conversation`, `Search conversations`) alongside user-pinned optional features (`Maka Bot`, `Automations`, `Rooms`) managed from a `More features` popover, and omits redundant filter entries such as `Waiting for you`. Navigation rows use `secondary` text and `muted` icons so conversation titles (`text`) stand out; selected rows use `raised` fill and `500` weight. A `Conversations` section header switches between project grouping and chronological order using the same `13 pt` caption scale as group headings and full-width `Show N more` rows. A fixed `16 pt` trailing slot holds the unread dot, active spinner, or hover `More` button so titles never shift horizontally.
+Sidebar navigation keeps core actions (`New conversation`, `Search conversations`) alongside user-pinned optional features (`Maka Bot`, `Automations`, `Rooms`) managed from a `More features` popover, and omits redundant filter entries such as `Waiting for you`. Navigation rows use `secondary` text and `muted` icons so conversation titles (`text`) stand out; selected rows use `raised` fill and `500` weight. A `Conversations` section header pairs the `13 pt` caption scale used by group headings and full-width `Show N more` rows with a compact two-option segmented control (`Project` | `Time`) to switch between project grouping and chronological order. A fixed `16 pt` trailing slot holds the unread dot, active spinner, or hover `More` button so titles never shift horizontally.
 
 ## Conversation stream
+
+- On iOS, approaching a pagination edge shows a quiet loading label in place, with a retry action only on failure. Prepending history keeps the reading position without animation; live updates follow the end only while the reader is there.
 
 - Assistant prose renders directly on the reading column without avatars.
 - Inter-agent messages render inside tool activity rows rather than user speech bubbles, collapsed by default with expandable source links and payloads.
@@ -84,8 +86,8 @@ Menus, selects, context menus, popovers, and modal dialogs are the only surfaces
 
 All settings screens compose primitives from [`SettingsPage.tsx`](products/maka/workbench/app/SettingsPage.tsx) without custom per-page layouts:
 
-- Left rail selects the category; the panel header shows the category title (with Back navigation when nested) and at most one primary page action.
-- Grouped rows sit on `surface` over `background` with aligned left text edges: label on the left, control on the right, and helper copy only when the label alone would be ambiguous.
+- Settings occupies the window's inverted-L shell as a peer workspace surface alongside Conversations and Rooms (keeping them mounted so drafts and streaming turns survive). The left rail leads with `Back to app` followed by category destinations (folding above the panel on narrow viewports); the panel header shows the category title (with Back navigation when nested) and at most one primary page action, without a modal close button. `Escape` steps back through nested subpages and unsaved-draft prompts before returning to the app.
+- Grouped rows sit on `card` over `panel` with aligned left text edges: label on the left, control on the right, and helper copy only when the label alone would be ambiguous.
 - Switches and discrete pickers apply immediately; text inputs (names, keys, URLs, prompts) and coupled multi-field forms (server/model/proxy configs) commit via a sticky footer `Save` bar that appears once dirty. Navigating away with unsaved edits prompts for confirmation.
 - Pages load on mount and window focus without manual Refresh buttons; failed loads surface an inline `Retry` action and error reason. Healthy rows stay quiet; actionable issues highlight in `warning`.
 
@@ -107,9 +109,13 @@ Inspect UI changes in the native desktop renderer across both light and dark the
 | Settings hierarchy, menus, confirmations and new-chat sheet | Native navigation, menu and sheet transitions; system owns back gestures and dismissal |
 | Computer, room and inbox selection | Native segmented selection or shared pill color transition (150 ms); replace target-bound data without animating stale rows |
 | Drafts, progress and load failures | Keep form position, show progress/errors inline; no animation on streamed status updates |
+| First chat list, transcript, Pending and settings lists | Wait 150 ms before showing placeholders; one slow native opacity pulse per group, static under Reduce Motion. Swap to content without holding it back. |
+| Chats, transcript and Pending connection status | Inline text shimmer during dials and online backoff, solid under Reduce Motion; static offline state while waiting for a network. No transition or placeholder over cached chats. |
 | Conversation and Bot work | Desktop five-stroke mark (4 s) and native text shimmer; static mark and solid text under Reduce Motion |
 | Approval actions | Approval press at 0.96 scale with a short opacity transition; no scale under Reduce Motion |
 
 Approvals stay in a fixed one-row layout, with short press feedback and the outcome replacing the card’s action row. Pending uses the system segmented control (pill fallback off iOS); settings disclosures use the existing grouped rows and native confirmation dialogs.
 
 Computer settings use native pushes for editors, menus for workspace scope, and native alerts for destructive changes and project MCP consent. Lists refresh in place on return; saving and download status stay inline. System transitions honor Reduce Motion; no custom animation is needed for form or catalog updates.
+
+Side questions push a chat with the same composer and quote tray. The first accepted fork replaces the draft with its real conversation; back and edge swipe keep the main transcript mounted. The system owns selection menus, context menus and the side-question sheet. Quote and link chips, anchor counts and submission feedback update in place.

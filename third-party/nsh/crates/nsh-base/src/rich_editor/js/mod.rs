@@ -916,7 +916,10 @@ impl RichEditorSession {
     }
 
     /// Inserts `content` (a string in `format`, plain text by default, or
-    /// JSON) over the selection.
+    /// JSON) over the selection. Plain text, Markdown and JSON open at their
+    /// edges and fit the insertion point, joining the text around the caret
+    /// when those edges are inline; an HTML string follows Tiptap's
+    /// `insertContent`.
     pub(crate) fn insert_content(
         this: Instance<Self>,
         content: Content,
@@ -1280,7 +1283,10 @@ impl RichEditorApi {
     }
 
     /// Inserts `content` (a string in `format`, plain text by default, or
-    /// JSON) over the selection.
+    /// JSON) over the selection. Plain text, Markdown and JSON open at their
+    /// edges and fit the insertion point, joining the text around the caret
+    /// when those edges are inline; an HTML string follows Tiptap's
+    /// `insertContent`.
     pub(crate) fn insert_content(content: Content, format: Option<RichFormat>) -> RichCommand {
         RichCommand {
             command: RichCommandName::InsertContent,

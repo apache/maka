@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { LoadingIndicator } from './Loading';
+import { SettingsSkeleton } from './Loading';
 import { inputAction } from 'nsh';
 import { tr } from './locale';
 import type { ProxyProtocol } from '../../../../packages/plugin-sdk/src/generated/runtime';
@@ -63,7 +63,7 @@ function NetworkForm(props: { owner: NetworkSettingsOwner }) {
             when={owner.loading()}
             else={<SettingsProblem retry={inputAction(owner.reload, owner.action())} />}
           >
-            <LoadingIndicator label={tr('Loading network settings…')} />
+            <SettingsSkeleton padded={false} rows={3} label={tr('Loading network settings…')} />
           </If>
         </SettingsBody>
       }

@@ -77,6 +77,28 @@ pub fn exports(app: &Path) -> Result<Vec<(String, PathBuf)>, String> {
     Ok(out)
 }
 
+/// The Rust modules of the nshm the lock in `app` holds: each package's
+/// name with its `#[native_module]` specifier. Their hosts serve them where
+/// the app links them; a build whose UI sets lack one is for a target the
+/// app leaves it out of (its `"dependencies"` entry's `"targets"`).
+pub fn modules(app: &Path) -> Result<Vec<(String, String)>, String> {
+    let Ok(text) = std::fs::read_to_string(app.join(LOCK)) else {
+        return Ok(Vec::new());
+    };
+    let lock: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("{LOCK} is not JSON: {e}"))?;
+    let Some(packages) = lock.get("packages").and_then(|p| p.as_array()) else {
+        return Ok(Vec::new());
+    };
+    Ok(packages
+        .iter()
+        .filter_map(|p| {
+            let module = p.get("module")?.as_str()?;
+            Some((p["name"].as_str()?.to_owned(), module.to_owned()))
+        })
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -101,6 +123,10 @@ mod tests {
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].0, "acme-ui");
         assert!(found[0].1.ends_with("src/index.tsx"));
+        assert_eq!(
+            modules(&app).unwrap(),
+            [("acme-gauge".to_owned(), "acme-gauge".to_owned())]
+        );
         std::fs::write(
             app.join(LOCK),
             r#"{ "version": 2, "packages": [

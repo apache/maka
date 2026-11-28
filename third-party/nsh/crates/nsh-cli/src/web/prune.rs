@@ -30,7 +30,8 @@ pub(crate) fn exports(wasm: &[u8]) -> anyhow::Result<Vec<String>> {
 }
 
 /// `wasm` as it is, without the custom sections a linked runtime leaves
-/// out ([`dropped_custom`]): for a runtime published whole.
+/// out ([`dropped_custom`]): for the main module wasm-bindgen wrote
+/// (`web::link`), which has none of the linker's sections left to read.
 pub(crate) fn unlinked(wasm: &[u8]) -> anyhow::Result<Vec<u8>> {
     let mut out = Vec::with_capacity(wasm.len());
     for payload in Parser::new(0).parse_all(wasm) {
@@ -51,6 +52,97 @@ pub(crate) fn unlinked(wasm: &[u8]) -> anyhow::Result<Vec<u8>> {
     }
     Ok(out)
 }
+
+/// The exports of a Rust app's runtime that make a part of `nsh/base` run:
+/// `nsh_part_<name>`, which the page calls the first time the app makes a
+/// component of that part by name.
+const PART_GATE: &str = "nsh_part_";
+
+/// What an app's code runs only when it makes a component by name
+/// (`ComponentElement::by_name`): the stand-in its element is until the part
+/// that registers the component has run. Found by its name in the symbol
+/// table, which has the mangled path of the function. `nsh-core` owns the
+/// name and tests that it is still the function's.
+const BY_NAME_MARK: &str = nsh_core::element::__private::BY_NAME_MARKER;
+
+/// The export of a Rust app's runtime that makes shaders run (the GLSL ES
+/// translation, naga): the page calls it the first time the app shows one.
+const SHADER_GATE: &str = "nsh_feature_shader";
+
+/// What an app's code runs only when it makes a shader view or a shader
+/// transition: the function `nsh-core` calls from each of them. Found like
+/// [`BY_NAME_MARK`], and `nsh-core` tests its name too.
+const SHADER_MARK: &str = nsh_core::element::__private::SHADER_USE_MARKER;
+
+/// The gates of `wasm`, a Rust app's linkable runtime, the app does not
+/// need: left out with the code only they reach, as `nsh package` splits
+/// it (`web::app_split`), rather than published as side modules no page
+/// loads.
+///
+/// - The `nsh_part_*` gates go when the app makes no component by name
+///   (every one stays when it does: a part is loaded when its first
+///   component is made, and which one that is is not known).
+/// - The shader gate goes when no code reachable from the other exports
+///   (the part gates that stay among them) makes a shader view or a shader
+///   transition.
+///
+/// Empty when every gate stays or the runtime has none.
+pub(crate) fn unused_gates(wasm: &[u8]) -> anyhow::Result<Vec<String>> {
+    let module = Module::parse(wasm)?;
+    let is_part = |e: &Export<'_>| e.name.starts_with(PART_GATE);
+    let is_gate = |e: &Export<'_>| is_part(e) || e.name == SHADER_GATE;
+    if !module
+        .exports
+        .iter()
+        .any(|e| is_gate(e) && e.kind == ExternalKind::Func)
+    {
+        return Ok(Vec::new());
+    }
+    let funcs = |keep: &dyn Fn(&Export<'_>) -> bool| -> Vec<u32> {
+        module
+            .exports
+            .iter()
+            .filter(|e| e.kind == ExternalKind::Func && keep(e))
+            .map(|e| e.index)
+            .collect()
+    };
+    let reaches = |roots: Vec<u32>, mark: &str| -> anyhow::Result<bool> {
+        let live = module.mark_from(roots, Vec::new())?;
+        Ok(module
+            .func_names
+            .iter()
+            .any(|&(func, name)| live.funcs[func as usize] && name.contains(mark)))
+    };
+    let mut roots = funcs(&|e| !is_gate(e));
+    let by_name = reaches(roots.clone(), BY_NAME_MARK)?;
+    if by_name {
+        roots.extend(funcs(&is_part));
+    }
+    let shaders = reaches(roots, SHADER_MARK)?;
+    Ok(module
+        .exports
+        .iter()
+        .filter(|e| {
+            if is_part(e) {
+                !by_name
+            } else if is_gate(e) {
+                !shaders
+            } else {
+                false
+            }
+        })
+        .map(|e| e.name.to_owned())
+        .collect())
+}
+
+/// The import modules of the functions wasm-bindgen replaces in the module
+/// it reads: the JS functions and intrinsics it provides, and the
+/// externref table's.
+const BINDGEN_IMPORTS: [&str; 2] = ["__wbindgen_placeholder__", "__wbindgen_externref_xform__"];
+
+/// The import a generic import's shim calls: wasm-bindgen replaces the shim
+/// with an import of its own and points every call of it there.
+const DESCRIBE_GENERIC_IMPORT: &str = "__wbindgen_describe_generic_import";
 
 /// A symbol of the `linking` section's table, as far as pruning needs it.
 enum Symbol {
@@ -104,6 +196,10 @@ struct Module<'a> {
     /// Every section in order: its id, its contents and a custom one's name.
     sections: Vec<(u8, Range<usize>, &'a str)>,
     imported_funcs: u32,
+    /// The imported functions wasm-bindgen replaces ([`BINDGEN_IMPORTS`]).
+    bindgen_imports: Vec<u32>,
+    /// wasm-bindgen's [`DESCRIBE_GENERIC_IMPORT`], when it is imported.
+    describe_generic: Option<u32>,
     memory_imported: bool,
     func_types: Vec<u32>,
     table: Option<Table>,
@@ -121,6 +217,8 @@ struct Module<'a> {
     segments: Vec<Segment>,
     symbols: Vec<Symbol>,
     no_strip: Vec<u32>,
+    /// The functions the symbol table names, as the toolchain mangled them.
+    func_names: Vec<(u32, &'a str)>,
     code_relocs: Vec<RelocationEntry>,
     data_relocs: Vec<DataReloc>,
 }
@@ -157,8 +255,17 @@ impl<'a> Module<'a> {
             match payload {
                 Payload::ImportSection(reader) => {
                     for import in reader.into_imports() {
-                        match import?.ty {
-                            TypeRef::Func(_) | TypeRef::FuncExact(_) => module.imported_funcs += 1,
+                        let import = import?;
+                        match import.ty {
+                            TypeRef::Func(_) | TypeRef::FuncExact(_) => {
+                                if BINDGEN_IMPORTS.contains(&import.module) {
+                                    module.bindgen_imports.push(module.imported_funcs);
+                                    if import.name == DESCRIBE_GENERIC_IMPORT {
+                                        module.describe_generic = Some(module.imported_funcs);
+                                    }
+                                }
+                                module.imported_funcs += 1;
+                            }
                             TypeRef::Memory(_) => module.memory_imported = true,
                             TypeRef::Table(_) => bail!("the web runtime imports its table"),
                             TypeRef::Global(_) => bail!("the web runtime imports globals"),
@@ -321,6 +428,14 @@ impl<'a> Module<'a> {
                             && !flags.contains(SymbolFlags::UNDEFINED)
                         {
                             module.no_strip.push(module.symbols.len() as u32);
+                        }
+                        if let SymbolInfo::Func {
+                            index,
+                            name: Some(name),
+                            ..
+                        } = &symbol
+                        {
+                            module.func_names.push((*index, name));
                         }
                         let symbol = module.symbol(symbol)?;
                         module.symbols.push(symbol);
@@ -685,7 +800,7 @@ fn read_u32(bytes: &[u8]) -> u32 {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use wasmparser::Validator;
 
     use super::*;
@@ -695,6 +810,12 @@ mod tests {
     /// (function 1) calls function 2 and loads `d0`; function 2 takes its
     /// own address; `d0` holds a pointer into itself.
     fn module() -> Vec<u8> {
+        module_named("b", "c")
+    }
+
+    /// [`module`] with `gate` the name of function 0 (`b`) and `callee` that
+    /// of function 2 (`c`).
+    pub(in crate::web) fn module_named(gate: &str, callee: &str) -> Vec<u8> {
         fn section(out: &mut Vec<u8>, id: u8, contents: &[u8]) {
             out.push(id);
             put_uleb(out, contents.len() as u64);
@@ -710,7 +831,7 @@ mod tests {
         section(&mut wasm, 4, &[1, 0x70, 1, 3, 3]);
         section(&mut wasm, 5, &[1, 0, 1]);
         let mut exports = vec![3];
-        for (export, kind, index) in [("b", 0, 0), ("a", 0, 1), ("memory", 2, 0)] {
+        for (export, kind, index) in [(gate, 0, 0), ("a", 0, 1), ("memory", 2, 0)] {
             name(&mut exports, export);
             exports.extend_from_slice(&[kind, index]);
         }
@@ -764,7 +885,7 @@ mod tests {
         name(&mut linking, "linking");
         linking.push(2);
         let mut symbols = vec![5];
-        for (index, func) in ["b", "a", "c"].iter().enumerate() {
+        for (index, func) in [gate, "a", callee].iter().enumerate() {
             symbols.extend_from_slice(&[0, 0, index as u8]);
             name(&mut symbols, func);
         }
@@ -807,7 +928,7 @@ mod tests {
     fn a_lazy_gate_gets_what_only_it_reaches() {
         let wasm = module();
         Validator::new().validate_all(&wasm).unwrap();
-        let split = split::split(&wasm, &["a", "memory"], &["b"]).unwrap();
+        let split = split::split(&wasm, &["a", "memory"], &["b"], false).unwrap();
 
         let main = parts(&split.main);
         assert_eq!(main.bodies.len(), 2);
@@ -823,11 +944,7 @@ mod tests {
         assert_eq!(main.data, [(1040, d0)]);
         assert!(main.exports.iter().any(|(name, _)| name == "a"));
         assert!(!main.exports.iter().any(|(name, _)| name == "b"));
-        assert!(
-            main.exports
-                .iter()
-                .any(|(name, _)| name == "__indirect_function_table")
-        );
+        assert!(main.exports.iter().any(|(name, _)| name == "__nsh_table"));
 
         let [side] = &split.sides[..] else {
             panic!("one side module")
@@ -841,16 +958,393 @@ mod tests {
         assert_eq!(read_sleb5(&side.bodies[0][9..]), 1024);
     }
 
+    /// `wasm` split without its [`unused_gates`], as `web::app_split`
+    /// leaves them out.
+    fn pruned(wasm: &[u8]) -> Vec<u8> {
+        let unused = unused_gates(wasm).unwrap();
+        assert!(!unused.is_empty());
+        let exports = exports(wasm).unwrap();
+        let keep: Vec<&str> = exports
+            .iter()
+            .map(String::as_str)
+            .filter(|name| !unused.iter().any(|u| u == name))
+            .collect();
+        split::split(wasm, &keep, &[], false).unwrap().main
+    }
+
+    #[test]
+    fn the_shader_gate_goes_when_nothing_shows_a_shader() {
+        let wasm = module_named(SHADER_GATE, "nsh_core::shader::other");
+        assert_eq!(unused_gates(&wasm).unwrap(), [SHADER_GATE]);
+        let pruned = pruned(&wasm);
+        Validator::new().validate_all(&pruned).unwrap();
+        let pruned = parts(&pruned);
+        assert!(pruned.exports.iter().any(|(name, _)| name == "a"));
+        assert!(!pruned.exports.iter().any(|(name, _)| name == SHADER_GATE));
+        assert_eq!(pruned.bodies.len(), 2);
+    }
+
+    #[test]
+    fn the_shader_gate_stays_when_the_app_shows_a_shader() {
+        let wasm = module_named(SHADER_GATE, &format!("nsh_core::shader::{SHADER_MARK}"));
+        assert!(unused_gates(&wasm).unwrap().is_empty());
+    }
+
+    #[test]
+    fn part_gates_go_when_nothing_makes_a_component_by_name() {
+        let wasm = module_named("nsh_part_plot", "nsh_core::element::component::missing_x");
+        assert_eq!(unused_gates(&wasm).unwrap(), ["nsh_part_plot"]);
+        let pruned = pruned(&wasm);
+        Validator::new().validate_all(&pruned).unwrap();
+        let pruned = parts(&pruned);
+        assert!(pruned.exports.iter().any(|(name, _)| name == "a"));
+        assert!(
+            !pruned
+                .exports
+                .iter()
+                .any(|(name, _)| name.starts_with("nsh_part_"))
+        );
+        // The gate's own function is gone with it.
+        assert_eq!(pruned.bodies.len(), 2);
+    }
+
+    #[test]
+    fn part_gates_stay_when_the_app_makes_a_component_by_name() {
+        let wasm = module_named(
+            "nsh_part_plot",
+            &format!("nsh_core::element::component::{BY_NAME_MARK}"),
+        );
+        assert!(unused_gates(&wasm).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_runtime_without_part_gates_is_left_alone() {
+        assert!(unused_gates(&module()).unwrap().is_empty());
+    }
+
+    /// A runtime whose crates call JS through wasm-bindgen, as wasm-ld
+    /// writes it with `--emit-relocs`: function 0 is a JS function
+    /// wasm-bindgen provides, 1 the generic imports' descriptor; the gate
+    /// `b` (2) calls `h` (3), which calls 0, `k` (4), which calls `g` (5),
+    /// the shim of a generic import (it calls 1), and `p` (6); `a` (7) is
+    /// the main module's. It has the stack pointer, named, and the features
+    /// wasm-bindgen reads.
+    fn bindgen_module() -> Vec<u8> {
+        fn section(out: &mut Vec<u8>, id: u8, contents: &[u8]) {
+            out.push(id);
+            put_uleb(out, contents.len() as u64);
+            out.extend_from_slice(contents);
+        }
+        fn name(out: &mut Vec<u8>, name: &str) {
+            put_uleb(out, name.len() as u64);
+            out.extend_from_slice(name.as_bytes());
+        }
+        let mut wasm = b"\0asm\x01\0\0\0".to_vec();
+        section(&mut wasm, 1, &[1, 0x60, 0, 0]);
+        let mut imports = vec![2];
+        for field in ["__wbg_now_1", "__wbindgen_describe_generic_import"] {
+            name(&mut imports, "__wbindgen_placeholder__");
+            name(&mut imports, field);
+            imports.extend_from_slice(&[0, 0]);
+        }
+        section(&mut wasm, 2, &imports);
+        section(&mut wasm, 3, &[6, 0, 0, 0, 0, 0, 0]);
+        section(&mut wasm, 4, &[1, 0x70, 0, 1]);
+        section(&mut wasm, 5, &[1, 0, 1]);
+        section(&mut wasm, 6, &[1, 0x7f, 1, 0x41, 0x80, 0x08, 0x0b]);
+        let mut exports = vec![3];
+        for (export, kind, index) in [("b", 0, 2), ("a", 0, 7), ("memory", 2, 0)] {
+            name(&mut exports, export);
+            exports.extend_from_slice(&[kind, index]);
+        }
+        section(&mut wasm, 7, &exports);
+
+        // Each function's callees; the symbols are the functions' indices.
+        let mut code = vec![6];
+        let mut relocs = Vec::new();
+        for callees in [&[3, 4, 6][..], &[0], &[5], &[1], &[], &[]] {
+            let mut body = vec![0];
+            let mut at = Vec::new();
+            for &callee in callees {
+                body.push(0x10);
+                at.push((body.len(), callee));
+                let mut padded = [0; 5];
+                put_uleb5(&mut padded, callee);
+                body.extend_from_slice(&padded);
+            }
+            body.push(0x0b);
+            code.push(body.len() as u8);
+            for (offset, callee) in at {
+                relocs.push((code.len() + offset, callee));
+            }
+            code.extend_from_slice(&body);
+        }
+        let code_index = 7;
+        section(&mut wasm, 10, &code);
+
+        let mut custom = Vec::new();
+        name(&mut custom, "target_features");
+        custom.extend_from_slice(&[1, b'+']);
+        name(&mut custom, "reference-types");
+        section(&mut wasm, 0, &custom);
+        let mut names = Vec::new();
+        name(&mut names, "name");
+        let mut funcs = vec![1, 7];
+        name(&mut funcs, "a");
+        names.push(1);
+        put_uleb(&mut names, funcs.len() as u64);
+        names.extend_from_slice(&funcs);
+        let mut globals = vec![1, 0];
+        name(&mut globals, "__stack_pointer");
+        names.push(7);
+        put_uleb(&mut names, globals.len() as u64);
+        names.extend_from_slice(&globals);
+        section(&mut wasm, 0, &names);
+
+        let mut linking = Vec::new();
+        name(&mut linking, "linking");
+        linking.push(2);
+        let mut symbols = vec![8];
+        for index in 0..2 {
+            // Undefined: the imports, without names of their own.
+            symbols.extend_from_slice(&[0, 0x10, index]);
+        }
+        for (index, func) in ["b", "h", "k", "g", "p", "a"].iter().enumerate() {
+            symbols.extend_from_slice(&[0, 0, index as u8 + 2]);
+            name(&mut symbols, func);
+        }
+        linking.push(8);
+        put_uleb(&mut linking, symbols.len() as u64);
+        linking.extend_from_slice(&symbols);
+        section(&mut wasm, 0, &linking);
+
+        let mut reloc = Vec::new();
+        name(&mut reloc, "reloc.CODE");
+        reloc.extend_from_slice(&[code_index, relocs.len() as u8]);
+        for (at, symbol) in relocs {
+            reloc.push(0);
+            put_uleb(&mut reloc, at as u64);
+            put_uleb(&mut reloc, u64::from(symbol));
+        }
+        section(&mut wasm, 0, &reloc);
+        wasm
+    }
+
+    /// The names of `wasm`'s custom sections, its imports and its exports.
+    fn outline(wasm: &[u8]) -> (Vec<String>, Vec<String>, Vec<String>) {
+        let (mut customs, mut imports, mut exports) = (Vec::new(), Vec::new(), Vec::new());
+        for payload in Parser::new(0).parse_all(wasm) {
+            match payload.unwrap() {
+                Payload::CustomSection(custom) => customs.push(custom.name().to_owned()),
+                Payload::ImportSection(reader) => {
+                    for import in reader.into_imports() {
+                        let import = import.unwrap();
+                        imports.push(format!("{}.{}", import.module, import.name));
+                    }
+                }
+                Payload::ExportSection(reader) => {
+                    for export in reader {
+                        exports.push(export.unwrap().name.to_owned());
+                    }
+                }
+                _ => {}
+            }
+        }
+        (customs, imports, exports)
+    }
+
+    #[test]
+    fn what_calls_js_through_wasm_bindgen_stays_in_the_main_module() {
+        let wasm = bindgen_module();
+        Validator::new().validate_all(&wasm).unwrap();
+
+        // Split for a page alone, `h`, `k` and `g` go with the gate, which
+        // then calls wasm-bindgen's imports through the main module.
+        let plain = split::split(&wasm, &["a", "memory"], &["b"], false).unwrap();
+        assert_eq!(parts(&plain.main).bodies.len(), 1);
+        let [side] = &plain.sides[..] else {
+            panic!("one side module")
+        };
+        let (_, imports, _) = outline(&side.bytes);
+        assert!(imports.contains(&"main.__nsh_f0".to_owned()), "{imports:?}");
+
+        // Split for wasm-bindgen, which rewrites what calls its imports and
+        // the generic imports' shims: they stay in the main module, and the
+        // gate's module calls them there.
+        let split = split::split(&wasm, &["a", "memory"], &["b"], true).unwrap();
+        let [side] = &split.sides[..] else {
+            panic!("one side module")
+        };
+        assert_eq!(side.gate.as_deref(), Some("b"));
+        let (customs, imports, exports) = outline(&side.bytes);
+        assert!(customs.is_empty(), "{customs:?}");
+        assert_eq!(
+            imports,
+            [
+                "main.memory",
+                "main.__nsh_table",
+                "main.__nsh_g0",
+                "main.__nsh_f3",
+                "main.__nsh_f4",
+            ]
+        );
+        assert_eq!(exports, ["b"]);
+        // `b` and `p`.
+        let mut bodies = 0;
+        for payload in Parser::new(0).parse_all(&side.bytes) {
+            if let Payload::CodeSectionEntry(_) = payload.unwrap() {
+                bodies += 1;
+            }
+        }
+        assert_eq!(bodies, 2);
+
+        let (customs, imports, exports) = outline(&split.main);
+        // What wasm-bindgen reads: the features, the globals' names.
+        assert_eq!(customs, ["target_features", "name"]);
+        assert_eq!(
+            imports,
+            [
+                "__wbindgen_placeholder__.__wbg_now_1",
+                "__wbindgen_placeholder__.__wbindgen_describe_generic_import"
+            ]
+        );
+        assert!(exports.contains(&"__nsh_f3".to_owned()), "{exports:?}");
+        assert!(!exports.contains(&"__nsh_f0".to_owned()), "{exports:?}");
+        let mut names = None;
+        let mut bodies = 0;
+        for payload in Parser::new(0).parse_all(&split.main) {
+            match payload.unwrap() {
+                Payload::CustomSection(custom) if custom.name() == "name" => {
+                    names = Some(custom.data().to_vec());
+                }
+                Payload::CodeSectionEntry(_) => bodies += 1,
+                _ => {}
+            }
+        }
+        // `h`, `k`, `g` and `a`.
+        assert_eq!(bodies, 4);
+        // The functions' names are gone with their indices.
+        let mut globals = vec![7, 18, 1, 0];
+        put_uleb(&mut globals, 15);
+        globals.extend_from_slice(b"__stack_pointer");
+        assert_eq!(names.unwrap(), globals);
+        Validator::new().validate_all(&split.main).unwrap();
+
+        // What wasm-bindgen writes must still have what the side module
+        // imports.
+        split::check_processed(&split.main, &split.main).unwrap();
+        let error = split::check_processed(&split.main, &plain.main)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("`__nsh_f3`"), "{error}");
+    }
+
+    /// A main module as [`split::check_processed`] reads it: a table of
+    /// `table` slots whose slots from 1 hold `slots` (functions of type 0,
+    /// `() -> ()`, or 1, `(i32) -> ()`), the `__nsh_g0` global of `global`,
+    /// and `data` (start, length) in its memory.
+    fn shared_main(table: u8, slots: &[u8], global: i8, data: (u16, u8)) -> Vec<u8> {
+        fn section(out: &mut Vec<u8>, id: u8, contents: &[u8]) {
+            out.push(id);
+            put_uleb(out, contents.len() as u64);
+            out.extend_from_slice(contents);
+        }
+        let mut wasm = b"\0asm\x01\0\0\0".to_vec();
+        section(&mut wasm, 1, &[2, 0x60, 0, 0, 0x60, 1, 0x7f, 0]);
+        // Function 0, `__nsh_f0`, then one per slot.
+        let mut funcs = vec![slots.len() as u8 + 1, 0];
+        funcs.extend_from_slice(slots);
+        section(&mut wasm, 3, &funcs);
+        section(&mut wasm, 4, &[1, 0x70, 0, table]);
+        section(&mut wasm, 5, &[1, 0, 1]);
+        section(&mut wasm, 6, &[1, 0x7f, 1, 0x41, global as u8 & 0x7f, 0x0b]);
+        let mut exports = vec![4];
+        for (name, kind) in [
+            ("memory", 2),
+            (split::TABLE, 1),
+            ("__nsh_g0", 3),
+            ("__nsh_f0", 0),
+        ] {
+            put_uleb(&mut exports, name.len() as u64);
+            exports.extend_from_slice(name.as_bytes());
+            exports.extend_from_slice(&[kind, 0]);
+        }
+        section(&mut wasm, 7, &exports);
+        let mut elements = vec![1, 0, 0x41, 1, 0x0b, slots.len() as u8];
+        elements.extend(1..=slots.len() as u8);
+        section(&mut wasm, 9, &elements);
+        let mut code = vec![slots.len() as u8 + 1];
+        for _ in 0..=slots.len() {
+            code.extend_from_slice(&[2, 0, 0x0b]);
+        }
+        section(&mut wasm, 10, &code);
+        let (start, len) = data;
+        let mut segment = vec![1, 0, 0x41];
+        // A signed LEB128 of at most 3 bytes.
+        let start = u32::from(start);
+        segment.extend_from_slice(&[
+            (start & 0x7f) as u8 | 0x80,
+            ((start >> 7) & 0x7f) as u8 | 0x80,
+            (start >> 14) as u8,
+            0x0b,
+            len,
+        ]);
+        segment.resize(segment.len() + len as usize, 0);
+        section(&mut wasm, 11, &segment);
+        Validator::new().validate_all(&wasm).unwrap();
+        wasm
+    }
+
+    #[test]
+    fn wasm_bindgen_must_leave_what_side_modules_import_as_it_was() {
+        let main = shared_main(4, &[0, 1], 7, (1024, 16));
+        split::check_processed(&main, &main).unwrap();
+        // A larger table and less data are fine.
+        split::check_processed(&main, &shared_main(8, &[0, 1], 7, (1024, 8))).unwrap();
+        for (processed, expected) in [
+            (
+                shared_main(2, &[0], 7, (1024, 16)),
+                "changed the main module's `__nsh_table`",
+            ),
+            (shared_main(4, &[0], 7, (1024, 16)), "changed which slots"),
+            (
+                shared_main(4, &[0, 1, 0], 7, (1024, 16)),
+                "changed which slots",
+            ),
+            (
+                shared_main(4, &[0, 0], 7, (1024, 16)),
+                "the type of the function in slot 2",
+            ),
+            (
+                shared_main(4, &[0, 1], 8, (1024, 16)),
+                "changed the main module's `__nsh_g0`",
+            ),
+            (
+                shared_main(4, &[0, 1], 7, (1024, 17)),
+                "put data at 1024..1041",
+            ),
+            (
+                shared_main(4, &[0, 1], 7, (2048, 1)),
+                "put data at 2048..2049",
+            ),
+        ] {
+            let error = split::check_processed(&main, &processed)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(expected), "{expected}: {error}");
+        }
+    }
+
     #[test]
     fn without_lazy_gates_it_keeps_what_the_exports_reach() {
-        let split = split::split(&module(), &["a", "memory"], &[]).unwrap();
+        let split = split::split(&module(), &["a", "memory"], &[], false).unwrap();
         assert!(split.sides.is_empty());
         assert_eq!(parts(&split.main).bodies.len(), 2);
     }
 
     #[test]
     fn fails_on_a_missing_export() {
-        let error = split::split(&module(), &["nsh_part_none"], &[])
+        let error = split::split(&module(), &["nsh_part_none"], &[], false)
             .err()
             .unwrap();
         assert!(error.to_string().contains("nsh_part_none"), "{error}");

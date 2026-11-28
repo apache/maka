@@ -18,20 +18,35 @@
  */
 
 //! Canonical model messages captured into one request-owned, replayable arena.
-use super::{capture_arena::CaptureArena, preparation::RequestPreparation};
-use maka_agent_facts::{context::PreparedContextBreakdown, model::prompt_source::source::*};
+use super::{
+    capture_arena::CaptureArena, preparation::RequestPreparation, preparation_io::PreparationIo,
+    serialize_source::MediaExternalizer,
+};
+use maka_agent_facts::{
+    context::PreparedContextBreakdown, durable::ContentRef, model::prompt_source::source::*,
+};
 use maka_model::{
     ModelPreparationResources,
     prompt::{Message, Prompt},
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::{io, marker::PhantomData, ops::Range, sync::Arc};
+use std::{
+    collections::HashMap,
+    future::Future,
+    io,
+    marker::PhantomData,
+    ops::Range,
+    pin::Pin,
+    sync::{Arc, Mutex},
+};
 use tokio_util::sync::CancellationToken;
 mod project;
 pub(super) use project::IdentifierBuilder;
 use project::*;
 
+const MESSAGE_FLAGS: usize = 10;
+const PINNED_MEMORY: u64 = 1 << 2;
 const WORDS: usize = 20;
 const RECORD_BYTES: usize = WORDS * 8;
 type Record = [u64; WORDS];
@@ -41,23 +56,313 @@ struct List {
     len: usize,
 }
 #[derive(Clone)]
+pub(crate) struct ExternalMediaEntry {
+    pub reference: ContentRef,
+    pub digest: [u8; 32],
+    pub range: Range<u64>,
+}
+
+#[derive(Clone)]
+pub(crate) struct RestoredMediaEntry {
+    pub digest: [u8; 32],
+    pub range: Range<u64>,
+}
+
+#[derive(Default)]
+struct MediaIndex {
+    entries: Vec<ExternalMediaEntry>,
+    by_key: HashMap<([u8; 32], u64), usize>,
+    leases: Vec<maka_model::DirectoryLease>,
+    charged_bytes: usize,
+}
+
+fn media_index_entry_bytes(digest_cap: usize) -> usize {
+    // Account for Vec<ExternalMediaEntry> (2x doubling headroom), HashMap bucket (~2x load factor),
+    // and the digest String heap buffer.
+    2 * std::mem::size_of::<ExternalMediaEntry>()
+        + 2 * (std::mem::size_of::<([u8; 32], u64, usize)>() + 1)
+        + digest_cap
+}
+
+fn decode_sha256_digest(digest: &str) -> io::Result<[u8; 32]> {
+    let hex_part = digest.strip_prefix("sha256:").ok_or_else(invalid)?;
+    let bytes = hex::decode(hex_part).map_err(|_| invalid())?;
+    bytes.try_into().map_err(|_| invalid())
+}
+
+pub(crate) struct MediaCapture {
+    io: PreparationIo,
+    preparation: Arc<RequestPreparation>,
+    arena: Mutex<Option<CaptureArena>>,
+    index: Mutex<MediaIndex>,
+}
+impl MediaCapture {
+    pub(crate) fn new(io: PreparationIo, preparation: Arc<RequestPreparation>) -> Arc<Self> {
+        Arc::new(Self {
+            io,
+            preparation,
+            arena: Mutex::new(None),
+            index: Mutex::new(MediaIndex::default()),
+        })
+    }
+    pub(crate) fn charged_bytes(&self) -> usize {
+        self.index
+            .lock()
+            .expect("media capture index lock poisoned")
+            .charged_bytes
+    }
+    pub(crate) fn current_arena(&self) -> Option<CaptureArena> {
+        self.arena
+            .lock()
+            .expect("media capture arena lock poisoned")
+            .clone()
+    }
+    pub(crate) fn entries(&self) -> Vec<ExternalMediaEntry> {
+        self.index
+            .lock()
+            .expect("media capture index lock poisoned")
+            .entries
+            .clone()
+    }
+    async fn ensure_arena(&self) -> io::Result<CaptureArena> {
+        if let Some(existing) = self.current_arena() {
+            return Ok(existing);
+        }
+        let created = CaptureArena::new(self.io.clone(), None).await?;
+        let existing = {
+            let mut guard = self
+                .arena
+                .lock()
+                .expect("media capture arena lock poisoned");
+            if let Some(existing) = guard.as_ref() {
+                Some(existing.clone())
+            } else {
+                *guard = Some(created.clone());
+                None
+            }
+        };
+        if let Some(existing) = existing {
+            let _ = created.close().await;
+            return Ok(existing);
+        }
+        Ok(created)
+    }
+    async fn capture_bytes(
+        &self,
+        source: SourceBytes,
+        budget: &Arc<dyn SourceBudget>,
+        cancellation: &CancellationToken,
+    ) -> io::Result<ContentRef> {
+        // Stream and hash once into the append-serialized media arena; rewind on dedup hit or error.
+        let arena = self.ensure_arena().await?;
+        let append = arena.begin_append().await;
+        let start = append.with_writer(|w| Ok(w.position())).await?;
+        let mut cursor = source.open(budget.clone());
+        let mut buffer = budget.allocate(32 * 1024).await?;
+        let mut hash = Sha256::new();
+        let mut total = 0u64;
+        let stream_result: io::Result<()> = async {
+            loop {
+                if cancellation.is_cancelled() {
+                    return Err(crate::preparation_cancelled(
+                        "canonical media capture cancelled",
+                    ));
+                }
+                let read = cursor.read_chunk(buffer).await?;
+                let count = read.bytes_read;
+                buffer = read.buffer;
+                if count != 0 {
+                    hash.update(&buffer.as_ref()[..count]);
+                    total = total.checked_add(count as u64).ok_or_else(overflow)?;
+                    buffer = append
+                        .with_writer(move |w| {
+                            w.append_bytes(&buffer.as_ref()[..count])?;
+                            Ok(buffer)
+                        })
+                        .await?;
+                }
+                if read.eof {
+                    return Ok(());
+                }
+                if count == 0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "media source made no progress",
+                    ));
+                }
+            }
+        }
+        .await;
+        if let Err(error) = stream_result {
+            let _ = append
+                .with_writer(move |w| w.truncate_unsealed(start))
+                .await;
+            return Err(error);
+        }
+        let end = append.with_writer(|w| Ok(w.position())).await?;
+        if end.checked_sub(start) != Some(total) {
+            let _ = append
+                .with_writer(move |w| w.truncate_unsealed(start))
+                .await;
+            return Err(invalid());
+        }
+        let digest_bytes: [u8; 32] = hash.finalize().into();
+        let key = (digest_bytes, total);
+        let existing = {
+            let guard = self
+                .index
+                .lock()
+                .expect("media capture index lock poisoned");
+            guard
+                .by_key
+                .get(&key)
+                .map(|&slot| guard.entries[slot].reference.clone())
+        };
+        if let Some(existing) = existing {
+            append
+                .with_writer(move |w| w.truncate_unsealed(start))
+                .await?;
+            return Ok(existing);
+        }
+        let reference = ContentRef {
+            digest: format!("sha256:{}", hex::encode(digest_bytes)),
+            bytes: total,
+        };
+        let entry_bytes = media_index_entry_bytes(reference.digest.capacity());
+        let lease = match self.preparation.plan_directory(entry_bytes) {
+            Ok(lease) => lease,
+            Err(error) => {
+                let _ = append
+                    .with_writer(move |w| w.truncate_unsealed(start))
+                    .await;
+                return Err(error);
+            }
+        };
+        let mut guard = self
+            .index
+            .lock()
+            .expect("media capture index lock poisoned");
+        let slot = guard.entries.len();
+        guard.entries.push(ExternalMediaEntry {
+            reference: reference.clone(),
+            digest: digest_bytes,
+            range: start..end,
+        });
+        guard.by_key.insert(key, slot);
+        guard.charged_bytes = guard.charged_bytes.saturating_add(entry_bytes);
+        guard.leases.push(lease);
+        drop(guard);
+        drop(append);
+        Ok(reference)
+    }
+    fn lookup(&self, digest: &str, bytes: u64) -> io::Result<(usize, [u8; 32])> {
+        let digest_bytes = decode_sha256_digest(digest)?;
+        let guard = self
+            .index
+            .lock()
+            .expect("media capture index lock poisoned");
+        let slot = *guard
+            .by_key
+            .get(&(digest_bytes, bytes))
+            .ok_or_else(invalid)?;
+        Ok((slot, guard.entries[slot].digest))
+    }
+    fn arena_range(
+        &self,
+        slot: usize,
+        expected_bytes: u64,
+        expected_digest: [u8; 32],
+    ) -> io::Result<(CaptureArena, Range<u64>)> {
+        let range = {
+            let guard = self
+                .index
+                .lock()
+                .expect("media capture index lock poisoned");
+            let entry = guard.entries.get(slot).ok_or_else(invalid)?;
+            if entry.reference.bytes != expected_bytes
+                || entry.digest != expected_digest
+                || entry.range.end.checked_sub(entry.range.start) != Some(expected_bytes)
+            {
+                return Err(invalid());
+            }
+            entry.range.clone()
+        };
+        let arena = self.current_arena().ok_or_else(invalid)?;
+        Ok((arena, range))
+    }
+}
+
+struct MediaCaptureExternalizer(Arc<MediaCapture>);
+impl MediaExternalizer for MediaCaptureExternalizer {
+    fn capture<'a>(
+        &'a mut self,
+        bytes: SourceBytes,
+        budget: &'a Arc<dyn SourceBudget>,
+        cancellation: &'a CancellationToken,
+    ) -> Pin<Box<dyn Future<Output = io::Result<ContentRef>> + Send + 'a>> {
+        let capture = self.0.clone();
+        Box::pin(async move { capture.capture_bytes(bytes, budget, cancellation).await })
+    }
+}
+
+#[derive(Clone)]
+enum MediaBacking {
+    None,
+    Capture(Arc<MediaCapture>),
+    Restored(Arc<[RestoredMediaEntry]>),
+}
+
+#[derive(Clone)]
 pub(super) struct Store {
     arena: CaptureArena,
+    media: MediaBacking,
     resources: ModelPreparationResources,
     owner: Arc<dyn Send + Sync>,
     inspection: bool,
 }
 impl Store {
     fn bytes(&self, range: Range<u64>) -> SourceBytes {
+        self.arena_bytes(&self.arena, range)
+    }
+    fn arena_bytes(&self, arena: &CaptureArena, range: Range<u64>) -> SourceBytes {
         let source = if self.inspection {
-            self.arena.inspect(range)
+            arena.inspect(range)
         } else {
-            self.arena.pending(range)
+            arena.pending(range)
         };
         SourceBytes::Source(Arc::new(OwnedSource {
             source,
             owner: self.owner.clone(),
         }))
+    }
+    fn lookup_external_media(&self, digest: &str, bytes: u64) -> io::Result<(usize, [u8; 32])> {
+        match &self.media {
+            MediaBacking::Capture(capture) => capture.lookup(digest, bytes),
+            MediaBacking::None | MediaBacking::Restored(_) => Err(invalid()),
+        }
+    }
+    fn external_media_bytes(
+        &self,
+        slot: usize,
+        expected_bytes: u64,
+        expected_digest: [u8; 32],
+    ) -> io::Result<SourceBytes> {
+        match &self.media {
+            MediaBacking::Capture(capture) => {
+                let (arena, range) = capture.arena_range(slot, expected_bytes, expected_digest)?;
+                Ok(self.arena_bytes(&arena, range))
+            }
+            MediaBacking::Restored(entries) => {
+                let entry = entries.get(slot).ok_or_else(invalid)?;
+                if entry.digest != expected_digest
+                    || entry.range.end.checked_sub(entry.range.start) != Some(expected_bytes)
+                {
+                    return Err(invalid());
+                }
+                Ok(self.bytes(entry.range.clone()))
+            }
+            MediaBacking::None => Err(invalid()),
+        }
     }
     async fn read(&self, offset: u64) -> io::Result<Record> {
         let bytes = self
@@ -174,6 +479,8 @@ pub(crate) struct CapturedPrompt {
     pub layout: Layout,
     pub bytes: SourceBytes,
     pub resident_bytes: usize,
+    pub media_arena: Option<CaptureArena>,
+    pub media_entries: Vec<ExternalMediaEntry>,
 }
 pub(crate) struct Builder {
     store: Store,
@@ -192,6 +499,38 @@ impl Builder {
         preparation: Arc<RequestPreparation>,
         cancellation: CancellationToken,
     ) -> io::Result<Self> {
+        Self::new_with_media(
+            arena,
+            MediaBacking::None,
+            resources,
+            preparation,
+            cancellation,
+        )
+        .await
+    }
+    pub async fn new_external_media(
+        arena: CaptureArena,
+        media: Arc<MediaCapture>,
+        resources: ModelPreparationResources,
+        preparation: Arc<RequestPreparation>,
+        cancellation: CancellationToken,
+    ) -> io::Result<Self> {
+        Self::new_with_media(
+            arena,
+            MediaBacking::Capture(media),
+            resources,
+            preparation,
+            cancellation,
+        )
+        .await
+    }
+    async fn new_with_media(
+        arena: CaptureArena,
+        media: MediaBacking,
+        resources: ModelPreparationResources,
+        preparation: Arc<RequestPreparation>,
+        cancellation: CancellationToken,
+    ) -> io::Result<Self> {
         // No total length is known at this boundary; file backing keeps both
         // the append-only payload and its directory independent of heap limits.
         arena.promote_to_file().await?;
@@ -202,6 +541,7 @@ impl Builder {
         Ok(Self {
             store: Store {
                 arena,
+                media,
                 resources,
                 owner,
                 inspection: true,
@@ -224,7 +564,7 @@ impl Builder {
     pub fn resident_bytes() -> usize {
         std::mem::size_of::<Self>() + std::mem::size_of::<Directory>() + 4096
     }
-    pub async fn append(&mut self, message: Message) -> io::Result<()> {
+    pub async fn append(&mut self, message: Message, is_pinned_memory: bool) -> io::Result<()> {
         self.check()?;
         let budget = self.acquire_budget().await?;
         let buffer = budget.allocate(4096).await?;
@@ -244,7 +584,7 @@ impl Builder {
             })
             .await?;
         drop(budget);
-        self.capture(range, None).await
+        self.capture(range, None, is_pinned_memory).await
     }
     pub async fn append_recipe(&mut self, message: &MessageRecipe) -> io::Result<()> {
         self.check()?;
@@ -256,17 +596,33 @@ impl Builder {
         )
         .await?;
         let start = emit.position();
-        super::serialize_source::exact_message_async(
-            message,
-            &budget,
-            &self.cancellation,
-            &mut emit,
-        )
-        .await?;
+        match &self.store.media {
+            MediaBacking::Capture(capture) => {
+                let mut externalizer = MediaCaptureExternalizer(capture.clone());
+                super::serialize_source::exact_message_async_with_media(
+                    message,
+                    &budget,
+                    &self.cancellation,
+                    &mut emit,
+                    Some(&mut externalizer),
+                )
+                .await?;
+            }
+            MediaBacking::None | MediaBacking::Restored(_) => {
+                super::serialize_source::exact_message_async(
+                    message,
+                    &budget,
+                    &self.cancellation,
+                    &mut emit,
+                )
+                .await?;
+            }
+        }
         let end = emit.position();
         emit.finish().await?;
         drop(budget);
-        self.capture(start..end, Some(message)).await
+        self.capture(start..end, Some(message), message.is_pinned_memory())
+            .await
     }
     async fn acquire_budget(&self) -> io::Result<Arc<dyn SourceBudget>> {
         tokio::select! {
@@ -286,6 +642,7 @@ impl Builder {
         &mut self,
         range: Range<u64>,
         original: Option<&MessageRecipe>,
+        is_pinned_memory: bool,
     ) -> io::Result<()> {
         let budget = self.acquire_budget().await?;
         let store = self.store.clone();
@@ -329,7 +686,8 @@ impl Builder {
                         && (description.last_is_tool_result || description.is_native_checkpoint)),
             );
         }
-        record[10] = u64::from(description.last_is_tool_result)
+        record[MESSAGE_FLAGS] = (u64::from(is_pinned_memory) * PINNED_MEMORY)
+            | u64::from(description.last_is_tool_result)
             | (u64::from(description.is_native_checkpoint) << 1);
         put_digest(&mut record[11..15], description.commitment);
         self.prefix.update(description.commitment);
@@ -350,8 +708,20 @@ impl Builder {
         }
         let byte_len = self.store.arena.with_writer(|w| Ok(w.position())).await?;
         self.store.arena.seal().await?;
+        let (version, media_arena, media_entries, media_dir_bytes) = match &self.store.media {
+            MediaBacking::Capture(capture) => {
+                let entries = capture.entries();
+                let arena = capture.current_arena();
+                let dir_bytes = capture.charged_bytes();
+                if let Some(arena) = &arena {
+                    arena.seal().await?;
+                }
+                (3, arena, entries, dir_bytes)
+            }
+            MediaBacking::None | MediaBacking::Restored(_) => (2, None, Vec::new(), 0),
+        };
         let layout = Layout {
-            version: 2,
+            version,
             message_count: self.count,
             index_offset: table.offset,
             byte_len,
@@ -362,20 +732,211 @@ impl Builder {
         store.inspection = false;
         let bytes = store.bytes(0..byte_len);
         let prompt = make_prompt(store, &layout);
+        let resident_bytes = Self::resident_bytes()
+            .checked_add(media_dir_bytes)
+            .ok_or_else(overflow)?;
         Ok(CapturedPrompt {
             prompt,
             layout,
             bytes,
-            resident_bytes: Self::resident_bytes(),
+            resident_bytes,
+            media_arena,
+            media_entries,
         })
     }
 }
+/// Verify every external media record in the prompt directory against `expected_media`
+/// (slot bounds, SHA-256 digest, byte length) and reject unreferenced trailing media slots.
+/// Reads only fixed-size directory records, before any external media payload is copied.
+pub(crate) async fn validate_external_media_directory(
+    arena: &CaptureArena,
+    layout: &Layout,
+    expected_media: &[([u8; 32], u64)],
+    cancellation: &CancellationToken,
+) -> io::Result<()> {
+    let valid_version = (layout.version == 2 && expected_media.is_empty()) || layout.version == 3;
+    if !valid_version {
+        return Err(invalid());
+    }
+    struct MediaCheckCtx<'a> {
+        arena: &'a CaptureArena,
+        byte_len: u64,
+        version: u32,
+        expected_media: &'a [([u8; 32], u64)],
+        owner: Arc<dyn Send + Sync>,
+        cancellation: &'a CancellationToken,
+    }
+    impl MediaCheckCtx<'_> {
+        async fn read_record(&self, offset: u64) -> io::Result<Record> {
+            if offset
+                .checked_add(RECORD_BYTES as u64)
+                .is_none_or(|end| end > self.byte_len)
+            {
+                return Err(invalid());
+            }
+            let bytes = self
+                .arena
+                .read_control_owned::<RECORD_BYTES>(offset, self.owner.clone())
+                .await?;
+            Ok(std::array::from_fn(|i| {
+                u64::from_le_bytes(bytes[i * 8..i * 8 + 8].try_into().unwrap())
+            }))
+        }
+        async fn read_list_item(&self, list: List, index: usize) -> io::Result<Record> {
+            let entry_offset = list
+                .offset
+                .checked_add((index as u64).checked_mul(8).ok_or_else(overflow)?)
+                .ok_or_else(overflow)?;
+            if entry_offset
+                .checked_add(8)
+                .is_none_or(|end| end > self.byte_len)
+            {
+                return Err(invalid());
+            }
+            let bytes = self
+                .arena
+                .read_control_owned::<8>(entry_offset, self.owner.clone())
+                .await?;
+            self.read_record(u64::from_le_bytes(bytes)).await
+        }
+        async fn check_content_list(&self, list: List, referenced: &mut [bool]) -> io::Result<()> {
+            if list
+                .offset
+                .checked_add((list.len as u64).checked_mul(8).ok_or_else(overflow)?)
+                .is_none_or(|end| end > self.byte_len)
+            {
+                return Err(invalid());
+            }
+            for i in 0..list.len {
+                if self.cancellation.is_cancelled() {
+                    return Err(crate::preparation_cancelled(
+                        "frozen prompt restore cancelled",
+                    ));
+                }
+                let r = self.read_list_item(list, i).await?;
+                match r[0] {
+                    1 | 2 => {}
+                    3 => {
+                        if self.version != 3 {
+                            return Err(invalid());
+                        }
+                        let slot = usize::try_from(r[1]).map_err(|_| invalid())?;
+                        let expected_bytes = r[2];
+                        let expected_digest = digest(&r[6..10]);
+                        let (actual_digest, actual_bytes) =
+                            self.expected_media.get(slot).ok_or_else(invalid)?;
+                        if *actual_digest != expected_digest || *actual_bytes != expected_bytes {
+                            return Err(invalid());
+                        }
+                        referenced[slot] = true;
+                    }
+                    _ => return Err(invalid()),
+                }
+            }
+            Ok(())
+        }
+    }
+
+    let ctx = MediaCheckCtx {
+        arena,
+        byte_len: layout.byte_len,
+        version: layout.version,
+        expected_media,
+        owner: Arc::new(()),
+        cancellation,
+    };
+    let root = List {
+        offset: layout.index_offset,
+        len: layout.message_count,
+    };
+    if root
+        .offset
+        .checked_add((root.len as u64).checked_mul(8).ok_or_else(overflow)?)
+        .is_none_or(|end| end > layout.byte_len)
+    {
+        return Err(invalid());
+    }
+    let mut referenced = vec![false; expected_media.len()];
+    for msg_idx in 0..root.len {
+        if cancellation.is_cancelled() {
+            return Err(crate::preparation_cancelled(
+                "frozen prompt restore cancelled",
+            ));
+        }
+        let msg = ctx.read_list_item(root, msg_idx).await?;
+        let list = List {
+            offset: msg[3],
+            len: usize::try_from(msg[4]).map_err(|_| invalid())?,
+        };
+        match role(msg[2])? {
+            MessageRole::System => {}
+            MessageRole::User => {
+                ctx.check_content_list(list, &mut referenced).await?;
+            }
+            MessageRole::Assistant => {
+                if list
+                    .offset
+                    .checked_add((list.len as u64).checked_mul(8).ok_or_else(overflow)?)
+                    .is_none_or(|end| end > layout.byte_len)
+                {
+                    return Err(invalid());
+                }
+                for item_idx in 0..list.len {
+                    if cancellation.is_cancelled() {
+                        return Err(crate::preparation_cancelled(
+                            "frozen prompt restore cancelled",
+                        ));
+                    }
+                    let item = ctx.read_list_item(list, item_idx).await?;
+                    if item[0] == 7 && item[5] == 4 {
+                        let content = List {
+                            offset: item[6],
+                            len: usize::try_from(item[7]).map_err(|_| invalid())?,
+                        };
+                        ctx.check_content_list(content, &mut referenced).await?;
+                    }
+                }
+            }
+            MessageRole::Tool => {
+                if list
+                    .offset
+                    .checked_add((list.len as u64).checked_mul(8).ok_or_else(overflow)?)
+                    .is_none_or(|end| end > layout.byte_len)
+                {
+                    return Err(invalid());
+                }
+                for item_idx in 0..list.len {
+                    if cancellation.is_cancelled() {
+                        return Err(crate::preparation_cancelled(
+                            "frozen prompt restore cancelled",
+                        ));
+                    }
+                    let item = ctx.read_list_item(list, item_idx).await?;
+                    if item[5] == 4 {
+                        let content = List {
+                            offset: item[6],
+                            len: usize::try_from(item[7]).map_err(|_| invalid())?,
+                        };
+                        ctx.check_content_list(content, &mut referenced).await?;
+                    }
+                }
+            }
+        }
+    }
+    if referenced.iter().any(|&used| !used) {
+        return Err(invalid());
+    }
+    Ok(())
+}
+
 pub(crate) async fn restore(
     arena: CaptureArena,
     resources: ModelPreparationResources,
     layout: Layout,
+    media: Arc<[RestoredMediaEntry]>,
 ) -> io::Result<Prompt> {
-    if layout.version != 2
+    let valid_version = (layout.version == 2 && media.is_empty()) || layout.version == 3;
+    if !valid_version
         || layout
             .index_offset
             .checked_add(
@@ -391,10 +952,23 @@ pub(crate) async fn restore(
     if layout.byte_len > available {
         return Err(invalid());
     }
+    for entry in media.iter() {
+        if entry.range.start < layout.byte_len
+            || entry.range.start > entry.range.end
+            || entry.range.end > available
+        {
+            return Err(invalid());
+        }
+    }
     arena.seal().await?;
     Ok(make_prompt(
         Store {
             arena,
+            media: if media.is_empty() {
+                MediaBacking::None
+            } else {
+                MediaBacking::Restored(media)
+            },
             resources,
             owner: Arc::new(()),
             inspection: false,
@@ -502,10 +1076,11 @@ impl RecipeCursor<MessageMetadata> for MetadataCursor {
             };
             let result = MessageMetadata {
                 message_index: self.index,
+                is_pinned_memory: record[MESSAGE_FLAGS] & PINNED_MEMORY != 0,
                 logical_identity: hex::encode(digest(&record[11..15])).into(),
                 role: role(record[2])?,
-                last_is_tool_result: (record[10] & 1) != 0,
-                is_native_checkpoint: (record[10] & 2) != 0,
+                last_is_tool_result: (record[MESSAGE_FLAGS] & 1) != 0,
+                is_native_checkpoint: (record[MESSAGE_FLAGS] & 2) != 0,
                 local_tool_names: self.store.list(List {
                     offset: record[6],
                     len: record[7] as usize,

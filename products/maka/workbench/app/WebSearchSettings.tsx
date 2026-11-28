@@ -26,7 +26,7 @@ import type {
   WebSearchEndpoint,
   WebSearchMethod,
 } from '../../../../packages/plugin-sdk/src/generated/runtime';
-import { LoadingIndicator } from './Loading';
+import { SettingsSkeleton } from './Loading';
 import { tr } from './locale';
 import {
   SettingsBody,
@@ -70,7 +70,11 @@ export function WebSearchSettings({ owner }: { owner: WebSearchSettingsOwner }) 
                 />
               }
             >
-              <LoadingIndicator label={tr('Loading web search settings…')} />
+              <SettingsSkeleton
+                padded={false}
+                rows={3}
+                label={tr('Loading web search settings…')}
+              />
             </If>
           </SettingsBody>
         }

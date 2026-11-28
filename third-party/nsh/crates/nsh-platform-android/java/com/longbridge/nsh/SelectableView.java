@@ -35,7 +35,7 @@ final class SelectableView implements SelectionHandle.Owner {
 
     private static native void nativeDestroy(long handle);
 
-    private static native boolean nativeSetTexts(long handle, SelectableView area, String[] contents, int[] keys, boolean[] continues, float[] frames);
+    private static native boolean nativeSetTexts(long handle, SelectableView area, String[] contents, int[] keys, boolean[] continues, float[] frames, String[] chromes, float[] chromeFrames);
 
     private static native boolean nativeGesture(long handle, SelectableView area, float[] frames, int kind, float x, float y);
 
@@ -44,6 +44,8 @@ final class SelectableView implements SelectionHandle.Owner {
     private static native int[] nativeBounds(long handle);
 
     private static native String nativeText(long handle, SelectableView area);
+
+    private static native int[] nativeEnds(long handle, SelectableView area);
 
     private static native int[] nativeReadingOrder(int count, float[] runs);
 
@@ -56,6 +58,8 @@ final class SelectableView implements SelectionHandle.Owner {
     private final int id;
     /** The selected text last reported to the area's {@code onSelectionChange}. */
     private String reported = "";
+    /** Its ends (anchor node, offset, focus node, offset; empty for none). */
+    private int[] reportedEnds = new int[0];
     /** The area's view is gone: clearing reports nothing. */
     private boolean removed;
     /** The native model while there is a selection, else 0. */
@@ -133,11 +137,23 @@ final class SelectableView implements SelectionHandle.Owner {
         clear();
     }
 
-    /** Reports {@code text}, the selected text, to {@code onSelectionChange} when it changed and JS listens. */
-    private void report(String text) {
-        if (text.equals(reported) || !mounter.wants(id, Native.SELECTION_CHANGE)) return;
+    /**
+     * Reports {@code text}, the selected text, and {@code ends}, its anchor's and focus's text nodes and offsets
+     * ({@code nativeEnds}, which the core places in list items), to {@code onSelectionChange} when they changed
+     * and JS listens.
+     */
+    private void report(String text, int[] ends) {
+        if ((text.equals(reported) && java.util.Arrays.equals(ends, reportedEnds))
+                || !mounter.wants(id, Native.SELECTION_CHANGE)) return;
         reported = text;
-        mounter.eventMap(id, Native.SELECTION_CHANGE, new String[] {"text"}, new Object[] {text});
+        reportedEnds = ends;
+        if (ends.length < 4) {
+            mounter.eventMap(id, Native.SELECTION_CHANGE, new String[] {"text"}, new Object[] {text});
+            return;
+        }
+        mounter.eventMap(id, Native.SELECTION_CHANGE,
+                new String[] {"text", "anchorNode", "anchorNodeOffset", "focusNode", "focusNodeOffset"},
+                new Object[] {text, ends[0], ends[1], ends[2], ends[3]});
     }
 
     /** Whether the long press selected and the gesture goes on (presses are cancelled). */
@@ -206,7 +222,7 @@ final class SelectableView implements SelectionHandle.Owner {
         collect();
         if (texts.isEmpty()) return false;
         if (handle == 0) handle = nativeCreate();
-        nativeSetTexts(handle, this, contents(), keys(), continues(), frames());
+        nativeSetTexts(handle, this, contents(), keys(), continues(), frames(), chromeTexts(), chromeFrames());
         if (mounter.selectedText != null) mounter.selectedText.clearSelection();
         if (mounter.selectedArea != null && mounter.selectedArea != this) mounter.selectedArea.clear();
         mounter.selectedArea = this;
@@ -244,8 +260,12 @@ final class SelectableView implements SelectionHandle.Owner {
         mode = null;
         if (m != null) m.finish();
         nativeDestroy(h);
-        if (removed) reported = "";
-        else report("");
+        if (removed) {
+            reported = "";
+            reportedEnds = new int[0];
+        } else {
+            report("", new int[0]);
+        }
     }
 
     /** Whether the screen point is on one of the handles (a touch there keeps the selection). */
@@ -281,7 +301,7 @@ final class SelectableView implements SelectionHandle.Owner {
             clear();
             return;
         }
-        nativeSetTexts(handle, this, contents(), keys(), continues(), frames());
+        nativeSetTexts(handle, this, contents(), keys(), continues(), frames(), chromeTexts(), chromeFrames());
         update();
         if (empty() && !extending) clear();
     }
@@ -296,19 +316,41 @@ final class SelectableView implements SelectionHandle.Owner {
      */
     private void collect() {
         texts.clear();
+        chromes.clear();
+        chrome = null;
         runsLength = 0;
         collect(view);
         if (texts.size() < 2) return;
         int[] order = nativeReadingOrder(texts.size(), java.util.Arrays.copyOf(runs, runsLength));
         if (order == null || order.length != texts.size()) return;
         java.util.ArrayList<TextBox> listed = new java.util.ArrayList<>(texts);
-        for (int i = 0; i < order.length; i++) texts.set(i, listed.get(order[i]));
+        java.util.ArrayList<TextBox> listedChromes = new java.util.ArrayList<>(chromes);
+        for (int i = 0; i < order.length; i++) {
+            texts.set(i, listed.get(order[i]));
+            chromes.set(i, listedChromes.get(order[i]));
+        }
     }
+
+    /**
+     * For each text, the text left out ({@code selectable={false}}) listed last before it, or null: maybe its
+     * list marker, which a copy puts before it ({@code selection::marker_of} decides).
+     */
+    private final java.util.ArrayList<TextBox> chromes = new java.util.ArrayList<>();
+    /** The text left out listed last while collecting. */
+    private TextBox chrome;
 
     private void collect(View v) {
         if (v instanceof TextBox) {
             TextBox t = (TextBox) v;
-            if (!t.excluded && t.layout() != null) texts.add(t);
+            if (t.layout() != null) {
+                if (t.excluded) {
+                    chrome = t;
+                } else {
+                    texts.add(t);
+                    chromes.add(chrome);
+                    chrome = null;
+                }
+            }
         }
         if (v instanceof ViewGroup) {
             ViewGroup group = (ViewGroup) v;
@@ -378,6 +420,33 @@ final class SelectableView implements SelectionHandle.Owner {
         return out;
     }
 
+    /** The text of each text's {@link #chromes} entry, or null. */
+    private String[] chromeTexts() {
+        String[] out = new String[chromes.size()];
+        for (int i = 0; i < out.length; i++) {
+            TextBox c = chromes.get(i);
+            if (c != null && c.layout() != null) out[i] = c.layout().getText().toString();
+        }
+        return out;
+    }
+
+    /** The content boxes of {@link #chromes} in the area (dp: x, y, width, height each; zeros for none). */
+    private float[] chromeFrames() {
+        float[] out = new float[chromes.size() * 4];
+        float d = mounter.density;
+        view.getLocationOnScreen(at);
+        for (int i = 0; i < chromes.size(); i++) {
+            TextBox c = chromes.get(i);
+            if (c == null) continue;
+            c.getLocationOnScreen(at2);
+            out[i * 4] = (at2[0] - at[0] + c.contentX()) / d;
+            out[i * 4 + 1] = (at2[1] - at[1] + c.contentY()) / d;
+            out[i * 4 + 2] = c.contentWidth() / d;
+            out[i * 4 + 3] = c.contentHeight() / d;
+        }
+        return out;
+    }
+
     /** A screen point in the area (dp). */
     private float[] toArea(float rawX, float rawY) {
         view.getLocationOnScreen(at);
@@ -443,7 +512,8 @@ final class SelectableView implements SelectionHandle.Owner {
         if (kept != null) Native.keepRendered(mounter.handle(), kept);
         if (mounter.wants(id, Native.SELECTION_CHANGE)) {
             String text = empty() ? "" : nativeText(handle, this);
-            report(text != null ? text : "");
+            int[] ends = empty() ? null : nativeEnds(handle, this);
+            report(text != null ? text : "", ends != null ? ends : new int[0]);
         }
         int[] ranges = nativeRanges(handle, this);
         java.util.ArrayList<TextBox> now = new java.util.ArrayList<>();

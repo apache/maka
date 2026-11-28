@@ -118,9 +118,15 @@ times); `onChange` gives a `PickedDate`, the value with the picker's time precis
 
 ## Value
 
-The value is in the forms of the HTML inputs: an ISO date, `"2026-10-28"`, as `<input type="date">`'s; with `range`
-`[start, end]`; with `timePrecision` a date and time, `"2026-10-28T09:30"` (`"2026-10-28T09:30:15"` at seconds), as
-`<input type="datetime-local">`'s; `null` is none. With `value`, the app owns it: the picker shows it and reports each
+The value is in the forms of the HTML inputs:
+
+- A date is an ISO date, `"2026-10-28"`, as in `<input type="date">`.
+- With `range`, it is `[start, end]`.
+- With `timePrecision`, it is a date and time, `"2026-10-28T09:30"` (`"2026-10-28T09:30:15"` at seconds), as in
+  `<input type="datetime-local">`.
+- `null` is none.
+
+With `value`, the app owns it: the picker shows it and reports each
 change with `onChange({ value })`; the app sets `value` to follow it. Left out, the picker keeps its own value, from
 `defaultValue` at first.
 

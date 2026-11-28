@@ -33,7 +33,7 @@ pub(super) fn executor_tool_id(run: RunId, task: ExternalTaskId, id: &str) -> St
     maka_agent_facts::tool_call::tool_use_id(run, &format!("{task}:{id}"))
 }
 
-pub(super) fn executor_tool_display(
+pub(crate) fn executor_tool_display(
     name: &str,
     input: &serde_json::Value,
 ) -> (
@@ -126,11 +126,10 @@ pub(super) fn recorded_settlement(
     reply: &maka_agent_facts::operation::RecordedOperationReply,
 ) -> Option<ToolSettlement> {
     use maka_plugin_core::operation::{OperationOutcome, Receipt};
+    if !maka_agent_facts::operation::has_recorded_settlement(reply) {
+        return None;
+    }
     Some(match &reply.receipt {
-        Receipt::Recorded {
-            outcome: OperationOutcome::Unresolved,
-            ..
-        } => return None,
         Receipt::Recorded {
             outcome: OperationOutcome::Returned { result },
             ..

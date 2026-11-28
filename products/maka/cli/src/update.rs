@@ -47,7 +47,7 @@ pub(super) struct Args {
 }
 
 enum HostState {
-    Live(discovery::Discovery, HostStatus),
+    Live(Box<discovery::Discovery>, HostStatus),
     Closing,
     None,
 }
@@ -57,7 +57,9 @@ async fn probe_host(root: &Path) -> HostState {
         return HostState::None;
     };
     match HostClient::status(&registered.endpoint, Some(registered.host_epoch)).await {
-        Ok(status) if !status.closed && !status.closing => HostState::Live(registered, status),
+        Ok(status) if !status.closed && !status.closing => {
+            HostState::Live(Box::new(registered), status)
+        }
         _ => HostState::Closing,
     }
 }

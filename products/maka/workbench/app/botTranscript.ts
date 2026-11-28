@@ -22,7 +22,12 @@ import type { createHost } from './host';
 import { createBotTranscriptCore } from './botTranscriptCore';
 
 export type { BotTranscriptMessage } from './botTranscriptCore';
-export { botTurnEnding, reportedWorker, activeWorkers } from './botTranscriptCore';
+export {
+  botChatHidesRow,
+  botTurnEnding,
+  reportedWorker,
+  activeWorkers,
+} from './botTranscriptCore';
 export type { ActiveWorker } from './botTranscriptCore';
 
 /** Reactive view of the Bot's transcript; see `createBotTranscriptCore`. */
@@ -44,6 +49,7 @@ export function createBotTranscript(
     isBot: () => (version(), known(), core.isBot()),
     /** `unknown` until the Host answers; Chat must not treat unknown as ordinary. */
     identity: () => (version(), known(), core.identity()),
+    whenIdentified: core.whenIdentified,
     forTurn: (turnId: string) => (version(), core.forTurn(turnId)),
     latest: () => (version(), core.latest()),
     close: () => core.close(),

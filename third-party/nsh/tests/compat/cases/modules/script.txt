@@ -406,4 +406,5 @@ covers [nsh] setFpsMode
 tap id:case-mod-perf-stats
 # no stats until the monitor measured a second.
 expect Fps: none
+expect Memory: none
 covers [nsh] perfStats

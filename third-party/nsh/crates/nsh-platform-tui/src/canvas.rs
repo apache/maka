@@ -1,9 +1,11 @@
 //! Canvas views drawn in braille dots: the drawing's operations replayed
 //! against a small 2D context (transform, save / restore, paints, global
 //! alpha, dashes, clips) onto a grid of 2 × 4 dots per Cell, which
-//! ratatui's `Canvas` turns into braille symbols. Fills set the dots whose
+//! ratatui's `Canvas` turns into braille symbols. Fills cover the dots whose
 //! centers the fill rule puts inside the path (a translucent one, a wash
-//! under the marks, only a sparse floor of them), strokes the dots along each
+//! under the marks, only a sparse floor of them); an opaque fill over a
+//! whole Cell is that Cell's background, over half of one a half block, and
+//! braille only at its ragged edges. Strokes the dots along each
 //! segment, and text is printed on whole Cells above the dots, with the
 //! Cell before and after it cleared of dots so a label never runs into a
 //! mark. A nearly transparent stroke or fill (hatching, a faint track) is
@@ -142,12 +144,13 @@ pub(crate) fn draw(
         replay.op(op);
     }
     let Replay {
-        dots,
+        mut dots,
         mut labels,
         hues: kept,
         ..
     } = replay;
     *hues = kept;
+    let blocks = dots.blocks();
     let mut scratch = Buffer::empty(Rect::new(0, 0, visible.width, visible.height));
     Canvas::default()
         .marker(Marker::Braille)
@@ -158,8 +161,34 @@ pub(crate) fn draw(
     let inks = dots.latest();
     for y in 0..visible.height {
         for x in 0..visible.width {
+            let at = (visible.x + x, visible.y + y);
+            let by_text = by_text(buffer, text_cells, at.0, at.1);
+            let cell = &mut buffer[at];
+            // A Cell an opaque fill wholly covers takes it as its
+            // background, which the text and the marks over it keep; half
+            // of one, a half block.
+            match blocks[usize::from(y) * usize::from(visible.width) + usize::from(x)] {
+                [Some(top), Some(bottom)] if top == bottom => {
+                    cell.bg = top;
+                    if !by_text && scratch[(x, y)].symbol() == " " {
+                        cell.set_symbol(" ");
+                    }
+                }
+                [Some(top), bottom] if !by_text => {
+                    cell.set_symbol("▀");
+                    cell.fg = top;
+                    if let Some(bottom) = bottom {
+                        cell.bg = bottom;
+                    }
+                }
+                [None, Some(bottom)] if !by_text => {
+                    cell.set_symbol("▄");
+                    cell.fg = bottom;
+                }
+                _ => {}
+            }
             let dot = &scratch[(x, y)];
-            if dot.symbol() != " " && !by_text(buffer, text_cells, visible.x + x, visible.y + y) {
+            if dot.symbol() != " " && !by_text {
                 let symbol = dot.symbol().to_owned();
                 let cell = &mut buffer[(visible.x + x, visible.y + y)];
                 cell.set_symbol(&symbol);
@@ -264,6 +293,10 @@ struct Dots {
     /// A dot's size in points.
     step: [f32; 2],
     inks: Vec<Option<(Style, u32)>>,
+    /// The dots an opaque fill covers, with its ink and when it was
+    /// painted: a Cell they wholly cover shows the fill as its background
+    /// (half a Cell, a half block), not as braille.
+    solid: Vec<Option<(Style, u32)>>,
     painted: u32,
 }
 
@@ -275,6 +308,79 @@ impl Dots {
     fn paint(&mut self, index: usize, ink: Style) {
         self.painted += 1;
         self.inks[index] = Some((ink, self.painted));
+    }
+
+    /// Covers a dot with an opaque fill, hiding the dots under it.
+    fn cover(&mut self, index: usize, ink: Style) {
+        self.painted += 1;
+        self.solid[index] = Some((ink, self.painted));
+        self.inks[index] = None;
+    }
+
+    /// The dot indexes of half `half` (0 top, 1 bottom) of Cell (`x`, `y`).
+    fn half(&self, x: usize, y: usize, half: usize) -> impl Iterator<Item = usize> + '_ {
+        let rows = y * DOTS_DOWN + half * DOTS_DOWN / 2;
+        (rows..rows + DOTS_DOWN / 2).flat_map(move |row| {
+            (x * DOTS_ACROSS..(x + 1) * DOTS_ACROSS).map(move |column| row * self.width + column)
+        })
+    }
+
+    /// Resolves the opaque fills into Cells: for each Cell, the fill color
+    /// of its top and bottom half where a fill covers the whole half. A
+    /// Cell with marks over a part-covered half keeps braille: its fills'
+    /// dots join its marks.
+    fn blocks(&mut self) -> Vec<[Option<Color>; 2]> {
+        let (columns, rows) = (self.width / DOTS_ACROSS, self.height / DOTS_DOWN);
+        let mut blocks = vec![[None; 2]; columns * rows];
+        for y in 0..rows {
+            for x in 0..columns {
+                let mut halves = [None; 2];
+                for (half, color) in halves.iter_mut().enumerate() {
+                    let mut latest: Option<(Style, u32)> = None;
+                    let mut full = true;
+                    for index in self.half(x, y, half) {
+                        match self.solid[index] {
+                            Some((ink, at)) => {
+                                if latest.is_none_or(|(_, last)| at > last) {
+                                    latest = Some((ink, at));
+                                }
+                            }
+                            None => full = false,
+                        }
+                    }
+                    *color = latest.filter(|_| full).and_then(|(ink, _)| ink.fg);
+                }
+                let marked = (0..2)
+                    .flat_map(|half| self.half(x, y, half))
+                    .any(|index| self.inks[index].is_some());
+                let whole = halves[0].is_some() && halves[0] == halves[1];
+                let indexes: Vec<usize> = (0..2).flat_map(|half| self.half(x, y, half)).collect();
+                if whole || (!marked && halves.iter().any(Option::is_some)) {
+                    // Drawn as a background or a half block: only the
+                    // dots of a half not wholly covered stay as braille,
+                    // and none at all over a whole Cell's background.
+                    if !whole {
+                        for (half, ink) in halves.iter().enumerate() {
+                            if ink.is_none() {
+                                for index in self.half(x, y, half).collect::<Vec<_>>() {
+                                    self.solid[index] = None;
+                                }
+                            }
+                        }
+                    }
+                    blocks[y * columns + x] = halves;
+                } else {
+                    for index in indexes {
+                        if let Some(dot) = self.solid[index].take()
+                            && self.inks[index].is_none()
+                        {
+                            self.inks[index] = Some(dot);
+                        }
+                    }
+                }
+            }
+        }
+        blocks
     }
 
     /// Paints a dot that every other in its Cell outranks (a texture's):
@@ -525,6 +631,7 @@ impl<'a> Replay<'a> {
                     cell_height / DOTS_DOWN as f32,
                 ],
                 inks: vec![None; width * height],
+                solid: vec![None; width * height],
                 painted: 0,
             },
             labels: Vec::new(),
@@ -623,7 +730,12 @@ impl<'a> Replay<'a> {
         for index in inside {
             let sparse =
                 (index % width).is_multiple_of(2) && index / width % DOTS_DOWN == DOTS_DOWN - 1;
-            if !self.clipped_out(index) && (!wash || sparse) {
+            if self.clipped_out(index) {
+                continue;
+            }
+            if !wash {
+                self.dots.cover(index, ink);
+            } else if sparse {
                 self.dots.paint(index, ink);
             }
         }
@@ -943,6 +1055,7 @@ mod tests {
             origin: [0.0, 0.0],
             step: [4.0, 4.0],
             inks: vec![None; 32],
+            solid: vec![None; 32],
             painted: 0,
         };
         let lit = |a: [f32; 2], b: [f32; 2]| {

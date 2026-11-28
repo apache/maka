@@ -188,6 +188,19 @@ struct CapsuleManifest {
     remote_relay_configured: bool,
 }
 
+impl CapsuleManifest {
+    fn has_discovery_migration(&self, version: i64) -> bool {
+        self.discovery.is_some()
+            && self
+                .migrations
+                .get(maka_event_log::root::ROOT_DATABASE)
+                .is_some_and(|versions| {
+                    versions.contains(&version)
+                        || (!versions.contains(&68) && versions.contains(&(version - 68 + 57)))
+                })
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DiscoveryCapsule {
@@ -660,6 +673,8 @@ fn verify_sqlite_integrity_and_migrations(root: &Path) -> BTreeMap<String, Vec<i
     for db_path in dbs {
         let conn = Connection::open(&db_path)
             .unwrap_or_else(|e| panic!("open SQLite {}: {e}", db_path.display()));
+        maka_event_log::content::register_sql_functions(&conn)
+            .unwrap_or_else(|e| panic!("register content UDFs {}: {e}", db_path.display()));
         let integrity: String = conn
             .query_row("PRAGMA integrity_check", [], |row| row.get(0))
             .unwrap_or_else(|e| panic!("integrity_check {}: {e}", db_path.display()));
@@ -697,14 +712,20 @@ fn verify_sqlite_integrity_and_migrations(root: &Path) -> BTreeMap<String, Vec<i
                     |row| row.get(0),
                 )
                 .unwrap();
+            let has_encoding = maka_event_log::content::has_encoding_column(&conn).unwrap();
             if has_runs > 0 && versions.contains(&17) {
                 use maka_agent_facts::external_publication::PublicationManifest;
                 use maka_fs_tools::publication::{PublicationChange, SourceIdentity};
-                let mut manifests = conn.prepare(
-                    "SELECT p.publication,c.payload FROM agent_external_publications p
+                let payload_expr = if has_encoding {
+                    "maka_content_bytes(c.payload, c.encoding)"
+                } else {
+                    "c.payload"
+                };
+                let mut manifests = conn.prepare(&format!(
+                    "SELECT p.publication,{payload_expr} FROM agent_external_publications p
                      LEFT JOIN contents c ON c.content_sha256=json_extract(p.body,'$.manifest.digest')
                      WHERE json_extract(p.body,'$.manifest') IS NOT NULL",
-                ).unwrap();
+                )).unwrap();
                 let mut rows = manifests.query([]).unwrap();
                 while let Some(row) = rows.next().unwrap() {
                     let id: String = row.get(0).unwrap();
@@ -741,6 +762,55 @@ fn verify_sqlite_integrity_and_migrations(root: &Path) -> BTreeMap<String, Vec<i
                     );
                 }
             }
+            if versions.contains(&58) {
+                let wrapped_recaps: i64 = conn
+                    .query_row(
+                        "SELECT count(*) FROM plugin_data
+                         WHERE package_id='maka.session-recap' AND scope_id='profile'
+                           AND json_type(value_json,'$.receipt')='object'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(
+                    wrapped_recaps, 0,
+                    "migration 58 left wrapped recap receipts on {rel}"
+                );
+            }
+            if has_runs > 0 && versions.contains(&57) {
+                let body_text = if has_encoding {
+                    "maka_content_text(b.payload, b.encoding)"
+                } else {
+                    "CAST(b.payload AS TEXT)"
+                };
+                let inconsistent: i64 = conn.query_row(
+                    &format!(
+                        "WITH pending AS (
+                           SELECT session,request,coalesce(entry_json->>'$.request.spec.memoryAdmission','unknown') AS admission
+                           FROM agent_queue_items WHERE state='pending'
+                         ), last_edit AS (
+                           SELECT p.session,p.request,max(e.revision) AS revision
+                           FROM (SELECT DISTINCT session FROM pending) affected
+                           CROSS JOIN agent_queue_events e ON e.session=affected.session
+                           CROSS JOIN contents b ON b.id=e.body_content_id
+                           CROSS JOIN pending p ON p.session=e.session AND p.request={body_text}->>'$.edit.request.id'
+                           WHERE {body_text}->>'$.kind'='command' AND {body_text}->>'$.edit.kind' IN ('enqueue','update')
+                           GROUP BY p.session,p.request
+                         )
+                         SELECT count(*) FROM pending p LEFT JOIN last_edit l USING(session,request)
+                         LEFT JOIN agent_queue_events e ON e.session=l.session AND e.revision=l.revision
+                         LEFT JOIN contents b ON b.id=e.body_content_id
+                         WHERE l.revision IS NULL OR p.admission IS NOT coalesce(
+                           e.memory_admission,{body_text}->>'$.edit.request.spec.memoryAdmission','unknown')"
+                    ),
+                    [],
+                    |row| row.get(0),
+                ).unwrap();
+                assert_eq!(
+                    inconsistent, 0,
+                    "pending admission differs from queue history on {rel}"
+                );
+            }
             if has_runs > 0 && versions.contains(&55) {
                 for view in [
                     "agent_memory_operation_field_source",
@@ -753,19 +823,31 @@ fn verify_sqlite_integrity_and_migrations(root: &Path) -> BTreeMap<String, Vec<i
                         })
                         .unwrap_or_else(|e| panic!("v55 view {view} failed on {rel}: {e}"));
                 }
+                let ns_join = if versions.contains(&62) {
+                    "m.namespace_id=h.namespace_id"
+                } else {
+                    "m.owner=h.owner AND m.session=h.session"
+                };
+                let body_text = if has_encoding {
+                    "maka_content_text(b.payload, b.encoding)"
+                } else {
+                    "CAST(b.payload AS TEXT)"
+                };
                 let missing_ended_unknown: i64 = conn
                     .query_row(
-                        "SELECT COUNT(*) FROM agent_session_history h
-                         JOIN agent_facts f ON f.sequence=h.sequence
-                         JOIN contents b ON b.id=f.body_content_id
-                         WHERE h.kind='external_effect' AND h.tool_start=0 AND h.result_source=0
-                           AND CAST(b.payload AS TEXT)->>'$.fact.event.kind'='observed'
-                           AND CAST(b.payload AS TEXT)->>'$.fact.event.observation.receipt.outcome.kind'='unknown'
-                           AND CAST(b.payload AS TEXT)->>'$.fact.event.observation.receipt.cleanup.kind'='confirmed'
-                           AND NOT EXISTS (
-                             SELECT 1 FROM agent_recall_messages m
-                             WHERE m.owner=h.owner AND m.session=h.session AND m.sequence=h.sequence
-                           )",
+                        &format!(
+                            "SELECT COUNT(*) FROM agent_session_history h
+                             JOIN agent_facts f ON f.sequence=h.sequence
+                             JOIN contents b ON b.id=f.body_content_id
+                             WHERE h.kind='external_effect' AND h.tool_start=0 AND h.result_source=0
+                               AND {body_text}->>'$.fact.event.kind'='observed'
+                               AND {body_text}->>'$.fact.event.observation.receipt.outcome.kind'='unknown'
+                               AND {body_text}->>'$.fact.event.observation.receipt.cleanup.kind'='confirmed'
+                               AND NOT EXISTS (
+                                 SELECT 1 FROM agent_recall_messages m
+                                 WHERE {ns_join} AND m.sequence=h.sequence
+                               )"
+                        ),
                         [],
                         |row| row.get(0),
                     )
@@ -773,6 +855,289 @@ fn verify_sqlite_integrity_and_migrations(root: &Path) -> BTreeMap<String, Vec<i
                 assert_eq!(
                     missing_ended_unknown, 0,
                     "v55 must index every ended-unknown external observation on {rel}"
+                );
+            }
+            if has_runs > 0 && versions.contains(&59) {
+                for dropped in [
+                    "agent_recall_message_order",
+                    "agent_recall_scope_runs",
+                    "agent_run_specs_history",
+                    "agent_interaction_requests_session",
+                    "agent_interaction_outcomes_session",
+                    "agent_continuation_successors_run",
+                ] {
+                    let exists: bool = conn
+                        .query_row(
+                            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='index' AND name=?)",
+                            [dropped],
+                            |row| row.get(0),
+                        )
+                        .unwrap();
+                    assert!(!exists, "v59 must drop duplicate index {dropped} on {rel}");
+                }
+            }
+            if has_runs > 0 && versions.contains(&60) {
+                let has_folded: bool = conn
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('agent_recall_messages') WHERE name='folded')",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                assert!(
+                    !has_folded,
+                    "v60 must drop agent_recall_messages.folded on {rel}"
+                );
+            }
+            if has_runs > 0 && versions.contains(&61) {
+                let has_legacy_table: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='agent_recall_legacy_evidenced'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(
+                    has_legacy_table, 1,
+                    "v61 must create agent_recall_legacy_evidenced on {rel}"
+                );
+                let ns_join = if versions.contains(&62) {
+                    "h.namespace_id = d.namespace_id"
+                } else {
+                    "h.owner = d.owner AND h.session = d.session"
+                };
+                let body_text = if has_encoding {
+                    "maka_content_text(c.payload, c.encoding)"
+                } else {
+                    "CAST(c.payload AS TEXT)"
+                };
+                let bookkeeping: i64 = conn
+                    .query_row(
+                        &format!(
+                            "SELECT COUNT(*) FROM agent_recall_messages d
+                             JOIN agent_session_history h
+                               ON {ns_join} AND h.sequence = d.sequence
+                             JOIN agent_facts f ON f.sequence = h.sequence
+                             JOIN contents c ON c.id = f.body_content_id
+                             WHERE h.kind = 'cell'
+                               AND json_extract({body_text}, '$.fact.event.kind') IN (
+                                 'vm_bound', 'loaded_tools_published', 'child_admitted',
+                                 'child_approval_consumed', 'child_bound',
+                                 'result_accepted', 'final_notification_queued', 'notification_consumed'
+                               )
+                               AND NOT EXISTS (
+                                 SELECT 1 FROM agent_recall_legacy_evidenced e
+                                 WHERE e.fact_id = h.fact_id
+                               )"
+                        ),
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(
+                    bookkeeping, 0,
+                    "v61 must omit unreferenced pure cell bookkeeping rows from agent_recall_messages on {rel}"
+                );
+            }
+            if has_runs > 0 && versions.contains(&62) {
+                let ns_rows: i64 = conn
+                    .query_row("SELECT COUNT(*) FROM agent_namespaces", [], |row| {
+                        row.get(0)
+                    })
+                    .unwrap();
+                assert!(ns_rows > 0, "v62 must populate agent_namespaces on {rel}");
+                for table in [
+                    "agent_session_history",
+                    "agent_recall_messages",
+                    "agent_usage_calls",
+                ] {
+                    let has_ns: bool = conn
+                        .query_row(
+                            &format!(
+                                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('{table}') WHERE name='namespace_id')"
+                            ),
+                            [],
+                            |row| row.get(0),
+                        )
+                        .unwrap();
+                    let has_legacy: bool = conn
+                        .query_row(
+                            &format!(
+                                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('{table}') WHERE name IN ('owner','session'))"
+                            ),
+                            [],
+                            |row| row.get(0),
+                        )
+                        .unwrap();
+                    assert!(
+                        has_ns && !has_legacy,
+                        "v62 must replace (owner,session) with namespace_id on {table} in {rel}"
+                    );
+                }
+                for dropped in [
+                    "agent_session_history_run_fk",
+                    "agent_session_history_result",
+                    "agent_memory_run_termination",
+                    "agent_usage_call_session_time",
+                ] {
+                    let present: bool = conn
+                        .query_row(
+                            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='index' AND name=?1)",
+                            [dropped],
+                            |row| row.get(0),
+                        )
+                        .unwrap();
+                    assert!(!present, "v62 must drop redundant index {dropped} on {rel}");
+                }
+            }
+            if has_runs > 0 && versions.contains(&63) {
+                for col in ["encoding", "logical_bytes"] {
+                    let exists: bool = conn
+                        .query_row(
+                            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('contents') WHERE name=?)",
+                            [col],
+                            |row| row.get(0),
+                        )
+                        .unwrap();
+                    assert!(exists, "v63 must add contents.{col} on {rel}");
+                }
+                let invalid_rows: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM contents
+                         WHERE encoding NOT IN (0, 1, 2, 3)
+                            OR (encoding = 0 AND logical_bytes IS NOT NULL)
+                            OR (encoding IN (1, 2, 3) AND (logical_bytes IS NULL OR logical_bytes < 0))",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                let recomp_rows: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM content_recompression_state WHERE singleton = 1",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(
+                    recomp_rows, 1,
+                    "v63 must initialize content_recompression_state on {rel}"
+                );
+                assert_eq!(
+                    invalid_rows, 0,
+                    "v63 contents encoding/logical_bytes invariant violated on {rel}"
+                );
+                let dict_decoded_ok: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM contents
+                         WHERE encoding = 3
+                           AND length(maka_content_bytes(payload, encoding)) = logical_bytes",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                let dict_total: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM contents WHERE encoding = 3",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(
+                    dict_decoded_ok, dict_total,
+                    "v63 dictionary-compressed (encoding=3) rows must decode to logical_bytes on {rel}"
+                );
+            }
+            if has_runs > 0 && versions.contains(&64) {
+                for view in [
+                    "agent_history_tool_metadata_source",
+                    "agent_memory_cell_accept_source",
+                    "agent_memory_cell_code_source",
+                    "agent_memory_cell_event_source",
+                    "agent_memory_cell_publication_source",
+                    "agent_memory_cell_return_source",
+                    "agent_memory_failed_terminations",
+                    "agent_memory_imported_tool_source",
+                    "agent_memory_operation_field_source",
+                    "agent_memory_recall_call_source",
+                    "agent_memory_selected_readers",
+                    "agent_memory_termination_receipts",
+                ] {
+                    let _: i64 = conn
+                        .query_row(&format!("SELECT COUNT(*) FROM {view}"), [], |row| {
+                            row.get(0)
+                        })
+                        .unwrap_or_else(|e| panic!("v64 view {view} failed on {rel}: {e}"));
+                }
+            }
+            if has_runs > 0 && versions.contains(&65) {
+                for (table, col, enc) in [
+                    (
+                        "application_operation_contracts",
+                        "contract_json",
+                        "contract_encoding",
+                    ),
+                    ("application_operations", "request_json", "request_encoding"),
+                    (
+                        "application_intents",
+                        "reference_json",
+                        "reference_encoding",
+                    ),
+                    ("application_intents", "recovery_json", "recovery_encoding"),
+                ] {
+                    let invalid_json: i64 = conn
+                        .query_row(
+                            &format!(
+                                "SELECT COUNT(*) FROM {table}
+                                 WHERE {enc} NOT IN (0, 1, 2, 3)
+                                    OR NOT json_valid(maka_content_text({col}, {enc}))"
+                            ),
+                            [],
+                            |row| row.get(0),
+                        )
+                        .unwrap();
+                    assert_eq!(
+                        invalid_json, 0,
+                        "v65 inline JSON decode invariant violated on {table}.{col} ({rel})"
+                    );
+                }
+            }
+            if has_runs > 0 && versions.contains(&66) {
+                let invalid_cells: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM agent_cells
+                         WHERE body_encoding NOT IN (0, 1, 2, 3)
+                            OR NOT json_valid(maka_content_text(body, body_encoding))",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(
+                    invalid_cells, 0,
+                    "v66 agent_cells decode invariant violated on {rel}"
+                );
+                for dropped in ["binding_json", "quote_json"] {
+                    let exists: bool = conn
+                        .query_row(
+                            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('agent_usage_calls') WHERE name=?)",
+                            [dropped],
+                            |row| row.get(0),
+                        )
+                        .unwrap();
+                    assert!(
+                        !exists,
+                        "v66 must replace agent_usage_calls.{dropped} with interned FK on {rel}"
+                    );
+                }
+                let invalid_blobs: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM agent_usage_json_blobs WHERE NOT json_valid(body)",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(
+                    invalid_blobs, 0,
+                    "v66 agent_usage_json_blobs JSON validity violated on {rel}"
                 );
             }
             ledgers.insert(rel, versions);
@@ -799,6 +1164,7 @@ fn capture_queued_before_upgrade(root: &Path, session: &str) -> QueuedBeforeUpgr
     let mut found = Vec::new();
     for db in dbs {
         let conn = Connection::open_with_flags(&db, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        maka_event_log::content::register_sql_functions(&conn).unwrap();
         let has_queue: bool = conn
             .query_row(
                 "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='agent_queue_events')",
@@ -809,17 +1175,24 @@ fn capture_queued_before_upgrade(root: &Path, session: &str) -> QueuedBeforeUpgr
         if !has_queue {
             continue;
         }
+        let body_text = if maka_event_log::content::has_encoding_column(&conn).unwrap() {
+            "maka_content_text(b.payload, b.encoding)"
+        } else {
+            "CAST(b.payload AS TEXT)"
+        };
         let row: Option<(String, i64)> = conn
             .query_row(
-                "SELECT q.request, e.at FROM agent_queue_events e
-                 JOIN contents b ON b.id=e.body_content_id
-                 JOIN agent_queue_items q ON q.session=e.session
-                   AND q.request=json_extract(CAST(b.payload AS TEXT), '$.edit.request.id')
-                 WHERE e.session=? AND q.state='delivered'
-                   AND json_extract(CAST(b.payload AS TEXT), '$.kind')='command'
-                   AND json_extract(CAST(b.payload AS TEXT), '$.edit.kind')='enqueue'
-                   AND json_extract(CAST(b.payload AS TEXT), '$.resume_after_interrupt') IS NULL
-                 ORDER BY e.revision LIMIT 1",
+                &format!(
+                    "SELECT q.request, e.at FROM agent_queue_events e
+                     JOIN contents b ON b.id=e.body_content_id
+                     JOIN agent_queue_items q ON q.session=e.session
+                       AND q.request=json_extract({body_text}, '$.edit.request.id')
+                     WHERE e.session=? AND q.state='delivered'
+                       AND json_extract({body_text}, '$.kind')='command'
+                       AND json_extract({body_text}, '$.edit.kind')='enqueue'
+                       AND json_extract({body_text}, '$.resume_after_interrupt') IS NULL
+                     ORDER BY e.revision LIMIT 1"
+                ),
                 [session],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
@@ -1630,11 +2003,60 @@ async fn produce_capsule(bin: &Path, capsule_dir: &Path) -> CapsuleManifest {
         }
     };
     fs::write(
+        capsule_dir.join("hosts.json"),
+        legacy_saved_hosts().to_string(),
+    )
+    .unwrap();
+    fs::write(
         capsule_dir.join("capsule-manifest.json"),
         serde_json::to_string_pretty(&manifest).unwrap(),
     )
     .unwrap();
     manifest
+}
+
+fn legacy_saved_hosts() -> Value {
+    json!([{
+        "rootId": "compat-root",
+        "hostName": "Compat Mac",
+        "hostPeerId": "compat-peer",
+        "relays": [{"url":"https://relay.example.com","quicPort":null,"certSha256":null}],
+        "directEndpoints": ["hostLogs"],
+    }])
+}
+
+fn verify_saved_host_upgrade(capsule_dir: &Path, work_dir: &Path) {
+    use maka_remote_client::SavedHosts;
+
+    // Mobile application support is separate from the Host root. Historical
+    // capsules without this fixture still exercise the oldest client shape.
+    let path = work_dir.join("hosts.json");
+    let old = match fs::read(capsule_dir.join("hosts.json")) {
+        Ok(bytes) => serde_json::from_slice(&bytes).unwrap(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => legacy_saved_hosts(),
+        Err(error) => panic!("read historical saved Hosts: {error}"),
+    };
+    fs::write(&path, old.to_string()).unwrap();
+    let mut saved = SavedHosts::load(&path).unwrap();
+    let mut host = saved.get("compat-root").unwrap().clone();
+    assert_eq!(host.host_name(), "Compat Mac");
+    assert_eq!(host.platform(), None);
+    assert!(!host.reconnect_paused());
+    host.set_host_name("Studio Mac").unwrap();
+    host.set_reconnect_paused(true);
+    saved.save(host).unwrap();
+
+    let upgraded: Value = serde_json::from_reader(fs::File::open(&path).unwrap()).unwrap();
+    let mut expected = old;
+    expected[0]["hostName"] = json!("Studio Mac");
+    expected[0]["reconnectPaused"] = json!(true);
+    assert_eq!(upgraded, expected);
+
+    let reopened = SavedHosts::load(path).unwrap();
+    let host = reopened.get("compat-root").unwrap();
+    assert_eq!(host.host_name(), "Studio Mac");
+    assert_eq!(host.platform(), None);
+    assert!(host.reconnect_paused());
 }
 
 async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
@@ -1652,6 +2074,7 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
     // tarball extract a fresh copy at manifest.base_dir before calling verify,
     // matching a real user upgrading Maka at the same HOME and State Root path).
     let work_tmp = tempfile::tempdir().unwrap();
+    verify_saved_host_upgrade(capsule_dir, work_tmp.path());
     let canonical_base = fs::canonicalize(capsule_dir).unwrap();
     let dirs = EnvDirs::in_base(&canonical_base);
     dirs.prepare();
@@ -1672,6 +2095,33 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
     })
     .await;
     let new_base_url = server.base_url();
+
+    // Record pre-upgrade contents.id high-water marks so Stage 3 proves live continuation
+    // newly inserted compressed contents rows (not merely re-pinning pre-existing digests).
+    let pre_upgrade_max_content_id: BTreeMap<PathBuf, i64> = {
+        let mut dbs = Vec::new();
+        collect_sqlite_files(&dirs.root, &mut dbs);
+        let mut marks = BTreeMap::new();
+        for db in dbs {
+            let conn = Connection::open_with_flags(&db, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+            let has_contents: bool = conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='contents')",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            if has_contents {
+                let max_id: i64 = conn
+                    .query_row("SELECT COALESCE(MAX(id), 0) FROM contents", [], |r| {
+                        r.get(0)
+                    })
+                    .unwrap();
+                marks.insert(db, max_id);
+            }
+        }
+        marks
+    };
 
     // Stage 1: Cold startup & in-place schema/data migrations.
     let mut host = Host::spawn_with(bin, &dirs.root, &dirs.home, &dirs.workspace)
@@ -1741,8 +2191,11 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
             "assistantPreferences lost across upgrade: {prefs}"
         );
 
-        let staged = manifest.migrations.get(maka_event_log::root::ROOT_DATABASE).is_some_and(|v| v.contains(&58));
-        verify_dossiers(&client, manifest.discovery.as_ref(), &manifest.nonce, &post_nonce, staged,manifest.migrations.get(maka_event_log::root::ROOT_DATABASE).is_some_and(|v|v.contains(&59))).await;
+        let staged = manifest.has_discovery_migration(70);
+        verify_dossiers(
+            &client, manifest.discovery.as_ref(), &manifest.nonce, &post_nonce,
+            staged, manifest.has_discovery_migration(71),
+        ).await;
         if staged {
             assert_eq!(fs::read_to_string(dirs.root.join("discovery/preferences.md")).unwrap(), COMPAT_RULE);
             assert!(fs::read_to_string(dirs.root.join("discovery/outcomes.md")).unwrap().contains("opened a staged artifact"));
@@ -1941,6 +2394,61 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
         .await;
         assert_eq!(updated_conn["kind"], "committed", "{updated_conn}");
 
+        let enabled = call(
+            &client,
+            "settings",
+            "updateAssistantPreferences",
+            json!({
+                "expectedRevision": prefs_after["revision"],
+                "mutation": {"kind": "memory", "value": {"enabled": true, "agentReadEnabled": true}}
+            }),
+            Attachments::new(),
+        )
+        .await;
+        assert_eq!(enabled["kind"], "committed", "{enabled}");
+        let pin = call(
+            &client,
+            "agent",
+            "changeMemory",
+            json!({
+                "scope": {"kind": "personal"},
+                "edit": {"kind": "set_always", "id": manifest.memory_id,
+                    "expectedRevision": memory["revision"], "always": true}
+            }),
+            Attachments::new(),
+        )
+        .await;
+        assert_eq!(pin["kind"], "saved", "{pin}");
+        let pinned = call(
+            &client,
+            "agent",
+            "memory",
+            json!({"scope": {"kind": "personal"}, "id": manifest.memory_id}),
+            Attachments::new(),
+        )
+        .await;
+        assert_eq!(pinned["mode"], "user_always", "{pinned}");
+        assert_eq!(pinned["assertion"], memory["assertion"]);
+        assert_eq!(pinned["revision"], pin["revision"]);
+
+        let observed = call(
+            &client,
+            "agent",
+            "observe",
+            json!({"sessionId": manifest.primary_session_id}),
+            Attachments::new(),
+        )
+        .await;
+        let original = call(
+            &client,
+            "agent",
+            "loadedMemories",
+            json!({"sessionId": manifest.primary_session_id, "runId": observed["latestRunId"].as_str().unwrap()}),
+            Attachments::new(),
+        )
+        .await;
+        assert_eq!(original, json!([]), "later pin changed historical Run admission");
+
         let followup = call(
             &client,
             "agent",
@@ -1954,12 +2462,25 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
         )
         .await;
         assert_eq!(followup["kind"], "queued", "{followup}");
-        wait_run_completed(
+        let continuation_run_id = wait_run_completed(
             &client,
             &manifest.primary_session_id,
             followup["messageId"].as_str().unwrap(),
         )
         .await;
+        let loaded = call(
+            &client,
+            "agent",
+            "loadedMemories",
+            json!({"sessionId": manifest.primary_session_id, "runId": continuation_run_id}),
+            Attachments::new(),
+        )
+        .await;
+        assert_eq!(loaded, json!([]), "tool-restricted session loaded a pin");
+        let continuation_run_id = continuation_run_id
+            .as_str()
+            .expect("wait_run_completed must return continuation runId")
+            .to_owned();
         assert!(
             saw_pre_context.load(Ordering::SeqCst),
             "post-upgrade model request did not retain pre-upgrade conversation context"
@@ -2108,6 +2629,129 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
         );
 
         host.quit(&mut client).await.expect("Host quit");
+
+        // Verify the exact post-upgrade continuation run newly inserted PR 5 zstd-compressed
+        // contents rows (id > pre_upgrade_max_content_id), wrote PR 6 out-of-line toolContracts,
+        // and emitted PR 8 Layout v3 FrozenInput payloads after upgrading legacy v2 capsules.
+        {
+            let mut dbs = Vec::new();
+            collect_sqlite_files(&dirs.root, &mut dbs);
+            let mut matched_continuation_run = false;
+            let mut saw_newly_inserted_compressed = false;
+            let mut saw_compact_request_spec = false;
+            let mut saw_layout_v3_request = false;
+            for db in dbs {
+                let conn =
+                    Connection::open_with_flags(&db, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+                maka_event_log::content::register_sql_functions(&conn).unwrap();
+                let has_req: bool = conn
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='agent_request_specs')",
+                        [],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+                if !has_req {
+                    continue;
+                }
+                let has_run: bool = conn
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM agent_run_specs WHERE run = ?1)",
+                        [&continuation_run_id],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+                if !has_run {
+                    continue;
+                }
+                matched_continuation_run = true;
+                let max_id_before = pre_upgrade_max_content_id.get(&db).copied().unwrap_or(0);
+                let newly_compressed: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*)
+                         FROM agent_content_pins p
+                         JOIN contents c ON c.id = p.content_id
+                         WHERE p.run = ?1
+                           AND c.id > ?2
+                           AND c.encoding IN (1, 2, 3)
+                           AND c.logical_bytes IS NOT NULL",
+                        rusqlite::params![&continuation_run_id, max_id_before],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+                if newly_compressed > 0 {
+                    saw_newly_inserted_compressed = true;
+                }
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT maka_content_text(c.payload, c.encoding)
+                         FROM agent_request_specs r
+                         JOIN contents c ON c.id = r.content_id
+                         WHERE r.run = ?1",
+                    )
+                    .unwrap();
+                let specs: Vec<String> = stmt
+                    .query_map([&continuation_run_id], |r| r.get::<_, String>(0))
+                    .unwrap()
+                    .collect::<Result<_, _>>()
+                    .unwrap();
+                assert!(
+                    !specs.is_empty(),
+                    "continuation run {continuation_run_id} must record at least one RequestSpec"
+                );
+                for raw in specs {
+                    let parsed: Value = serde_json::from_str(&raw).unwrap();
+                    if parsed
+                        .get("toolContracts")
+                        .and_then(|v| v.get("digest"))
+                        .is_some()
+                    {
+                        saw_compact_request_spec = true;
+                    }
+                    let req_digest = parsed
+                        .get("request")
+                        .and_then(|v| v.get("digest"))
+                        .and_then(Value::as_str)
+                        .expect("RequestSpec.request.digest must be present");
+                    let frozen_raw: String = conn
+                        .query_row(
+                            "SELECT maka_content_text(payload, encoding)
+                             FROM contents
+                             WHERE content_sha256 = ?1",
+                            [req_digest],
+                            |r| r.get(0),
+                        )
+                        .unwrap();
+                    let frozen: Value = serde_json::from_str(&frozen_raw).unwrap();
+                    let layout_version = frozen
+                        .get("layout")
+                        .and_then(|v| v.get("version"))
+                        .and_then(Value::as_u64);
+                    assert_eq!(
+                        layout_version,
+                        Some(3),
+                        "post-upgrade continuation run {continuation_run_id} must emit Layout v3 FrozenInput"
+                    );
+                    saw_layout_v3_request = true;
+                }
+            }
+            assert!(
+                matched_continuation_run,
+                "could not locate post-upgrade continuation run {continuation_run_id}"
+            );
+            assert!(
+                saw_newly_inserted_compressed,
+                "post-upgrade continuation run {continuation_run_id} must newly insert zstd-compressed contents blobs"
+            );
+            assert!(
+                saw_compact_request_spec,
+                "post-upgrade continuation run {continuation_run_id} must write out-of-line RequestSpec.toolContracts"
+            );
+            assert!(
+                saw_layout_v3_request,
+                "post-upgrade continuation run {continuation_run_id} must record at least one Layout v3 FrozenInput"
+            );
+        }
 
         // Cold startup preserves historical device rows but must prune
         // invitations for a publication this Host is not serving.
@@ -2307,8 +2951,8 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
             "SELECT count(*) FROM discovery_source_cursors WHERE source_uri='annex.md' AND delta_kind='modified' AND delta_at=1",
             [], |row| row.get(0),
         ).unwrap();
-        let captured_changes = manifest.migrations.get(maka_event_log::root::ROOT_DATABASE).is_some_and(|versions|versions.contains(&57));
-        assert_eq!(pending, i64::from(manifest.discovery.is_some() && captured_changes));
+        let captured_changes = manifest.has_discovery_migration(69);
+        assert_eq!(pending, i64::from(captured_changes));
         let owner = if let Some(dossier) = &manifest.discovery {
             let (cycle, explored, owner): (u8, i64, String) = conn.query_row("SELECT p.broad_cycle,c.last_explored_at,d.owner FROM discovery_dossiers d
                 JOIN discovery_preferences p USING(owner) JOIN discovery_source_cursors c USING(owner)

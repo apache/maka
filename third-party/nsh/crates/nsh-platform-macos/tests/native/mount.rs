@@ -20,6 +20,13 @@
 //! A subtree deleted in one batch leaves the window with its root alone:
 //! its views stay in the root, out of the window (`deleted_subtree`).
 //!
+//! Texts that are leaves (#2066) moved, added, removed and cleared within
+//! one parent keep their layers in the children's order, and the list the
+//! parent reads them from in the same order (`leaf_order`).
+//! `NSH_LEAF_BENCH_ONLY=1` times mounting, reversing, prepending to and
+//! clearing 1 000, 4 000 and 8 000 such leaves (`leaf_bench`;
+//! `NSH_LEAF_SIZES=8000` picks sizes).
+//!
 //! The benchmark (`bench`) mounts 100, 1 000 and 8 600 rows that are not
 //! virtualized (wall time, process and main thread CPU). It is the
 //! workload of the former `tests/mount.rs`, unchanged, so that runs before
@@ -912,6 +919,181 @@ fn bench(mtm: MainThreadMarker) {
     }
 }
 
+/// The keys of the texts [`LeafRows`] shows, and how often the bench
+/// changed them.
+static LEAF_KEYS: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+static LEAF_GENERATION: AtomicUsize = AtomicUsize::new(0);
+
+/// Keyed texts ([`LEAF_KEYS`]) in a plain view: every one a leaf, its
+/// layer in its parent's leaf layer with no view in the hierarchy.
+#[component]
+fn LeafRows() -> impl IntoElement {
+    let generation = signal(LEAF_GENERATION.load(Ordering::SeqCst));
+    set_interval(Duration::from_millis(1), move || {
+        let now = LEAF_GENERATION.load(Ordering::SeqCst);
+        if generation.get_untracked() != now {
+            generation.set(now);
+        }
+    });
+    view().test_id("leaves").child(each(
+        move || {
+            generation.get();
+            LEAF_KEYS.lock().unwrap().clone()
+        },
+        |key: &usize| *key,
+        |key, _| text(format!("{}", key.get_untracked())).into_element(),
+    ))
+}
+
+fn set_leaves(keys: Vec<usize>) {
+    *LEAF_KEYS.lock().unwrap() = keys;
+    LEAF_GENERATION.fetch_add(1, Ordering::SeqCst);
+}
+
+/// The layers of the leaves of `view`, bottom to top: the sublayers of
+/// the plain layer they are in (the container layer's one with the most).
+fn leaf_layers(view: &NSView) -> Vec<usize> {
+    let Some(layer) = holder(view).layer() else {
+        return Vec::new();
+    };
+    // SAFETY: read on the main thread; nothing changes them meanwhile.
+    let Some(sublayers) = (unsafe { layer.sublayers() }) else {
+        return Vec::new();
+    };
+    sublayers
+        .iter()
+        // SAFETY: as above.
+        .filter_map(|l| unsafe { l.sublayers() })
+        .max_by_key(|s| s.count())
+        .map(|s| s.iter().map(|l| Retained::as_ptr(&l) as usize).collect())
+        .unwrap_or_default()
+}
+
+/// Times one change of [`LEAF_KEYS`] until `done` holds of the leaf layers.
+fn time_leaves(view: &NSView, keys: Vec<usize>, done: impl Fn(&[usize]) -> bool) -> [Duration; 3] {
+    let (wall, cpu, main) = (Instant::now(), process_cpu(), thread_cpu());
+    set_leaves(keys);
+    until("the leaves", Duration::from_secs(1200), || {
+        find(view, "leaves").is_some_and(|v| done(&leaf_layers(&v)))
+    });
+    [wall.elapsed(), process_cpu() - cpu, thread_cpu() - main]
+}
+
+/// A flat list of `n` leaves mounted, reversed, prepended to and cleared,
+/// each step timed.
+fn leaf_steps(mtm: MainThreadMarker, n: usize) -> [[Duration; 3]; 4] {
+    set_leaves(Vec::new());
+    let shown = Shown::new(mtm, false);
+    shown.app.load(Root::of::<LeafRows>().into());
+    settle(0.1);
+    let view = shown.view();
+    let keys: Vec<usize> = (0..n).collect();
+    let mount = time_leaves(&view, keys.clone(), |l| l.len() == n);
+    let last = *leaf_layers(&find(&view, "leaves").unwrap()).last().unwrap();
+    let reversed: Vec<usize> = keys.iter().rev().copied().collect();
+    let reverse = time_leaves(&view, reversed.clone(), |l| {
+        l.len() == n && l.first() == Some(&last)
+    });
+    let prepended: Vec<usize> = std::iter::once(n).chain(reversed).collect();
+    let prepend = time_leaves(&view, prepended, |l| l.len() == n + 1);
+    let clear = time_leaves(&view, Vec::new(), |l| l.is_empty());
+    [mount, reverse, prepend, clear]
+}
+
+/// The layers of the leaves `view`'s accessibility lists (its leaves'
+/// list, [`NshView::leaf_children`]), in its order.
+fn listed_leaf_layers(view: &NSView) -> Vec<usize> {
+    view.accessibilityChildren()
+        .map(|children| {
+            children
+                .iter()
+                .filter_map(|c| c.downcast_ref::<NSView>().and_then(|v| v.layer()))
+                .map(|l| Retained::as_ptr(&l) as usize)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Leaves moved, added, removed and cleared within one parent, and added
+/// back: the layers are in the keys' order (each a text of its key), and
+/// the list the parent reads its leaves from has them in that order too.
+fn leaf_order(mtm: MainThreadMarker) {
+    set_leaves(Vec::new());
+    let shown = Shown::new(mtm, false);
+    shown.app.load(Root::of::<LeafRows>().into());
+    settle(0.1);
+    let root = shown.view();
+    // The layers (bottom to top) of the texts of `keys`, read when the
+    // first one is mounted.
+    let mut layer_of = std::collections::HashMap::new();
+    let steps: [Vec<usize>; 7] = [
+        (0..8).collect(),
+        (0..8).rev().collect(),
+        vec![3, 7, 6, 5, 4, 2, 1, 0],
+        vec![9, 3, 6, 4, 2, 0, 8],
+        vec![9, 0, 3, 6, 8, 4],
+        Vec::new(),
+        vec![1, 0, 2],
+    ];
+    for keys in steps {
+        let n = keys.len();
+        set_leaves(keys.clone());
+        until("the leaves", Duration::from_secs(5), || {
+            find(&root, "leaves").is_some_and(|v| leaf_layers(&v).len() == n)
+        });
+        settle(0.05);
+        let leaves = find(&root, "leaves").expect("the leaves' parent");
+        let layers = leaf_layers(&leaves);
+        assert_eq!(layers.len(), n, "{keys:?}: leaves shown");
+        for (key, layer) in keys.iter().zip(&layers) {
+            // A key mounted for the first time is a new layer: noted here.
+            let known = *layer_of.entry(*key).or_insert(*layer);
+            assert_eq!(known, *layer, "{keys:?}: the layer of {key}");
+        }
+        assert_eq!(
+            listed_leaf_layers(&leaves),
+            layers,
+            "{keys:?}: leaves listed as their layers are"
+        );
+        if n == 0 {
+            // Deleted: new texts next time.
+            layer_of.clear();
+        }
+    }
+    println!("mount leaves: ok");
+}
+
+/// The leaf list benchmark (`NSH_LEAF_BENCH_ONLY`): 1 000, 4 000 and
+/// 8 000 texts in one plain view.
+pub(super) fn leaf_bench() {
+    let mtm = MainThreadMarker::new().expect("the main thread");
+    let _app = NSApplication::sharedApplication(mtm);
+    let repeats: usize = std::env::var("NSH_MOUNT_REPEATS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(3);
+    let sizes: Vec<usize> = std::env::var("NSH_LEAF_SIZES")
+        .ok()
+        .map(|s| s.split(',').filter_map(|n| n.parse().ok()).collect())
+        .unwrap_or_else(|| vec![1000, 4000, 8000]);
+    // Warm up (fonts, classes, the engine's first start).
+    leaf_steps(mtm, 100);
+    for n in sizes {
+        let runs: Vec<_> = (0..repeats).map(|_| leaf_steps(mtm, n)).collect();
+        for (i, step) in ["mount", "reverse", "prepend", "clear"].iter().enumerate() {
+            let mut wall: Vec<f64> = runs.iter().map(|r| ms(r[i][0])).collect();
+            let mut main: Vec<f64> = runs.iter().map(|r| ms(r[i][2])).collect();
+            wall.sort_by(f64::total_cmp);
+            main.sort_by(f64::total_cmp);
+            println!(
+                "leaf bench n={n} {step}: wall ms median {:.1} {wall:.1?} | main thread cpu ms median {:.1}",
+                wall[wall.len() / 2],
+                main[main.len() / 2],
+            );
+        }
+    }
+}
+
 /// Whether only the benchmark runs (`NSH_MOUNT_BENCH_ONLY`).
 pub(super) fn bench_only() -> bool {
     std::env::var_os("NSH_MOUNT_BENCH_ONLY").is_some()
@@ -931,6 +1113,7 @@ pub(super) fn run() {
     let _app = NSApplication::sharedApplication(mtm);
     ordering(mtm);
     deleted_subtree(mtm);
+    leaf_order(mtm);
     if std::env::var_os("NSH_MOUNT_BENCH").is_some() {
         bench(mtm);
     }

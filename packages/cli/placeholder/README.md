@@ -21,20 +21,20 @@
 
 This `latest` package intentionally contains no CLI, runtime, executable code, dependencies, or install scripts. Installing it does not install Maka.
 
-**Maka npm previews are independent, experimental distributions. They are not official releases of the Apache Software Foundation (ASF), and are not approved, endorsed, or supported by the ASF. Their publication does not imply ASF affiliation or sponsorship.** Source attribution and the Apache-2.0 license do not imply ASF endorsement of these distributions.
+**Maka nightly builds are unofficial developer previews. They are not official releases of the Apache Software Foundation (ASF), and are not approved, endorsed, or supported by the ASF. Their publication does not imply ASF affiliation or sponsorship.** Source attribution and the Apache-2.0 license do not imply ASF endorsement of these distributions.
 
-To explicitly opt into the experimental Rust preview:
+To explicitly opt into the developer nightly build:
 
 ```sh
-npm install --global @maka-agent/cli@rust-preview
+npm install --global @maka-agent/cli@nightly
 ```
 
-There is no stable CLI on the `latest` tag. Preview behavior and compatibility can change without notice.
+There is no stable CLI on the `latest` tag yet. Nightly behavior and compatibility can change without notice.
 
 ---
 
 本 `latest` 包为空占位包，不含 CLI、运行时、可执行代码、依赖或安装脚本，安装它不会安装 Maka。
 
-**Maka 的 npm 预览版由独立发布者提供，均为实验性分发，与 ASF 官方发布无关，不是 Apache 软件基金会（ASF）的官方版本，未经 ASF 批准、背书或支持，也不代表 ASF 的关联或赞助。** 源码归属和 Apache-2.0 许可不意味着 ASF 对本分发的认可。
+**Maka 的 nightly 构建为非官方开发者预览版，与 ASF 官方发布无关，不是 Apache 软件基金会（ASF）的官方版本，未经 ASF 批准、背书或支持，也不代表 ASF 的关联或赞助。** 源码归属和 Apache-2.0 许可不意味着 ASF 对本分发的认可。
 
-如需尝试实验性 Rust 预览版，请显式安装 `@maka-agent/cli@rust-preview`。`latest` 不提供稳定版 CLI。
+如需尝试开发者 nightly 构建，请显式安装 `@maka-agent/cli@nightly`。`latest` 暂不提供稳定版 CLI。

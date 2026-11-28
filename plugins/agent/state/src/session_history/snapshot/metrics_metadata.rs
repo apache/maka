@@ -189,7 +189,7 @@ pub(super) fn classify(
     };
     // The typed original above already validated this wire variant. Retain its
     // stored tag without serializing large model parts or private protocol data.
-    let kind: String = c.query_row("SELECT json_extract(CAST(payload AS TEXT),'$.fact.kind') FROM contents WHERE content_sha256=? AND length(payload)=?", params![body.digest, bind_u64(body.bytes)?], |row| row.get(0))?;
+    let kind: String = c.query_row("SELECT json_extract(maka_content_text(payload,encoding),'$.fact.kind') FROM contents WHERE content_sha256=? AND COALESCE(logical_bytes,length(payload))=?", params![body.digest, bind_u64(body.bytes)?], |row| row.get(0))?;
     Ok((Some(kind), metadata))
 }
 

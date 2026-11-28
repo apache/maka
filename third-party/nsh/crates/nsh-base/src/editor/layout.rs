@@ -1,10 +1,12 @@
 //! How an editor sizes and scrolls: how far the text scrolls past its last
 //! line ([`EditorScrollBeyond`]), the height of an editor that grows with
 //! its text (`minRows` / `maxRows`), the rows kept around the caret
-//! (`cursorSurroundingLines`), and scrolling on its own while a drag
-//! selects past the viewport's edge.
+//! (`cursorSurroundingLines`), scrolling on its own while a drag selects
+//! past the viewport's edge, and where the scroll bars keep within the
+//! editor (`scrollbarInset`).
 
 use nsh_core::{
+    EdgeInsets,
     element::{JsHost, JsIn, JsOwned, JsValue, PropError, TsTypes},
     geometry::{Points, px},
 };
@@ -87,13 +89,14 @@ impl JsValue for EditorScrollBeyond {
 }
 
 /// The height of the rows of an editor growing with its text: `rows`
-/// rows, at least `min` and at most `max` of them. `None` when neither is
-/// set (the app sizes the editor).
+/// rows, at least `min` and at most `max` of them, the first `n` of them
+/// `top(n)` tall (rows past the last a line height each). `None` when
+/// neither is set (the app sizes the editor).
 pub(crate) fn grow_height(
     rows: usize,
-    line_height: Points,
     min: Option<u32>,
     max: Option<u32>,
+    top: impl Fn(usize) -> Points,
 ) -> Option<Points> {
     if min.is_none() && max.is_none() {
         return None;
@@ -101,7 +104,7 @@ pub(crate) fn grow_height(
     let min = min.unwrap_or(1).max(1);
     let max = max.unwrap_or(u32::MAX).max(min);
     let rows = u32::try_from(rows).unwrap_or(u32::MAX).clamp(min, max);
-    Some(line_height * rows as f32)
+    Some(top(rows as usize))
 }
 
 /// The room kept between the caret's row and the viewport's top and bottom
@@ -138,14 +141,17 @@ mod tests {
 
     #[test]
     fn an_editor_grows_between_its_rows_bounds() {
-        let lh = px(20.0);
-        assert_eq!(grow_height(5, lh, None, None), None);
-        assert_eq!(grow_height(1, lh, Some(3), None), Some(px(60.0)));
-        assert_eq!(grow_height(5, lh, Some(3), None), Some(px(100.0)));
-        assert_eq!(grow_height(9, lh, Some(2), Some(6)), Some(px(120.0)));
+        let top = |rows: usize| px(20.0) * rows as f32;
+        assert_eq!(grow_height(5, None, None, top), None);
+        assert_eq!(grow_height(1, Some(3), None, top), Some(px(60.0)));
+        assert_eq!(grow_height(5, Some(3), None, top), Some(px(100.0)));
+        assert_eq!(grow_height(9, Some(2), Some(6), top), Some(px(120.0)));
         // A max under the min is the min; zero rows are one.
-        assert_eq!(grow_height(9, lh, Some(4), Some(2)), Some(px(80.0)));
-        assert_eq!(grow_height(0, lh, None, Some(4)), Some(px(20.0)));
+        assert_eq!(grow_height(9, Some(4), Some(2), top), Some(px(80.0)));
+        assert_eq!(grow_height(0, None, Some(4), top), Some(px(20.0)));
+        // Taller rows: the rows' own tops.
+        let tall = |rows: usize| px(20.0) * rows as f32 + if rows > 0 { px(12.0) } else { px(0.0) };
+        assert_eq!(grow_height(2, Some(1), Some(4), tall), Some(px(52.0)));
     }
 
     #[test]
@@ -164,20 +170,21 @@ mod tests {
 /// The least height of a mark on the overview ruler, as Monaco's.
 const RULER_MARK_MIN_HEIGHT: Points = Points(6.0);
 
-/// Where a mark covering display rows `rows` is down an overview ruler
-/// `track` tall: its top and height, the rows' place in the rows' box
-/// (`content` tall, or the ruler's height when shorter) scaled to the
-/// ruler, at least [`RULER_MARK_MIN_HEIGHT`] tall and kept within it.
+/// Where a mark covering rows `top` down and `height` tall in the rows'
+/// box is down an overview ruler `track` tall: its top and height, the
+/// rows' place in the rows' box (`content` tall, or the ruler's height when
+/// shorter) scaled to the ruler, at least [`RULER_MARK_MIN_HEIGHT`] tall
+/// and kept within it.
 pub(crate) fn ruler_place(
-    rows: std::ops::Range<usize>,
-    line_height: Points,
+    top: Points,
+    height: Points,
     content: Points,
     track: Points,
 ) -> (Points, Points) {
     let content = content.max(track).max(px(1.0));
     let scale = track / content;
-    let height = (line_height * rows.len() as f32 * scale).max(RULER_MARK_MIN_HEIGHT);
-    let top = (line_height * rows.start as f32 * scale).min((track - height).max(px(0.0)));
+    let height = (height * scale).max(RULER_MARK_MIN_HEIGHT);
+    let top = (top * scale).min((track - height).max(px(0.0)));
     (top, height)
 }
 
@@ -194,6 +201,27 @@ pub(crate) fn ruler_lane(lane: super::EditorOverviewRulerLane) -> (f32, f32) {
     }
 }
 
+/// The editor's `scrollbarInset`, none below zero, as a scroll view
+/// takes it.
+pub(crate) fn bar_inset(inset: EdgeInsets) -> EdgeInsets {
+    inset.map(|v| v.max(px(0.0)))
+}
+
+/// The horizontal scroll view's `scrollbarInset`: the editor's `inset`,
+/// measured from the editor's edges, for a text area starting `text_left`
+/// past the editor's left (the gutter's width). Its bar runs along the
+/// bottom between the ends, so the top is the vertical bar's alone, and
+/// the gutter already keeps the bar that far from the left.
+pub(crate) fn text_bar_inset(inset: EdgeInsets, text_left: Points) -> EdgeInsets {
+    let inset = bar_inset(inset);
+    EdgeInsets {
+        top: px(0.0),
+        right: inset.right,
+        bottom: inset.bottom,
+        left: (inset.left - text_left).max(px(0.0)),
+    }
+}
+
 #[cfg(test)]
 mod ruler_tests {
     use super::*;
@@ -201,20 +229,48 @@ mod ruler_tests {
 
     #[test]
     fn ruler_marks_scale_to_the_ruler_in_their_lanes() {
-        let lh = px(20.0);
         // 100 rows (2000 points) on a 200 point ruler: a tenth.
         assert_eq!(
-            ruler_place(50..60, lh, px(2000.0), px(200.0)),
+            ruler_place(px(1000.0), px(200.0), px(2000.0), px(200.0)),
             (px(100.0), px(20.0))
         );
         // A row is at least six points tall, kept within the ruler.
         assert_eq!(
-            ruler_place(99..100, lh, px(2000.0), px(200.0)),
+            ruler_place(px(1980.0), px(20.0), px(2000.0), px(200.0)),
             (px(194.0), px(6.0))
         );
         // A short text keeps its rows' places.
-        assert_eq!(ruler_place(2..3, lh, px(100.0), px(200.0)).0, px(40.0));
+        assert_eq!(
+            ruler_place(px(40.0), px(20.0), px(100.0), px(200.0)).0,
+            px(40.0)
+        );
         assert_eq!(ruler_lane(Lane::Right), (2.0 / 3.0, 1.0 / 3.0));
         assert_eq!(ruler_lane(Lane::Full), (0.0, 1.0));
+    }
+
+    #[test]
+    fn the_horizontal_bar_keeps_the_editors_inset_past_the_gutter() {
+        let inset = EdgeInsets {
+            top: px(8.0),
+            right: px(4.0),
+            bottom: px(6.0),
+            left: px(12.0),
+        };
+        let without_top = |left| EdgeInsets {
+            top: px(0.0),
+            right: px(4.0),
+            bottom: px(6.0),
+            left: px(left),
+        };
+        // No gutter: the text area starts at the editor's left.
+        assert_eq!(text_bar_inset(inset, px(0.0)), without_top(12.0));
+        // A gutter narrower than the inset keeps the rest of it.
+        assert_eq!(text_bar_inset(inset, px(5.0)), without_top(7.0));
+        // A wider one already keeps the bar clear.
+        assert_eq!(text_bar_inset(inset, px(40.0)), without_top(0.0));
+        // Negative sides count as none, as on a scroll view.
+        let negative = EdgeInsets::all(px(-3.0));
+        assert_eq!(bar_inset(negative), EdgeInsets::default());
+        assert_eq!(text_bar_inset(negative, px(0.0)), EdgeInsets::default());
     }
 }

@@ -36,7 +36,7 @@ pub struct Migration {
     pub description: &'static str,
     /// SQL whose exact bytes determine the migration checksum.
     pub sql: &'static str,
-    /// Register functions required by this schema on every writer, including reopen.
+    /// Prepare each writer inside the migration savepoint before ledger validation.
     pub configure: Option<ConfigureConnection>,
     /// Optional in-place Rust data rewrite executed inside the migration savepoint
     /// right after `sql`, before the ledger entry is recorded.
@@ -78,9 +78,6 @@ pub fn checksum(sql: &str) -> Vec<u8> {
 /// Returns an error for dirty, unknown, or changed applied migrations, or when
 /// SQLite cannot execute or record a migration.
 pub fn run(connection: &Connection, migrations: &[Migration]) -> Result<(), StoreError> {
-    for configure in migrations.iter().filter_map(|m| m.configure) {
-        configure(connection)?;
-    }
     connection.execute_batch("SAVEPOINT maka_schema_migrations")?;
     let result = apply(connection, migrations).and_then(|()| {
         connection.execute_batch("RELEASE maka_schema_migrations")?;
@@ -102,6 +99,19 @@ pub fn run(connection: &Connection, migrations: &[Migration]) -> Result<(), Stor
 }
 
 fn apply(connection: &Connection, migrations: &[Migration]) -> Result<(), StoreError> {
+    for configure in migrations.iter().filter_map(|m| m.configure) {
+        configure(connection)?;
+    }
+    let mut ordered = migrations.to_vec();
+    ordered.sort_by_key(|migration| migration.version);
+    for pair in ordered.windows(2) {
+        if pair[0].version == pair[1].version {
+            return Err(StoreError::Migration(format!(
+                "duplicate migration version {}",
+                pair[0].version
+            )));
+        }
+    }
     connection.execute_batch(
         "CREATE TABLE IF NOT EXISTS _sqlx_migrations (
             version BIGINT PRIMARY KEY,
@@ -130,16 +140,16 @@ fn apply(connection: &Connection, migrations: &[Migration]) -> Result<(), StoreE
         })?
         .collect::<Result<BTreeMap<_, _>, _>>()?;
     for version in applied.keys() {
-        if !migrations
-            .iter()
-            .any(|migration| migration.version == *version)
+        if ordered
+            .binary_search_by_key(version, |migration| migration.version)
+            .is_err()
         {
             return Err(StoreError::Migration(format!(
                 "applied migration {version} is missing from the available migrations"
             )));
         }
     }
-    for migration in migrations {
+    for migration in &ordered {
         let checksum = checksum(migration.sql);
         if let Some(previous) = applied.get(&migration.version) {
             if *previous != checksum {
@@ -187,6 +197,36 @@ mod tests {
         let connection = Connection::open_in_memory().unwrap();
         run(&connection, &[BASE]).unwrap();
         connection
+    }
+
+    #[test]
+    fn applies_migrations_in_version_order_and_rejects_duplicates() {
+        let connection = Connection::open_in_memory().unwrap();
+        let out_of_order = [
+            Migration::sql(3, "third", "INSERT INTO log VALUES (3);"),
+            Migration::sql(
+                1,
+                "first",
+                "CREATE TABLE log(v INTEGER); INSERT INTO log VALUES (1);",
+            ),
+            Migration::sql(2, "second", "INSERT INTO log VALUES (2);"),
+        ];
+        run(&connection, &out_of_order).unwrap();
+        let values: Vec<i64> = connection
+            .prepare("SELECT v FROM log ORDER BY rowid")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(values, [1, 2, 3]);
+
+        let dup = [
+            Migration::sql(1, "a", "SELECT 1;"),
+            Migration::sql(1, "b", "SELECT 1;"),
+        ];
+        let err = run(&Connection::open_in_memory().unwrap(), &dup).unwrap_err();
+        assert!(matches!(err, StoreError::Migration(_)), "{err:?}");
     }
 
     #[test]

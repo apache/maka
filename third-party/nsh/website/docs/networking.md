@@ -384,7 +384,7 @@ An app without `"capabilities"` may reach every host: a standalone app is its de
 TSX's `fetch` follows the Fetch standard with the differences that make sense for an app rather than a web page:
 
 - **No CORS.** An app talks to any host its capabilities allow; there are no preflight requests and no opaque responses.
-- **No forbidden headers.** An app may set `Cookie`, `User-Agent`, `Origin` and others. For an app with `"capabilities"`, NSH follows redirects itself, and the credential headers (`Authorization`, `Cookie`, `Proxy-Authorization`) stay with the origin they were set for; without them, the platform's network stack follows redirects with its own rules.
+- **No forbidden headers.** An app may set `Cookie`, `User-Agent`, `Origin` and others. For an app with `"capabilities"`, NSH follows redirects itself, and the credential headers (`Authorization`, `Cookie`, `Proxy-Authorization`) stay with the origin they were set for; without `"capabilities"`, the platform's network stack follows redirects with its own rules.
 - **`redirect: "manual"`** gives the 3xx response itself (with its `Location` header) rather than an opaque redirect. `redirect: "error"` rejects on a redirect.
 - **`data:` and `blob:` URLs** are answered locally. `URL.createObjectURL(blob)` makes a `blob:` URL that `fetch` can read until you revoke it.
 - **`asset:/` URLs** are the files the app ships, read from the app's own files with no capability needed ([Reading a file at run time](./images-and-assets.md#reading-a-file-at-run-time)).

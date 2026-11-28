@@ -18,13 +18,15 @@
  */
 
 import { platform, safeAreaInsets, Scroll, Text, View, token, type JSX } from 'nsh';
-import { AlertDialog, Input, MenuButton, NavPage } from 'nsh/base';
-import { Switch } from 'nsh/mobile';
+import { AlertDialog, Input, MenuButton, NavPage, Switch as BaseSwitch } from 'nsh/base';
+import { isAvailable, Switch as NativeSwitch } from 'nsh/mobile';
 import { tr } from '../../locale';
 import { hostById } from '../../state/hostPool';
 import type { SettingsWork } from '../../state/settings/rpc';
 import { type } from '../../theme/tokens';
 import { ActionButton, BannerNotice, GroupDivider, GroupRow, ScreenHeader } from '../../ui';
+
+import { ListSkeleton } from '../../ui/Skeleton';
 
 export interface SettingsPageProps {
   rootId: string;
@@ -38,6 +40,7 @@ export function SettingsForm(
     title: string;
     work: SettingsWork;
     ready: boolean;
+    initialList?: boolean;
     reload: () => void;
     dirty?: boolean;
     save?: () => void;
@@ -104,11 +107,18 @@ export function SettingsForm(
           />
         </If>
         <If when={props.work.busy()}>
-          <View style={{ paddingHorizontal: 16, paddingBottom: 12 }}>
-            <Text style={{ ...type.footnote, color: token('muted-foreground') }}>
-              {props.ready ? tr('Working…') : tr('Loading…')}
-            </Text>
-          </View>
+          <If
+            when={props.initialList && !props.ready}
+            else={
+              <View style={{ paddingHorizontal: 16, paddingBottom: 12 }}>
+                <Text style={{ ...type.footnote, color: token('muted-foreground') }}>
+                  {props.ready ? tr('Working…') : tr('Loading…')}
+                </Text>
+              </View>
+            }
+          >
+            <ListSkeleton compact />
+          </If>
         </If>
         <If when={props.ready}>
           {props.children}
@@ -171,6 +181,49 @@ export function SettingField(props: {
   );
 }
 
+export function SettingSwitchControl(props: {
+  accessibilityLabel: string;
+  checked: boolean;
+  disabled?: boolean;
+  onChange: (checked: boolean) => void;
+}) {
+  return (
+    <If
+      when={isAvailable}
+      else={
+        <BaseSwitch
+          accessibilityLabel={props.accessibilityLabel}
+          checked={props.checked}
+          disabled={props.disabled}
+          onChange={({ checked }) => props.onChange(checked)}
+          hitSlop={6}
+          style={{
+            flexShrink: 0,
+            borderRadius: 9999,
+            alignItems: 'center',
+            justifyContent: 'center',
+            opacity: props.disabled ? 0.45 : 1,
+          }}
+          trackClass="w-[44px] h-[26px] p-[2px] rounded-full flex-row items-center checked:justify-end"
+          trackStyle={{
+            backgroundColor: props.checked ? token('success') : token('surface-muted'),
+          }}
+          thumbClass="size-[22px] rounded-full"
+          thumbStyle={{ backgroundColor: token('primary-foreground') }}
+        />
+      }
+    >
+      <NativeSwitch
+        accessibilityLabel={props.accessibilityLabel}
+        checked={props.checked}
+        disabled={props.disabled}
+        onChange={({ checked }) => props.onChange(checked)}
+        style={{ accentColor: token('success') }}
+      />
+    </If>
+  );
+}
+
 export function SettingSwitch(props: {
   title: string;
   checked: boolean;
@@ -183,14 +236,13 @@ export function SettingSwitch(props: {
       title={props.title}
       disabled={props.disabled}
       divider={props.divider}
-      onPress={() => props.change(!props.checked)}
+      accessible={false}
       trailing={
-        <Switch
+        <SettingSwitchControl
           accessibilityLabel={props.title}
           checked={props.checked}
           disabled={props.disabled}
-          onChange={({ checked }) => props.change(checked)}
-          style={{ accentColor: token('success') }}
+          onChange={props.change}
         />
       }
     />
@@ -222,7 +274,10 @@ export function SettingChoice<T extends string>(props: {
     >
       <GroupRow
         title={props.title}
-        value={props.options.find((item) => item.id === props.value)?.label ?? props.value}
+        value={
+          props.options.find((item) => item.id === props.value)?.label ??
+          (props.value ? tr('Unavailable') : '')
+        }
         divider={props.divider}
         chevron
         disabled={props.disabled}

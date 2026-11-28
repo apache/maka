@@ -94,7 +94,7 @@ impl Query for Read {
         // CROSS JOIN fixes the session-indexed outer relation; ORDER BY sorts
         // only this session's metadata, never Root-wide facts or Blob payloads.
         let mut statement = c.prepare_cached(
-            "SELECT s.run,s.owner,f.sequence,f.id,f.revision,f.schema_version,b.id,b.content_sha256,length(b.payload),h.run,h.fact_id,h.admission_sequence,h.step,h.attempt,h.prefix_digest FROM agent_run_specs s INDEXED BY agent_run_specs_session CROSS JOIN agent_facts f INDEXED BY agent_facts_diagnostics_tail LEFT JOIN contents b ON b.id=f.body_content_id LEFT JOIN agent_session_history h ON h.sequence=f.sequence WHERE s.session=? AND f.run=s.run AND f.sequence<=? ORDER BY f.sequence LIMIT ?",
+            "SELECT s.run,s.owner,f.sequence,f.id,f.revision,f.schema_version,b.id,b.content_sha256,COALESCE(b.logical_bytes,length(b.payload)),h.run,h.fact_id,h.admission_sequence,h.step,h.attempt,h.prefix_digest FROM agent_run_specs s INDEXED BY agent_run_specs_session CROSS JOIN agent_facts f INDEXED BY agent_facts_diagnostics_tail LEFT JOIN contents b ON b.id=f.body_content_id LEFT JOIN agent_session_history h ON h.sequence=f.sequence WHERE s.session=? AND f.run=s.run AND f.sequence<=? ORDER BY f.sequence LIMIT ?",
         )?;
         let mut rows = statement.query(params![
             output.session,
@@ -115,7 +115,7 @@ impl Query for Read {
             let run: RunId = sql::identity(run_key.clone())?;
             if !runs.contains_key(&run_key) {
                 let (spec_bytes, admission_bytes): (u64, u64) = c.query_row(
-                    "SELECT length(b.payload),length(ab.payload) FROM agent_run_specs s LEFT JOIN contents b ON b.id=s.spec_content_id LEFT JOIN agent_facts a ON a.run=s.run AND a.revision=1 LEFT JOIN contents ab ON ab.id=a.body_content_id WHERE s.run=?",
+                    "SELECT COALESCE(b.logical_bytes,length(b.payload)),COALESCE(ab.logical_bytes,length(ab.payload)) FROM agent_run_specs s LEFT JOIN contents b ON b.id=s.spec_content_id LEFT JOIN agent_facts a ON a.run=s.run AND a.revision=1 LEFT JOIN contents ab ON ab.id=a.body_content_id WHERE s.run=?",
                     [&run_key],
                     |row| Ok((sql::read_u64(row,0)?, sql::read_u64(row,1)?)),
                 )?;
