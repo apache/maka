@@ -77,16 +77,7 @@ impl Owner {
                 approval_ceiling,
             )
         } else {
-            let job = self
-                .scheduler
-                .investigation()
-                .await
-                .map_err(ToolError::Failed)?
-                .1
-                .ok_or_else(|| ToolError::Failed("discovery_not_active".into()))?;
-            self.check_discovery_invocation(context, &job)
-                .await
-                .map_err(ToolError::Failed)?;
+            let (job, _) = self.discovery_tool_job(context).await?;
             let plan_ceiling = job
                 .approval
                 .sandbox_ceiling
@@ -123,6 +114,21 @@ impl Owner {
         })
     }
 
+    pub(super) async fn discovery_workspace_policy(
+        &self,
+        workspace: &Workspace,
+        floor: &maka_sandbox::Sandbox,
+    ) -> Result<maka_sandbox::filesystem::Compiled, String> {
+        let ceiling = access::reserved_sandbox_floor(&self.store, workspace)
+            .await?
+            .intersect(floor)
+            .map_err(reason)?;
+        let maka_sandbox::Sandbox::Managed { filesystem, .. } = ceiling else {
+            return Err("workspace read access required".into());
+        };
+        filesystem.compile().map_err(reason)
+    }
+
     pub(super) async fn watch_inputs(
         &self,
         authority: &WatchAuthority,
@@ -137,13 +143,9 @@ impl Owner {
             &self.managed_worktrees,
         )
         .await?;
-        let ceiling = access::reserved_sandbox_floor(&self.store, workspace)
-            .await?
-            .intersect(&authority.read_floor)
-            .map_err(reason)?;
-        let maka_sandbox::Sandbox::Managed { filesystem, .. } = ceiling else {
-            return Err("workspace read access unavailable".into());
-        };
+        let policy = self
+            .discovery_workspace_policy(workspace, &authority.read_floor)
+            .await?;
         Ok(WatchInputs {
             state: self.store.owned_root().map_err(reason)?,
             topic,
@@ -156,7 +158,7 @@ impl Owner {
                     .tools
                     .as_ref()
                     .is_none_or(|tools| self.discovery_reads_files(tools)),
-            policy: filesystem.compile().map_err(reason)?,
+            policy,
         })
     }
 }

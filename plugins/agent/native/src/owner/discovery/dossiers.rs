@@ -255,16 +255,7 @@ impl Owner {
                 if cancel.is_cancelled() {
                     return Err(ToolError::Failed("discovery_cancelled".into()));
                 }
-                let (_, job) = self
-                    .scheduler
-                    .investigation()
-                    .await
-                    .map_err(ToolError::Failed)?;
-                let job = job.ok_or_else(|| ToolError::Failed("discovery_not_active".into()))?;
-                let source_revision = self
-                    .check_discovery_invocation(&context, &job)
-                    .await
-                    .map_err(ToolError::Failed)?;
+                let (job, source_revision) = self.discovery_tool_job(&context).await?;
                 if !matches!(job.phase, Phase::Investigating { result: None }) {
                     return Err(ToolError::Failed("discovery_already_finished".into()));
                 }
@@ -311,17 +302,7 @@ impl Owner {
                         .await
                         .map_err(ToolError::Failed)?;
                 } else {
-                    let (_, job) = self
-                        .scheduler
-                        .investigation()
-                        .await
-                        .map_err(ToolError::Failed)?;
-                    self.check_discovery_invocation(
-                        &context,
-                        &job.ok_or_else(|| ToolError::Failed("discovery_not_active".into()))?,
-                    )
-                    .await
-                    .map_err(ToolError::Failed)?;
+                    self.discovery_tool_job(&context).await?;
                 }
                 Ok(match call {
                     Call::List => Value::Array(
