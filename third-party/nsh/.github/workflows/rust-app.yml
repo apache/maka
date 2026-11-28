@@ -130,7 +130,7 @@ jobs:
         with:
           cache: rust-app
       - name: Clippy
-        run: cargo clippy -p gallery-native -p nsh-extra --all-targets --features nsh-extra/camera,nsh-extra/location,nsh-extra/photos,nsh-extra/push,nsh-extra/speech --locked -- -D warnings
+        run: cargo clippy -p gallery-native -p nsh-extra --all-targets --features nsh-extra/camera,nsh-extra/location,nsh-extra/photos,nsh-extra/push,nsh-extra/share,nsh-extra/speech --locked -- -D warnings
       # Without the optional features: no naga, wgpu, syntect, RaTeX, ropey,
       # imara-diff; no `zlib` or `crypto` module.
       - name: Check macOS without optional features
@@ -143,7 +143,7 @@ jobs:
       # gallery's features, so nothing is built twice. nsh-extra's with
       # every module on: off the phones, their APIs and backends.
       - name: Test the crate
-        run: cargo test -p gallery-native -p nsh-extra --features nsh-extra/camera,nsh-extra/location,nsh-extra/photos,nsh-extra/push,nsh-extra/speech ${{ runner.os == 'macOS' && '-p nsh-platform-apple' || '' }} --locked
+        run: cargo test -p gallery-native -p nsh-extra --features nsh-extra/camera,nsh-extra/location,nsh-extra/photos,nsh-extra/push,nsh-extra/share,nsh-extra/speech ${{ runner.os == 'macOS' && '-p nsh-platform-apple' || '' }} --locked
       - name: Check the native dependency graph
         run: |
           cargo tree -p gallery-native --locked -e normal > "$RUNNER_TEMP/rust-app-dependencies.txt"
@@ -185,10 +185,11 @@ jobs:
         uses: ./.github/actions/cargo
         with:
           cache: rust-app-web
-      # nsh-extra's web code (the browser's Web Speech API), which no other
-      # job compiles: the native jobs build it empty.
+      # nsh-extra's web code (the browser's geolocation, Web Share and Web
+      # Speech APIs), which no other job compiles: the native jobs build it
+      # empty.
       - name: Clippy nsh-extra for the web
-        run: cargo clippy -p nsh-extra --target wasm32-unknown-unknown --features nsh-extra/location,nsh-extra/speech --locked -- -D warnings
+        run: cargo clippy -p nsh-extra --target wasm32-unknown-unknown --features nsh-extra/location,nsh-extra/share,nsh-extra/speech --locked -- -D warnings
       - name: Build the command line
         run: cargo build -p nsh-cli --locked
       - name: Publish the Rust gallery for the web

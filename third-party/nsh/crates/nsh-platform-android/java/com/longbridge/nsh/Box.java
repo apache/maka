@@ -252,6 +252,11 @@ class Box extends ViewGroup implements Node, NshView.ShaderFrames {
         if (shader) setShader(false, FILL, 0, 0);
     }
 
+    /** Whether a shader draws it, or a transition's picture stands in for its children. */
+    boolean hasShader() {
+        return shader || fromBitmap != null;
+    }
+
     /** Whether it draws over the whole surface. */
     boolean screen() {
         return shaderRole == SCREEN || shaderRole == SCREEN_TRANSITION;
@@ -598,12 +603,16 @@ class Box extends ViewGroup implements Node, NshView.ShaderFrames {
      * per corner's square, where what lies outside the corner
      * ({@link #outside}) is erased: those paths stay while the box does, so
      * their coverage is made once. A box too small for its corners' squares
-     * to leave a middle is drawn into one layer.
+     * to leave a middle is drawn into one layer, and so is one with a child
+     * drawn through a layer of its own ({@link Effects#layered}): drawn in
+     * seven pieces, each under another clip, hwui would filter the child's
+     * layer again for each (a blurred child: seven blurs a frame, the
+     * gallery's Aurora card at 75–85 % janky frames on a Pixel 10 Pro).
      */
     private void drawInCorners(Canvas canvas) {
         float left = edges[0], top = edges[1], right = edges[2], bottom = edges[3];
         float l = edges[4], t = edges[5], r = edges[6], b = edges[7];
-        if (l >= r || t >= b) {
+        if (l >= r || t >= b || layeredChild()) {
             int layer = canvas.saveLayer(left, top, right, bottom, null);
             canvas.clipRect(left, top, right, bottom);
             super.dispatchDraw(canvas);
@@ -629,6 +638,14 @@ class Box extends ViewGroup implements Node, NshView.ShaderFrames {
             canvas.drawPath(outside[q], eraser);
             canvas.restoreToCount(layer);
         }
+    }
+
+    /** Whether a child draws through a layer of its own. */
+    private boolean layeredChild() {
+        for (int i = 0; i < getChildCount(); i++) {
+            if (Effects.layered(getChildAt(i))) return true;
+        }
+        return false;
     }
 
     /**
@@ -756,8 +773,30 @@ class Box extends ViewGroup implements Node, NshView.ShaderFrames {
 
     // --- Touch routing: pointerEvents and hitSlop -----------------------------
 
+    // The down time of the touch whose DOWN this view, or a view inside it, took; -1 for none.
+    private long tookDown = -1;
+
     @Override
     public boolean dispatchTouchEvent(MotionEvent e) {
+        boolean handled = dispatchTouch(e);
+        if (e.getActionMasked() == MotionEvent.ACTION_DOWN) {
+            tookDown = handled ? e.getDownTime() : -1;
+        }
+        return handled;
+    }
+
+    /**
+     * Whether this view, or a view inside it, took the DOWN of a touch: the views on the touch's path, which a
+     * scroll view around asks about to find the pan the touch went to.
+     *
+     * @param downTime the down time of the touch
+     * @return whether the touch's DOWN went to this view or into it
+     */
+    boolean took(long downTime) {
+        return tookDown == downTime;
+    }
+
+    private boolean dispatchTouch(MotionEvent e) {
         if (pointerEvents == 1) return false;
         int action = e.getActionMasked();
         // Outside its clip path, neither the box nor its children: the touch
@@ -1011,6 +1050,28 @@ class Box extends ViewGroup implements Node, NshView.ShaderFrames {
         screen.setLocation(e.getRawX(), e.getRawY());
         velocity.addMovement(screen);
         screen.recycle();
+    }
+
+    /**
+     * Whether this view, on the path of a touch in a scroll view around it, pans for a drag by ({@code dx},
+     * {@code dy}) px: {@link #takesPan}, except for a content wrapper, which shares its box's id but never handles
+     * touches itself.
+     *
+     * @param dx the drag along x, px
+     * @param dy the drag along y, px
+     * @return whether this view's pan would take the drag
+     */
+    boolean takesPanInside(float dx, float dy) {
+        return !contentWrapper && takesPan(dx, dy);
+    }
+
+    /**
+     * Whether this view's pan waits for its `panActivation` to decide, which may still fail for the touch.
+     *
+     * @return whether the pan has a `panActivation`
+     */
+    boolean panGated() {
+        return mounter.panActivation(id) != null;
     }
 
     /** Whether this view's pan would start for a drag by ({@code dx}, {@code dy}) px (a scroll view inside asks). */

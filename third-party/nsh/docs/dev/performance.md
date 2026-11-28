@@ -4,6 +4,22 @@ Performance is the project's first priority; the rules are in `AGENTS.md`. Chang
 after `nsh test --trace` timings and item counts (`nsh trace` before it, in the records below). Current baselines
 (Apple Silicon except where noted):
 
+Queued computations run without an ancestor list (`reactive.rs`, 2026-11-28, Linux x86_64, Ryzen 9 7950X, release,
+against `25b304afe`): every computation run from the queue (`run_top`) allocated a list holding itself before looking
+for stale owners to run first, which it almost never finds. The list now holds only those owners and the computation
+runs after them, so it no longer allocates for each effect a write reruns. `bench_reactive_updates`
+(`reactive/tests.rs`), the median of ten alternating runs of each version pinned to one idle core, ns per write:
+
+| Effects reading the signal | Before | After |
+|---:|---:|---:|
+| 1 | 39 | 36 |
+| 32 | 979 | 888 |
+| 1,024 | 30,776 | 28,034 |
+
+`stale_owners_run_before_a_child_queued_first` keeps the order owners run in. The counter control (eight presses of
+`+1`, ten alternating debug runs) keeps 9 commits, 148 ops, 128 mount items and 30 nodes; its summed commit times stay
+within their run-to-run spread (median 2,055 / 2,143 µs).
+
 Resolved class styles cached and style records shared (`core/classes.rs`, `core/mod.rs`, `core/layout_tree.rs`,
 `core/components.rs`, `tailwind/mod.rs`, `tailwind/utilities.rs`, 2026-11-25, macOS arm64, Apple M5, release against
 `main` at `b729299a0`): every restyle unconditionally cloned `Style` (~900 B) for TUI resting fills, zero-initialized
@@ -32,6 +48,24 @@ headless `PositionalClasses`, three alternating rounds):
 | `examples/bench/PositionalClasses.tsx` (release `--trace`) | First commit median (range) | 1,918 µs (1,563–2,314) | 954 µs (823–1,225) |
 
 The debug `examples/counter/App.tsx --trace` control keeps 56 ops, 50 mount items, and 15 nodes with every mount item identical (`Node` record stays at 600 B).
+
+List row offsets rebuilt without a copy of the rows (`core/list.rs`, `fenwick.rs`, 2026-11-28, Linux x86_64, Ryzen 9
+7950X, release, against `25b304afe`): `rebuild_offsets` collected every row's size into a `Vec` and then built the
+Fenwick tree in a second one, and an empty list still allocated the tree's leading zero. The row sizes now go straight
+into `Fenwick::from_sizes`, which builds the empty tree (`Fenwick::default()`, what `ListState::new` starts with) for
+no rows. `bench_list_rebuild_offsets` (`core/list.rs`, measured and estimated heights, both gaps and a partial last row
+checked against every prefix), the median of ten alternating runs of each version pinned to one idle core, ns per
+rebuild:
+
+| Rows × columns | Before | After |
+|---|---:|---:|
+| 0 × 1 | 6 | 2 |
+| 8 × 1 / 8 × 3 | 29 / 37 | 19 / 27 |
+| 1,024 × 1 / 1,024 × 3 | 2,413 / 3,526 | 1,806 / 2,912 |
+| 65,536 × 1 / 65,536 × 3 | 153,120 / 223,930 | 115,542 / 186,131 |
+
+`examples/bench/RowsTs.tsx --trace` (open, scroll 3,000 pt down and back, ten alternating debug runs) keeps 1,344 ops,
+1,453 mount items and 222 nodes; its first commit stays within its run-to-run spread (median 3,370 / 3,382 µs).
 
 Sibling position classes looked at once per parent (`core/classes.rs`, 2026-11-23, macOS arm64, release, the change on
 `cc19b8b38` against `main` at `2c17143e7`): every child inserted or removed ran `positions_changed` over all of its

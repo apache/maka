@@ -24,8 +24,9 @@ live = ["dep:ureq"]
 agent = ["dep:nsh-dev", "dep:serde", "dep:serde_json", "dep:base64"]
 # `nsh test`'s side: the `nsh/test` module, test files on an engine of their
 # own (`run_file`) and apps' headless runners (`runner`): QuickJS, which also
-# runs the web page's host module (`page_host`).
-js = ["live", "nsh-engine/js", "dep:nsh-dev", "dep:base64", "dep:dunce", "dep:rquickjs", "dep:serde", "dep:serde_json", "dep:tokio"]
+# runs the web page's host module (`page_host`). With the global `WebSocket`,
+# which test files and apps use whether or not they import `websocket`.
+js = ["live", "nsh-engine/js", "nsh-engine/websocket", "dep:nsh-dev", "dep:base64", "dep:dunce", "dep:rquickjs", "dep:serde", "dep:serde_json", "dep:tokio"]
 # Building entries in this process (`compile_tsx`, `tsx`, `compiler`): nsh's
 # bundler. Off in apps' headless runners, which `nsh` builds the entries for.
 bundle = ["js", "dep:nsh-bundler", "dep:nsh-js"]

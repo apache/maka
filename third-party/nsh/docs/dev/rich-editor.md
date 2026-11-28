@@ -381,7 +381,8 @@ JS describes.
   (`core_extensions`: `keymap`, the core keymap and `clearDocument`).
 - **The built-in extensions** (`extensions/kit.rs`): `document` (`doc`), `paragraph`, `text`, `heading` (`levels`),
   `blockquote`, `bullet_list`, `ordered_list`, `list_item`, `task_list`, `task_item` (`nested`), `code_block`
-  (Tiptap's code block options), `hard_break` (`keepMarks`), `horizontal_rule`, `image`, the marks `bold`, `italic`,
+  (Tiptap's code block options), `code_block_highlight` (`defaultLanguage`; `code_block_highlight_with` adds the
+  Rust-only `detect_language` guess for blocks naming no language, the view's only), `hard_break` (`keepMarks`), `horizontal_rule`, `image`, the marks `bold`, `italic`,
   `strike`, `code`, `underline`, `link`, `highlight`, `subscript`, `superscript`, `text_style`, and `text_align`
   (`types`, `alignments`, `defaultAlignment`: a global attribute), `history` (`depth`, `newGroupDelay`),
   `trailing_node` (`node`, `notAfter`), `typography` (each replacement `false` or a string), `list_keymap`; each with

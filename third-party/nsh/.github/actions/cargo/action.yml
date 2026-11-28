@@ -76,6 +76,12 @@ runs:
         echo "$version"
         case "$version" in *huacnlee/cargo*) ;; *) echo "::error::cargo is not huacnlee/cargo"; exit 1 ;; esac
         rustc=$(rustc -vV | sha256sum 2>/dev/null || rustc -vV | shasum -a 256)
+        # The fork keeps both shared-deps and workspace builds under Cargo home.
+        if [[ "${{ runner.environment }}" == self-hosted ]]; then
+          cargo_home="${CARGO_HOME:-$HOME/.cargo}/nsh-ci/${rustc:0:12}"
+          if [[ "$RUNNER_OS" == Windows ]]; then cargo_home=$(cygpath -aw "$cargo_home"); fi
+          echo "CARGO_HOME=$cargo_home" >> "$GITHUB_ENV"
+        fi
         echo "prefix=cargo-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.cache }}-${rustc:0:12}-" >> "$GITHUB_OUTPUT"
 
     # The registry's index and the fork's builds of the dependencies

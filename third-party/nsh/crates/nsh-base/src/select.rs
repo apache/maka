@@ -23,6 +23,11 @@
 //!   Space) highlights the first enabled item, Up the last, and a press
 //!   nothing until a key or the pointer moves it. The highlighted item is
 //!   revealed.
+//! - **The search** (`searchable`) is the field's own query, each opening
+//!   starting from `defaultQuery` (else empty), or the app's when it sets
+//!   `query`; `onQueryChange({ query })` reports what the user typed in
+//!   the field, as `Combobox`'s does, so the app can mark the match in its
+//!   rows or clear the query itself.
 //! - **While open** the keys move the highlight (`Listbox::bind_keys`),
 //!   Return chooses it, and Escape, the back button, a press outside or on
 //!   the backdrop close it (`onCancel`, then `onOpenChange(false, …)`).
@@ -243,6 +248,12 @@ pub struct SelectProps {
     /// `testID` names the select's own view).
     #[prop(rename = "searchTestID")]
     pub search_test_id: Prop<Option<SharedString>>,
+    /// The query (controlled), with `searchable`: what the user typed in
+    /// the search field, which filters the items. The app owns it and sets
+    /// the one `onQueryChange` reports. Without it the field keeps its own.
+    pub query: Prop<Option<SharedString>>,
+    /// The query each opening starts with, while `query` is not set.
+    pub default_query: Prop<Option<SharedString>>,
     /// A clear button while an item is chosen (`gpui-component`'s
     /// `cleanable`): a press clears the value, reported by
     /// `onChange(null)`, and leaves the list closed.
@@ -363,12 +374,17 @@ pub struct SelectProps {
 
 /// The events of a [`Select`].
 #[derive(Debug, Clone, PartialEq, Event)]
+#[non_exhaustive]
 pub enum SelectEvent {
     /// The user chose another item (a press, Return or Space, typeahead on
     /// the trigger): its value; `null` when the clear button cleared it.
     /// Set `value` to follow it.
     #[args(value)]
     Change(Option<SharedString>),
+    /// The user typed in the search field: the query. Set `query` to
+    /// follow it.
+    #[args(query)]
+    QueryChange(SharedString),
     /// The list opened or closed (by the trigger or its keys, a choice, a
     /// press outside or on the backdrop, Escape or back), with why: set
     /// `open` to follow it.
@@ -449,7 +465,8 @@ enum Opening {
 /// `searchable` a field above the items filters them, with `cleanable` a
 /// button after the trigger clears the value. The value is `value` and
 /// `onChange` (or the select's own, from `defaultValue`), the open state
-/// `open` and `onOpenChange` (or its own). It looks like
+/// `open` and `onOpenChange` (or its own), the search's query `query` and
+/// `onQueryChange` (or the field's own, from `defaultQuery`). It looks like
 /// nothing: the app styles the trigger, the popup (`popupClass`), the list
 /// (`listClass`), the rows (`itemClass`, with `focus:` for the highlighted
 /// row and `selected:` for the chosen one) and the headers (`groupClass`),
@@ -474,7 +491,14 @@ pub fn Select(props: SelectProps, cx: Scope<SelectEvent>) -> impl IntoElement {
     let open = OpenState::new(props.open, props.default_open);
     let value = ValueState::new(props.value, props.default_value);
     let current = computed(move || value.get());
-    let lb = Listbox::new(props.items, props.searchable, Query::own());
+    let lb = Listbox::new(
+        props.items,
+        props.searchable,
+        Query {
+            controlled: props.query,
+            default: props.default_query,
+        },
+    );
     // The app's element in the slot (or the view around what a Rust parent
     // fills it with): the combobox, what takes the keyboard, and what the
     // list is placed against.
@@ -486,8 +510,6 @@ pub fn Select(props: SelectProps, cx: Scope<SelectEvent>) -> impl IntoElement {
     let width = signal(None::<Points>);
     let focused = signal(false);
     let opening = stored(Opening::Press);
-    // Why it closed last: a press outside leaves the focus where it went.
-    let closed_by = stored(None::<OpenChangeReason>);
     let change: Rc<dyn Fn(bool, OpenChangeReason)> = Rc::new(move |next, reason| {
         if next && props.disabled.get_untracked() {
             return;
@@ -495,14 +517,14 @@ pub fn Select(props: SelectProps, cx: Scope<SelectEvent>) -> impl IntoElement {
         if open.get_untracked() == next {
             return;
         }
-        if !next {
-            closed_by.replace(Some(reason));
-        }
         // Reported before the state follows: `onOpen` / `onClose` come
         // after it (as `Menu`'s order says: `onCancel`, `onOpenChange`,
         // then the lifecycle), in this same turn while the popup has no
-        // looks for its states.
-        open.request(next, || cx.emit(SelectEvent::OpenChange(next, reason)));
+        // looks for its states. The reason a close keeps says where the
+        // keyboard goes (`back`).
+        open.request_for(next, reason, || {
+            cx.emit(SelectEvent::OpenChange(next, reason))
+        });
     });
     // The value of item `item`, if it can be chosen.
     let choosable = move |item: usize| {
@@ -631,8 +653,9 @@ pub fn Select(props: SelectProps, cx: Scope<SelectEvent>) -> impl IntoElement {
         open: Rc::new(move || open.get()),
         selected: Rc::new(move |v| current.with(|c| c.as_ref() == Some(v))),
         choose,
-        // Its query is the search field's own.
-        query_changed: Rc::new(|_| {}),
+        query_changed: Rc::new(move |query: &str| {
+            cx.emit(SelectEvent::QueryChange(query.to_owned().into()));
+        }),
         dismiss,
         shown: Rc::new(move |shown| {
             if shown {
@@ -644,9 +667,8 @@ pub fn Select(props: SelectProps, cx: Scope<SelectEvent>) -> impl IntoElement {
         // The keyboard goes back to the trigger, unless a press outside,
         // Tab or the app's `onChange` took it somewhere else.
         back: Rc::new(move |popup| {
-            let by = closed_by.replace(None);
             if !matches!(
-                by,
+                open.take_closed_by(),
                 Some(OpenChangeReason::PressOutside | OpenChangeReason::Focus)
             ) {
                 anchor.focus_back(popup);

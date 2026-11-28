@@ -1431,7 +1431,10 @@ fn base_role(a: &Accessibility, kind: ViewKind, pressable: bool) -> Ax {
             ViewKind::Text => Ax::Text,
             ViewKind::Image if a.label.is_some() => Ax::Image,
             _ if a.accessible == Some(false) => Ax::Generic,
-            _ if pressable => Ax::Button,
+            // An input that hears presses (a combobox's) is still its
+            // field, which is the text field VoiceOver reads, not a
+            // button around it.
+            _ if pressable && kind != ViewKind::Input => Ax::Button,
             ViewKind::Scroll => Ax::ScrollArea,
             _ if a.label.is_some() || a.accessible == Some(true) => Ax::Group,
             _ => Ax::Generic,
@@ -1595,6 +1598,12 @@ mod tests {
         assert_eq!(role_for(&labelled, ViewKind::Image, false), Ax::Image);
         assert_eq!(role_for(&labelled, ViewKind::View, false), Ax::Group);
         assert_eq!(role_for(&labelled, ViewKind::View, true), Ax::Button);
+        // An input that hears presses is no button around its field.
+        assert_eq!(role_for(&none, ViewKind::Input, true), Ax::Generic);
+        assert_eq!(
+            role_for(&labelled, ViewKind::Input, true),
+            role_for(&labelled, ViewKind::Input, false)
+        );
         assert_eq!(
             role_for(&with_role(Role::Header), ViewKind::Text, false),
             Ax::Heading

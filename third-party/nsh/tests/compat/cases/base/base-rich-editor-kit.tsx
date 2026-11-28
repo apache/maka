@@ -182,6 +182,17 @@ function App() {
         .map((extension) => extension.configure().name)
         .join(","),
     );
+    step("Language", () => {
+      // The language of code blocks naming none (Tiptap's `defaultLanguage`).
+      type Options = { defaultLanguage: string | null };
+      const plain = CodeBlockHighlight.configure().options as Options;
+      const rust = CodeBlockHighlight.configure({ defaultLanguage: "rust" }).options as Options;
+      const editor = createRichEditor({
+        extensions: [StarterKit.configure({ codeBlockHighlight: { defaultLanguage: "rust" } })],
+        content: "x",
+      });
+      return `${plain.defaultLanguage} ${rust.defaultLanguage} ${editor.isEditable}`;
+    });
     lines.set(out);
   };
 

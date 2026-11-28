@@ -1,5 +1,7 @@
-//! `OtpInput`: a fixed-length numeric one-time code (an SMS code, an
-//! authenticator's), entered into cells, with no look of its own.
+//! `OtpInput`: a fixed-length one-time code (an SMS code, an
+//! authenticator's, digits by default, or letters and digits with
+//! `validationType="alphanumeric"`), entered into cells, with no look of
+//! its own.
 //!
 //! `gpui-base`'s `OtpState` keeps the code and edits it from key presses
 //! (`otp_input.rs`); its styled counterpart draws the cells. Here one native
@@ -12,10 +14,11 @@
 //!   at its end are removed from the code (Backspace removes the last
 //!   digit), the digits it gained are added at the end while the code is
 //!   shorter than `length` (full-width digits as ASCII ones, anything else
-//!   dropped), and text bringing `length` digits or more at once (a paste,
-//!   an autofilled code) replaces the code with its first `length`. The
-//!   caret stays at the end, as in `gpui-base`, so nothing is edited in the
-//!   middle.
+//!   dropped; with `Alphanumeric`, ASCII letters too, full-width ones
+//!   mapped, upper-cased), and text bringing `length` digits or more at
+//!   once (a paste, an autofilled code) replaces the code with its first
+//!   `length`. The caret stays at the end, as in `gpui-base`, so nothing
+//!   is edited in the middle.
 //! - **Edits build on the code as the user typed it**: a controlled
 //!   `value` comes back a JS turn after `onChange`, maybe after the next
 //!   key; the changes the input reported coming back are not set again, a
@@ -54,11 +57,30 @@ const BLINK_PAUSE: Duration = Duration::from_millis(300);
 /// fields show.
 const MASK: &str = "\u{2022}";
 
+/// Which characters an [`OtpInput`] takes (`validationType`, as Radix's
+/// `OneTimePasswordField`), and the software keyboard it shows.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PropEnum)]
+pub enum OtpInputValidationType {
+    /// Digits only, on the number pad (`inputmode="numeric"`).
+    #[default]
+    Numeric,
+    /// ASCII letters and digits, on the full keyboard
+    /// (`inputmode="text"`). Letters are upper-cased: the cells show, and
+    /// `onChange` reports, `AB12CD34` for `ab12cd34`, so the app compares
+    /// codes without case.
+    Alphanumeric,
+}
+
 /// The props of [`OtpInput`].
 #[derive(Debug, Clone, PartialEq, Props)]
 pub struct OtpInputProps {
     /// How many digits the code has: one cell each.
     pub length: Prop<u32>,
+    /// Which characters the code takes: digits (the default) or ASCII
+    /// letters and digits, letters upper-cased; full-width ones (an East
+    /// Asian input method's) are taken as ASCII, anything else is dropped.
+    #[prop(default)]
+    pub validation_type: Prop<OtpInputValidationType>,
     /// The code (controlled): the app owns it and sets it in `onChange`.
     /// Shown as it is, unfiltered (as `gpui-base`'s `set_value`). Without
     /// it the input keeps its own code.
@@ -316,6 +338,7 @@ pub fn OtpInput(props: OtpInputProps, cx: Scope<OtpInputEvent>) -> impl IntoElem
             deleted,
             inserted,
             props.length.get_untracked() as usize,
+            props.validation_type.get_untracked(),
         );
         if next != shown {
             typed.replace(next.clone());
@@ -442,10 +465,17 @@ pub fn OtpInput(props: OtpInputProps, cx: Scope<OtpInputEvent>) -> impl IntoElem
                 .text_color(AdaptiveColor::TRANSPARENT)
                 .selection_color(transparent_black())
                 .caret(false)
-                .keyboard_type(KeyboardType::Number)
+                .keyboard_type(move || match props.validation_type.get() {
+                    OtpInputValidationType::Numeric => KeyboardType::Number,
+                    OtpInputValidationType::Alphanumeric => KeyboardType::Default,
+                })
                 .auto_fill(AutoFill::OneTimeCode)
                 .auto_correct(false)
-                .auto_capitalize(AutoCapitalize::None)
+                // The keyboard's capitals match the cells' upper case.
+                .auto_capitalize(move || match props.validation_type.get() {
+                    OtpInputValidationType::Numeric => AutoCapitalize::None,
+                    OtpInputValidationType::Alphanumeric => AutoCapitalize::Characters,
+                })
                 .masked(props.masked)
                 .disabled(props.disabled)
                 .optional_label(props.accessibility_label)
@@ -594,6 +624,24 @@ pub(crate) fn digit(c: char) -> Option<char> {
     char::from_digit(n, 10)
 }
 
+/// `c` as a character of an alphanumeric code: an ASCII letter (upper-cased)
+/// or digit, a full-width one (`Ａ`, `ａ`, `１`) as the ASCII one.
+pub(crate) fn alphanumeric(c: char) -> Option<char> {
+    let c = match c {
+        '\u{FF01}'..='\u{FF5E}' => char::from_u32(c as u32 - 0xFEE0)?,
+        c => c,
+    };
+    c.is_ascii_alphanumeric().then(|| c.to_ascii_uppercase())
+}
+
+/// `c` as a character of a code of `validation`, or none if it takes none.
+fn code_char(c: char, validation: OtpInputValidationType) -> Option<char> {
+    match validation {
+        OtpInputValidationType::Numeric => digit(c),
+        OtpInputValidationType::Alphanumeric => alphanumeric(c),
+    }
+}
+
 /// What the field lost at its end (characters) and what it gained, from
 /// `before` to `after`.
 pub(crate) fn diff<'a>(before: &str, after: &'a str) -> (usize, &'a str) {
@@ -608,11 +656,20 @@ pub(crate) fn diff<'a>(before: &str, after: &'a str) -> (usize, &'a str) {
 }
 
 /// The code after an edit of `shown` that removed `deleted` characters at
-/// its end and inserted `inserted`: its digits appended while the code is
-/// shorter than `length`, or, `length` of them at once, the code replaced
-/// by the first `length`.
-fn edit(shown: &str, deleted: usize, inserted: &str, length: usize) -> String {
-    let digits: Vec<char> = inserted.chars().filter_map(digit).collect();
+/// its end and inserted `inserted`: the characters of it `validation`
+/// takes appended while the code is shorter than `length`, or, `length` of
+/// them at once, the code replaced by the first `length`.
+fn edit(
+    shown: &str,
+    deleted: usize,
+    inserted: &str,
+    length: usize,
+    validation: OtpInputValidationType,
+) -> String {
+    let digits: Vec<char> = inserted
+        .chars()
+        .filter_map(|c| code_char(c, validation))
+        .collect();
     if length > 0 && digits.len() >= length {
         return digits[..length].iter().collect();
     }
@@ -634,7 +691,46 @@ pub(crate) fn utf16_len(text: &str) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{diff, digit, echoed, edit, group_count};
+    use super::{OtpInputValidationType, alphanumeric, diff, digit, echoed, group_count};
+
+    fn edit(shown: &str, deleted: usize, inserted: &str, length: usize) -> String {
+        super::edit(
+            shown,
+            deleted,
+            inserted,
+            length,
+            OtpInputValidationType::Numeric,
+        )
+    }
+
+    fn edit_alphanumeric(shown: &str, deleted: usize, inserted: &str, length: usize) -> String {
+        super::edit(
+            shown,
+            deleted,
+            inserted,
+            length,
+            OtpInputValidationType::Alphanumeric,
+        )
+    }
+
+    #[test]
+    fn alphanumeric_codes_take_ascii_letters_and_digits_upper_cased() {
+        assert_eq!(alphanumeric('a'), Some('A'));
+        assert_eq!(alphanumeric('Z'), Some('Z'));
+        assert_eq!(alphanumeric('7'), Some('7'));
+        assert_eq!(alphanumeric('ａ'), Some('A'));
+        assert_eq!(alphanumeric('Ｂ'), Some('B'));
+        assert_eq!(alphanumeric('３'), Some('3'));
+        assert_eq!(alphanumeric('-'), None);
+        assert_eq!(alphanumeric('－'), None);
+        assert_eq!(alphanumeric('é'), None);
+        assert_eq!(alphanumeric('中'), None);
+        assert_eq!(edit_alphanumeric("AB", 0, "c", 8), "ABC");
+        assert_eq!(edit_alphanumeric("AB", 1, "", 8), "A");
+        assert_eq!(edit_alphanumeric("", 0, "ab12-cd34", 8), "AB12CD34");
+        // Numeric codes still drop letters.
+        assert_eq!(edit("", 0, "ab12", 8), "12");
+    }
 
     #[test]
     fn a_reported_code_coming_back_late_is_an_echo() {

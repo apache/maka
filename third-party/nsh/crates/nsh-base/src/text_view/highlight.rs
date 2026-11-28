@@ -472,6 +472,64 @@ mod syntect_highlighter {
         }
 
         #[test]
+        fn highlight_js_names_find_their_syntaxes() {
+            for (language, syntax) in [
+                ("objectivec", "Objective-C"),
+                ("obj-c", "Objective-C"),
+                ("obj-c++", "Objective-C++"),
+                ("plist", "XML"),
+                ("xsl", "XML"),
+                ("atom", "XML"),
+                ("shellsession", "Bourne Again Shell (bash)"),
+                ("fsharp", "F#"),
+                ("f#", "F#"),
+                ("mkd", "Markdown"),
+                ("ipython", "Python"),
+                ("php-template", "PHP"),
+                ("nginxconf", "nginx"),
+                ("apacheconf", "Apache Conf"),
+                ("fortran", "Fortran (Modern)"),
+                ("scheme", "Lisp"),
+                ("delphi", "Pascal"),
+                ("x86asm", "Assembly (x86_64)"),
+                ("dos", "Batch File"),
+                ("osascript", "AppleScript"),
+                ("django", "Jinja2"),
+            ] {
+                assert_eq!(
+                    find_syntax(language).map(|s| s.name.as_str()),
+                    Some(syntax),
+                    "{language}"
+                );
+            }
+            // Names without a syntax here stay plain.
+            for language in ["vbnet", "wasm", "powershell"] {
+                assert!(find_syntax(language).is_none(), "{language}");
+            }
+        }
+
+        #[test]
+        fn an_info_string_names_its_language_by_its_first_word() {
+            for (language, syntax) in [
+                ("ts title=\"a.ts\"", "TypeScript"),
+                ("rust,ignore", "Rust"),
+                ("rust, no_run", "Rust"),
+                ("objectivec {1-3}", "Objective-C"),
+                // A whole name with spaces comes first.
+                ("Git Commit", "Git Commit"),
+            ] {
+                assert_eq!(
+                    find_syntax(language).map(|s| s.name.as_str()),
+                    Some(syntax),
+                    "{language}"
+                );
+            }
+            for language in ["text title=\"a.txt\"", "no-such-language rust", ","] {
+                assert!(find_syntax(language).is_none(), "{language}");
+            }
+        }
+
+        #[test]
         fn unknown_languages_are_plain() {
             assert!(tokens("no-such-language", "let x = 1").is_empty());
             assert!(tokens("", "let x = 1").is_empty());

@@ -201,8 +201,8 @@ is copied with `transform_copied`.
 
 Files reach the app, which decides what they become (an image node, an attachment, a link to an uploaded copy); the
 editor inserts nothing for them and keeps its selection, where the app inserts what it makes of them. A paste of
-images or of files copied in a file manager calls `onPasteFiles` with `{ files, uris }`: `files` the images with
-their bytes, `uris` the copied files' `file:` URLs. On the desktops, files dragged from another application onto
+images or of files copied in a file manager calls `onPasteFiles` with `{ paste: { files, uris } }`: `files` the images with
+their bytes (`{ name, mime, data }`), `uris` the copied files' `file:` URLs. On the desktops, files dragged from another application onto
 the editor call its `onFileDrop` with `{ uris, mimeTypes }`, as a [view's file drops](./view.md#desktop-file-drops)
 do, and `onFileDragEnter` / `onFileDragLeave` follow the drag, for a hint such as "Release to attach". Without
 `onFileDrop` the editor leaves dropped files to the view around it that listens.
@@ -214,7 +214,7 @@ the text goes in as a paste of it would (with its HTML when the drag has some, t
 ```tsx
 <RichEditor
   editor={editor}
-  onPasteFiles={({ files }) => attach(files)}
+  onPasteFiles={({ paste }) => attach(paste.files)}
   onFileDrop={({ uris, mimeTypes }) => attachFiles(uris, mimeTypes)}
 />
 ```
@@ -345,8 +345,30 @@ colors fenced code, with the same syntaxes and palette: that is `CodeBlockHighli
 code plain. Typing in a long block does not wait for the colors: they are worked out off the engine thread and arrive
 a moment later. On the web the syntaxes come from the page once, the first time a block needs them, shared with
 `TextView`; they are not in the first download. Without the platform's feature `highlight` code stays plain.
+A block's `language` takes the names highlight.js and lowlight use (`objectivec`, `plist`, `shellsession`, ...), and a
+whole fence info string is read by its first word (`ts title="a.ts"`, `rust,ignore`), so documents from other editors
+keep their colors.
+
+A block that names no language stays plain, unless the extension names one for it. `defaultLanguage` (Tiptap's
+option) gives every such block a language: `CodeBlockHighlight.configure({ defaultLanguage: "rust" })`, or
+`StarterKit.configure({ codeBlockHighlight: { defaultLanguage: "rust" } })`. The language only colors the block: the
+document keeps no language, so collaborators and saved content see no change.
 
 In Rust it is `kit::code_block_highlight()`, part of `kit::starter_kit()` and of `starter::plugins`.
+`kit::code_block_highlight_with(options)` also takes `CodeBlockHighlightOptions`: `default_language`, and
+`detect_language` (an `Arc<dyn Fn(&str) -> Option<String> + Send + Sync>`), the app's own guess of a block's language
+from its code, as Tiptap's `CodeBlockLowlight` guesses one when no `defaultLanguage` is set. A block's own `language` comes first, then `detect_language`, then
+`default_language`; when none gives one, the block stays plain. `detect_language` is asked once each time an unlabelled
+block's code changes, on the engine thread, so keep it quick. It is Rust only: functions in a built-in extension's TSX
+options would run JS while typing.
+
+```rust
+let mut options = CodeBlockHighlightOptions::default();
+options.detect_language = Some(Arc::new(|code: &str| {
+    code.trim_start().starts_with("fn ").then(|| "rust".to_owned())
+}));
+let highlight = kit::code_block_highlight_with(options);
+```
 
 Each extension adds Tiptap's commands, which `command(name, args)` runs: `toggleBold`, `setItalic`,
 `unsetStrike`, `toggleHeading({ level })`, `setParagraph`, `toggleBlockquote`, `toggleBulletList`,

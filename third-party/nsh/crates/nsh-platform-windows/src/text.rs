@@ -1078,8 +1078,12 @@ pub struct Prepared {
     /// The attachments' inline objects, in order.
     placeholders: Vec<IDWriteInlineObject>,
     spans: Vec<SpanBox>,
-    /// The line box of text without spans.
+    /// The line box empty text falls back to: the root font's natural box,
+    /// or its strut box with a fixed `lineHeight`.
     base: (f32, f32),
+    /// The root paragraph's fixed strut box (`lineHeight`; `None`: none),
+    /// the minimum of every line.
+    strut: Option<(f32, f32)>,
     /// The attachments, in order.
     attachments: Vec<AttachmentBox>,
     no_wrap: bool,
@@ -1310,10 +1314,7 @@ impl DWriteTextEngine {
 
     /// The paragraph format of `t`.
     fn format(&self, t: &AttributedText, rtl: bool) -> Option<IDWriteTextFormat> {
-        let base = t
-            .spans
-            .first()
-            .map_or_else(ResolvedTextStyle::default, |s| s.style);
+        let base = t.paragraph_strut_or_first();
         let face = self.face(&base);
         let custom = if face.custom { self.custom() } else { None };
         let locale_name = t
@@ -1498,8 +1499,7 @@ impl DWriteTextEngine {
     /// `start` to `end` (UTF-16): those of the spans in it (spans that only
     /// hold attachments there aside) and of its attachments.
     fn line_box(p: &Prepared, start: u32, end: u32) -> (f32, f32) {
-        let mut ascent = f32::NEG_INFINITY;
-        let mut descent = f32::NEG_INFINITY;
+        let (mut ascent, mut descent) = p.strut.unwrap_or((f32::NEG_INFINITY, f32::NEG_INFINITY));
         let placeholders = |a: u32, b: u32| {
             p.attachments
                 .iter()
@@ -1514,7 +1514,9 @@ impl DWriteTextEngine {
                     .partition_point(|s| s.end < start)
                     .min(p.spans.len().saturating_sub(1)),
             ) {
-                (ascent, descent) = s.extents();
+                let (up, down) = s.extents();
+                ascent = ascent.max(up);
+                descent = descent.max(down);
             }
         } else {
             let first = p.spans.partition_point(|s| s.end <= start);
@@ -1886,20 +1888,19 @@ impl TextEngine for DWriteTextEngine {
                 }
             })
             .collect();
-        let base_style = t
-            .spans
-            .first()
-            .map_or_else(ResolvedTextStyle::default, |s| s.style);
-        let base = spans.first().map_or_else(
-            || {
-                let m = self.face(&base_style).metrics;
-                (
-                    m.ascent * base_style.font_size.0,
-                    m.descent * base_style.font_size.0,
-                )
-            },
-            SpanBox::extents,
-        );
+        let root_strut = t.paragraph_strut_or_first();
+        let base = {
+            let m = self.face(&root_strut).metrics;
+            let size = root_strut.font_size.0;
+            let (ascent, descent) = (m.ascent * size, m.descent * size);
+            if root_strut.line_height.0 > 0.0 {
+                let half = (root_strut.line_height.0 - ascent - descent) / 2.0;
+                (ascent + half, descent + half)
+            } else {
+                (ascent, descent)
+            }
+        };
+        let strut = (root_strut.line_height.0 > 0.0).then_some(base);
         let placeholders: Vec<IDWriteInlineObject> = t
             .attachments
             .iter()
@@ -1933,6 +1934,7 @@ impl TextEngine for DWriteTextEngine {
             placeholders,
             spans,
             base,
+            strut,
             attachments: t
                 .attachments
                 .iter()
@@ -1967,7 +1969,7 @@ impl TextEngine for DWriteTextEngine {
             cut,
             attributed: (cut || ellipsis && paragraphs).then(|| Box::new(t.clone())),
             lines: RefCell::default(),
-            base_size: base_style.font_size.0,
+            base_size: root_strut.font_size.0,
             ellipsis_width,
         }
     }
@@ -4070,6 +4072,52 @@ mod tests {
         // Its middle above the baseline.
         let (top, up, _) = place(nsh_core::VerticalAlign::Middle);
         assert!(top + 15.0 < up, "{top} {up}");
+    }
+
+    /// The paragraph's fixed line height is its root strut's, not the line
+    /// height of a smaller inline span that happens to start the text.
+    #[test]
+    fn the_paragraph_line_height_is_the_root_struts() {
+        let root = ResolvedTextStyle {
+            font_size: px(14.0),
+            line_height: px(22.75),
+            ..Default::default()
+        };
+        let small = ResolvedTextStyle {
+            font_size: px(12.6),
+            line_height: px(20.475),
+            ..Default::default()
+        };
+        let make = |first_small| {
+            let mut t = if first_small {
+                text(&[("`code`", small), (" 中文正文", root)])
+            } else {
+                text(&[("中文正文 ", root), ("`code`", small)])
+            };
+            t.paragraph_strut = Some(root);
+            t
+        };
+        let engine = engine();
+        let measure = |first_small| {
+            let t = make(first_small);
+            let prepared = engine.prepare(&t);
+            let size = engine.measure(&prepared, Some(px(300.0)));
+            let baseline = engine
+                .first_baseline(&prepared, px(300.0))
+                .expect("a first line");
+            (size.height.0, baseline.0)
+        };
+        let small_first = measure(true);
+        let plain_first = measure(false);
+        assert!(
+            (small_first.0 - plain_first.0).abs() < 0.01,
+            "height: small first {small_first:?}, plain first {plain_first:?}"
+        );
+        assert!(
+            (small_first.1 - plain_first.1).abs() < 0.01,
+            "baseline: small first {small_first:?}, plain first {plain_first:?}"
+        );
+        assert!((plain_first.0 - 23.0).abs() < 0.01, "{plain_first:?}");
     }
 
     /// A text's first baseline (what `align-items: baseline` lines it up

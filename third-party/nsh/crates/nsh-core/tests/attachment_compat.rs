@@ -33,6 +33,7 @@ fn existing_attachment_literals_and_engines_remain_compatible() {
     let mut text = AttributedText {
         text: String::new(),
         spans: Vec::new(),
+        paragraph_strut: None,
         align: Default::default(),
         max_lines: 0,
         ellipsize: Default::default(),

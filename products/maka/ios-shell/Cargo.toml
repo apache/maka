@@ -33,6 +33,7 @@ maka-remote-client.workspace = true
 nsh-base.workspace = true
 nsh-core.workspace = true
 nsh-engine = { workspace = true, features = ["js-core"] }
+nsh-system-controls.workspace = true
 serde = { workspace = true, features = ["rc"] }
 serde_json.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time"] }
@@ -41,6 +42,7 @@ tokio-util.workspace = true
 
 [build-dependencies]
 maka-ui-build.workspace = true
+nsh-system-controls.workspace = true
 
 [target.'cfg(target_os = "ios")'.dependencies]
 block2 = "0.6.2"

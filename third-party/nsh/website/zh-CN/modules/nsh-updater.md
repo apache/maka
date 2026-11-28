@@ -290,4 +290,16 @@ use nsh_core::runtime::{UpdatePromptOptions, prompt_for_update};
 spawn(prompt_for_update(UpdatePromptOptions::default().quiet(true)));
 ```
 
+如果更新需要应用持有的凭据才能下载（私有 GitHub 仓库、SSO 后面的 CDN），应用可以自己下载，其余流程不变。在启动时、第一次检查之前调用一次 `set_updater_transport`：
+
+```rust
+nsh_core::runtime::set_updater_transport(|url, from, sink| {
+    // 用应用自己的凭据，从第 `from` 字节开始获取 `url`（`Range: bytes=<from>-`），
+    // 每段数据交给 `sink(offset, bytes, total)`。
+    my_fetch(url, from, sink)
+});
+```
+
+地址仍来自打包的 `nsh-updater.json`，应用不能把更新指向别处。NSH 照常校验签名、版本、大小和 SHA-256，自己仍不发送凭据。
+
 自己实现流程时，直接使用 `nsh-updater` crate，并自带 HTTP 客户端：`Config::check` 校验清单，`Download` 校验压缩包，`Installation::install` 替换应用，`nsh_core::element::desktop::restart()` 启动新版本（[应用更新](../docs/app-updates.md#rust-应用)）。

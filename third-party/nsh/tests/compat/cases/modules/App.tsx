@@ -25,7 +25,6 @@ import ModIos from "./mod-ios";
 import ModKeymap from "./mod-keymap";
 import ModMobile from "./mod-mobile";
 import ModPicker from "./mod-picker";
-import ModShare from "./mod-share";
 import ModNotifications from "./mod-notifications";
 import ModStorage from "./mod-storage";
 import ModWeb from "./mod-web";
@@ -53,7 +52,6 @@ const cases: Record<string, () => JSX.Element> = {
   "mod-keymap": ModKeymap,
   "mod-mobile": ModMobile,
   "mod-picker": ModPicker,
-  "mod-share": ModShare,
   "mod-notifications": ModNotifications,
   "mod-storage": ModStorage,
   "mod-web": ModWeb,

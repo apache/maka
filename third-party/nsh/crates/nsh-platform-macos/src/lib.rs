@@ -28,6 +28,7 @@ mod agent;
 mod animation;
 mod app;
 mod blur;
+mod box_none;
 mod canvas;
 #[cfg(any(feature = "dev", feature = "terminal"))]
 mod capture;
@@ -54,11 +55,11 @@ mod navigation;
 mod net;
 mod panels;
 mod picker;
+mod presenting;
 mod screen_color;
 mod scroll;
 mod selectable_view;
 mod shader;
-mod share;
 mod sight;
 // Shared with iOS.
 use nsh_platform_apple::{audio, notifications};
@@ -96,5 +97,6 @@ pub use crate::{
     },
     image::AssetBase,
     native::{ComponentContext, ComponentFactory, Components, NativeComponent},
+    presenting::{native_view, presenting_view},
     text::CoreTextEngine,
 };

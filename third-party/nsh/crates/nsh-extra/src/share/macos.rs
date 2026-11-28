@@ -1,11 +1,13 @@
-//! `Share.show`: AppKit's share menu, `NSSharingServicePicker`
-//! ([`nsh_core::share`]). The text, the link and the files' URLs are its
-//! items; the title becomes the subject of the service the user chooses (a
-//! mail's subject line). The menu shows on a later turn of the run loop,
-//! never from the batch that asked for it, below the anchor's own view, in
-//! whatever window it is, or at the middle of a visible app window. With
-//! neither available, the share fails. A new share replaces the menu of one still
-//! open. The share is answered once on the root's `Share` event: shared
+//! The share sheet on macOS: AppKit's share menu, `NSSharingServicePicker`.
+//! The text, the link and the files' URLs are its items; the title becomes
+//! the subject of the service the user chooses (a mail's subject line).
+//! The menu shows on a later turn of the run loop, never inside the
+//! main-thread task that found its views (`nsh::native_view`,
+//! `nsh::presenting_view`), below the anchor's own view, in whatever window
+//! it is, or at the middle of the surface's visible window. With neither
+//! available, the share fails; a surface that is no AppKit one (GPUI) has
+//! no share menu. A new share of the same engine replaces the menu of one
+//! still open. The share is answered once: shared
 //! with the service's title once the service reports it finished, or, for
 //! a service that has reported nothing, once the user is back in the
 //! window the menu opened from (a window since closed counts as back);
@@ -17,26 +19,49 @@
 
 use std::{
     cell::{Cell, RefCell},
-    rc::{Rc, Weak},
+    collections::HashMap,
 };
 
+use dispatch2::{DispatchQueue, DispatchTime, MainThreadBound};
 use nsh_core::{
-    EventKind, ROOT_ID,
-    share::{ShareError, ShareOutcome, ShareSheet},
+    ROOT_ID,
+    element::{EngineId, run_on_main_thread},
 };
-use nsh_engine::EngineControl;
+use nsh_platform_macos::{
+    objc2_app_kit::{NSApplication, NSModalPanelRunLoopMode, NSView, NSWindow},
+    objc2_foundation::{
+        NSArray, NSDefaultRunLoopMode, NSError, NSObject, NSObjectProtocol, NSPoint, NSRect,
+        NSRunLoop, NSSize, NSString, NSURL,
+    },
+};
 use objc2::{
-    DefinedClass, MainThreadOnly, Message, define_class, msg_send,
+    DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send,
     rc::{Allocated, Retained},
     runtime::{AnyClass, AnyObject},
 };
-use objc2_app_kit::{NSApplication, NSModalPanelRunLoopMode, NSView, NSWindow};
-use objc2_foundation::{
-    NSArray, NSDefaultRunLoopMode, NSError, NSObject, NSObjectProtocol, NSPoint, NSRect, NSRunLoop,
-    NSSize, NSString, NSURL,
-};
 
-use crate::surface::Surface;
+use super::{Answered, Reply, ShareError, ShareOutcome, ShareSheet};
+
+/// Whether this engine's surface shows a share menu: an AppKit surface.
+pub(super) async fn available() -> bool {
+    run_on_main_thread(|| {
+        MainThreadMarker::new()
+            .is_some_and(|mtm| nsh_platform_macos::native_view(mtm, ROOT_ID).is_some())
+    })
+    .await
+    .unwrap_or(false)
+}
+
+/// Shows the share menu for `sheet` in the calling engine's surface, and
+/// answers `reply` once.
+pub(super) async fn show(sheet: ShareSheet, reply: Reply) {
+    let task = reply.clone();
+    if let Err(error) = run_on_main_thread(move || schedule(sheet, task)).await {
+        reply.send(Err(ShareError::failed(format!(
+            "share: the share menu cannot be shown: {error}"
+        ))));
+    }
+}
 
 /// `NSRectEdgeMinY`: the edge with the smaller y, below the rect in an
 /// unflipped view and above it in a flipped one.
@@ -85,20 +110,37 @@ const BACK: u32 = 2;
 /// is not looked after for ever.
 const GIVE_UP: u32 = (10 * 60 * 1000 / WATCH_MS) as u32;
 
-/// A surface's share: the menu while it shows and its delegate until the
-/// share is answered (the picker and the service hold it weakly). One per
-/// surface, as the core keeps one share per engine.
-#[derive(Default)]
-pub(crate) struct Showing {
-    picker: RefCell<Option<Retained<AnyObject>>>,
-    delegate: RefCell<Option<Retained<PickerDelegate>>>,
+/// An engine's open share: the menu while it shows and its delegate until
+/// the share is answered (the picker and the service hold it weakly). One
+/// per engine, as the module keeps one share open per engine.
+struct Showing {
+    picker: Option<Retained<AnyObject>>,
+    delegate: Retained<PickerDelegate>,
+}
+
+thread_local! {
+    /// Each engine's open share (main thread). A share's entry goes when
+    /// it is answered or a newer share replaces it, so the table holds
+    /// open shares only.
+    static SHOWING: RefCell<HashMap<Option<EngineId>, Showing>> = RefCell::new(HashMap::new());
+}
+
+/// Runs `f` on `owner`'s open share if `delegate` is its delegate.
+fn mine<R>(
+    owner: Option<EngineId>,
+    delegate: &PickerDelegate,
+    f: impl FnOnce(&mut HashMap<Option<EngineId>, Showing>) -> R,
+) -> Option<R> {
+    SHOWING.with_borrow_mut(|showing| {
+        let open = showing.get(&owner)?;
+        std::ptr::eq(&*open.delegate, delegate).then(|| f(showing))
+    })
 }
 
 pub(crate) struct DelegateIvars {
-    id: u32,
-    control: EngineControl,
+    reply: Reply,
+    owner: Option<EngineId>,
     title: Option<Retained<NSString>>,
-    surface: Weak<Surface>,
     /// The window the menu opened from, which the user comes back to, and
     /// whether it was the key window then (a panel that never becomes key
     /// is back once it shows again).
@@ -152,58 +194,49 @@ define_class!(
                     }
                     // The menu is done; the service answers the share, or
                     // the user coming back from it does.
-                    if let Some(surface) = self.ivars().surface.upgrade() {
-                        release_later(surface.share.picker.borrow_mut().take());
-                        watch(surface.key(), self.ivars().id);
-                    }
+                    let owner = self.ivars().owner;
+                    let picker = mine(owner, self, |showing| {
+                        showing.get_mut(&owner).and_then(|s| s.picker.take())
+                    });
+                    release_later(picker.flatten());
+                    watch(objc2::rc::Weak::from_retained(&self.retain()));
                 }
-                None => self.finish(ShareOutcome::dismissed().payload(self.ivars().id)),
+                None => self.finish(Ok(ShareOutcome::dismissed())),
             }
         }
 
         #[unsafe(method(sharingService:didShareItems:))]
         fn did_share(&self, _service: &AnyObject, _items: &AnyObject) {
-            let ivars = self.ivars();
-            let target = ivars.service.borrow().clone();
-            self.finish(ShareOutcome::shared(target).payload(ivars.id));
+            let target = self.ivars().service.borrow().clone();
+            self.finish(Ok(ShareOutcome::shared(target)));
         }
 
         #[unsafe(method(sharingService:didFailToShareItems:error:))]
         fn did_fail(&self, _service: &AnyObject, _items: &AnyObject, error: &NSError) {
-            let id = self.ivars().id;
             let cancelled = error.code() == USER_CANCELLED
                 && error.domain().to_string() == "NSCocoaErrorDomain";
-            let payload = if cancelled {
-                ShareOutcome::dismissed().payload(id)
+            let result = if cancelled {
+                Ok(ShareOutcome::dismissed())
             } else {
-                ShareError::failed(error.localizedDescription().to_string()).payload(id)
+                Err(ShareError::failed(error.localizedDescription().to_string()))
             };
-            self.finish(payload);
+            self.finish(result);
         }
     }
 );
 
 impl PickerDelegate {
-    /// Answers the share once, and lets the menu and this delegate go once
-    /// AppKit returns from the call it is making.
-    fn finish(&self, payload: nsh_core::EventPayload) {
+    /// Answers the share once, drops its entry, and lets the menu and this
+    /// delegate go once AppKit returns from the call it is making.
+    fn finish(&self, result: Answered) {
         let ivars = self.ivars();
         if !ivars.answered.replace(true) {
-            ivars
-                .control
-                .dispatch_event(ROOT_ID, EventKind::Share, payload);
+            ivars.reply.send(result);
         }
-        if let Some(surface) = ivars.surface.upgrade() {
-            release_later(surface.share.picker.borrow_mut().take());
-            let mine = surface
-                .share
-                .delegate
-                .borrow()
-                .as_ref()
-                .is_some_and(|d| std::ptr::eq(&**d, self));
-            if mine {
-                release_later(surface.share.delegate.borrow_mut().take());
-            }
+        let open = mine(ivars.owner, self, |showing| showing.remove(&ivars.owner));
+        if let Some(Showing { picker, delegate }) = open.flatten() {
+            release_later(picker);
+            release_later(Some(delegate));
         }
     }
 }
@@ -236,7 +269,7 @@ impl PickerDelegate {
             };
             if done {
                 let target = ivars.service.borrow().clone();
-                self.finish(ShareOutcome::shared(target).payload(ivars.id));
+                self.finish(Ok(ShareOutcome::shared(target)));
                 return false;
             }
         } else {
@@ -244,28 +277,42 @@ impl PickerDelegate {
             ivars.back.set(0);
         }
         if looks >= GIVE_UP {
-            self.finish(ShareOutcome::dismissed().payload(ivars.id));
+            self.finish(Ok(ShareOutcome::dismissed()));
             return false;
         }
         true
     }
 }
 
-/// Looks after share `id`'s chosen service every [`WATCH_MS`] until the
-/// share is answered or replaced, or gives up ([`PickerDelegate::look`]).
-fn watch(key: u64, id: u32) {
-    crate::input::later(WATCH_MS, move || {
-        let Some(surface) = Surface::with_key(key) else {
-            return;
-        };
-        let delegate = surface.share.delegate.borrow().clone();
-        let Some(delegate) = delegate.filter(|d| d.ivars().id == id) else {
+/// Looks after the chosen service of `delegate`'s share every
+/// [`WATCH_MS`] until the share is answered or replaced, or gives up
+/// ([`PickerDelegate::look`]).
+fn watch(delegate: objc2::rc::Weak<PickerDelegate>) {
+    later(WATCH_MS, move || {
+        // Gone: answered and let go of.
+        let Some(delegate) = delegate.load() else {
             return;
         };
         if delegate.look() {
-            watch(key, id);
+            watch(objc2::rc::Weak::from_retained(&delegate));
         }
     });
+}
+
+/// Runs `f` on the main queue after `ms` milliseconds.
+fn later(ms: u64, f: impl FnOnce() + 'static) {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    let f = MainThreadBound::new(f, mtm);
+    let when = DispatchTime::NOW.time((ms * 1_000_000) as i64);
+    let scheduled = DispatchQueue::main().after(when, move || {
+        let mtm = MainThreadMarker::new().expect("main queue");
+        (f.into_inner(mtm))();
+    });
+    if let Err(err) = scheduled {
+        log::warn!("share: cannot schedule a look at the service: {err:?}");
+    }
 }
 
 /// A service's display title (`NSSharingService.title`).
@@ -288,23 +335,51 @@ fn release_later<T: 'static>(object: Option<T>) {
     }
 }
 
-/// Shows the share menu for `sheet` in `surface` on a later turn of the
-/// main run loop, and answers request `id`.
+/// Where a share menu shows: the view it points below and the rect in it.
+struct Place {
+    view: Retained<NSView>,
+    rect: NSRect,
+}
+
+/// Finds where the menu for `sheet` shows, in a main-thread task with the
+/// surface current, and shows it on a later turn of the main run loop:
+/// below the anchor's own view where it is in a window, else at the
+/// middle of the surface's visible window.
 ///
-/// Not now: the batch that asked for it holds the surface's mounter, which
-/// finding the anchor's view borrows, and the menu tracks the mouse inside
-/// the call that shows it, where the batches that come meanwhile borrow
-/// the mounter again. In the default and modal modes, as alerts: not while
-/// another menu or a drag tracks the mouse.
-pub(crate) fn schedule(surface: &Rc<Surface>, id: u32, sheet: &ShareSheet) {
-    let held = RefCell::new(Some((Rc::downgrade(surface), sheet.clone())));
+/// Not in the task: the menu tracks the mouse inside the call that shows
+/// it, where the batches that come meanwhile apply to the surface. In the
+/// default and modal modes, as alerts: not while another menu or a drag
+/// tracks the mouse.
+fn schedule(sheet: ShareSheet, reply: Reply) {
+    let Some(mtm) = MainThreadMarker::new() else {
+        reply.send(Err(ShareError::failed("share: not on the main thread")));
+        return;
+    };
+    if nsh_platform_macos::native_view(mtm, ROOT_ID).is_none() {
+        // Not an AppKit surface (GPUI): no share menu there.
+        reply.send(Err(ShareError::unavailable(
+            "this surface shows no share menu",
+        )));
+        return;
+    }
+    let anchor = sheet
+        .anchor
+        .and_then(|anchor| nsh_platform_macos::native_view(mtm, anchor))
+        .filter(|view| view.window().is_some())
+        .map(|view| Place {
+            rect: view.bounds(),
+            view,
+        });
+    let place = anchor.or_else(|| {
+        nsh_platform_macos::presenting_view(mtm).map(|root| Place {
+            rect: middle(root.bounds()),
+            view: root,
+        })
+    });
+    let held = RefCell::new(Some((sheet, reply, place)));
     let block = block2::RcBlock::new(move || {
-        let Some((surface, sheet)) = held.borrow_mut().take() else {
-            return;
-        };
-        match surface.upgrade() {
-            Some(surface) => show(&surface, id, &sheet),
-            None => log::warn!("share: the surface closed; request {id} is not answered"),
+        if let Some((sheet, reply, place)) = held.borrow_mut().take() {
+            show_menu(mtm, &sheet, reply, place);
         }
     });
     // SAFETY: immutable constants of Foundation and AppKit.
@@ -314,24 +389,24 @@ pub(crate) fn schedule(surface: &Rc<Surface>, id: u32, sheet: &ShareSheet) {
     unsafe { NSRunLoop::mainRunLoop().performInModes_block(&modes, &block) };
 }
 
-/// Shows the share menu for `sheet` in `surface`, below the view of node
-/// `sheet.anchor` where it is in a window, and answers request `id`.
-fn show(surface: &Rc<Surface>, id: u32, sheet: &ShareSheet) {
-    let Some(control) = surface.event_control() else {
-        // No engine runs to hear an answer (the command came from one).
-        log::warn!("share: no app runs in this surface; request {id} is not answered");
-        return;
-    };
-    let fail = |error: ShareError| {
-        control.dispatch_event(ROOT_ID, EventKind::Share, error.payload(id));
-    };
-    // A share still open is replaced (the core answered it already),
+/// Shows the share menu for `sheet` at `place`, and answers `reply` once.
+fn show_menu(mtm: MainThreadMarker, sheet: &ShareSheet, reply: Reply, place: Option<Place>) {
+    let owner = reply.0.owner;
+    // A share still open is replaced (the module answered it already),
     // whether this one shows or fails.
-    if let Some(earlier) = surface.share.delegate.borrow_mut().take() {
-        earlier.ivars().answered.set(true);
-        release_later(Some(earlier));
+    let earlier = SHOWING.with_borrow_mut(|showing| showing.remove(&owner));
+    if let Some(Showing { picker, delegate }) = earlier {
+        delegate.ivars().answered.set(true);
+        release_later(Some(delegate));
+        release_later(picker);
     }
-    release_later(surface.share.picker.borrow_mut().take());
+    if reply.is_answered() {
+        // A newer share of the engine replaced this one before it showed.
+        return;
+    }
+    let fail = |error: ShareError| {
+        reply.send(Err(error));
+    };
     let Some(class) = AnyClass::get(c"NSSharingServicePicker") else {
         return fail(ShareError::unavailable("this system has no share menu"));
     };
@@ -351,39 +426,20 @@ fn show(surface: &Rc<Surface>, id: u32, sheet: &ShareSheet) {
     if items.is_empty() {
         return fail(ShareError::failed("share: nothing to share"));
     }
-    // No batch holds the mounter on this turn; were one to, the menu shows
-    // at the middle rather than wait.
-    let anchor = sheet
-        .anchor
-        .and_then(|anchor| {
-            let mounter = surface.mounter.try_borrow().ok()?;
-            mounter.views.get(&anchor).cloned()
-        })
-        .filter(|view| view.ns().window().is_some());
-    let (view, rect): (Retained<NSView>, NSRect) = match &anchor {
-        Some(anchor) => (anchor.ns().retain(), anchor.ns().bounds()),
-        None => {
-            let root = crate::window::visible_container(surface)
-                .unwrap_or_else(|| surface.root.ns().retain());
-            if root.window().is_none_or(|w| !w.isVisible()) {
-                // AppKit shows no menu there, and so never answers.
-                return fail(ShareError::failed(
-                    "share: the surface is in no visible window",
-                ));
-            }
-            let rect = middle(root.bounds());
-            (root, rect)
-        }
+    let Some(Place { view, rect }) = place.filter(|place| place.view.window().is_some()) else {
+        // AppKit shows no menu there, and so never answers.
+        return fail(ShareError::failed(
+            "share: the surface is in no visible window",
+        ));
     };
     // The window's container is not flipped, an anchor (an NSH view) is.
     let edge = below(view.isFlipped());
     let window = view.window();
     let key = window.as_ref().is_some_and(|w| w.isKeyWindow());
-    let delegate = PickerDelegate::alloc(surface.mtm).set_ivars(DelegateIvars {
-        id,
-        control: control.clone(),
+    let delegate = PickerDelegate::alloc(mtm).set_ivars(DelegateIvars {
+        reply: reply.clone(),
+        owner,
         title: sheet.title.as_deref().map(NSString::from_str),
-        surface: Rc::downgrade(surface),
         window: window
             .as_ref()
             .map(objc2::rc::Weak::from_retained)
@@ -400,7 +456,7 @@ fn show(surface: &Rc<Surface>, id: u32, sheet: &ShareSheet) {
     let items = NSArray::from_retained_slice(&items);
     // SAFETY: NSSharingServicePicker's documented API (macOS 10.8), on the
     // main thread; its items are strings and URLs, and the delegate is kept
-    // in the surface's `share` until the share is answered.
+    // in the engine's `Showing` until the share is answered.
     unsafe {
         let picker: Allocated<AnyObject> = msg_send![class, alloc];
         let picker: Option<Retained<AnyObject>> = msg_send![picker, initWithItems: &*items];
@@ -412,8 +468,15 @@ fn show(surface: &Rc<Surface>, id: u32, sheet: &ShareSheet) {
         let _: () = msg_send![&picker, setDelegate: &*delegate];
         // Kept before it shows: the menu tracks inside this call, and the
         // choice comes before it returns.
-        *surface.share.picker.borrow_mut() = Some(picker.clone());
-        *surface.share.delegate.borrow_mut() = Some(delegate);
+        SHOWING.with_borrow_mut(|showing| {
+            showing.insert(
+                owner,
+                Showing {
+                    picker: Some(picker.clone()),
+                    delegate,
+                },
+            )
+        });
         let _: () =
             msg_send![&picker, showRelativeToRect: rect, ofView: &*view, preferredEdge: edge];
     }

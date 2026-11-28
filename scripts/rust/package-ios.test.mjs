@@ -248,6 +248,10 @@ test('ditto stages a standard Payload archive and a portable SHA-256 file', {
     await assert.rejects(archiveIpa(payload, ipa), /IPA missing Payload\/Maka.app\/Info.plist/);
     await rm(ipa);
     await writeFile(join(app, 'Info.plist'), '<fixture />');
+    await assert.rejects(archiveIpa(payload, ipa), /IPA missing Payload\/Maka.app\/LICENSE/);
+    await rm(ipa);
+    await writeFile(join(app, 'LICENSE'), 'license fixture');
+    await writeFile(join(app, 'NOTICE'), 'notice fixture');
     await archiveIpa(payload, ipa);
     validateIpa(ipa);
     const entries = execFileSync('unzip', ['-Z1', ipa], { encoding: 'utf8' }).trim().split('\n');
@@ -255,6 +259,8 @@ test('ditto stages a standard Payload archive and a portable SHA-256 file', {
       'Payload/',
       'Payload/Maka.app/',
       'Payload/Maka.app/Info.plist',
+      'Payload/Maka.app/LICENSE',
+      'Payload/Maka.app/NOTICE',
       'Payload/Maka.app/maka-ios-shell',
     ]);
     const digest = createHash('sha256')

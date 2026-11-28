@@ -202,7 +202,7 @@ pub use crate::{
     },
     otp_input::{
         OtpInput, OtpInputApi, OtpInputCompleteEvent, OtpInputElement, OtpInputEvent,
-        OtpInputProps, otp_input,
+        OtpInputProps, OtpInputValidationType, otp_input,
     },
     pagination::{
         Pagination, PaginationElement, PaginationEvent, PaginationItem, PaginationItemKind,
@@ -233,7 +233,10 @@ pub use crate::{
         SelectValue, select,
     },
     sheet::{Sheet, SheetDetent, SheetElement, SheetEvent, SheetProps, sheet},
-    slider::{Slider, SliderElement, SliderEvent, SliderProps, SliderScale, SliderValue, slider},
+    slider::{
+        Slider, SliderElement, SliderEvent, SliderProps, SliderScale, SliderThumbContext,
+        SliderValue, slider,
+    },
     split_view::{
         ColumnVisibility, SplitView, SplitViewElement, SplitViewEvent, SplitViewProps, split_view,
     },

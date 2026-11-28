@@ -53,6 +53,10 @@
 //!   still may, as a `UIScrollView` with scrolling disabled.
 //! - `desktop={{ allowsBackForwardNavigationGestures }}`: WebView2's swipe navigation
 //!   (`IsSwipeNavigationEnabled`, touch swipes).
+//! - Color scheme: pages follow the surface's color scheme (`prefers-color-scheme`,
+//!   `Sec-CH-Prefers-Color-Scheme`, scrollbars and menus) via
+//!   `ICoreWebView2Profile::SetPreferredColorScheme` (`ICoreWebView2_13`; older
+//!   runtimes keep following the system).
 //!
 //! # Downloads
 //!
@@ -127,8 +131,10 @@ use webview2_com::{
         COREWEBVIEW2_PERMISSION_KIND, COREWEBVIEW2_PERMISSION_KIND_CAMERA,
         COREWEBVIEW2_PERMISSION_KIND_MICROPHONE, COREWEBVIEW2_PERMISSION_STATE_ALLOW,
         COREWEBVIEW2_PERMISSION_STATE_DENY, COREWEBVIEW2_POINTER_EVENT_KIND,
-        COREWEBVIEW2_WEB_ERROR_STATUS, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT, ICoreWebView2,
-        ICoreWebView2_2, ICoreWebView2_4, ICoreWebView2CompositionController,
+        COREWEBVIEW2_PREFERRED_COLOR_SCHEME, COREWEBVIEW2_PREFERRED_COLOR_SCHEME_DARK,
+        COREWEBVIEW2_PREFERRED_COLOR_SCHEME_LIGHT, COREWEBVIEW2_WEB_ERROR_STATUS,
+        COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT, ICoreWebView2, ICoreWebView2_2,
+        ICoreWebView2_4, ICoreWebView2_13, ICoreWebView2CompositionController,
         ICoreWebView2Controller, ICoreWebView2Controller2, ICoreWebView2Controller3,
         ICoreWebView2Deferral, ICoreWebView2DownloadOperation,
         ICoreWebView2DownloadStartingEventArgs, ICoreWebView2Environment,
@@ -853,6 +859,7 @@ impl WebItem {
         *self.controller.borrow_mut() = Some(controller);
         *self.webview.borrow_mut() = Some(webview);
         self.paint_background();
+        self.apply_color_scheme();
         self.bounds.set(None);
         self.place();
         let props = self.props.borrow().clone();
@@ -1596,11 +1603,15 @@ impl WebItem {
             return false;
         };
         let access = surface.native.access.borrow().clone();
-        let origin = self
+        let (origin, hosts) = self
             .props
             .borrow()
             .as_ref()
-            .and_then(|p| p.allow_origin.clone());
+            .map(|p| (p.allow_origin.clone(), p.allow_navigation.clone()))
+            .unwrap_or_default();
+        if hosts.as_ref().is_some_and(|h| !h.allows(url)) {
+            return false;
+        }
         access.is_none_or(|a: Arc<nsh_engine::Access>| a.allows_webview_with(url, origin.as_ref()))
     }
 
@@ -1922,6 +1933,30 @@ impl WebItem {
                     G: byte(g),
                     B: byte(b),
                 });
+            }
+        }
+    }
+
+    /// Keeps WebView2's `prefers-color-scheme` (and `Sec-CH-Prefers-Color-Scheme`,
+    /// scrollbars and menus) in step with the surface's color scheme (`ICoreWebView2_13`;
+    /// older runtimes keep following the system).
+    pub(crate) fn apply_color_scheme(&self) {
+        if self.closed.get() || self.closing.get() {
+            return;
+        }
+        let Some(surface) = self.surface.upgrade() else {
+            return;
+        };
+        let Some(webview) = self.webview.borrow().clone() else {
+            return;
+        };
+        let scheme = preferred_color_scheme(crate::system::dark(&surface));
+        if let Ok(v13) = webview.cast::<ICoreWebView2_13>() {
+            // SAFETY: WebView2 calls on the live core, on its thread.
+            unsafe {
+                if let Ok(profile) = v13.Profile() {
+                    let _ = profile.SetPreferredColorScheme(scheme);
+                }
             }
         }
     }
@@ -3057,6 +3092,15 @@ fn interrupt_message(reason: i32) -> String {
     message.to_owned()
 }
 
+/// Maps the surface's resolved color scheme to WebView2's profile color scheme.
+fn preferred_color_scheme(dark: bool) -> COREWEBVIEW2_PREFERRED_COLOR_SCHEME {
+    if dark {
+        COREWEBVIEW2_PREFERRED_COLOR_SCHEME_DARK
+    } else {
+        COREWEBVIEW2_PREFERRED_COLOR_SCHEME_LIGHT
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3297,5 +3341,17 @@ mod tests {
         let terminal = Cell::new(false);
         assert!(take_terminal(&terminal));
         assert!(!take_terminal(&terminal));
+    }
+
+    #[test]
+    fn maps_surface_color_scheme_to_webview2_preferred_color_scheme() {
+        assert_eq!(
+            preferred_color_scheme(true),
+            COREWEBVIEW2_PREFERRED_COLOR_SCHEME_DARK
+        );
+        assert_eq!(
+            preferred_color_scheme(false),
+            COREWEBVIEW2_PREFERRED_COLOR_SCHEME_LIGHT
+        );
     }
 }

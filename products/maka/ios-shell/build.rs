@@ -30,11 +30,12 @@ fn main() {
     let compiler = maka_ui_build::compiler_identity().expect("UI build script identity");
     let entry = "app/Entry.tsx";
     println!("cargo:rerun-if-changed={entry}");
-    let module = maka_ui_build::compile_cached(
+    let module = maka_ui_build::compile_cached_with_modules(
         std::path::Path::new(entry),
         &output.join("ios-shell"),
         Some(repo),
         &compiler,
+        vec![nsh_system_controls::registry().into()],
     )
     .expect("bundle iOS shell UI");
     for input in &module.inputs {

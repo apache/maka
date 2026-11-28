@@ -3,6 +3,7 @@ import '@fontsource-variable/figtree/wght.css';
 import '../styles/global.css';
 import 'virtual:nsh-gallery-ui.css';
 import { BASE, SITE_DESCRIPTION, SITE_TITLE, SITE_URL, type Lang } from '../lib/site';
+import Analytics from '../components/Analytics.astro';
 import { isLatestVersion, siteVersions, latestVersion, versionHref, versionPath } from '../lib/versions';
 
 export interface Props {
@@ -83,6 +84,7 @@ const abs = (route: string) => new URL(`${BASE.replace(/\/$/, '')}${route}`, SIT
     <meta property="og:image:alt" content={`${SITE_TITLE}: Build once, native everywhere`} />
     <meta name="twitter:card" content="summary_large_image" />
     <link rel="alternate" type="text/plain" title="llms.txt" href={`${BASE}llms.txt`} />
+    <Analytics />
 
   </head>
   <body>

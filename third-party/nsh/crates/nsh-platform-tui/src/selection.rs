@@ -209,6 +209,33 @@ impl Selection {
         }
     }
 
+    /// `ref.selectAll()` on view `id`: selects every text of the outermost
+    /// selectable view `id` is or is inside, as Ctrl+A does. `geometry` is
+    /// the last frame's.
+    pub(crate) fn select_in(&mut self, tree: &Mounter, geometry: &[Geometry], id: NodeId) {
+        let mut root = None;
+        let mut node = Some(id);
+        while let Some(at) = node {
+            let Some(view) = tree.get(at) else { break };
+            if view.props.selectable_view {
+                root = Some(at);
+            }
+            node = view.parent;
+        }
+        let Some(root) = root else { return };
+        if self.root != Some(root) {
+            self.clear();
+            self.root = Some(root);
+        }
+        let texts = Texts::new(tree, geometry, root);
+        if texts.is_empty() {
+            self.clear();
+            return;
+        }
+        self.model.texts_changed(&texts);
+        self.model.select_all(&texts);
+    }
+
     pub(crate) fn clear(&mut self) {
         *self = Self {
             reported: self.reported.take(),

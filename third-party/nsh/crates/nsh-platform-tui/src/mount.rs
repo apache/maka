@@ -34,6 +34,8 @@ pub(crate) struct Mounter {
     pub(crate) image_infos: Vec<(u32, String)>,
     /// The views `ref.clearSelection()` was called on.
     pub(crate) clear_selection_requests: Vec<NodeId>,
+    /// The views `ref.selectAll()` was called on.
+    pub(crate) select_all_requests: Vec<NodeId>,
     /// The system dialogs shown (`AlertDialog`), oldest first.
     pub(crate) dialogs: crate::dialog::Dialogs,
     /// The context menu open (`Menu.popup`), and where the pointer last was.
@@ -79,6 +81,7 @@ impl Default for Mounter {
             removed_images: Vec::new(),
             image_infos: Vec::new(),
             clear_selection_requests: Vec::new(),
+            select_all_requests: Vec::new(),
             scroll_bars: Vec::new(),
             text_cells: Vec::new(),
             links: Default::default(),
@@ -180,6 +183,7 @@ impl Mounter {
         self.responder = None;
         self.focus_requests.clear();
         self.clear_selection_requests.clear();
+        self.select_all_requests.clear();
         self.scroll_bars.clear();
         self.dialogs.clear();
         self.menus.reset();
@@ -387,6 +391,10 @@ impl Mounter {
                     id,
                     command: Command::ClearSelection,
                 } => self.clear_selection_requests.push(id),
+                MountItem::Command {
+                    id,
+                    command: Command::SelectAll,
+                } => self.select_all_requests.push(id),
                 MountItem::TrackStates { id, states } => {
                     if let Some(view) = self.get_mut(id) {
                         view.tracked = states;

@@ -72,6 +72,10 @@ pub struct WebProps {
     /// backend checks its navigations with
     /// [`Access::allows_webview_with`](crate::access::Access::allows_webview_with).
     pub allow_origin: Option<crate::access::WebOrigin>,
+    /// The hosts this web view may show, narrower than the app's grant
+    /// (`allowNavigation`; none: not narrowed). Checked with
+    /// [`Access::allows_webview_in`](crate::access::Access::allows_webview_in).
+    pub allow_navigation: Option<crate::access::WebHosts>,
     /// Script run after each page loads.
     pub injected_js: Option<Arc<str>>,
     /// Script run before each page's own scripts.
@@ -110,6 +114,7 @@ impl Default for WebProps {
             src: None,
             base_url: None,
             allow_origin: None,
+            allow_navigation: None,
             injected_js: None,
             injected_js_before: None,
             user_agent: None,

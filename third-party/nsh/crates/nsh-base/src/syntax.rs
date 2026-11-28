@@ -220,26 +220,59 @@ mod syntect_syntaxes {
     }
 
     /// The syntax of a language: an extension or a name (case-insensitive),
-    /// or one of the other names code fences use. Loads the syntaxes.
+    /// or one of the other names code fences use. A whole info string
+    /// (`ts title="a.ts"`, `rust,ignore`) that names none is read by its
+    /// first word, as CommonMark and highlight.js read a fence's. Loads the
+    /// syntaxes.
     pub(crate) fn find_syntax(language: &str) -> Option<&'static SyntaxReference> {
         let language = language.trim();
+        // The whole string first: some syntaxes' names hold spaces
+        // (`Git Commit`).
+        named(language).or_else(|| {
+            let first = language
+                .split(|c: char| c.is_whitespace() || c == ',')
+                .next()?;
+            (first.len() < language.len())
+                .then(|| named(first))
+                .flatten()
+        })
+    }
+
+    fn named(language: &str) -> Option<&'static SyntaxReference> {
         if plain(language) {
             return None;
         }
+        // Mostly highlight.js's names, for the languages bat's set has a
+        // syntax of.
         let alias = match language.to_ascii_lowercase().as_str() {
-            "shell" | "console" | "shellscript" => "sh",
+            "shell" | "console" | "shellscript" | "shellsession" => "sh",
             "golang" => "go",
             // TSX reads JSX too (no JSX grammar of its own here).
             "jsx" => "tsx",
             "mjs" | "cjs" => "js",
             "c++" => "cpp",
             "c#" | "csharp" => "cs",
-            "f#" | "fsharp" => "fs",
+            // `fs` is GLSL's extension too.
+            "f#" | "fsharp" => "F#",
             "jsonc" | "json5" => "json",
-            "objective-c" | "objc" => "m",
+            "objective-c" | "objectivec" | "objc" | "obj-c" => "m",
+            "obj-c++" => "mm",
             "docker" => "Dockerfile",
             "make" => "Makefile",
             "vue" | "svelte" => "html",
+            "plist" | "xsl" | "atom" | "xjb" | "wsf" => "xml",
+            "mkd" | "mkdown" => "md",
+            "ipython" => "py",
+            "php-template" => "php",
+            "nginxconf" => "nginx",
+            "apache" | "apacheconf" => "htaccess",
+            "fortran" => "f90",
+            "scheme" => "scm",
+            "delphi" => "pas",
+            "x86asm" => "asm",
+            "dos" => "bat",
+            "osascript" => "applescript",
+            "django" => "jinja",
             _ => language,
         };
         syntaxes()

@@ -46,7 +46,7 @@ pub fn ios_bundle() -> Bundle {
 }
 
 fn ui_sets() -> Vec<nsh_core::element::Registry> {
-    vec![nsh_base::registry()]
+    vec![nsh_base::registry(), nsh_system_controls::registry()]
 }
 
 pub fn engine_config(host: HostChannel, runtime: tokio::runtime::Handle) -> EngineConfig {
@@ -83,7 +83,10 @@ pub fn run() {
         bridge.queue_pairing_uri(uri);
     }
     nsh_platform_ios::set_ui_sets(ui_sets());
-    nsh_platform_ios::set_components(scanner::register);
+    nsh_platform_ios::set_components(|components| {
+        scanner::register(components);
+        nsh_system_controls::__nsh_native_components_ios(components);
+    });
     run_app(
         AppSource::Bundle(ios_bundle()),
         AppOptions {

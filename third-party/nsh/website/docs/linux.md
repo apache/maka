@@ -199,6 +199,17 @@ Native components are registered with `AppView::register_component`; see [Native
 (`my_app::registry()`, which `#[native_module]` makes), so the TSX a view loads imports your Rust components and
 modules too.
 
+## Presenting from Rust
+
+Rust code that shows system UI (a popover, a dialog, a file chooser) shows it from the surface whose code asked. In a
+main-thread task (`run_on_main_thread`), `nsh_platform_linux::presenting_window()` is the window to make a dialog
+transient for: the surface's visible window the user is in; `None` when the surface shows in no visible window.
+`native_view(node)` is the GTK widget of an element of that surface (the node of its `ref`, a `NodeRef` argument of a
+module function; `ROOT_ID` for the surface's root widget), in whatever window of the surface it is: the parent of a
+popover that belongs to the element (unparent the popover once it closes, as NSH's own menus do). Take both while the
+task runs. They are for anchoring and presenting system UI only: a module never changes, re-parents, restyles or
+removes a widget NSH owns.
+
 ## What differs on Linux
 
 The environment is a desktop's: the safe area and the keyboard height are 0, `idiom()` is the desktop

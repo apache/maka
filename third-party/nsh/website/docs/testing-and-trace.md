@@ -458,9 +458,7 @@ one: a selector matching several fails the step, and the error says how to narro
 | `app.dialogs()` | The dialogs the app showed, in order. |
 | `app.onPick(handler)` | Answers the picks the app asks for from now on (`Picker.pickImages`, `Picker.pickFiles`): `handler` gets what the pick asks (`kind`: `"images"` or `"files"`, `multiple`, `limit`, `maxDimension`, `quality`, `format`, `filters`, `maxSize`) and returns the files the user picks (`{ name, type?, data: Uint8Array }`, given to the app as they are; one larger than `maxSize` reaches the app unread, `status` `"tooLarge"`), or `null` to cancel. Without a handler, picks are cancelled. Headless runs. |
 | `app.picks()` | The picks the app asked for, in order. |
-| `app.onShare({ action, target })` | Gives the run a share sheet and answers the shares the app shows from now on (`Share.show`): `action` `"shared"` (to `target`) or `"dismissed"`. Headless runs. |
-| `app.shares()` | What the app shared, in order (`{ title, text, url, files }`). |
-| `await app.fake(name, method, args?)` | Calls the fake a native module gives headless runs in place of a device, by its name, with `args` (an array), and resolves with its JSON answer once the app is quiet. The module documents its fake's methods: `nsh-extra`'s speech recognizer is `"nsh-extra/speech"` ([`Speech`](./nshm.md#speech): `app.fake("nsh-extra/speech", "hear", ["hello"])` speaks for the user). Headless runs. |
+| `await app.fake(name, method, args?)` | Calls the fake a native module gives headless runs in place of a device, by its name, with `args` (an array), and resolves with its JSON answer once the app is quiet. The module documents its fake's methods: `nsh-extra`'s speech recognizer is `"nsh-extra/speech"` ([`Speech`](./nshm.md#speech): `app.fake("nsh-extra/speech", "hear", ["hello"])` speaks for the user), its share sheet `"nsh-extra/share"` ([`Share`](./nshm.md#share): `app.fake("nsh-extra/share", "answer", [{ action: "shared" }])` answers for the user). Headless runs. |
 | `app.audio()` | What the app asked of the speaker (`Sound`, `AudioPlayer`), in order: `command` (`"load"`, `"play"`, `"stop"`, `"unload"`, `"open"`, `"preload"`, `"resume"`, `"pause"`, `"seek"`, `"set"`, `"close"`), `src`, and `volume`, `rate`, `position` where they apply. Headless runs. |
 | `app.endAudio()` | The players playing reach their end (`end`; those that loop start again). Headless runs. |
 | `app.clipboard()` | The text on the clipboard now, `null` when it holds none. |
@@ -564,11 +562,10 @@ that only a real platform can do:
   so what it does not declare is refused.
 - **URLs are recorded**: what the app opens is reported opened unless the test fails it (`app.failOpenUrls`), and `app.openedUrls()` lists it.
 - **Picks are answered**: with the test's files (`onPick`), else cancelled, so `Picker.pickImages` and `Picker.pickFiles` resolve `[]`.
-- **Shares are the test's**: a run has a share sheet once `onShare` gives it one, which answers each share as it says;
-  before that `Share.available()` resolves `false`.
 - **Native modules run on their fakes**: a module that reaches a device gives headless runs a fake in its place, which
   the test drives (`app.fake`). With `nsh-extra`'s `speech`, `Speech.available()` resolves `true`, a session starts
-  at once and hears what the fake's `hear` says. Rust tests that launch `Headless` apps whose modules give fakes take
+  at once and hears what the fake's `hear` says. With its `share`, a run has a share sheet once the fake's `answer`
+  gives it one, which answers each share as it says; before that `Share.available()` resolves `false`. Rust tests that launch `Headless` apps whose modules give fakes take
   turns in one process, as a fake stands in process-wide; apps started with clones of one registry run together.
 - **Sound plays to a fake speaker**: sounds decode as WAV (their length from the header; other bytes fail with `decode`), players play a minute of their source at once and end at `endAudio()`.
 - **Modals show at once**: `onShow` comes when one is presented.
@@ -735,6 +732,49 @@ echo 'await app.press("text:+1"); expect(app.texts()).toContain("1");' | nsh tes
 
 The 1.2 s let the engine's idle garbage collection run before the first step, so an app that lets go of what it still
 uses shows it: its handlers stop working.
+
+### Driving a running session
+
+`nsh test --attach` drives the app you already have open with `nsh run` or `nsh dev`, in its window, as it is. Use it
+when a problem only shows in that window, for example after a long session with many hot updates. A fresh `nsh test`
+instance starts from scratch and would not show it.
+
+Run it in the app's directory, with the steps on standard input:
+
+```sh
+nsh run --target gpui                         # in one terminal: the window you work in
+echo 'console.log(app.texts()); await app.press("text:+1"); await app.screenshot("now.png")' | nsh test --attach
+```
+
+The steps and queries are the ones of [On a real platform](#on-a-real-platform): `press`, `type`, `scroll`, `hover`,
+`waitFor`, `texts()`, `shows()`, `layout()`, `accessibility()`, `screenshot(path)` and the others. They act on the
+running app with the platform's own input. `app` is that app, at once: nothing waits 1.2 s first.
+
+- `--attach` takes the session running on this machine. When several run, it takes the one of this directory's app.
+  `--attach=<port>` names the session's port (the port `nsh run` prints).
+- A session can have several hosts connected, such as a GPUI window and a browser. The steps go to the host that
+  connected last. `--device <name>` picks another one, by its name as the session's terminal shows it, or by its
+  platform as `--target` names it (`--device gpui`). `nsh test --attach` prints the host it took and the others.
+- A test file works too: `nsh test tests/repro.test.tsx --attach`. Its `open("./App.tsx")` attaches to the running app.
+  `open` takes no options there, because they would set a new app up: `storage`, `network`, `width`, `colorScheme` and
+  the others reject with `ERR_NSH_TEST_UNSUPPORTED`.
+- The app keeps running when the steps end, and closing it in a test does not quit it. Its requests go to the
+  network as usual, so `app.requests()` is empty.
+- The steps see the views the app has made. A long list makes its rows as they come near the screen, so a row far
+  down is found after a `scroll`.
+- `--target`, `--trace`, `--fps`, `--display` and `--foreground` set up an app a test opens, and don't go with
+  `--attach`.
+
+The macOS and GPUI development hosts take attached steps. The other hosts (Windows, Linux, iOS, Android, the
+terminal and the browser) say that they take none.
+
+Only this machine can drive a session. The dev server takes attached steps on loopback only, refuses any web page
+(even its own), and asks for a token that the session writes to a file only your user can read. Other machines on
+the network, other users of this machine and pages open in a browser cannot drive your app.
+
+Attaching is for development only. Only the hosts of `nsh run` and `nsh dev` connect to a dev server and keep the
+model the steps need; a packaged app (`nsh package`) and an app in its release build have neither, and nothing can
+attach to them.
 
 The examples have tests to start from: `examples/gallery-rs` for a Rust app (`cargo test`, one module per demo, and
 `App.test.tsx`), `examples/rust-exports` for an app with a Rust crate, `examples/counter` and `examples/gallery/tests`

@@ -127,7 +127,10 @@ to that file. `C-h e` opens its log/error panel; closing it gives every row back
 - Without `--port`, `nsh run` and `nsh dev` take the port their app (its entry) had last, else the first free one from
   8790; `nsh dev --server-only` takes 8790, which embedding apps keep in their code. By default `nsh run` and `nsh dev`
   bind to loopback, and `--target ios`, `android` or `web` and `nsh dev --server-only` bind to every address for other
-  machines (`dev::Listen`, `run::Target::uses_network`). `nsh dev --host <IPV4>` overrides the bind address (for example
+  machines (`dev::Listen`, `run::Target::uses_network`, decided in `main.rs`'s `dev_listen`). A port is free when the
+  server could listen on it at that address: a loopback server's port is probed on loopback, since listening on every
+  address, even for a probe, makes Windows Defender Firewall ask to let each new `nsh` executable on the network
+  (`dev_port::port_is_free`). `nsh dev --host <IPV4>` overrides the bind address (for example
   `nsh dev --server-only --host 127.0.0.1` for loopback only); with `--target android`, only `127.0.0.1` and `0.0.0.0`
   are accepted because `adb reverse` forwards the device's `127.0.0.1` to host `127.0.0.1`, and `run_android` passes
   `DevSession::loopback_url()`.
@@ -139,6 +142,11 @@ to that file. `C-h e` opens its log/error panel; closing it gives every row back
   are cleared by the next owner. All cooperating commands use the same cache directory. A listener
   outside this mechanism (including an older CLI) given by `--port` produces a bind error naming the port; `--port 0`
   asks the OS for a free port. The control files stay local to the machine.
+- `nsh test --attach` drives the hosts of a running session (`test_attach.rs`, "Attached sessions" under `nsh
+  test`). Each session makes a random token (`dev_port::AttachFile`, `ring`'s `SystemRandom`), keeps it in its port's
+  `.attach` file in `dev-sessions/` (mode `0600` on Unix; the user's cache directory elsewhere) while it runs, and gives
+  it to the server (`DevServer::set_attach_token`). The file goes when the session ends, unless a later session on the
+  port wrote its own.
 - Imported source directories and theme files outside the entry directory are watched too, using the last
   successful bundle's dependencies. The gallery and website demos share `examples/nsh-gallery-ui`; saving one of
   its components or its theme rebuilds the app as saving a file inside the app does.
@@ -467,12 +475,11 @@ Headless runs play the platform's part NSH's protocol defines, and refuse what o
   (`Headless::on_pick`, `app.onPick`; given as they are, nothing scaled), else cancelled (no files); `nsh/test`'s `App`
   answers them after each step and its dialogs (`answer_picks_myself`), and `app.picks()` lists what was asked; a real
   platform shows its own picker, which the driver does not answer;
-- shares (`Command::Share`) are answered as `onShare` says (`Headless::on_share`, `app.onShare`, which also turns
-  `Environment::share` on), and `app.shares()` lists what was shared;
 - native modules' fakes (`nsh_core::fake::Fake`, which a set registers with `Registry::fake` under a name) are
   installed before each app launches, in place of the device they reach; a test calls one by name with
   `Headless::call_fake` (`app.fake(name, method, args?)`, a JSON answer). `nsh/test` knows no module's fake: their
-  names, methods and answers are the module's (`nsh-extra`'s `"nsh-extra/speech"` is documented with `Speech`).
+  names, methods and answers are the module's (`nsh-extra`'s `"nsh-extra/speech"` is documented with `Speech`,
+  `"nsh-extra/share"` with `Share`).
   A fake may stand in process-wide, so `Headless` takes a turn for its fakes: apps with other fakes never overlap in
   one process, while apps started with the same fakes (clones of one registry, as one test file's apps) run
   together; fake names are unique across an app's sets (`Registry::merged`);
@@ -675,6 +682,37 @@ window-relative on macOS (posted `NSEvent`s carry the window's number and a wind
 makes their window point the agent's), so the tests run the same on any display. A host whose hello says `tests` takes steps:
 `DevServer::step` sends a `ServerMessage::Step` with an id to the test host that connected last and blocks for the
 `ClientMessage::StepDone` with that id; a host that leaves fails its waiting steps.
+
+**Attached sessions (`nsh test --attach`).** A developer's `nsh run` window can get into a state a fresh test run
+never reaches (a long session, many hot updates), and an agent cannot see that window. `--attach` takes the same steps
+there. `test_attach.rs` finds the session: the port `--attach=<port>` gives, else the `dev-sessions/*.attach` files
+whose server answers (the app's `.app` decides between several). It connects to `ATTACH_PATH` (`/attach`) with
+`nsh_dev::Attachment` and sends `AttachRequest::Hello` with the token. The server answers `AttachReply::Hosts`: every
+connected host, with whether it takes steps. Each `AttachRequest::Step` names a host and waits for its
+`AttachReply::StepDone`. The server runs it through `take_step`, as `DevServer::step` does for a test session. The
+CLI picks the host `--device` names (exact name, then platform as `--target` names it, then part of the name), else
+the steps-taking host that connected last. The test runs as under `--target` (`StartHost` returns an `AttachedHost`
+whose `Quit` does nothing, so closing the app leaves it running). `HostTarget::attached` makes `open` refuse every
+option that sets an app up (`failure::unsupported_attached`, `ERR_NSH_TEST_UNSUPPORTED`). Given a directory or an
+entry, `--attach` takes the steps of standard input with `open(entry)` and no 1.2 s wait (`steps_file`). Flags that
+set an app up (`--target`, `--trace`, `--fps`, `--display`, `--foreground`, `--browser`, `--web-host`) are refused.
+
+The security boundary is this machine's user. `/attach` sits behind `addresses_only` (an IP or `localhost` `Host`).
+`attach_upgrade` takes only loopback peers (`ConnectInfo`, `into_make_service_with_connect_info`) and no `Origin`,
+so no web page connects, the server's own included. `serve_attach` compares the token in constant time and refuses
+a session without one (`DevServer::test_session` sessions, servers given none). It refuses `TestStep::Quit` as well.
+A host takes attached steps when its hello says `attach` (`HostInfo::attach`) and the server's hello says `attach`
+(a token is set and it is no test session); the client then emits `DevEvent::Attachable`. `Tester::with_attach`
+starts the model and the agent's worker on it, through the host's `attach` closure: it attaches the model to the
+surface as a test does, but changes nothing of how the app runs. On macOS `Surface::testing` is a flag of its own,
+set only by a test session: it decides the lifecycle, reduced motion and the filter of the user's input. In a
+development session the engine keeps its content culling (`Model::engine_started` turns it off only under a test's
+setup). So the steps see the views the app made, and a row far down a long list is found after a `scroll`. A model
+in a development session sees reloads: `Model::engine_started` gives a restarted engine a fresh `Screen` that keeps
+the viewport and system bar (`Screen::restarted`). It keeps the latest 64 errors for the next step (`KEPT_ERRORS`),
+since no step may look for hours. The macOS (AppKit) and GPUI hosts take attached steps. The others say
+`attach: false` and are listed as taking none; the web page's hello has no `attach`. The cost is the model's: each
+batch applied to a `Screen` once more on the main thread, in development hosts only.
 
 The host's side is `nsh_testing::agent` (feature `agent`: no QuickJS, no network; the dev hosts link it). Its
 `Model` keeps the headless driver's `Screen`, fed every batch the surface applied and every error the app reported,
@@ -1163,7 +1201,9 @@ this CLI does not know are reported and left out, so the format can grow.
 The CLI finds prebuilt runtimes next to itself (`bin/../runtime`, the distribution layout) or, in a checkout, in
 `target/<triple>/<profile>` (Linux's, macOS's, Windows' and GPUI's, built for this machine, in `target/<profile>`,
 Windows' `nsh-windows-host.exe` / `nsh-windows-app.exe`; the distribution has GPUI's in `runtime/gpui/` on each OS) and `target/android/<profile>[-dev]` with the CLI's own profile (`NSH_RUNTIME` overrides). In a checkout (`<root>/target/<profile>/nsh` next to
-`crates/nsh-ios-host`), the CLI builds what it needs with cargo first (`cargo build -p nsh-ios-host --target ...`,
+`crates/nsh-ios-host`, found from the path it was run as, each link on the way or the resolved path, so a linked
+`target/` and a source install's links count; a build outside its checkout says it uses released crates and runtimes),
+the CLI builds what it needs with cargo first (`cargo build -p nsh-ios-host --target ...`,
 `cargo xtask android --dev`), so `nsh run` never uses a missing or stale host; on a Mac without Xcode's Metal
 Toolchain it builds GPUI's hosts with `nsh-platform-gpui/runtime-shaders` (`gpui.md`). GPUI builds run in
 `crates/gpui`, their own workspace, and the CLI resolves their output through `cargo metadata`'s

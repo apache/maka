@@ -210,7 +210,7 @@ let Some(doc) = open_window(
 | 层级 | `level` | `"normal"`、`"floating"`（在普通窗口之上）、`"aboveDock"`（在 Dock 和任务栏之上）或 `"desktopIcon"`（macOS 的桌面图标层级，出现在所有空间；Windows 上移到 z 序底部）。 |
 | | `taskbar` | 它在任务栏上有按钮（Windows）。 |
 | | `workspaces` | `"current"` 或 `"all"`：它出现在哪些工作区（macOS 的空间）。 |
-| | `pointerEvents` | `"auto"`，或 `"none"`：点击穿透它到达下面的内容。需要 `windows` 权限的 `overlay`。 |
+| | `pointerEvents` | `"auto"`；`"none"`：点击穿透它到达下面的内容；或 `"box-none"`：它的根视图如同视图的 `box-none`，点在它的视图上的点击由它接收，其余的穿透下去，适合放在较大透明窗口里的小面板（[见下文](#点击穿过空白区域)）。`"none"` 和 `"box-none"` 需要 `windows` 权限的 `overlay`。 |
 | 外观 | `transparent` | 背景透明：只显示应用的视图。 |
 | | `backdrop` | 内容背后的系统材质：`"none"`、`"window"`、`"sidebar"`、`"popover"` 或 `"hud"`。各平台映射到自己的材质（macOS 的视觉效果材质，Windows 11 的 Mica 和 Acrylic）。 |
 | | `shadow` | 窗口周围的系统阴影。 |
@@ -232,6 +232,27 @@ let Some(doc) = open_window(
 | Windows | 在 `WM_SIZING` 里修正拖动的矩形：拖左右边按宽度定高度，拖上下边按高度定宽度，拖角按宽度。用户按住的边始终跟着指针。`minSize` 和 `maxSize` 仍然有效；比例和它们冲突时以它们为准。 |
 | Linux | 暂不生效。GTK 4 没有对应的调用；Wayland 在交互式调整时根本没有宽高比约束（尺寸由合成器决定），X11 上 GDK 4 每次排版窗口（包括拖动中的每一步）都会整个重写 `WM_NORMAL_HINTS`，不带宽高比字段，另外写进去的比例会在用户拖动时被冲掉。可以让内容加黑边显示，或者在 `onBoundsChange` 里修正尺寸。 |
 | GPUI 应用（Windows、Linux） | 不生效：调整大小的过程由 GPUI 控制。 |
+| iOS、Android、Web、终端 | 没有窗口，不生效。 |
+
+### 点击穿过空白区域
+
+会变大变小的弹出面板，常常放在按最大状态设定尺寸的透明窗口里。设置 `pointerEvents: "box-none"` 后，窗口只接收落在它的视图上的点击；点在面板周围空白处的点击会到达下面的窗口，由那个窗口获得焦点，因此失去焦点时关闭的弹出窗口（`closeOnBlur`）会关闭。
+
+窗口的根视图如同视图的 `box-none`：其中的视图按各自的 `pointerEvents`、`hidden` 和 `hitSlop` 决定，铺满窗口的视图仍然会接收落在它上面的点击。把这样的外层容器也设为 `box-none`；有没有背景并不决定窗口在哪里接收点击。窗口自己的标题栏和边框同样会让点击穿过，因此请用于无边框窗口。
+
+```tsx
+<Window id="palette" kind="popup" transparent defaultSize={{ width: 640, height: 480 }} pointerEvents="box-none">
+  <View pointerEvents="box-none" class="flex-1 items-center">
+    <View class="w-96 rounded-xl bg-white p-3 shadow-lg">{/* 面板 */}</View>
+  </View>
+</Window>
+```
+
+| 平台 | 用户看到的效果 |
+|---|---|
+| macOS（AppKit 与 GPUI 应用） | 视图以外的点击、滚轮和悬停交给下面的窗口或桌面。布局变化立即生效，指针移动随到随跟；一次按下在松开按键之前一直交给它开始时所在的窗口。 |
+| Windows（Win32 与 GPUI 应用） | 与 macOS 相同：视图以外的点击、滚轮和悬停交给下面的窗口或桌面，布局变化立即生效，一次按下在松开按键之前一直交给它开始时所在的窗口。窗口显示期间大约每帧跟随一次指针。 |
+| Linux（GTK 与 GPUI 应用，Wayland 与 X11） | 窗口只在它的视图范围内接收点击，每次布局变化后更新；其余位置交给下面的窗口。旋转或倾斜的视图、圆角的 `clipPath` 按包住它们的矩形计算。 |
 | iOS、Android、Web、终端 | 没有窗口，不生效。 |
 
 ### currentWindow
@@ -384,7 +405,7 @@ mount(App);
 
 ### 权限
 
-nsh.json 中没有 `"capabilities"` 的应用可以打开除浮层（overlay）外所有种类的窗口。声明了权限的应用，在 `capabilities.windows` 允许时才能打开自己的窗口（[沙箱与权限](../docs/sandbox-and-capabilities.md#windows)）。浮层和点击穿透的窗口（`pointerEvents: "none"`）只有声明后才会授予。对于不允许的窗口，`Window.open` 和 `<Window>` 抛出 `ERR_ACCESS_DENIED`，`permission` 为 `"windows"`，`resource` 为窗口的 id；`set()` 中不允许的属性保持不变，并给出警告。
+nsh.json 中没有 `"capabilities"` 的应用可以打开除浮层（overlay）外所有种类的窗口。声明了权限的应用，在 `capabilities.windows` 允许时才能打开自己的窗口（[沙箱与权限](../docs/sandbox-and-capabilities.md#windows)）。浮层和点击穿透的窗口（`pointerEvents: "none"` 或 `"box-none"`）只有声明后才会授予。对于不允许的窗口，`Window.open` 和 `<Window>` 抛出 `ERR_ACCESS_DENIED`，`permission` 为 `"windows"`，`resource` 为窗口的 id；`set()` 中不允许的属性保持不变，并给出警告。
 
 ## Application
 

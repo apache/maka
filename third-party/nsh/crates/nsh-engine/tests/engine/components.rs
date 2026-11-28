@@ -3460,6 +3460,128 @@ fn a_base_button_has_behavior_and_no_look() {
     );
 }
 
+const BASE_ACCESSIBILITY_HOST_PROPS: &str = r#"import { mount, signal, Text, View, type ViewRef } from "nsh";
+import { Button, Collapsible } from "nsh/base";
+
+function App() {
+  const error = signal<ViewRef>();
+  const list = signal<ViewRef>();
+  return (
+    <View>
+      <Button
+        testID="button"
+        accessibilityDescription="Deletes the draft"
+        accessibilityLevel={2}
+      >
+        <Text>Delete</Text>
+      </Button>
+      <Collapsible
+        testID="details"
+        accessible
+        role="region"
+        accessibilityLabel="Details"
+        accessibilityHint="Shows the details"
+        accessibilityState={{ expanded: true }}
+        accessibilityValue={{ text: "three" }}
+        accessibilityElementsHidden={false}
+        accessibilityLiveRegion="polite"
+        accessibilityActions={[{ name: "activate" }]}
+        accessibilityActiveDescendant={error() ?? null}
+        accessibilityControls={list() ?? null}
+        accessibilityDescribedBy={error() ?? null}
+        onAccessibilityAction={() => {}}
+      >
+        <Text>Details</Text>
+      </Collapsible>
+      <Collapsible
+        testID="hidden"
+        importantForAccessibility="no-hide-descendants"
+      >
+        <Text>Hidden details</Text>
+      </Collapsible>
+      <View testID="error" ref={error}><Text>Enter a name</Text></View>
+      <View testID="list" ref={list}><Text>List</Text></View>
+    </View>
+  );
+}
+
+mount(App);
+"#;
+
+/// A component's host takes a view's accessibility props, as its classes
+/// and mouse events: the app labels a control the component's own props
+/// leave out, and the host is the view screen readers reach.
+#[test]
+fn a_component_host_takes_the_accessibility_props_of_a_view() {
+    use nsh_core::{AccessibilityRole, LiveRegion};
+    let (_engine, rx) = start(BASE_ACCESSIBILITY_HOST_PROPS);
+    let first = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("first frame");
+    let view = |test_id: &str| {
+        first
+            .items
+            .iter()
+            .rev()
+            .find_map(|i| match i {
+                MountItem::ViewProps { id, props } if props.test_id.as_deref() == Some(test_id) => {
+                    Some((*id, props.clone()))
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{test_id}"))
+    };
+    let (_, button) = view("button");
+    assert_eq!(
+        button.accessibility.description.as_deref(),
+        Some("Deletes the draft")
+    );
+    assert_eq!(button.accessibility.level, Some(2));
+    let (details, props) = view("details");
+    let accessibility = &props.accessibility;
+    assert_eq!(accessibility.role, AccessibilityRole::Region);
+    assert_eq!(accessibility.label.as_deref(), Some("Details"));
+    assert_eq!(accessibility.hint.as_deref(), Some("Shows the details"));
+    assert_eq!(
+        accessibility.state.expanded,
+        Some(true),
+        "the state the app set"
+    );
+    assert_eq!(
+        accessibility.value.as_ref().and_then(|v| v.text.as_deref()),
+        Some("three")
+    );
+    assert_eq!(accessibility.live_region, LiveRegion::Polite);
+    assert_eq!(accessibility.actions.len(), 1);
+    assert_eq!(accessibility.actions[0].name.as_ref(), "activate");
+    assert!(
+        accessibility.active_descendant.is_some(),
+        "the ref the app passed names the view"
+    );
+    assert!(accessibility.controls.is_some());
+    assert!(accessibility.described_by.is_some());
+    assert_eq!(
+        accessibility.accessible,
+        Some(true),
+        "the `accessible` host prop"
+    );
+    let (_, hidden) = view("hidden");
+    assert_eq!(
+        hidden.accessibility.accessible,
+        Some(false),
+        "importantForAccessibility=\"no-hide-descendants\""
+    );
+    assert!(hidden.accessibility.hidden);
+    assert!(
+        first.items.iter().any(|i| matches!(
+            i,
+            MountItem::Events { id, events }
+                if *id == details && events.contains(EventKind::AccessibilityAction)
+        )),
+        "the host hears the actions assistive technologies perform"
+    );
+}
+
 const BASE_SWITCH: &str = r##"import { mount, signal, Text, View } from "nsh";
 import { Switch } from "nsh/base";
 
@@ -6035,6 +6157,125 @@ fn a_base_slider_moves_the_nearer_thumb_and_tells_screen_readers_each_value() {
     );
     let after = until(&rx, |b| shows(b, "end 21,75"));
     assert!(after.iter().any(|b| shows(b, "Price 21-75")));
+}
+
+const BASE_SLIDER_THUMBS: &str = r##"import { mount, signal, Text, View } from "nsh";
+import { Slider } from "nsh/base";
+
+function App() {
+  const price = signal<[number, number]>([20, 60]);
+  return (
+    <View>
+      <Slider
+        value={price()}
+        onChange={({ value: next }) => price.set(next as [number, number])}
+        accessibilityLabel="Maximum price"
+        startAccessibilityLabel="Minimum price"
+        class="w-[200px]"
+        trackClass="h-[20px] justify-center"
+        indicatorClass="h-[4px]"
+        thumbClass="w-[10px] h-[10px]"
+        renderThumb={({ start }) => (
+          <Text class="absolute bottom-[12px]">{`${start ? "Low" : "High"} ${price()[start ? 0 : 1]}`}</Text>
+        )}
+      />
+    </View>
+  );
+}
+
+mount(App);
+"##;
+
+/// `nsh/base`'s `Slider` drawing content in each thumb with the app's
+/// `renderThumb`: told which thumb it is (`{ start }`), the content is
+/// placed in that thumb, and follows the app's value in place, with no
+/// view made again.
+#[test]
+fn a_base_slider_draws_the_apps_content_in_each_thumb() {
+    use nsh_core::AccessibilityRole;
+    let (engine, rx) = start(BASE_SLIDER_THUMBS);
+    let (mut low_seen, mut high_seen) = (false, false);
+    let batches = until(&rx, |b| {
+        low_seen |= shows(b, "Low 20");
+        high_seen |= shows(b, "High 60");
+        low_seen && high_seen
+    });
+    let text = |wanted: &str| {
+        batches
+            .iter()
+            .find_map(|b| text_ids(b, wanted))
+            .unwrap_or_else(|| panic!("{wanted} shown"))
+    };
+    let (low, high) = (text("Low 20"), text("High 60"));
+    let items: Vec<&MountItem> = batches.iter().flat_map(|b| b.items.iter()).collect();
+    let thumb_of = |label: &str| {
+        items
+            .iter()
+            .find_map(|i| match i {
+                MountItem::ViewProps { id, props }
+                    if props.accessibility.role == AccessibilityRole::Adjustable
+                        && props.accessibility.label.as_deref() == Some(label) =>
+                {
+                    Some(*id)
+                }
+                _ => None,
+            })
+            .expect("a thumb")
+    };
+    let (start_thumb, end_thumb) = (thumb_of("Minimum price"), thumb_of("Maximum price"));
+    // Each text is inside its own thumb.
+    let inside = |mut node: u32, thumb: u32| {
+        while let Some(parent) = items.iter().find_map(|i| match i {
+            MountItem::Insert { parent, child, .. } if *child == node => Some(*parent),
+            _ => None,
+        }) {
+            if parent == thumb {
+                return true;
+            }
+            node = parent;
+        }
+        false
+    };
+    assert!(inside(low, start_thumb) && !inside(low, end_thumb));
+    assert!(inside(high, end_thumb) && !inside(high, start_thumb));
+    // Hidden from screen readers, so the thumb is never named by its
+    // content's text: the view holding it, inside the thumb.
+    let hidden = |mut node: u32, thumb: u32| {
+        while node != thumb {
+            if items.iter().any(|i| {
+                matches!(i, MountItem::ViewProps { id, props }
+                    if *id == node && props.accessibility.hidden)
+            }) {
+                return true;
+            }
+            match items.iter().find_map(|i| match i {
+                MountItem::Insert { parent, child, .. } if *child == node => Some(*parent),
+                _ => None,
+            }) {
+                Some(parent) => node = parent,
+                None => return false,
+            }
+        }
+        false
+    };
+    assert!(hidden(low, start_thumb) && hidden(high, end_thumb));
+
+    // A step of the start's thumb: its content shows the new value in
+    // place, nothing drawn again.
+    engine.control().dispatch_event(
+        start_thumb,
+        EventKind::AccessibilityAction,
+        EventPayload::Map(vec![("actionName", PayloadValue::Str("increment".into()))]),
+    );
+    let after = until(&rx, |b| shows(b, "Low 21"));
+    assert_eq!(after.iter().find_map(|b| text_ids(b, "Low 21")), Some(low));
+    assert!(
+        !after
+            .iter()
+            .flat_map(|b| b.items.iter())
+            .any(|i| matches!(i, MountItem::Create { .. })),
+        "no view made again"
+    );
 }
 
 const BASE_SLIDER_TENS: &str = r##"import { mount, signal, View } from "nsh";
@@ -12311,345 +12552,6 @@ fn component_prop(batches: &[MountBatch], id: u32, key: &str) -> Option<serde_js
         .flatten()
         .rfind(|(name, _)| &**name == key)
         .and_then(|(_, value)| value.clone())
-}
-
-const SEGMENTED_CONTROL: &str = r#"import { mount, signal, Text, View } from "nsh";
-import { SegmentedControl } from "nsh/mobile";
-const selected = signal(0);
-const items = signal([{ title: "Light", icon: "sun.max" }, { title: "Dark" }]);
-mount(() => <View>
-  <SegmentedControl items={items()} selectedIndex={selected()}
-    onChange={({ index }) => {
-      selected.set(index);
-      items.set([{ title: "Light", icon: "sun.max" }, { title: "Dark", disabled: true }]);
-    }} />
-  <Text>{`Selected: ${selected()}`}</Text>
-</View>);
-"#;
-
-/// `nsh/mobile`'s `SegmentedControl` is the system's control on iOS: its
-/// segments and selection reach it, the user's choice comes back as
-/// `onChange({ index })` and the app's new props reach the same control.
-#[test]
-fn the_segmented_control_is_the_systems_on_ios_and_reports_the_choice() {
-    use nsh_core::platform::{Os, SEGMENTED_CONTROL_COMPONENT};
-
-    let (engine, rx) = start_in(
-        SEGMENTED_CONTROL,
-        Environment {
-            os: Os::Ios,
-            ..Environment::default()
-        },
-    );
-    let initial = until(&rx, |batch| shows(batch, "Selected: 0"));
-    let control = component_id(&initial, SEGMENTED_CONTROL_COMPONENT).expect("the control");
-    assert_eq!(
-        component_prop(&initial, control, "items"),
-        Some(serde_json::json!([{ "title": "Light", "icon": "sun.max" }, { "title": "Dark" }]))
-    );
-    assert_eq!(
-        component_prop(&initial, control, "selectedIndex"),
-        Some(serde_json::json!(0))
-    );
-    assert_eq!(
-        component_prop(&initial, control, "disabled"),
-        Some(serde_json::json!(false))
-    );
-    engine.control().dispatch_event(
-        control,
-        EventKind::NativeEvent,
-        EventPayload::Native {
-            name: "change".into(),
-            data: serde_json::json!(1),
-        },
-    );
-    let updates = until(&rx, |batch| shows(batch, "Selected: 1"));
-    assert_eq!(
-        component_prop(&updates, control, "selectedIndex"),
-        Some(serde_json::json!(1))
-    );
-    assert_eq!(
-        component_prop(&updates, control, "items"),
-        Some(serde_json::json!([
-            { "title": "Light", "icon": "sun.max" },
-            { "title": "Dark", "disabled": true },
-        ]))
-    );
-}
-
-/// Elsewhere the segmented control takes no room and makes no component.
-#[test]
-fn the_segmented_control_shows_nothing_off_ios() {
-    use nsh_core::platform::{Os, SEGMENTED_CONTROL_COMPONENT};
-
-    for os in [Os::Android, Os::MacOs] {
-        let (_engine, rx) = start_in(
-            SEGMENTED_CONTROL,
-            Environment {
-                os,
-                ..Environment::default()
-            },
-        );
-        let batches = until(&rx, |batch| shows(batch, "Selected: 0"));
-        assert!(
-            !batches.iter().any(|b| b
-                .items
-                .iter()
-                .any(|i| is_component(i, SEGMENTED_CONTROL_COMPONENT))),
-            "{os:?}"
-        );
-    }
-}
-
-const SWITCH: &str = r#"import { mount, signal, Text, View } from "nsh";
-import { Switch } from "nsh/mobile";
-const on = signal(false);
-const locked = signal(false);
-mount(() => <View>
-  <Switch checked={on()} accessibilityLabel="Notifications"
-    onChange={({ checked }) => on.set(checked)} />
-  <Switch checked={locked()} disabled accessibilityLabel="Locked"
-    onChange={() => {}} />
-  <Text>{`On: ${on()}`}</Text>
-</View>);
-"#;
-
-/// The native switches mounted in `batches`, in order.
-fn switches(batches: &[MountBatch]) -> Vec<u32> {
-    batches
-        .iter()
-        .flat_map(|batch| &batch.items)
-        .filter_map(|item| match item {
-            MountItem::Component { id, name }
-                if &**name == nsh_core::platform::SWITCH_COMPONENT =>
-            {
-                Some(*id)
-            }
-            _ => None,
-        })
-        .collect()
-}
-
-/// `nsh/mobile`'s `Switch` is the system's switch on iOS and Android: its
-/// value, `disabled` and label reach it, the user's flip comes back as
-/// `onChange({ checked })`, the app's new value reaches the same switch,
-/// and a flip the app has heard bumps `revision`, so the switch shows
-/// a value the app kept again.
-#[test]
-fn the_switch_is_the_systems_on_mobile_and_follows_the_app() {
-    use nsh_core::platform::Os;
-
-    for os in [Os::Ios, Os::Android] {
-        let (engine, rx) = start_in(
-            SWITCH,
-            Environment {
-                os,
-                ..Environment::default()
-            },
-        );
-        let initial = until(&rx, |batch| shows(batch, "On: false"));
-        let ids = switches(&initial);
-        assert_eq!(ids.len(), 2, "two switches on {os:?}");
-        // Each switch by its label: the mount order is not the tree's.
-        let by_label = |label: &str| {
-            *ids.iter()
-                .find(|&&id| {
-                    component_prop(&initial, id, "accessibilityLabel")
-                        == Some(serde_json::json!(label))
-                })
-                .unwrap_or_else(|| panic!("the {label} switch on {os:?}"))
-        };
-        let (on, locked) = (by_label("Notifications"), by_label("Locked"));
-        assert_eq!(
-            component_prop(&initial, on, "checked"),
-            Some(serde_json::json!(false))
-        );
-        assert_eq!(
-            component_prop(&initial, on, "disabled"),
-            Some(serde_json::json!(false))
-        );
-        assert_eq!(
-            component_prop(&initial, locked, "disabled"),
-            Some(serde_json::json!(true))
-        );
-        // The app follows the flip.
-        engine.control().dispatch_event(
-            on,
-            EventKind::NativeEvent,
-            EventPayload::Native {
-                name: "change".into(),
-                data: serde_json::json!(true),
-            },
-        );
-        let updates = until(&rx, |batch| shows(batch, "On: true"));
-        assert_eq!(
-            component_prop(&updates, on, "checked"),
-            Some(serde_json::json!(true)),
-            "{os:?}"
-        );
-        // The app keeps its value: the switch is told it again.
-        engine.control().dispatch_event(
-            locked,
-            EventKind::NativeEvent,
-            EventPayload::Native {
-                name: "change".into(),
-                data: serde_json::json!(true),
-            },
-        );
-        let kept = until(&rx, |batch| {
-            component_prop(std::slice::from_ref(batch), locked, "revision").is_some()
-        });
-        assert_eq!(
-            component_prop(&kept, locked, "revision"),
-            Some(serde_json::json!(1)),
-            "{os:?}"
-        );
-        assert_eq!(
-            component_prop(&kept, locked, "checked"),
-            None,
-            "the kept value stays as it was on {os:?}"
-        );
-    }
-}
-
-/// The desktops and the web have no system switch: it takes no room and
-/// makes no component.
-#[test]
-fn the_switch_shows_nothing_off_mobile() {
-    use nsh_core::platform::Os;
-
-    for os in [Os::MacOs, Os::Web] {
-        let (_engine, rx) = start_in(
-            SWITCH,
-            Environment {
-                os,
-                ..Environment::default()
-            },
-        );
-        let batches = until(&rx, |batch| shows(batch, "On: false"));
-        assert!(switches(&batches).is_empty(), "{os:?}");
-    }
-}
-
-const DATE_TIME_PICKER: &str = r#"import { mount, signal, Text, View } from "nsh";
-import { DateTimePicker } from "nsh/mobile";
-const value = signal("2026-11-17T09:30");
-mount(() => <View>
-  <DateTimePicker mode="dateTime" value={value()} min="2026-11-01T00:00" max="bogus"
-    minuteInterval={7} accessibilityLabel="Reminder" onChange={({ value: v }) => value.set(v)} />
-  <DateTimePicker mode="time" value="09:30" />
-  <Text>{`Picked: ${value()}`}</Text>
-</View>);
-"#;
-
-/// `nsh/mobile`'s `DateTimePicker` is the system's picker on iOS and
-/// Android: its value and bounds reach it as fields, a minute step that
-/// does not divide an hour and a bound that is no date are not passed on,
-/// its `accessibilityLabel` reaches it (none without one), and the user's
-/// pick comes back as `onChange({ value })` in the mode's form.
-#[test]
-fn the_date_time_picker_is_the_systems_on_mobile_and_reports_the_pick() {
-    use nsh_core::platform::{DATE_TIME_PICKER_COMPONENT, Os};
-
-    for os in [Os::Ios, Os::Android] {
-        let (engine, rx) = start_in(
-            DATE_TIME_PICKER,
-            Environment {
-                os,
-                ..Environment::default()
-            },
-        );
-        let initial = until(&rx, |batch| shows(batch, "Picked: 2026-11-17T09:30"));
-        // Each picker by its mode: the mount order is not the tree's.
-        let by_mode = |mode: &str| {
-            initial
-                .iter()
-                .flat_map(|batch| &batch.items)
-                .find_map(|item| match item {
-                    MountItem::Component { id, name }
-                        if &**name == DATE_TIME_PICKER_COMPONENT
-                            && component_prop(&initial, *id, "mode")
-                                == Some(serde_json::json!(mode)) =>
-                    {
-                        Some(*id)
-                    }
-                    _ => None,
-                })
-                .unwrap_or_else(|| panic!("the {mode} picker on {os:?}"))
-        };
-        let (picker, unnamed) = (by_mode("dateTime"), by_mode("time"));
-        assert_eq!(
-            component_prop(&initial, picker, "value"),
-            Some(
-                serde_json::json!({ "year": 2026, "month": 11, "day": 17, "hour": 9, "minute": 30 })
-            )
-        );
-        assert_eq!(
-            component_prop(&initial, picker, "min"),
-            Some(
-                serde_json::json!({ "year": 2026, "month": 11, "day": 1, "hour": 0, "minute": 0 })
-            )
-        );
-        assert_eq!(
-            component_prop(&initial, picker, "max"),
-            Some(serde_json::json!(null))
-        );
-        assert_eq!(
-            component_prop(&initial, picker, "minuteInterval"),
-            Some(serde_json::json!(1))
-        );
-        assert_eq!(
-            component_prop(&initial, picker, "accessibilityLabel"),
-            Some(serde_json::json!("Reminder")),
-            "{os:?}"
-        );
-        assert_eq!(
-            component_prop(&initial, unnamed, "accessibilityLabel"),
-            Some(serde_json::json!(null)),
-            "{os:?}"
-        );
-        engine.control().dispatch_event(
-            picker,
-            EventKind::NativeEvent,
-            EventPayload::Native {
-                name: "change".into(),
-                data: serde_json::json!({ "year": 2026, "month": 12, "day": 1, "hour": 18, "minute": 45 }),
-            },
-        );
-        let updates = until(&rx, |batch| shows(batch, "Picked: 2026-12-01T18:45"));
-        assert_eq!(
-            component_prop(&updates, picker, "value"),
-            Some(
-                serde_json::json!({ "year": 2026, "month": 12, "day": 1, "hour": 18, "minute": 45 })
-            ),
-            "{os:?}"
-        );
-    }
-}
-
-/// The desktops and the web have no system date picker: it takes no room
-/// and makes no component.
-#[test]
-fn the_date_time_picker_shows_nothing_off_mobile() {
-    use nsh_core::platform::{DATE_TIME_PICKER_COMPONENT, Os};
-
-    for os in [Os::MacOs, Os::Web] {
-        let (_engine, rx) = start_in(
-            DATE_TIME_PICKER,
-            Environment {
-                os,
-                ..Environment::default()
-            },
-        );
-        let batches = until(&rx, |batch| shows(batch, "Picked: 2026-11-17T09:30"));
-        assert!(
-            !batches.iter().any(|b| b
-                .items
-                .iter()
-                .any(|i| is_component(i, DATE_TIME_PICKER_COMPONENT))),
-            "{os:?}"
-        );
-    }
 }
 
 const MENU_BUTTON: &str = r#"import { mount, signal, Text, View } from "nsh";

@@ -576,6 +576,30 @@ pub(crate) fn deleted(surface: &Rc<Surface>, view: &NshView) {
     drop(host);
 }
 
+/// The surface's color scheme changed (`crate::system::environment_applied`):
+/// every live web view updates its profile's preferred color scheme.
+pub(crate) fn appearance_changed(surface: &Surface) {
+    #[cfg(feature = "webview")]
+    {
+        let Ok(hosts) = surface.native.hosts.try_borrow() else {
+            return;
+        };
+        let webs: Vec<_> = hosts
+            .values()
+            .filter_map(|host| match host {
+                Host::Web(w) => Some(w.clone()),
+                _ => None,
+            })
+            .collect();
+        drop(hosts);
+        for web in webs {
+            web.apply_color_scheme();
+        }
+    }
+    #[cfg(not(feature = "webview"))]
+    let _ = surface;
+}
+
 /// The view's frame changed: its item fills it again.
 pub(crate) fn resized(view: &NshView) {
     let mut s = view.state_mut();

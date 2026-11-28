@@ -1701,6 +1701,7 @@ fn handle(
         WM_WINDOWPOSCHANGED if data.top_level => {
             crate::window_state::report_main(surface);
             crate::system::lifecycle_changed(surface);
+            crate::box_none::shown_or_hidden(hwnd);
         }
         // An embedded surface's: its root window's ([`observe_root`]).
         WM_NSH_ROOT => crate::system::lifecycle_changed(surface),
@@ -1728,6 +1729,7 @@ fn handle(
         }
         WM_DESTROY => {
             surface.activation_changed(false);
+            crate::box_none::forget(hwnd);
             crate::window_close::destroyed(surface);
             crate::tray::destroyed(hwnd);
             crate::global_shortcut::destroyed(hwnd);
@@ -1781,27 +1783,34 @@ fn window_api(
         }
         WM_SIZING => {
             let attrs = shell.attrs();
-            let ratio = attrs.aspect_ratio?;
             // SAFETY: `lparam` is the drag's RECT, which the handler may change.
             let rect = unsafe { &mut *(lparam.0 as *mut RECT) };
-            let scale = dpi(hwnd) as f32 / 96.0;
-            let (l, t, r, b) = frame_extents(hwnd);
-            let extra = (l + r, t + b);
-            let limits = crate::shell::track_sizes(&attrs, scale, extra);
-            let (left, top, right, bottom) = crate::shell::aspect_sizing(
-                (rect.left, rect.top, rect.right, rect.bottom),
-                wparam.0 as u32,
-                ratio,
-                extra,
-                limits,
-            );
-            *rect = RECT {
-                left,
-                top,
-                right,
-                bottom,
-            };
-            Some(Some(LRESULT(1)))
+            let result = attrs.aspect_ratio.map(|ratio| {
+                let scale = dpi(hwnd) as f32 / 96.0;
+                let (l, t, r, b) = frame_extents(hwnd);
+                let extra = (l + r, t + b);
+                let limits = crate::shell::track_sizes(&attrs, scale, extra);
+                let (left, top, right, bottom) = crate::shell::aspect_sizing(
+                    (rect.left, rect.top, rect.right, rect.bottom),
+                    wparam.0 as u32,
+                    ratio,
+                    extra,
+                    limits,
+                );
+                *rect = RECT {
+                    left,
+                    top,
+                    right,
+                    bottom,
+                };
+                Some(LRESULT(1))
+            });
+            if attrs.frameless()
+                && let Some(id) = data.window
+            {
+                crate::app_window::prepare_resize(surface, id, *rect);
+            }
+            result
         }
         WM_SYSCOMMAND => {
             let command = (wparam.0 & 0xFFF0) as u32;
@@ -1864,6 +1873,7 @@ fn window_api(
                 // Shown, hidden, minimized or restored: the app's state
                 // follows its own windows (the host never shows).
                 crate::system::lifecycle_changed(surface);
+                crate::box_none::shown_or_hidden(hwnd);
             }
             None
         }
@@ -2478,6 +2488,13 @@ impl Drop for Ticker {
             let _ = t.join();
         }
     }
+}
+
+/// The root node of the window `hwnd` is: one of the app's own, or the
+/// surface's own top-level window (`ROOT_ID`); none for an embedded one.
+pub(crate) fn root_id(hwnd: HWND) -> Option<NodeId> {
+    let data = data(hwnd)?;
+    data.window.or(data.top_level.then_some(ROOT_ID))
 }
 
 /// The surface window `hwnd` (its own or one of the app's own) is of

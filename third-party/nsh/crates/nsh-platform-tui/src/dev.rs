@@ -83,18 +83,18 @@ pub(super) struct DevSession {
 impl DevSession {
     pub(super) fn start(url: String, options: &AppOptions, wake: Arc<Wake>) -> io::Result<Self> {
         let (sender, inbox) = crossbeam_channel::unbounded();
-        let host = HostInfo {
-            device: format!("Terminal ({})", std::env::consts::OS),
-            platform: HostPlatform::Tui,
-            bytecode_version: BYTECODE_VERSION.to_owned(),
-            ui_sets: options
-                .ui_sets
-                .iter()
-                .flat_map(nsh_core::element::Registry::sets)
-                .filter_map(|set| set.specifier().map(str::to_owned))
-                .collect(),
-            tests: true,
-        };
+        let mut host = HostInfo::new(HostPlatform::Tui);
+        host.device = format!("Terminal ({})", std::env::consts::OS);
+        host.bytecode_version = BYTECODE_VERSION.to_owned();
+        host.ui_sets = options
+            .ui_sets
+            .iter()
+            .flat_map(nsh_core::element::Registry::sets)
+            .filter_map(|set| set.specifier().map(str::to_owned))
+            .collect();
+        host.tests = true;
+        // It keeps no model in a development session (`nsh test --attach`).
+        host.attach = false;
         log::info!("Connecting to {url}");
         let attach = sender.clone();
         let test_wake = wake.clone();
@@ -136,6 +136,7 @@ impl DevSession {
                 source_map,
                 capabilities,
                 app_id,
+                url_schemes,
                 window,
                 application,
                 limits,
@@ -154,6 +155,7 @@ impl DevSession {
                         bundle = bundle.with_source_map(map);
                     }
                     let bundle = bundle
+                        .with_url_schemes(url_schemes)
                         .with_app_id(app_id.as_deref())
                         .with_main_window(window.as_deref())
                         .with_application(application.as_deref())
@@ -238,9 +240,12 @@ impl DevSession {
                 }
             }
             DevEvent::Testing
+            | DevEvent::Attachable
             | DevEvent::Step { .. }
             | DevEvent::TestSetup { .. }
             | DevEvent::Fetch { .. } => {}
+            // Events added later for other hosts (`DevEvent` is non-exhaustive).
+            _ => {}
         }
     }
 

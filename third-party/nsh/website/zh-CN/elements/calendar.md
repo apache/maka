@@ -106,7 +106,42 @@ fn due_date() -> impl IntoElement {
 `onChange` 只报告完整的值，与 `gpui-base` 的 `Selected` 相同：按下的一天，或范围的结束日。
 
 - 不设 `range` 时，按下某一天就选中它。
-- 在 `range` 时，第一次按压开始范围，第二次结束范围，两者之间的日期都在范围内（每一天都是 `selected`，包括两端，见[条目](#items)）。第二次按在更早的一天上会从那一天重新开始范围，范围完整之后再按也一样。半个范围会一直显示，直到完整时才被报告。
+- 在 `range` 时，第一次按压开始范围，第二次结束范围，两者之间的日期都在范围内（每一天都是 `selected`，包括两端，见[条目](#items)）。第二次按在更早的一天上会从那一天重新开始范围，范围完整之后再按也一样。半个范围会一直显示，直到完整时 `onChange` 才报告它。
+
+在 `range` 时，用户每开始一个范围，`onChangeStart({ value })` 都会报告它，值为 `[start, null]`。范围还要显示在日历之外时就用它：日历上方的开始和结束输入框、一行摘要，或者要等结束日选好才能按的"应用"按钮。`onChange` 仍然只报告完整的范围。
+
+想把开始日放进自己的状态，就把 `value` 设为它。日历显示你设置的值，所以你下一次设置的值会替换掉这个开始日：一个把已应用范围放回去的"取消"会丢掉半个范围，下一次按压重新开始一个范围。
+
+```tsx
+import { signal, Text, View } from "nsh";
+import { Button, Calendar, type CalendarValue } from "nsh/base";
+
+function TripDates() {
+  const applied = signal<CalendarValue>(["2026-10-05", "2026-10-07"]);
+  const draft = signal<CalendarValue>(applied());
+  const ends = () => {
+    const value = draft();
+    return Array.isArray(value) ? value : [null, null];
+  };
+  return (
+    <View class="gap-2">
+      <Text>{`${ends()[0] ?? "开始"} – ${ends()[1] ?? "结束"}`}</Text>
+      <Calendar
+        range
+        value={draft()}
+        onChangeStart={({ value }) => draft.set(value)}
+        onChange={({ value }) => draft.set(value)}
+      />
+      <Button onPress={() => draft.set(applied())}>
+        <Text>取消</Text>
+      </Button>
+      <Button disabled={ends()[1] === null} onPress={() => applied.set(draft())}>
+        <Text>应用</Text>
+      </Button>
+    </View>
+  );
+}
+```
 
 日历打开时显示值所在的月份（范围的开始日），没有值则显示今天所在的月份。
 
@@ -218,6 +253,7 @@ fn due_date() -> impl IntoElement {
 | 事件 | Rust | 说明 |
 |---|---|---|
 | `onChange` | `.on_change(\|value\| ..)` | 用户选出了一个完整的值：`{ value }`，一天或一个范围。设置 `value` 以跟随它。应用传入的 `value` 从不被报告。 |
+| `onChangeStart` | `.on_change_start(\|value\| ..)` | 在 `range` 时，用户开始了一个范围：`{ value }`，即 `[start, null]`。第二次按压结束范围后由 `onChange` 报告。把 `value` 设为它，开始日就由你持有（见[值](#value)）。 |
 
 <a id="parts"></a>
 

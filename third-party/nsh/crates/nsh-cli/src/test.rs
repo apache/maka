@@ -18,6 +18,9 @@
 //! with the TypeScript tests', so a Rust app without test files is tested
 //! too. Their tests run on this machine: with `--target` only the test
 //! files run.
+//!
+//! With `--attach` the apps the tests open are the app of a development
+//! session that runs already, in the host it shows (`test_attach.rs`).
 
 use std::{
     collections::HashMap,
@@ -71,12 +74,13 @@ pub(crate) fn test(
     device: Option<&str>,
     display: Option<usize>,
     foreground: bool,
+    attach: Option<Option<u16>>,
 ) -> anyhow::Result<()> {
     let app_dir = nsh_bundler::app_dir::app_dir_of(entry);
     let work_dir = app_dir.join(".nsh/test");
     // The app's crates in the directory, which `cargo test` tests.
     let crates: Vec<AppCrate> = match crate::rust_app::current() {
-        Some(app) if path.is_dir() => app
+        Some(app) if path.is_dir() && attach.is_none() => app
             .crates()
             .iter()
             .filter(|c| c.dir().starts_with(path))
@@ -86,6 +90,11 @@ pub(crate) fn test(
     };
     let files = if is_test_file(path) {
         vec![path.to_owned()]
+    } else if attach.is_some() {
+        // The running app takes the steps of standard input, given its
+        // directory too: a directory's test files would each set up apps
+        // of their own.
+        vec![steps_file(&work_dir, entry, true)?]
     } else if path.is_dir() {
         let mut files = Vec::new();
         find_tests(&test_root(path), &mut files);
@@ -103,7 +112,7 @@ pub(crate) fn test(
         }
         files
     } else {
-        vec![steps_file(&work_dir, path)?]
+        vec![steps_file(&work_dir, path, false)?]
     };
     // How the files are shown: an entry's steps by the entry.
     let shown = |file: &Path| {
@@ -118,13 +127,28 @@ pub(crate) fn test(
     if browser.is_some() && target.is_none() {
         bail!("--browser goes with --target web");
     }
-    if device.is_some()
+    if attach.is_some() {
+        let given = [
+            ("--target", target.is_some()),
+            ("--trace", trace),
+            ("--fps", fps),
+            ("--browser", browser.is_some()),
+            ("--web-host", web_host.is_some()),
+            ("--display", display.is_some()),
+            ("--foreground", foreground),
+        ];
+        if let Some((flag, _)) = given.iter().find(|(_, set)| *set) {
+            bail!(
+                "{flag} sets up the app a test opens, and --attach drives a running session's app as it is"
+            );
+        }
+    } else if device.is_some()
         && !matches!(
             target,
             Some(crate::run::Target::Ios | crate::run::Target::Android)
         )
     {
-        bail!("--device goes with --target ios or android");
+        bail!("--device goes with --target ios or android, or --attach");
     }
     if display.is_some() && !target.is_some_and(crate::test_host::opens_on_a_display) {
         bail!("{}", crate::test_host::DISPLAY_TARGETS);
@@ -165,18 +189,28 @@ pub(crate) fn test(
             }
         }
     }
-    let host = target
-        .filter(|_| !files.is_empty())
-        .map(|target| {
-            crate::test_host::starter(
-                target, browser, &work_dir, fps, device, display, foreground, release,
-            )
-        })
-        .transpose()?;
-    // What `open` checks its options against on that host.
-    let host_target = target
-        .filter(|_| host.is_some())
-        .map(crate::test_host::host_target);
+    let attached = match attach {
+        Some(port) if !files.is_empty() => Some(crate::test_attach::starter(port, device, entry)?),
+        _ => None,
+    };
+    let (host, host_target) = match attached {
+        Some((host, host_target)) => (Some(host), Some(host_target)),
+        None => {
+            let host = target
+                .filter(|_| !files.is_empty())
+                .map(|target| {
+                    crate::test_host::starter(
+                        target, browser, &work_dir, fps, device, display, foreground, release,
+                    )
+                })
+                .transpose()?;
+            // What `open` checks its options against on that host.
+            let host_target = target
+                .filter(|_| host.is_some())
+                .map(crate::test_host::host_target);
+            (host, host_target)
+        }
+    };
     // On a real platform the apps run in hosts built with the app's crates:
     // the test files run here, whatever the app is.
     match crate::rust_app::current().filter(|_| host.is_none()) {
@@ -979,8 +1013,9 @@ fn find_tests(dir: &Path, out: &mut Vec<PathBuf>) {
 
 /// A test file that opens the app at `entry` on the network, lets it run
 /// for a while, then takes the steps standard input gives (none from a
-/// terminal), with `app` the app.
-fn steps_file(work_dir: &Path, entry: &Path) -> anyhow::Result<PathBuf> {
+/// terminal), with `app` the app; `attached` (`--attach`), the running
+/// app as it is, at once.
+fn steps_file(work_dir: &Path, entry: &Path, attached: bool) -> anyhow::Result<PathBuf> {
     let mut steps = String::new();
     let stdin = std::io::stdin();
     if !stdin.is_terminal() {
@@ -993,12 +1028,18 @@ fn steps_file(work_dir: &Path, entry: &Path) -> anyhow::Result<PathBuf> {
         .file_name()
         .map_or("app".into(), |n| n.to_string_lossy().into_owned());
     let entry_js = serde_json::to_string(&entry.to_string_lossy().replace('\\', "/"))?;
+    let open = if attached {
+        format!("const app = await open({entry_js});\n")
+    } else {
+        format!(
+            "const app = await open({entry_js}, {{ network: \"live\" }});\nawait app.wait({IDLE_MS});\n"
+        )
+    };
     let code = format!(
         "// Made by `nsh test {name}`: the steps of standard input.\n\
          import {{ expect, open, test }} from \"nsh/test\";\n\n\
          test(\"steps\", async () => {{\n\
-         const app = await open({entry_js}, {{ network: \"live\" }});\n\
-         await app.wait({IDLE_MS});\n\
+         {open}\
          {steps}\n\
          }});\n"
     );
@@ -1163,12 +1204,13 @@ test src/lib.rs - App (line 3) ... ok
             Some("iPhone 16"),
             None,
             false,
+            None,
         )
         .err();
         std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!(
             err.map(|e| e.to_string()).as_deref(),
-            Some("--device goes with --target ios or android")
+            Some("--device goes with --target ios or android, or --attach")
         );
     }
 

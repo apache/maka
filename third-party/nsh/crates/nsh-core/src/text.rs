@@ -361,6 +361,13 @@ pub struct AttributedText {
     pub text: String,
     /// Non-overlapping, sorted style runs covering `text`.
     pub spans: Vec<TextSpan>,
+    /// The root paragraph's strut when the core mounted the text (`None`
+    /// for a directly constructed text, whose engines keep their historic
+    /// first-span fallback). A nested span's smaller resolved line height
+    /// never lowers the paragraph below this strut, while a taller inline
+    /// box can still grow its own line.
+    #[doc(hidden)]
+    pub paragraph_strut: Option<ResolvedTextStyle>,
     /// Paragraph alignment.
     pub align: TextAlign,
     /// Maximum number of lines; 0 means no limit (`numberOfLines`).
@@ -746,6 +753,34 @@ impl AttributedText {
         self.spans.iter().any(|s| s.style.background.is_some())
     }
 
+    /// The explicit root strut, or the first span's style for a directly
+    /// constructed text without one (the platform engines' historic input).
+    #[doc(hidden)]
+    pub fn paragraph_strut_or_first(&self) -> ResolvedTextStyle {
+        self.paragraph_strut.unwrap_or_else(|| {
+            self.spans
+                .first()
+                .map_or_else(ResolvedTextStyle::default, |s| s.style)
+        })
+    }
+
+    /// Whether the root struts reserve the same line box. The reused style
+    /// is plumbing for a zero-width inline box: colors, decorations,
+    /// transforms and letter spacing change nothing of it.
+    #[inline]
+    fn paragraph_strut_layout_eq(&self, other: &Self) -> bool {
+        let (a, b) = (
+            self.paragraph_strut_or_first(),
+            other.paragraph_strut_or_first(),
+        );
+        a.font_size == b.font_size
+            && a.font_weight == b.font_weight
+            && a.line_height == b.line_height
+            && a.font_family == b.font_family
+            && a.italic == b.italic
+            && a.font_variant == b.font_variant
+    }
+
     /// The largest clamped font size across spans (`14 pt` when empty) and
     /// the tallest [`ResolvedTextStyle::approx_line_height`] across spans,
     /// shared by [`ApproxTextEngine`] and offscreen text estimates.
@@ -754,15 +789,16 @@ impl AttributedText {
             let font = px(14.0);
             return (font, font * 1.2);
         }
-        self.spans
-            .iter()
-            .fold((Points::ZERO, Points::ZERO), |(font, line), span| {
+        self.spans.iter().fold(
+            (Points::ZERO, self.paragraph_strut_or_first().line_height),
+            |(font, line), span| {
                 let s = &span.style;
                 (
                     font.max(s.font_size.max(px(1.0))),
                     line.max(s.approx_line_height()),
                 )
-            })
+            },
+        )
     }
 
     /// The color every character is drawn in, decoration lines included,
@@ -1131,6 +1167,7 @@ impl AttributedText {
         let Self {
             text,
             spans,
+            paragraph_strut: _,
             align,
             max_lines,
             ellipsize,
@@ -1148,6 +1185,7 @@ impl AttributedText {
             link_hrefs: _,
         } = self;
         text == &other.text
+            && self.paragraph_strut_layout_eq(other)
             && align == &other.align
             && max_lines == &other.max_lines
             && ellipsize == &other.ellipsize
@@ -1224,6 +1262,7 @@ impl AttributedText {
         let Self {
             text,
             spans,
+            paragraph_strut: _,
             align,
             max_lines,
             ellipsize,
@@ -1243,6 +1282,7 @@ impl AttributedText {
         } = self;
         text == &other.text
             && spans == &other.spans
+            && self.paragraph_strut_layout_eq(other)
             && align == &other.align
             && max_lines == &other.max_lines
             && ellipsize == &other.ellipsize
@@ -1261,6 +1301,7 @@ impl AttributedText {
     /// metrics and alignment. Decorative attributes (colors) are ignored.
     pub fn layout_eq(&self, other: &Self) -> bool {
         self.align == other.align
+            && self.paragraph_strut_layout_eq(other)
             && self.writing_direction == other.writing_direction
             && self.rtl == other.rtl
             && self.locale == other.locale
@@ -1282,6 +1323,16 @@ impl AttributedText {
     pub fn layout_hash(&self) -> u64 {
         let mut h = std::hash::DefaultHasher::new();
         self.text.hash(&mut h);
+        let strut = self.paragraph_strut_or_first();
+        strut.line_height.0.to_bits().hash(&mut h);
+        (
+            strut.font_size.0.to_bits(),
+            strut.font_weight,
+            strut.font_family,
+            strut.italic,
+            strut.font_variant,
+        )
+            .hash(&mut h);
         (
             self.align as u8,
             self.writing_direction,
@@ -1686,6 +1737,9 @@ mod estimate {
 pub struct ApproxPrepared {
     chars: usize,
     font: Points,
+    /// The root strut's font for the baseline when a fixed paragraph line
+    /// height is set (otherwise `font`, preserving the natural model).
+    strut_font: Points,
     line: Points,
     max_lines: u32,
     attachments: Vec<TextAttachment>,
@@ -1721,6 +1775,7 @@ impl Default for ApproxPrepared {
         Self {
             chars: 0,
             font,
+            strut_font: font,
             line: font * 1.2,
             max_lines: 0,
             attachments: Vec::new(),
@@ -1772,6 +1827,12 @@ impl TextEngine for ApproxTextEngine {
         ApproxPrepared {
             chars: text.text.chars().count(),
             font,
+            strut_font: match text.paragraph_strut {
+                Some(strut) if strut.line_height.0 > 0.0 => strut.font_size,
+                // A directly constructed text has no root strut: keep the
+                // historic estimate based on its largest span font.
+                _ => font,
+            },
             line,
             max_lines: text.max_lines,
             attachments: text
@@ -1790,7 +1851,7 @@ impl TextEngine for ApproxTextEngine {
     /// The first line's baseline from the top of the box (natural ascent plus
     /// half-leading).
     fn first_baseline(&self, prepared: &Self::Prepared, _: Points) -> Option<Points> {
-        let natural = prepared.font * 1.2;
+        let natural = prepared.strut_font * 1.2;
         Some(natural + (prepared.line - natural) * 0.5)
     }
 
@@ -1824,7 +1885,7 @@ impl TextEngine for ApproxTextEngine {
         // Each character as wide as the others, reported as one line.
         let line = prepared.line;
         let font = prepared.font;
-        let natural = font * 1.2;
+        let natural = prepared.strut_font * 1.2;
         let baseline = natural + (line - natural) * 0.5;
         let advance = font * 0.55;
         let units = prepared.chars.saturating_add(prepared.astral.len());
@@ -2291,6 +2352,79 @@ mod tests {
         assert_eq!(t.spans.len(), 2);
         assert_eq!((t.spans[0].start, t.spans[0].end), (0, 4));
         assert_eq!((t.spans[1].start, t.spans[1].end), (4, 5));
+    }
+
+    #[test]
+    fn a_direct_text_falls_back_to_its_first_span_until_the_root_strut_is_set() {
+        let small = ResolvedTextStyle {
+            font_size: px(12.6),
+            line_height: px(20.475),
+            ..Default::default()
+        };
+        let root = ResolvedTextStyle {
+            font_size: px(14.0),
+            line_height: px(22.75),
+            ..Default::default()
+        };
+        let mut text = AttributedText::default();
+        text.push("`code`", small);
+        text.push(" body", root);
+
+        let fallback = text.paragraph_strut_or_first();
+        assert_eq!(fallback.font_size, small.font_size);
+        assert_eq!(fallback.line_height, small.line_height);
+
+        text.paragraph_strut = Some(root);
+        let explicit = text.paragraph_strut_or_first();
+        assert_eq!(explicit.font_size, root.font_size);
+        assert_eq!(explicit.line_height, root.line_height);
+
+        // An explicit zero is meaningful too: the core can say the root has
+        // no fixed line height even when the first span has one.
+        text.paragraph_strut = Some(ResolvedTextStyle {
+            line_height: Points::ZERO,
+            ..root
+        });
+        assert_eq!(text.paragraph_strut_or_first().line_height, Points::ZERO);
+    }
+
+    #[test]
+    fn only_the_root_struts_layout_metrics_compare() {
+        let root = ResolvedTextStyle {
+            color: Color(0xff00_00ff),
+            font_size: px(14.0),
+            line_height: px(22.75),
+            letter_spacing: px(2.0),
+            decoration: TextDecoration {
+                underline: true,
+                line_through: false,
+            },
+            ..Default::default()
+        };
+        let mut a = AttributedText::default();
+        a.push("hello", root);
+        a.paragraph_strut = Some(root);
+        let mut b = a.clone();
+        b.paragraph_strut = Some(ResolvedTextStyle {
+            color: Color(0x0000_ffff),
+            letter_spacing: Points::ZERO,
+            decoration: TextDecoration::default(),
+            transform: TextTransform::Uppercase,
+            hidden: true,
+            ..root
+        });
+
+        assert!(a.layout_eq(&b));
+        assert_eq!(a.layout_hash(), b.layout_hash());
+        assert!(a.rendering_eq(&b));
+        assert!(a.same_but_colors(&b));
+
+        let mut c = b.clone();
+        c.paragraph_strut.as_mut().unwrap().font_weight = 700;
+        assert!(!a.layout_eq(&c));
+        assert_ne!(a.layout_hash(), c.layout_hash());
+        assert!(!a.rendering_eq(&c));
+        assert!(!a.same_but_colors(&c));
     }
 
     #[test]

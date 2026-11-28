@@ -120,8 +120,7 @@ mounts the native component `TAB_BAR_COMPONENT` the platform registers; off: `Ta
 false), and `Environment::clipboard_images` (`None` by default: as NSH's own backends on the OS, none on Android; `Some` from a platform built outside NSH) is images on the clipboard
 (off: `Clipboard`'s image calls reject with `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` before reaching the platform), and
 `Environment::scheme_links` (`None` by default: as NSH's native backends on the OS, none on the web; the GPUI and
-terminal backends say `Some(false)`) is links of the app's schemes reaching it (off: `open_auth_session` fails at once
-unless the platform shows sign-in sessions itself). The Mini Program platform turns the first two off; as it hands the
+terminal backends say `Some(false)`) is links of the app's schemes reaching it (off: the app hears none). The Mini Program platform turns the first two off; as it hands the
 app no links of its schemes, it should say `Some(false)` for the third. The other services follow the same pattern
 (`screen_color`, `file_requests`, `notifications`, `audio`: what the platform answers).
 

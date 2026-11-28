@@ -1330,13 +1330,13 @@ dependencies = [
 
 [[package]]
 name = "brotli"
-version = "9.0.0"
+version = "9.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f8b851b75c23ca7873623d612fe49bd1989aeb03d08fb9432187eb253d3d4c6b"
+checksum = "9071f285ed78f04f37d675abaaef5de7689e2f30a216c8dc6795465d81910a13"
 dependencies = [
  "alloc-no-stdlib 3.0.0",
  "alloc-stdlib 0.3.0",
- "brotli-decompressor 6.0.1",
+ "brotli-decompressor 6.4.0",
 ]
 
 [[package]]
@@ -1351,18 +1351,9 @@ dependencies = [
 
 [[package]]
 name = "brotli-decompressor"
-version = "5.0.3"
+version = "6.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3a32acac15fe1967bc3986b2a6347dffc965602354ea6f450ad07e8bfd253583"
-dependencies = [
- "alloc-no-stdlib 2.0.4",
-]
-
-[[package]]
-name = "brotli-decompressor"
-version = "6.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "941cd9bd4ddab83cb46fa5a2d428f1c857b24ac78cb876cf7beb710840934bd7"
+checksum = "664148598c930650998ef56df301329ffe7b4cdb02d49b2a3fca3bcaf2185bcb"
 dependencies = [
  "alloc-no-stdlib 3.0.0",
  "alloc-stdlib 0.3.0",
@@ -1989,7 +1980,7 @@ version = "0.4.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cae36683101b2899f48bd31f8db9839437356188e3b1ff23096e73dab09ba8fe"
 dependencies = [
- "brotli 9.0.0",
+ "brotli 9.1.3",
  "compression-core",
  "flate2",
  "memchr",
@@ -9700,6 +9691,7 @@ dependencies = [
  "nsh-engine",
  "nsh-platform-apple",
  "nsh-platform-ios",
+ "nsh-system-controls",
  "nsh-testing",
  "objc2 0.6.5",
  "objc2-av-foundation",
@@ -10572,6 +10564,7 @@ dependencies = [
  "nsh-core",
  "nsh-engine",
  "nsh-js",
+ "nsh-system-controls",
  "nsh-testing",
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
@@ -11625,7 +11618,6 @@ name = "nsh-core"
 version = "0.7.2"
 dependencies = [
  "cap-std",
- "chrono",
  "crc32fast",
  "flate2",
  "futures-util",
@@ -11739,6 +11731,23 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "nsh-platform-android"
+version = "0.7.2"
+dependencies = [
+ "jni 0.21.1",
+ "libc",
+ "log",
+ "ndk-context",
+ "nsh-base",
+ "nsh-core",
+ "nsh-engine",
+ "rustc-hash 2.1.3",
+ "serde_json",
+ "tokio",
+ "ttf-parser",
 ]
 
 [[package]]
@@ -11877,6 +11886,25 @@ dependencies = [
  "windows 0.62.2",
  "windows-core 0.62.2",
  "windows-numerics",
+]
+
+[[package]]
+name = "nsh-system-controls"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9a90969b2a893074011f9087e0d141594c9230fad45b0cb96fa61f1437260b4d"
+dependencies = [
+ "block2 0.6.2",
+ "chrono",
+ "log",
+ "nsh-core",
+ "nsh-platform-android",
+ "nsh-platform-ios",
+ "objc2 0.6.5",
+ "objc2-core-foundation",
+ "objc2-foundation 0.3.2",
+ "objc2-ui-kit",
+ "serde_json",
 ]
 
 [[package]]
@@ -14856,7 +14884,7 @@ dependencies = [
  "aes-gcm 0.11.1",
  "aes-kw 0.3.1",
  "base64-simd",
- "brotli 9.0.0",
+ "brotli 9.1.3",
  "cbc 0.2.1",
  "chacha20poly1305",
  "const-oid 0.10.2",
@@ -21340,11 +21368,11 @@ dependencies = [
 
 [[package]]
 name = "wuff"
-version = "0.2.9"
+version = "0.2.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "200a7b806377b65f1ff9a985874332f15357c87e5dd7855f35f06dade95b8b3d"
+checksum = "f6a992b57b3d1ee972b2e3fd9225e44793104d49818836dd812d5459187712dd"
 dependencies = [
- "brotli-decompressor 5.0.3",
+ "brotli-decompressor 6.4.0",
  "bytes",
  "flate2",
 ]

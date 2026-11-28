@@ -1649,14 +1649,6 @@ fn surface(
 ) -> AnyElement {
     let Asked { keyed, why } = asked;
     let sheet = at.is_none();
-    // Why it last closed: a press outside put the focus where it pressed.
-    let closed_by = stored(None::<OpenChangeReason>);
-    let change: Rc<dyn Fn(bool, OpenChangeReason)> = Rc::new(move |next, reason| {
-        if !next {
-            closed_by.replace(Some(reason));
-        }
-        change(next, reason);
-    });
     let path = signal(Vec::<u32>::new());
     let open_sub = signal(None::<u32>);
     let close = {
@@ -1770,7 +1762,7 @@ fn surface(
         presence.focus_back_on_close(
             move || open.get(),
             move || {
-                if closed_by.get() != Some(OpenChangeReason::PressOutside) {
+                if open.take_closed_by() != Some(OpenChangeReason::PressOutside) {
                     anchor.focus_back(presence.popup());
                 }
             },
@@ -1796,13 +1788,15 @@ fn surface(
                     presence.mounted()
                 }
             },
+            // A reason the focus's return did not read (the focus was not in
+            // the popup as it closed) goes as it opens or is gone.
             move || {
-                closed_by.replace(None);
+                open.take_closed_by();
                 opened(MenuEvent::Open);
             },
             move || {
                 closed(MenuEvent::Close);
-                closed_by.replace(None);
+                open.take_closed_by();
             },
         );
     }
@@ -2084,7 +2078,10 @@ pub fn Menu(props: MenuProps, cx: Scope<MenuEvent>) -> impl IntoElement {
             keyed.replace(None);
         }
         why.stamp(reason);
-        open.request(next, || cx.emit(MenuEvent::OpenChange(next, reason)));
+        // The reason a close keeps says where the keyboard goes (`surface`).
+        open.request_for(next, reason, || {
+            cx.emit(MenuEvent::OpenChange(next, reason))
+        });
     });
     let anchor = element_ref();
     let parts = Surface {
@@ -2335,7 +2332,8 @@ pub fn ContextMenu(props: ContextMenuProps, cx: Scope<ContextMenuEvents>) -> imp
             return;
         }
         why.stamp(reason);
-        open.request(next, || {
+        // The reason a close keeps says where the keyboard goes (`surface`).
+        open.request_for(next, reason, || {
             cx.emit(ContextMenuEvents::OpenChange(next, reason))
         });
     });

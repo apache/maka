@@ -61,7 +61,6 @@ mod agent;
 mod animation;
 mod app;
 mod application;
-mod auth_session;
 mod blur;
 mod bottom_bar;
 mod canvas;
@@ -91,7 +90,6 @@ mod scroll_edge;
 mod scroll_watch;
 mod selectable_view;
 mod shader;
-mod share;
 mod sight;
 mod split;
 mod state_words;
@@ -103,10 +101,7 @@ mod surface;
 mod synth;
 mod system;
 mod system_context_menu;
-mod system_date_time_picker;
 mod system_menu_button;
-mod system_segmented_control;
-mod system_switch;
 mod system_tab_bar;
 mod target;
 mod text;
@@ -122,7 +117,7 @@ mod zoom;
 
 pub use nsh_engine::{Bundle, ByteSize, CacheLocation, CacheOptions, CachePolicy, Root};
 pub use picker::prepare_image;
-pub use presenting::presenting_controller;
+pub use presenting::{native_view, presenting_controller};
 
 /// The UI sets apps import ([`set_ui_sets`]; by default [`default_ui_sets`]).
 static UI_SETS: std::sync::RwLock<Option<Vec<nsh_core::element::Registry>>> =

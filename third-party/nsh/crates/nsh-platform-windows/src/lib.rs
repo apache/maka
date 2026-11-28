@@ -31,6 +31,7 @@ mod app_window;
 #[cfg_attr(not(feature = "media"), path = "audio_off.rs")]
 mod audio;
 mod backdrop;
+mod box_none;
 mod canvas;
 mod chrome;
 mod compose;
@@ -55,6 +56,7 @@ mod navigation;
 mod notifications;
 mod picker;
 mod presence;
+mod presenting;
 mod render;
 mod richedit;
 mod scroll;
@@ -99,5 +101,6 @@ pub use crate::{
         ComponentContext, ComponentFactory, Components, NativeComponent, Pointer, PointerKind,
         Wheel,
     },
+    presenting::{ElementBounds, element_bounds, presenting_window},
     text::DWriteTextEngine,
 };

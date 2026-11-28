@@ -1,5 +1,6 @@
 //! A static nested shader arrives after its reader's first picture. The
 //! reader must update without a later mount batch, then become idle.
+//! A static fill also redraws after its layout collapses and expands.
 use std::{
     sync::atomic::{AtomicBool, Ordering},
     time::{Duration, Instant},
@@ -20,6 +21,7 @@ use objc2_core_graphics::{
 };
 use objc2_quartz_core::CALayer;
 static SCREEN: AtomicBool = AtomicBool::new(false);
+static COLLAPSED: AtomicBool = AtomicBool::new(false);
 const FILL: &str = "fn shade(uv: vec2f) -> vec4f { return vec4f(8.0/255.0, 0.0, 0.0, 1.0); }";
 const EFFECT: &str =
     "fn shade(uv: vec2f) -> vec4f { return vec4f(sample_content(uv).rgb * 24.0, 1.0); }";
@@ -50,6 +52,31 @@ fn Content() -> impl IntoElement {
             .into_element()
     }
 }
+
+#[component]
+fn Resizable() -> impl IntoElement {
+    let collapsed = signal(false);
+    set_interval(Duration::from_millis(5), move || {
+        let next = COLLAPSED.load(Ordering::SeqCst);
+        if collapsed.get_untracked() != next {
+            collapsed.set(next);
+        }
+    });
+    view().size_full().child(
+        view()
+            .w(px(40.0))
+            .h(px(40.0))
+            .style_when(collapsed, |s| s.w(px(0.0)).h(px(0.0)))
+            .child(
+                shader()
+                    .test_id("static-fill")
+                    .source(Shader::compile(FILL).unwrap())
+                    .w_full()
+                    .h_full(),
+            ),
+    )
+}
+
 fn find(view: &NSView, id: &str) -> Option<Retained<NSView>> {
     if view
         .accessibilityIdentifier()
@@ -95,6 +122,34 @@ fn until(what: &str, mut done: impl FnMut() -> bool) {
         NSRunLoop::currentRunLoop().runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(0.005));
     }
 }
+
+fn check_static_resize(app: &platform::AppView) {
+    COLLAPSED.store(false, Ordering::SeqCst);
+    app.load(platform::App::Rust(platform::Root::of::<Resizable>()));
+    let mut displayed = None;
+    until("the static fill must show its first frame", || {
+        displayed = find(&app.view(), "static-fill").and_then(|view| {
+            // SAFETY: the main thread owns the layer tree.
+            unsafe {
+                view.layer()?
+                    .sublayers()?
+                    .iter()
+                    .find(|layer| layer.contents().is_some())
+            }
+        });
+        displayed.is_some()
+    });
+    let layer = displayed.unwrap();
+    // SAFETY: retained layer contents on the main thread.
+    let showing = || unsafe { layer.contents() }.is_some();
+    COLLAPSED.store(true, Ordering::SeqCst);
+    until("collapsing must clear the static fill", || !showing());
+    COLLAPSED.store(false, Ordering::SeqCst);
+    until("expanding must redraw the same static fill", showing);
+    println!("shader_content: static fill redrawn after collapse");
+    app.stop();
+}
+
 pub(super) fn run() {
     let mtm = MainThreadMarker::new().unwrap();
     NSApplication::sharedApplication(mtm).finishLaunching();
@@ -118,6 +173,11 @@ pub(super) fn run() {
     );
     window.setContentView(Some(&app.view()));
     window.orderFront(None);
+    if std::env::var("NSH_SHADER_CONTENT_CHECK_ONLY").as_deref() == Ok("resize") {
+        check_static_resize(&app);
+        window.close();
+        return;
+    }
     for screen in [false, true] {
         SCREEN.store(screen, Ordering::SeqCst);
         app.load(platform::App::Rust(platform::Root::of::<Content>()));
@@ -150,5 +210,6 @@ pub(super) fn run() {
         );
         app.stop();
     }
+    check_static_resize(&app);
     window.close();
 }

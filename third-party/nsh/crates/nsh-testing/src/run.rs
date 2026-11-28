@@ -131,6 +131,10 @@ pub struct HostTarget {
     /// window, a browser's page); false where the app fills a device's
     /// screen.
     pub sized: bool,
+    /// The apps are a development session's that runs already (`nsh test
+    /// --attach`): `open` drives that app as it is, so it refuses every
+    /// option that sets an app up, and closing it leaves it running.
+    pub attached: bool,
 }
 
 /// How [`StartHost`] starts an app.
@@ -967,6 +971,30 @@ fn check_launch(entry: &str, launch: &Launch, target: Option<&HostTarget>) -> Re
     let Some(target) = target else {
         return Ok(());
     };
+    if target.attached {
+        let given = [
+            ("storage", !launch.storage.0.is_empty()),
+            ("network", !matches!(launch.network, NetworkSetup::None)),
+            ("width", launch.width.is_some()),
+            ("height", launch.height.is_some()),
+            ("safeArea", launch.safe_area.is_some()),
+            ("clipboard", launch.clipboard.is_some()),
+            ("colorScheme", launch.color_scheme.is_some()),
+            ("locale", launch.locale.is_some()),
+            (
+                "localeSettings",
+                launch.locale_settings != crate::module::LocaleSettingsOptions::default(),
+            ),
+            ("reducedMotion", launch.reduced_motion.is_some()),
+            ("platform", launch.platform.is_some()),
+            ("clock", launch.clock.is_some()),
+            ("host.params", !launch.host.params().is_empty()),
+        ];
+        if let Some((option, _)) = given.iter().find(|(_, set)| *set) {
+            return Err(crate::failure::unsupported_attached(entry, option));
+        }
+        return Ok(());
+    }
     if !target.sized {
         let given = [("width", launch.width), ("height", launch.height)];
         if let Some((option, _)) = given.iter().find(|(_, v)| v.is_some()) {
@@ -1349,7 +1377,29 @@ mod tests {
             name: name.into(),
             platform,
             sized,
+            attached: false,
         }
+    }
+
+    #[test]
+    fn an_attached_open_takes_the_app_as_it_runs() {
+        let attached = HostTarget {
+            attached: true,
+            ..target("gpui", Platform::Macos, true)
+        };
+        let check = |launch: &Launch| check_launch("./App.tsx", launch, Some(&attached));
+        assert_eq!(check(&launch()), Ok(()));
+        let mut sized = launch();
+        sized.width = Some(Points(800.0));
+        let error = check(&sized).unwrap_err();
+        assert!(
+            error.starts_with("open(\"./App.tsx\"): `width` is unsupported with --attach"),
+            "{error}"
+        );
+        assert_eq!(code_of(&error), Some(UNSUPPORTED));
+        let mut stored = launch();
+        stored.storage.0.insert("theme".into(), "dark".into());
+        assert!(check(&stored).unwrap_err().contains("`storage`"));
     }
 
     #[test]

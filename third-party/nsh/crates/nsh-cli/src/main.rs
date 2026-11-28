@@ -36,6 +36,7 @@ mod sign;
 mod store;
 mod test;
 mod test_android;
+mod test_attach;
 mod test_host;
 mod test_ios;
 mod test_web;
@@ -43,10 +44,11 @@ mod ui;
 mod updater;
 mod web;
 mod windows;
+mod windows_link;
 
 use std::{
     net::Ipv4Addr,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::ExitCode,
     sync::{Arc, OnceLock, RwLock},
 };
@@ -213,7 +215,9 @@ enum Command {
         /// UDID); default: a booted one, else the newest iPhone. With
         /// `--target android`: the device or emulator (its serial, as `adb
         /// devices` lists it); default: the one `ANDROID_SERIAL` names, else
-        /// the first one.
+        /// the first one. With `--attach`: the session's host (its name, or
+        /// its platform as `--target` names it); default: the one that
+        /// connected last.
         #[arg(long, value_name = "DEVICE")]
         device: Option<String>,
         /// With `--target macos` or `gpui`: the display the apps' windows
@@ -232,6 +236,15 @@ enum Command {
         /// except on a display nobody types on, such as Xvfb).
         #[arg(long)]
         foreground: bool,
+        /// Drive the app of a development session that runs already (`nsh
+        /// run`, `nsh dev`) in the window it shows, as it is, instead of
+        /// opening one: the session on this port, else the one running on
+        /// this machine (the app's, when several run). Its host the
+        /// connected last takes the steps, or the one `--device` names (its
+        /// name, or its platform as `--target` names it). From this machine
+        /// only; `open` takes no options, and the app keeps running after.
+        #[arg(long, value_name = "PORT", num_args = 0..=1, require_equals = true)]
+        attach: Option<Option<u16>>,
     },
     /// Type check an app with TypeScript's native compiler (TypeScript 7,
     /// downloaded once from the npm registry; no Node needed); an app with
@@ -846,6 +859,43 @@ fn parse_limits(spec: &str) -> Result<nsh_core::js::HostLimits, String> {
     nsh_core::js::HostLimits::parse(spec)
 }
 
+/// Where the dev server of `nsh run` and `nsh dev` listens. `--server-only`
+/// serves hosts started elsewhere, on other machines too; a host `nsh dev`
+/// starts is on the network only as `nsh run` starts it; `--host` replaces
+/// the address.
+fn dev_listen(
+    port: Option<u16>,
+    target: run::Target,
+    server_only: bool,
+    host: Option<Ipv4Addr>,
+) -> dev::Listen {
+    let mut listen = dev::Listen::new(
+        port.unwrap_or_default(),
+        server_only || target.uses_network(),
+    );
+    if let Some(host) = host {
+        listen.host = host;
+    }
+    listen
+}
+
+/// Owns the dev server's `port` for `entry`, or the first free one at
+/// `host` (the address the server will listen on) when none was given.
+fn acquire_port(
+    entry: &Path,
+    port: &mut Option<u16>,
+    host: Ipv4Addr,
+) -> anyhow::Result<Option<dev_port::Session>> {
+    match port {
+        Some(port) => dev_port::Session::acquire(*port, entry),
+        None => {
+            let (session, free) = dev_port::Session::acquire_free(entry, host)?;
+            *port = Some(free);
+            Ok(session)
+        }
+    }
+}
+
 /// Refuses `--limits` for an app of Rust only: they are its JS VM's, and it
 /// runs no JS.
 fn no_limits_for_rust(
@@ -955,14 +1005,27 @@ fn run(mut command: Command) -> anyhow::Result<()> {
             let port = port.get_or_insert(nsh_dev::protocol::DEFAULT_PORT);
             dev_port::Session::acquire(*port, entry)?
         }
-        Command::Run { entry, port, .. } | Command::Dev { entry, port, .. } => match port {
-            Some(port) => dev_port::Session::acquire(*port, entry)?,
-            None => {
-                let (session, free) = dev_port::Session::acquire_free(entry)?;
-                *port = Some(free);
-                session
-            }
-        },
+        // Without `--port`, the first port free where the server will listen.
+        Command::Run {
+            entry,
+            port,
+            target,
+            ..
+        } => {
+            let host = dev_listen(None, *target, false, None).host;
+            acquire_port(entry, port, host)?
+        }
+        Command::Dev {
+            entry,
+            port,
+            target,
+            host,
+            server_only,
+            ..
+        } => {
+            let host = dev_listen(None, *target, *server_only, *host).host;
+            acquire_port(entry, port, host)?
+        }
         _ => None,
     };
     // A Rust app (`nsh.json` "root") has no bundle: it is built, checked,
@@ -989,10 +1052,11 @@ fn run(mut command: Command) -> anyhow::Result<()> {
     // (`read_config`), it says before the type check calls the app fine.
     // A Rust app's manifest is its describing's (`root_config`), which
     // refuses what it does not know.
-    if let Command::Check { entry, .. } = &command
-        && !rust_app::is_root(entry)
-    {
-        package::read_config(entry)?;
+    if let Command::Check { entry, .. } = &command {
+        if !rust_app::is_root(entry) {
+            package::read_config(entry)?;
+        }
+        check::warn_locales(entry);
     }
     if let Some(entry) = command.entry_mut()
         && rust_app::is_root(entry)
@@ -1144,6 +1208,7 @@ fn dispatch(command: Command) -> anyhow::Result<()> {
             device,
             display,
             foreground,
+            attach,
         } => test::test(
             &path,
             &entry,
@@ -1159,6 +1224,7 @@ fn dispatch(command: Command) -> anyhow::Result<()> {
             device.as_deref(),
             display.map(|n| n as usize),
             foreground,
+            attach,
         ),
         Command::Dev {
             entry,
@@ -1171,16 +1237,7 @@ fn dispatch(command: Command) -> anyhow::Result<()> {
             server_only,
         } => {
             no_limits_for_rust(&entry, limits)?;
-            // `--server-only` serves hosts started elsewhere, on other
-            // machines too; a host `nsh dev` starts is on the network only
-            // as `nsh run` starts it.
-            let mut listen = dev::Listen::new(
-                port.unwrap_or_default(),
-                server_only || target.uses_network(),
-            );
-            if let Some(host) = host {
-                listen.host = host;
-            }
+            let listen = dev_listen(port, target, server_only, host);
             if server_only {
                 let session = dev::DevSession::start(&entry, listen, release, limits)?;
                 session.print_urls();
@@ -1275,7 +1332,7 @@ fn dispatch(command: Command) -> anyhow::Result<()> {
             no_limits_for_rust(&entry, limits)?;
             run::run(
                 &entry,
-                dev::Listen::new(port.unwrap_or_default(), target.uses_network()),
+                dev_listen(port, target, false, None),
                 release,
                 run::HostFlags {
                     limits,

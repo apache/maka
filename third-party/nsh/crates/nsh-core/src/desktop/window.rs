@@ -106,7 +106,8 @@ pub enum Workspaces {
     All,
 }
 
-/// Whether a window takes the pointer (CSS's `pointer-events` names).
+/// Whether a window takes the pointer (the names of a view's
+/// `pointerEvents`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, PropEnum)]
 pub enum WindowPointerEvents {
     /// It takes the pointer.
@@ -115,6 +116,18 @@ pub enum WindowPointerEvents {
     /// Presses and the pointer go through it to what is below. Needs the
     /// `windows` capability's `overlay`.
     None,
+    /// Its root view is `box-none`: the window takes the pointer where it
+    /// is over a view in the root that takes it under the views' own
+    /// rules (`hidden`, `pointerEvents`, `hitSlop`, `overflow`), and lets
+    /// it through to what is below everywhere else, as if the window were
+    /// not there. Like a view's `box-none`, a view that fills the root
+    /// still takes the pointer unless it is `box-none` (or `none`) itself;
+    /// a background does not decide it. Needs the `windows` capability's
+    /// `overlay`. Every desktop lets the pointer through this way; on
+    /// Linux a rotated or skewed view and a rounded `clipPath` count by the
+    /// box around them.
+    #[prop(rename = "box-none")]
+    BoxNone,
 }
 
 /// The system material behind a window's content, named for what it is
@@ -593,10 +606,13 @@ impl WindowAttributes {
     }
 
     /// Whether these make the window an overlay's: click-through
-    /// (`pointerEvents: "none"`), which the `windows` capability's
-    /// `overlay` grants.
+    /// (`pointerEvents: "none"`, or `"box-none"` where nothing in it takes
+    /// the pointer), which the `windows` capability's `overlay` grants.
     pub fn passes_pointer(&self) -> bool {
-        self.pointer_events == Some(WindowPointerEvents::None)
+        matches!(
+            self.pointer_events,
+            Some(WindowPointerEvents::None | WindowPointerEvents::BoxNone)
+        )
     }
 
     /// Keeps the values in their ranges: a size or an aspect ratio not
@@ -1179,6 +1195,19 @@ mod tests {
         assert!(overlay.passes_pointer());
         assert_eq!(overlay.focusable, Some(false));
         assert!(!WindowAttributes::for_kind(WindowKind::Normal).passes_pointer());
+    }
+
+    #[test]
+    fn a_box_none_window_passes_the_pointer() {
+        let json = serde_json::json!({ "pointerEvents": "box-none" });
+        let a = crate::element::from_json::<WindowAttributes>(&json).unwrap();
+        assert_eq!(a.pointer_events, Some(WindowPointerEvents::BoxNone));
+        // It lets the pointer through where nothing takes it: the
+        // `overlay` grant, as `none`.
+        assert!(a.passes_pointer());
+        // The view's spelling only.
+        let json = serde_json::json!({ "pointerEvents": "boxNone" });
+        assert!(crate::element::from_json::<WindowAttributes>(&json).is_err());
     }
 
     #[test]

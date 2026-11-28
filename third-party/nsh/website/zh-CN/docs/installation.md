@@ -85,6 +85,7 @@ nsh component remove gpui
 | `web` | Web 运行时（`--target web`） | 所有平台 |
 | `gpui` | [GPUI](./gpui.md) 开发宿主（`--target gpui`） | 所有平台，各自构建 |
 | `tui` | 终端开发宿主（`--target tui`） | 所有平台，各自构建 |
+| `windows-linker` | 链接器：让 TSX 应用的可执行文件只包含它导入的 `nsh/base` 部件（`nsh package --target windows`） | Windows x86_64 |
 
 组件总是来自与 CLI 相同的构建。`nsh update` 会从更新到的发布版重新安装已安装的组件。nightly 构建的组件每晚都会替换，因此较早一晚的 nightly `nsh` 会提示先运行 `nsh update`。
 
@@ -200,6 +201,8 @@ curl -fsSL https://nsh.dev/install.sh | sh -s -- --source
 git clone https://github.com/longbridge/nsh.git && cd nsh
 cargo build -p nsh-cli
 ```
+
+构建到源码目录之外的 target 目录（`CARGO_TARGET_DIR`）的 CLI 会使用 NSH 已发布的 crate 和运行时，并会给出提示。
 
 iOS、Android 运行时和发布版运行器的构建命令见仓库的 [AGENTS.md](https://github.com/longbridge/nsh/blob/main/AGENTS.md#commands)。
 

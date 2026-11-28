@@ -120,7 +120,47 @@ The value is an ISO date, `"2026-10-28"`, as an HTML `<input type="date">`'s; wi
 - Without `range`, a press on a day picks it.
 - With `range`, the first press starts the range and the second ends it, the days between them in the range (each
   `selected`, its ends included, see [Items](#items)). A second press on an earlier day starts the range over from it,
-  as does a press once the range is complete. A half range shows until it is complete and only then is reported.
+  as does a press once the range is complete. A half range shows until it is complete, and `onChange` reports the
+  range only then.
+
+With `range`, `onChangeStart({ value })` reports each range the user starts, as `[start, null]`. Use it when the range
+also shows outside the grid: start and end fields above it, a summary line, or an Apply button that waits for the end.
+`onChange` still reports complete ranges only.
+
+To keep the start in your own state, set `value` to it. The calendar shows the value you set, so the next value you set
+replaces the start: a Cancel that puts back the applied range drops the half range, and the next press starts a new
+one.
+
+```tsx
+import { signal, Text, View } from "nsh";
+import { Button, Calendar, type CalendarValue } from "nsh/base";
+
+function TripDates() {
+  const applied = signal<CalendarValue>(["2026-10-05", "2026-10-07"]);
+  const draft = signal<CalendarValue>(applied());
+  const ends = () => {
+    const value = draft();
+    return Array.isArray(value) ? value : [null, null];
+  };
+  return (
+    <View class="gap-2">
+      <Text>{`${ends()[0] ?? "Start"} – ${ends()[1] ?? "End"}`}</Text>
+      <Calendar
+        range
+        value={draft()}
+        onChangeStart={({ value }) => draft.set(value)}
+        onChange={({ value }) => draft.set(value)}
+      />
+      <Button onPress={() => draft.set(applied())}>
+        <Text>Cancel</Text>
+      </Button>
+      <Button disabled={ends()[1] === null} onPress={() => applied.set(draft())}>
+        <Text>Apply</Text>
+      </Button>
+    </View>
+  );
+}
+```
 
 The calendar opens on the month of the value (a range's start), else today's.
 
@@ -246,6 +286,7 @@ language.
 | Event | Rust | Description |
 |---|---|---|
 | `onChange` | `.on_change(\|value\| ..)` | The user picked a complete value: `{ value }`, a day or a range. Set `value` to follow it. A `value` the app passes is never reported. |
+| `onChangeStart` | `.on_change_start(\|value\| ..)` | With `range`, the user started a range: `{ value }`, `[start, null]`. `onChange` reports it once the second press ends it. Set `value` to it to keep the start as your own ([Value](#value)). |
 
 ## Parts
 

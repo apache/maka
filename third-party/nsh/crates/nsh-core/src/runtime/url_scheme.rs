@@ -28,9 +28,11 @@ impl UrlScheme {
     /// scheme it claims (`nsh.json` `"schemes": [...]`),
     /// at launch or while it runs; links that came while nothing listened,
     /// the one that launched the app included, go to the next listener (at
-    /// most 16, the oldest dropped). Nothing navigates on its own: what a
-    /// link opens is the app's. Anyone can make a link of the app's scheme,
-    /// so its URL is untrusted input: check it before acting on it.
+    /// most 16, the oldest dropped). A link a native module waits for by
+    /// its scheme (a sign-in session's callback) goes to that module alone.
+    /// Nothing navigates on its own: what a link opens is the app's. Anyone
+    /// can make a link of the app's scheme, so its URL is untrusted input:
+    /// check it before acting on it.
     /// `change`: the app's address moved without the app moving it (on the
     /// web, the browser's back or forward to an entry its pages do not
     /// account for, `reason` `"back"` or `"forward"`, or an address the user

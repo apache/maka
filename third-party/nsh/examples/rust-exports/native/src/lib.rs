@@ -26,11 +26,25 @@ pub use crate::{
     ledger::Ledger,
 };
 
+/// Renders a string passed as the JSX children.
+#[derive(Debug, Clone, PartialEq, Props)]
+pub struct TextChildProps {
+    /// The text supplied between the JSX tags.
+    pub children: Prop<SharedString>,
+}
+
+/// Render the supplied text, following changes to the JSX child.
+#[component]
+pub fn TextChild(props: TextChildProps) -> impl IntoElement {
+    text(move || props.children.get())
+}
+
 /// The crate's UI set: what `App.tsx` imports from `rust-exports/native`.
 #[native_module("rust-exports/native")]
 fn native(registry: &mut Registry) {
     registry
         .register::<Gauge>()
+        .register::<TextChild>()
         .module::<Ledger>()
         .class::<Account>();
 }

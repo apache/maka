@@ -17,9 +17,9 @@
  * under the License.
  */
 
-import { computed, safeAreaInsets, Scroll, signal, View, token } from 'nsh';
+import { computed, platform, safeAreaInsets, Scroll, signal, View, token } from 'nsh';
 import { NavPage } from 'nsh/base';
-import { isAvailable, SegmentedControl } from 'nsh/mobile';
+import { SegmentedControl } from 'nsh-system-controls';
 import {
   approvalControls,
   approvalDetail,
@@ -128,7 +128,7 @@ export function InboxScreen(props: { onOpenItem: (item: InboxItem) => void }) {
           }}
         >
           <If
-            when={isAvailable}
+            when={platform.os === 'ios'}
             else={
               <ScopePills
                 items={categoryItems()}

@@ -74,6 +74,20 @@ final class Activities {
         }
     }
 
+    /**
+     * {@code nsh::activity::content_uri}: the {@code content:} URI another app reads the file at {@code path} through
+     * ({@link FilesProvider}) and its MIME type, as {@code [uri, type]}; an empty array when the provider does not serve
+     * the file (it is outside the app's own storage), {@code null} before any {@code NshView} was made. Any thread.
+     */
+    static Object[] contentUri(String path) {
+        Context context = Permissions.application();
+        if (context == null) return null;
+        File file = new File(path);
+        android.net.Uri uri = FilesProvider.uriFor(context, file);
+        if (uri == null) return new Object[0];
+        return new Object[] {uri, FilesProvider.typeOf(context, file)};
+    }
+
     /** How long an output file is kept: one left by a request that never finished (the app ended meanwhile). */
     private static final long OUTPUT_LIFETIME_MS = 24L * 60 * 60 * 1000;
 

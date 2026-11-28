@@ -1083,6 +1083,11 @@ impl HotBundle {
         if self.entry != previous.entry {
             return HotPatch::Reload;
         }
+        // The engine installs link claims when it loads the app, not
+        // when its code updates in place. Removed claims must disappear too.
+        if self.links != previous.links {
+            return HotPatch::Reload;
+        }
         // A native module the running script did not import.
         if !self.natives.iter().all(|s| previous.natives.contains(s))
             || !self.preloads.iter().all(|s| previous.preloads.contains(s))
@@ -1439,6 +1444,40 @@ mod tests {
         .unwrap();
         let eager = bundle_hot(&dir.join("App.tsx"), &[]).unwrap();
         assert!(matches!(eager.patch(&bundle), HotPatch::Reload));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn hot_bundles_reload_when_url_scheme_claims_change() {
+        let dir = single("hot-url-schemes", "console.log('first');\n");
+        let entry = dir.join("App.tsx");
+        let config = dir.join("nsh.json");
+        std::fs::write(&config, r#"{"schemes":["MyApp"]}"#).unwrap();
+        let first = bundle_hot(&entry, &[]).unwrap();
+        assert_eq!(first.links.schemes(), ["myapp"]);
+        let unchanged = bundle_hot(&entry, &[]).unwrap();
+        assert!(matches!(unchanged.patch(&first), HotPatch::Unchanged));
+
+        // Ordinary code edits still update in place under the same claims.
+        std::fs::write(&entry, "console.log('second');\n").unwrap();
+        let edited = bundle_hot(&entry, &[]).unwrap();
+        assert!(matches!(edited.patch(&first), HotPatch::Update { .. }));
+
+        // Metadata-only changes need a new core, even without a code edit.
+        std::fs::write(&config, r#"{"schemes":["MyApp","Other"]}"#).unwrap();
+        let added = bundle_hot(&entry, &[]).unwrap();
+        assert_eq!(added.links.schemes(), ["myapp", "other"]);
+        assert!(matches!(added.patch(&edited), HotPatch::Reload));
+
+        std::fs::write(&config, r#"{"schemes":["Other"]}"#).unwrap();
+        let removed = bundle_hot(&entry, &[]).unwrap();
+        assert_eq!(removed.links.schemes(), ["other"]);
+        assert!(matches!(removed.patch(&added), HotPatch::Reload));
+
+        std::fs::write(&config, r#"{"schemes":[]}"#).unwrap();
+        let cleared = bundle_hot(&entry, &[]).unwrap();
+        assert!(cleared.links.schemes().is_empty());
+        assert!(matches!(cleared.patch(&removed), HotPatch::Reload));
         std::fs::remove_dir_all(dir).unwrap();
     }
 

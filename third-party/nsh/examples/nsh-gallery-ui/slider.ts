@@ -77,3 +77,29 @@ export function sliderFill(_from: number, _to: number, vertical = false): ViewSt
     borderColor: finish.fill.borderColor,
   };
 }
+
+/**
+ * A thumb's value bubble (the content of `renderThumb`: `<View
+ * class={sliderBubbleClass()}><Text class={sliderBubbleText}>`): a
+ * tooltip's popover surface centered 6 points above its thumb (a 14-point
+ * thumb with a pointer, 20 on a touch screen, as `sliderLook`). It shows
+ * while the pointer is over its thumb, while a drag moves the thumb (a press
+ * on the track too) and with the keyboard's focus on it, fading in as it
+ * rises 2 points (the fade alone with reduced motion). The slider moves it
+ * with the thumb and switches its states natively: nothing is drawn again.
+ */
+export function sliderBubbleClass(): string {
+  const lift = (platform.desktop ? 14 : 20) + 6;
+  const shown = (variant: string) => `${variant}:opacity-100 ${variant}:translate-y-0`;
+  return [
+    `absolute bottom-[${lift}px] left-1/2 -translate-x-1/2 translate-y-0.5 opacity-0`,
+    "rounded-md border border-border bg-popover px-1.5 py-0.5 shadow-sm",
+    "transition duration-150 motion-reduce:transition-opacity",
+    shown("group-hover"),
+    shown("group-data-dragging"),
+    shown("group-focus-visible"),
+  ].join(" ");
+}
+
+/** A value bubble's text (`class`): one line of 11-point figures in the popover's foreground. */
+export const sliderBubbleText = "whitespace-nowrap text-[11px] leading-4 tabular-nums text-popover-foreground";

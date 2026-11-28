@@ -159,6 +159,29 @@ canvas(
 .size(px(80.0))
 ```
 
+In Rust, `quadratic_curve_to` and `bezier_curve_to` accept ordinary `Point<Points>` values for fixed control
+points and endpoints. Use a `Point<CanvasArg>` to animate either coordinate. Here `height` moves the control
+point vertically while both ends stay fixed.
+
+```rust
+use nsh_core::element::CanvasArg;
+
+let height = animated_value(0.0);
+height.timing(60.0, 1000.0, Easing::Linear);
+
+canvas(
+    Painter::new()
+        .begin_path()
+        .move_to(0.0, 0.0)
+        .quadratic_curve_to(
+            point(px(40.0).into(), CanvasArg::from(&height)),
+            point(px(80.0), px(0.0)),
+        )
+        .stroke(),
+)
+.size(px(80.0))
+```
+
 ## The context
 
 `CanvasRenderingContext2D` is a subset of the browser's, and `Painter` has the same operations as methods in snake case
@@ -171,7 +194,8 @@ paths (`moveTo`, `lineTo`, `arc`, `arcTo`, `ellipse`, `rect`, `roundRect`, Bézi
 charts and animated graphics.
 
 Coordinates are in points with the origin at the top left. `measureText` is synchronous and returns `width`. Rust's
-`Painter` answers hit tests too (`is_point_in_path`, `is_point_in_stroke`).
+`Painter` answers hit tests too (`is_point_in_path`, `is_point_in_stroke`). In both Rust and TSX, these synchronous
+queries use zero for animated coordinates.
 
 The context draws vector operations and images: pixel access (`getImageData` / `putImageData`), `filter` and SVG
 images are outside it.

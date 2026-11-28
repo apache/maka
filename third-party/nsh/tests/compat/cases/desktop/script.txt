@@ -65,6 +65,9 @@ absent Document
 tap id:case-window-access
 tap id:overlay
 expect Result: overlay ERR_ACCESS_DENIED windows hud
+tap id:box-none
+expect Result: box-none ERR_ACCESS_DENIED windows palette
+absent Palette
 tap id:many
 expect Result: fourth ERR_ACCESS_DENIED windows d
 expect a

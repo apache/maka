@@ -2504,10 +2504,16 @@ impl RustApp {
     }
 
     /// Its crates' packages, for what the steps say they build
-    /// (`charts, storage`).
+    /// (`charts, storage`), counted past two (`4 crates`): a step's line
+    /// stays one short line however many crates the app has.
     fn packages(&self) -> String {
-        let packages: Vec<&str> = self.crates.iter().map(|c| c.package.as_str()).collect();
-        packages.join(", ")
+        match self.crates.len() {
+            0..=2 => {
+                let packages: Vec<&str> = self.crates.iter().map(|c| c.package.as_str()).collect();
+                packages.join(", ")
+            }
+            n => format!("{n} crates"),
+        }
     }
 
     /// Whether `path` is part of the app's Rust code (the sources and
@@ -2609,11 +2615,12 @@ impl RustApp {
     }
 
     /// What the steps say they build: `the Rust crate charts`, `the Rust
-    /// crates charts, storage`.
+    /// crates charts, storage`, `4 Rust crates`.
     fn crates_what(&self) -> String {
         match self.crates.as_slice() {
             [one] => format!("the Rust crate {}", one.package),
-            _ => format!("the Rust crates {}", self.packages()),
+            [_, _] => format!("the Rust crates {}", self.packages()),
+            crates => format!("{} Rust crates", crates.len()),
         }
     }
 
@@ -5237,6 +5244,33 @@ mod tests {
             minimums: crate::apple::AppleMinimums::default(),
             shared: false,
         }
+    }
+
+    /// A step names one or two crates and counts more, so its line stays
+    /// short.
+    #[test]
+    fn steps_name_two_crates_and_count_more() {
+        let dir = Path::new("/app");
+        let named = |packages: &[&str]| {
+            let crates: Vec<(&str, PathBuf)> = packages.iter().map(|p| (*p, dir.join(p))).collect();
+            let app = app(dir, &crates, None);
+            (app.crates_what(), app.packages())
+        };
+        assert_eq!(
+            named(&["charts"]),
+            ("the Rust crate charts".to_owned(), "charts".to_owned())
+        );
+        assert_eq!(
+            named(&["charts", "storage"]),
+            (
+                "the Rust crates charts, storage".to_owned(),
+                "charts, storage".to_owned()
+            )
+        );
+        assert_eq!(
+            named(&["nsh-extra", "nsh-icon", "nsh-icon-lucide", "nsmetry"]),
+            ("4 Rust crates".to_owned(), "4 crates".to_owned())
+        );
     }
 
     /// Builds for an Apple system get the deployment target of the app's

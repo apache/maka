@@ -70,16 +70,43 @@ A new feature, one NSH does not have in any form, is accepted only when all of t
 When a proposal fails these points but the feature is still worth sharing, the answer is an nshm, not a smaller
 version in NSH; reviewers point there instead of reviewing the code.
 
-Not accepted, unless a complete design meets every point above: wrappers of individual platform APIs for specific
-scenarios (WebView cookies, downloads, page capture, developer tools and similar controls), features only some
-platforms can support, and options that serve one app.
-
 Before writing a new feature, open an issue that answers these points and wait for a maintainer to agree. A pull
 request that adds a feature without that agreement may be closed without a review of its code, however well it is
 written.
 
 Reviewers, people and AI agents alike, judge scope first: a pull request that adds public API or a dependency is
 checked against this section before its implementation is reviewed.
+
+### What NSH does not accept
+
+A quick test: NSH helps apps draw, lay out, animate, take input and get delivered. If a feature is about what an
+app does for its users (signs them in, takes payments, speaks text, tracks uploads), it belongs in the app or in an
+nshm, however many apps would use it.
+
+These are not accepted in NSH. Most of them make a good nshm:
+
+- **App and business features.** Sign-in flows and OAuth 2, accounts, payments, analytics, clients for push or
+  cloud services, text-to-speech, upload progress and similar. A popular protocol or service is still an app
+  feature: OAuth 2 is everywhere, and it is still an nshm, not part of a UI framework.
+- **Linking a third-party framework or SDK into NSH**, above all one that exists on a single platform (a
+  macOS-only framework, for example). NSH would carry its size, licence and release schedule for every app. Call it
+  from the app's Rust crate or wrap it in an nshm. System frameworks such as UIKit and AppKit are not third-party.
+- **Wrappers of individual platform APIs for specific scenarios**: WebView cookies, downloads, page capture,
+  developer tools and similar controls.
+- **Features only some platforms can support**, and options that serve one app.
+- **Behavior that departs from the platforms.** Base behavior (keys, focus, selection, scrolling, text editing)
+  follows what macOS, Windows and the browser commonly do. A change NSH would invent, or one that alters this
+  behavior on a single platform, is not accepted, even as an option. For example, Up on the first line of a
+  multi-line input does what a native text field does there; NSH does not give it a meaning of its own.
+- **A second, system-styled version of a shared control**, or a React Native compatibility wrapper or alias. See
+  [Component design standards](#component-design-standards) and [NSH and React Native](#nsh-and-react-native).
+
+App features and third-party frameworks stay out of NSH, whatever the design. For the platform API wrappers and
+partial-platform features, only a complete design that meets all four points of the new-feature list above changes
+the answer; a popular request alone does not. A feature NSH already has is not precedent for adding a similar one.
+
+Reviewers answer these proposals by pointing to an nshm or the app's Rust crate and closing the issue or pull
+request, without reviewing the code.
 
 ## Component design standards
 

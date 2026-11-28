@@ -115,37 +115,45 @@ impl Surfaces {
         &self.slots[i].view
     }
 
-    /// The frame `serial` was submitted into slot `i`: ready once the GPU
-    /// did the work submitted so far (heard at a later device poll).
-    pub(crate) fn submitted(&mut self, i: usize, serial: u64, queue: &wgpu::Queue) {
+    /// The frame `serial` goes into slot `i`, rendering from now on; ready
+    /// once the GPU did the work submitted with it ([`Submitted`]).
+    pub(crate) fn submitting(&mut self, i: usize, serial: u64) -> Submitted {
         let slot = &mut self.slots[i];
         slot.serial = serial;
         slot.state.store(state::RENDERING, Ordering::Release);
-        let flag = slot.state.clone();
-        queue.on_submitted_work_done(move || flag.store(state::DONE, Ordering::Release));
+        Submitted(slot.state.clone())
     }
 
     /// Shows the newest frame done, if newer than the one shown; `true`
     /// when [`Self::shown`] changed. Older frames done go back to the pool
     /// unseen, and so does the one replaced.
     pub(crate) fn collect(&mut self) -> bool {
-        let shown_serial = self.shown.map_or(0, |i| self.slots[i].serial);
-        let newest = self
-            .slots
+        self.newest_done()
+            .is_some_and(|newest| self.show_done(newest))
+    }
+
+    fn newest_done(&self) -> Option<usize> {
+        self.slots
             .iter()
             .enumerate()
             .filter(|(_, s)| s.state.load(Ordering::Acquire) == state::DONE)
             .max_by_key(|(_, s)| s.serial)
-            .map(|(i, _)| i);
-        let Some(newest) = newest else {
-            return false;
-        };
+            .map(|(i, _)| i)
+    }
+
+    fn show_done(&mut self, newest: usize) -> bool {
+        let shown_serial = self.shown.map_or(0, |i| self.slots[i].serial);
+        let chosen_serial = self.slots[newest].serial;
+        // Leave frames that completed after selection for the next collect.
         for (i, s) in self.slots.iter().enumerate() {
-            if i != newest && s.state.load(Ordering::Acquire) == state::DONE {
+            if i != newest
+                && s.serial <= chosen_serial
+                && s.state.load(Ordering::Acquire) == state::DONE
+            {
                 s.state.store(state::IDLE, Ordering::Release);
             }
         }
-        if self.slots[newest].serial <= shown_serial {
+        if chosen_serial <= shown_serial {
             self.slots[newest]
                 .state
                 .store(state::IDLE, Ordering::Release);
@@ -181,6 +189,46 @@ impl Surfaces {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use crate::{frames::tests::clear, shader::Renderer};
+
+    use super::*;
+
+    #[test]
+    fn a_surface_completed_after_selection_stays_pending() {
+        let Some((device, queue)) = Renderer::metal_device_for_test() else {
+            eprintln!("no Metal GPU: skipped");
+            return;
+        };
+        let mut surfaces = Surfaces::new(1, 1);
+        let first = surfaces.free(&device).unwrap().unwrap();
+        let first_id = surfaces.slots[first].surface.id();
+        let first_ready = surfaces.submitting(first, 1);
+        let second = surfaces.free(&device).unwrap().unwrap();
+        let second_id = surfaces.slots[second].surface.id();
+        let second_ready = surfaces.submitting(second, 2);
+
+        queue.submit([clear(&device, surfaces.view(first), wgpu::Color::RED).finish()]);
+        first_ready.after_submit(&queue);
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        let chosen = surfaces.newest_done().unwrap();
+
+        queue.submit([clear(&device, surfaces.view(second), wgpu::Color::GREEN).finish()]);
+        second_ready.after_submit(&queue);
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        assert!(surfaces.show_done(chosen));
+        assert_eq!(surfaces.shown().unwrap().id(), first_id);
+        assert!(
+            surfaces.pending(),
+            "newer surface must keep the view scheduled"
+        );
+        assert!(surfaces.collect());
+        assert_eq!(surfaces.shown().unwrap().id(), second_id);
+        assert!(!surfaces.pending());
+    }
+}
+
 /// Calls `f` on a thread of Metal's once the GPU finished the work
 /// submitted to `queue` so far: an empty command buffer committed after it,
 /// which completes after the buffers before it on the queue. `false` (and
@@ -210,6 +258,24 @@ pub(crate) fn when_done(queue: &wgpu::Queue, f: impl FnOnce() + Send + 'static) 
     unsafe { buffer.addCompletedHandler(block2::RcBlock::as_ptr(&block)) };
     buffer.commit();
     true
+}
+
+/// Whether `queue` is Metal's ([`when_done`] can tell).
+pub(crate) fn is_metal(queue: &wgpu::Queue) -> bool {
+    // SAFETY: the raw queue is only looked at.
+    unsafe { queue.as_hal::<wgpu::hal::api::Metal>() }.is_some()
+}
+
+/// A slot's frame on its way to the GPU ([`Surfaces::submitting`]).
+pub(crate) struct Submitted(Arc<AtomicU8>);
+
+impl Submitted {
+    /// Its frame was submitted to `queue`: done once the GPU did the work
+    /// submitted so far (heard at a later device poll).
+    pub(crate) fn after_submit(self, queue: &wgpu::Queue) {
+        let flag = self.0;
+        queue.on_submitted_work_done(move || flag.store(state::DONE, Ordering::Release));
+    }
 }
 
 /// One surface and its texture on `device`.

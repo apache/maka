@@ -57,6 +57,8 @@ pub(crate) struct Built {
     pub(crate) watch_files: Vec<PathBuf>,
     /// What the app declares it may reach (`nsh.json` `capabilities`).
     pub(crate) capabilities: Option<nsh_core::access::Capabilities>,
+    /// Checked URL claims, including fileTypes-derived claims, from the bundler.
+    pub(crate) url_schemes: Vec<String>,
     /// The UI sets it imports, by specifier ([`imported_sets`]).
     pub(crate) ui_sets: Vec<String>,
     /// What its code uses of the native modules, by export
@@ -87,6 +89,7 @@ pub(crate) fn rust_root() -> Built {
         asset_root: None,
         watch_files: Vec::new(),
         capabilities: None,
+        url_schemes: Vec::new(),
         ui_sets: Vec::new(),
         native_use: None,
         entry_native_use: None,
@@ -316,6 +319,7 @@ fn compile_with(
         asset_root: Some(bundle.asset_root),
         watch_files: bundle.watch_files,
         capabilities: bundle.capabilities,
+        url_schemes: bundle.links.schemes().to_vec(),
         ui_sets: imported_sets(&bundle.natives),
         native_use: Some(bundle.native_use),
         entry_native_use: Some(bundle.entry_native_use),
@@ -341,6 +345,7 @@ pub(crate) fn compile_hot(entry: &Path) -> Result<(Built, nsh_bundler::HotBundle
         asset_root: Some(hot.asset_root.clone()),
         watch_files: hot.watch_files.clone(),
         capabilities: hot.capabilities.clone(),
+        url_schemes: hot.links.schemes().to_vec(),
         ui_sets: imported_sets(hot.natives()),
         native_use: None,
         entry_native_use: None,

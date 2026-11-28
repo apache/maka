@@ -100,6 +100,8 @@ pub(crate) struct AppWindow {
     /// Its client area in pixels, and its scale.
     pixels: Cell<(u32, u32)>,
     scale: Cell<f32>,
+    /// The proposed client size whose frame was presented during `WM_SIZING`.
+    prepared_size: Cell<Option<(u32, u32)>>,
     /// A `WM_PAINT` is asked for.
     invalid: Cell<bool>,
     repaint_after_frame: Cell<bool>,
@@ -154,8 +156,9 @@ pub(crate) fn hwnds(surface: &Surface) -> Vec<HWND> {
     surface.windows.borrow().iter().map(|w| w.hwnd).collect()
 }
 
-/// The app window with the keyboard focus, for test steps that act on the
-/// focused window (the host is not one).
+/// The app window with the keyboard focus (the host is not one): what test
+/// steps act on, and what owns a module's system UI
+/// ([`crate::presenting_window`]).
 pub(crate) fn focused_hwnd(surface: &Surface) -> Option<HWND> {
     surface
         .windows
@@ -374,8 +377,10 @@ fn open(surface: &Rc<Surface>, view: &NshView, open: &OpenWindow) {
         attrs
     };
     let owner = open.parent.and_then(|parent| window_hwnd(surface, parent));
-    let composed =
-        resolved.transparent || resolved.backdrop != Backdrop::None || resolved.click_through;
+    let composed = resolved.transparent
+        || resolved.backdrop != Backdrop::None
+        || resolved.click_through
+        || resolved.box_none;
     let hwnd = match crate::window::create_app_window(
         surface,
         id,
@@ -412,6 +417,7 @@ fn open(surface: &Rc<Surface>, view: &NshView, open: &OpenWindow) {
         target_scale: Cell::new(0.0),
         pixels: Cell::new((0, 0)),
         scale: Cell::new(1.0),
+        prepared_size: Cell::new(None),
         invalid: Cell::new(false),
         repaint_after_frame: Cell::new(false),
         damage: Default::default(),
@@ -641,19 +647,30 @@ fn fill_background(surface: &Surface, id: NodeId, hwnd: HWND) {
 /// The window's client area was resized or moved to another scale: the
 /// root view takes its size, which the core lays the root out at.
 fn resized(surface: &Rc<Surface>, window: &AppWindow) {
+    resize_to(surface, window, client_pixels(window.hwnd));
+}
+
+fn client_pixels(hwnd: HWND) -> (u32, u32) {
+    let mut rect = RECT::default();
+    // SAFETY: plain call with a local out value.
+    let _ = unsafe { GetClientRect(hwnd, &mut rect) };
+    rect_pixels(rect)
+}
+
+fn rect_pixels(rect: RECT) -> (u32, u32) {
+    (
+        (rect.right - rect.left).max(0) as u32,
+        (rect.bottom - rect.top).max(0) as u32,
+    )
+}
+
+fn resize_to(surface: &Rc<Surface>, window: &AppWindow, pixels: (u32, u32)) {
     // Made at the system's default size (`CW_USEDEFAULT`, most of the
     // screen), which its styles report before it is placed: the app would
     // lay itself out for a window nobody sees.
     if !window.positioned.get() {
         return;
     }
-    let mut rect = RECT::default();
-    // SAFETY: plain call with a local out value.
-    let _ = unsafe { GetClientRect(window.hwnd, &mut rect) };
-    let pixels = (
-        (rect.right - rect.left).max(0) as u32,
-        (rect.bottom - rect.top).max(0) as u32,
-    );
     let scale = crate::window::dpi(window.hwnd) as f32 / 96.0;
     window.pixels.set(pixels);
     window.scale.set(scale);
@@ -681,6 +698,37 @@ fn resized(surface: &Rc<Surface>, window: &AppWindow) {
     // The primary window's size and scale are the app's `windowSize()`.
     surface.window_environment();
     invalidate(window);
+}
+
+/// Prepare the newly exposed pixels before the window bounds grow.
+pub(crate) fn prepare_resize(surface: &Rc<Surface>, id: NodeId, rect: RECT) {
+    let Some(window) = get(surface, id) else {
+        return;
+    };
+    if !window.opened.get() {
+        return;
+    }
+    let hwnd = window.hwnd;
+    // SAFETY: querying the mode of a live window.
+    if unsafe { IsZoomed(hwnd) }.as_bool() || crate::window::is_full_screen(hwnd) {
+        return;
+    }
+    // A normal frameless window's proposed outer rectangle is its client area.
+    let pixels = rect_pixels(rect);
+    let current = window.pixels.get();
+    if pixels == current || pixels.0 < current.0 || pixels.1 < current.1 {
+        return;
+    }
+    window.prepared_size.set(None);
+    resize_to(surface, &window, pixels);
+    paint(surface, &window);
+    let swap = window.swap.borrow();
+    if swap
+        .as_ref()
+        .is_some_and(|chain| chain.size == pixels && chain.shows_a_frame())
+    {
+        window.prepared_size.set(Some(pixels));
+    }
 }
 
 /// Draws `window` (`WM_PAINT`, and at once when resized).
@@ -929,14 +977,32 @@ pub(crate) fn handle(
             Some(Some(LRESULT(0)))
         }
         WM_ERASEBKGND => Some(Some(LRESULT(1))),
+        WM_EXITSIZEMOVE => {
+            if let Some(window) = &window {
+                window.prepared_size.set(None);
+                // Windows can end a drag without applying its last proposal.
+                let pixels = client_pixels(hwnd);
+                if window.pixels.get() != pixels {
+                    resize_to(surface, window, pixels);
+                    paint(surface, window);
+                }
+            }
+            None
+        }
         WM_SIZE => {
             // The frame's material follows the zoom state.
             crate::shell::zoom_changed(hwnd);
             if let Some(window) = &window {
+                let pixels = client_pixels(hwnd);
+                if window.prepared_size.take() == Some(pixels)
+                    && window.scale.get() == crate::window::dpi(hwnd) as f32 / 96.0
+                {
+                    return Some(Some(LRESULT(0)));
+                }
                 // What DWM shows past the last frame meanwhile, as the main
                 // window's.
                 fill_background(surface, id, hwnd);
-                resized(surface, window);
+                resize_to(surface, window, pixels);
                 // Drawn now, so that it never shows stretched or stale
                 // pixels while it is resized.
                 paint(surface, window);
@@ -1078,6 +1144,7 @@ fn destroy(surface: &Surface, window: &AppWindow) {
     window.composed.borrow_mut().clear();
     window.swap.borrow_mut().take();
     crate::file_drop::window_closing(surface, window.hwnd);
+    crate::box_none::forget(window.hwnd);
     // SAFETY: plain calls on a window of this thread, if it is still there
     // (the system destroys owned windows with their owner).
     unsafe {
@@ -1134,6 +1201,7 @@ mod tests {
             target_scale: Cell::new(0.0),
             pixels: Cell::new((0, 0)),
             scale: Cell::new(1.0),
+            prepared_size: Cell::new(None),
             invalid: Cell::new(false),
             repaint_after_frame: Cell::new(false),
             damage: Default::default(),
@@ -1228,6 +1296,7 @@ mod tests {
                 target_scale: Cell::new(0.0),
                 pixels: Cell::new((0, 0)),
                 scale: Cell::new(1.0),
+                prepared_size: Cell::new(None),
                 invalid: Cell::new(false),
                 repaint_after_frame: Cell::new(false),
                 damage: Default::default(),
@@ -1444,6 +1513,7 @@ mod tests {
             target_scale: Cell::new(0.0),
             pixels: Cell::new((0, 0)),
             scale: Cell::new(1.0),
+            prepared_size: Cell::new(None),
             invalid: Cell::new(false),
             repaint_after_frame: Cell::new(false),
             damage: Default::default(),
@@ -1498,6 +1568,7 @@ mod tests {
             target_scale: Cell::new(0.0),
             pixels: Cell::new((0, 0)),
             scale: Cell::new(1.0),
+            prepared_size: Cell::new(None),
             invalid: Cell::new(false),
             repaint_after_frame: Cell::new(false),
             damage: Default::default(),

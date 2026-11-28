@@ -74,7 +74,7 @@ export function createLists(invoke, values, reactive, dom, live, wake) {
     if ("empty" in props) {
       let empty;
       reactive.renderEffect(() => {
-        if (!(props.each?.length)) { if (!empty) { empty = extra("empty"); state.extras.push(empty); } }
+        if (!(state.items()?.length)) { if (!empty) { empty = extra("empty"); state.extras.push(empty); } }
         else if (empty) { remove(node, empty); state.extras.splice(state.extras.indexOf(empty), 1); empty = null; }
       });
     }
@@ -85,7 +85,7 @@ export function createLists(invoke, values, reactive, dom, live, wake) {
         const [first, last] = state.latest, [before, after] = state.reported;
         if (first === before && last === after) return;
         state.reported = state.latest;
-        const each = props.each ?? [], viewableItems = [], changed = [];
+        const each = state.items() ?? [], viewableItems = [], changed = [];
         const token = (index, isViewable) => {
           const item = itemAt(each, index);
           const key = typeof props.keyExtractor === "function" ? props.keyExtractor(item, index) : String(item?.key ?? item?.id ?? index);
@@ -128,7 +128,7 @@ export function createLists(invoke, values, reactive, dom, live, wake) {
               let separator, made = false;
               const owner = reactive.getOwner();
               rt.insert(cell, () => {
-                if (index() >= (state.props.each?.length ?? 0) - 1) return content;
+                if (index() >= (state.items()?.length ?? 0) - 1) return content;
                 if (!made) { separator = reactive.runWithOwner(owner, () => slot(state.props.separator)); made = true; }
                 return state.props.inverted ? [separator, content] : [content, separator];
               });

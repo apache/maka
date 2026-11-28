@@ -386,6 +386,20 @@ impl AreaSelection {
         }
     }
 
+    /// `ref.selectAll()` on `view` (`Command::SelectAll`): selects every
+    /// text of the selectable view `view` is or is inside, as Cmd+A does.
+    pub(crate) fn select_in(&self, surface: &Surface, view: &NshView) {
+        let Some(area) = area_of(view) else {
+            return;
+        };
+        if !self.is(&area) {
+            // Another area's selection, or a single text's, ends first.
+            crate::text::clear(surface);
+            *self.active.borrow_mut() = Some(Active::new(&area));
+        }
+        self.select_all(surface);
+    }
+
     /// Whether `area` has the selection.
     pub(crate) fn is(&self, area: &NshView) -> bool {
         self.active

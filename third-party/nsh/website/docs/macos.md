@@ -100,7 +100,7 @@ the panel however the app is opened. Add this key through `nsh.json`'s `macos.in
 | `FPS` | Frames shown over the last second: display refreshes in which the app changed (an idle app reads low; that is not slowness). `max` is what the main thread could keep up with, then the display's rate (120 Hz on ProMotion screens). |
 | `TICK` | The gaps between display refreshes as they arrived (mean, p95) and `gap`, the p95 gap between shown frames: one refresh (8.3 ms at 120 Hz) when nothing is late. |
 | `MAIN` | Main-thread time per frame (applying the engine's changes, drawing text and canvases, animations, input), its 95th percentile, and `drop`: the share of frames that took longer than one refresh. |
-| `JS` / `CORE` | Per commit: your code (handlers, timers, list rows) and NSH's core (layout, text, diffing); commits per second, native view changes per commit. |
+| `JS` / `CORE` | Per commit, over the commits of the last 5 seconds: your code (handlers, timers, list rows) and NSH's core (layout, text, diffing); commits per second, native view changes per commit. |
 | `HOP` | How long changes wait between the engine thread and the main thread; how busy the engine thread is. |
 | `CPU` / `GPU` / `MEM` | The process: CPU (100% is one core), its GPU share, its memory footprint (Activity Monitor's figure). |
 
@@ -313,6 +313,16 @@ Native components are registered with `AppView::register_component`; see
 engine serves: NSH's (`nsh_base::registry()`) and your crates' (`my_app::registry()`, which `#[native_module]`
 makes), so the TSX a view loads imports your Rust components and modules too.
 
+## Presenting from Rust
+
+Rust code that shows system UI (a share menu, a popover, a sheet) shows it from the surface whose code asked. In a
+main-thread task (`run_on_main_thread`), `nsh_platform_macos::presenting_view(mtm)` is the view to show it from when
+no element anchors it: the content of the surface's visible window the user is in, or the surface's own view when it
+is embedded; `None` when the surface shows in no visible window. `native_view(mtm, node)` is the `NSView` of an
+element of that surface (the node of its `ref`, a `NodeRef` argument of a module function; `ROOT_ID` for the
+surface's root view), in whatever window of the surface it is: the view a menu that belongs to the element opens
+from. NSH's views are flipped. Take both while the task runs. They are for anchoring and presenting system UI only: a module never changes, re-parents, restyles or removes a view NSH owns.
+
 ## Notifications from other code
 
 Remote notifications, and those other native code schedules, never reach `Notifications`' `press`: they go to the
@@ -327,7 +337,7 @@ The environment is a desktop's: the safe area and the keyboard height are 0, `id
 (`platform.idiom` is `"desktop"`), `os_version()` (`platform.version`) is the macOS version, and dark mode follows the system's appearance live. See
 [Device and environment](./device-and-environment.md).
 
-Input is a desktop's: the mouse, the trackpad (scrolling with momentum, pinch and rotation) and the keyboard.
+Input is a desktop's: the mouse, the trackpad (scrolling with momentum, stretching past the edges and springing back as in AppKit's scroll views, pinch and rotation) and the keyboard.
 Trackpad tap-to-click briefly shows the app’s `active:` feedback even when the press and release arrive together; press callbacks run at release. Reduced motion keeps immediate visual release.
 A zoomable scroll view zooms with a trackpad pinch or Control + wheel around the pointer, and scrolls both ways while
 zoomed.

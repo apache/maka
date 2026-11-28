@@ -108,6 +108,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         .sets()
         .into_iter()
         .map(Into::into)
+        .chain(std::iter::once(nsh_system_controls::registry().into()))
         .chain(std::iter::once(
             maka_workbench::bindings::ui_set_description(),
         ))
@@ -119,6 +120,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         "nsh/tokens.d.ts".to_owned(),
         nsh_bundler::tokens_declaration(&tokens),
     ));
+    // Both shells type their message catalogs independently of nsh/i18n.
+    definitions.push((
+        "nsh/translations.d.ts".to_owned(),
+        nsh_bundler::translations_declaration(&Default::default()),
+    ));
 
     let types = output.join(".nsh/types");
     for (name, contents) in definitions {
@@ -128,7 +134,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         &output.join(".nsh/tsconfig.json"),
         nsh_bundler::TSCONFIG_BASE.as_bytes(),
     )?;
-    // Keep the base config's generated globals, assets and tokens in `files`.
+    // Keep NSH's generated declarations in `files`.
     let config = serde_json::json!({
         "extends": "./.nsh/tsconfig.json",
         "compilerOptions": {

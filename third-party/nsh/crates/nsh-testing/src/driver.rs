@@ -136,16 +136,6 @@ pub(crate) trait Driver: Send {
         let _ = url;
         Err(headless_only("failOpenUrls"))
     }
-    /// The platform shows a share sheet, and the user answers every share
-    /// with `outcome` (`onShare`).
-    fn on_share(&mut self, outcome: nsh_core::share::ShareOutcome) -> Result<(), String> {
-        let _ = outcome;
-        Err(headless_only("onShare"))
-    }
-    /// What the app shared, in order (`shares()`).
-    fn shares(&mut self) -> Result<Vec<nsh_core::share::ShareSheet>, String> {
-        Err(headless_only("`shares()`"))
-    }
     fn run_for(&mut self, time: Duration) -> Result<(), String>;
     fn fast_forward(&mut self, time: Duration) -> Result<(), String>;
     fn set_system_time(&mut self, at: std::time::SystemTime) -> Result<(), String>;
@@ -362,13 +352,6 @@ impl Driver for Headless {
     }
     fn fail_open_urls(&mut self, url: &str) -> Result<(), String> {
         Headless::fail_open_urls(self, url)
-    }
-    fn on_share(&mut self, outcome: nsh_core::share::ShareOutcome) -> Result<(), String> {
-        Headless::on_share(self, outcome)
-    }
-    fn shares(&mut self) -> Result<Vec<nsh_core::share::ShareSheet>, String> {
-        self.catch_up();
-        Ok(self.screen().shares().to_vec())
     }
     fn open_with_url(&mut self, url: &str) -> Result<(), String> {
         Headless::open_with_url(self, url)

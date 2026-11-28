@@ -150,7 +150,7 @@ pub(crate) fn attach(surface: &Rc<Surface>, root: &NshView) {
                     glib::Propagation::Stop
                 }
                 Some(surface) if !controller_acts(&surface.keymap) => glib::Propagation::Proceed,
-                Some(surface) if fires_binding(&surface, root, &binding) => {
+                Some(surface) if fires(&surface, root, false)(&binding) => {
                     fire(&surface, &binding, surface.keymap.press_time.get());
                     if binding.pass_through {
                         glib::Propagation::Proceed
@@ -208,18 +208,6 @@ fn fire(surface: &Rc<Surface>, binding: &KeyBinding, time: u32) {
     }
 }
 
-fn fires_binding(surface: &Surface, root: &NshView, binding: &KeyBinding) -> bool {
-    let yields = surface
-        .keymap
-        .keymap
-        .borrow()
-        .as_ref()
-        .is_some_and(|keymap| keymap.gives_way(binding));
-    binding.window.is_none_or(|window| window == root.id())
-        && !crate::text_input::composing_focused(surface)
-        && fires(surface, root, binding.in_text, binding.within, yields)
-}
-
 /// Replays capture-phase shortcut matching for a held GDK key event.
 pub(crate) fn press_gdk(surface: &Rc<Surface>, event: &gtk::gdk::Event) -> bool {
     if surface.input_paused.get() && !crate::text_input::is_replaying(surface) {
@@ -229,6 +217,7 @@ pub(crate) fn press_gdk(surface: &Rc<Surface>, event: &gtk::gdk::Event) -> bool 
         .surface()
         .and_then(|s| crate::window::root_at(surface, &s))
         .unwrap_or_else(|| surface.root.clone());
+    let fires = fires(surface, &root, false);
     let matched = surface
         .keymap
         .triggers
@@ -237,7 +226,7 @@ pub(crate) fn press_gdk(surface: &Rc<Surface>, event: &gtk::gdk::Event) -> bool 
         .find(|(trigger, binding)| {
             !binding.fallback
                 && trigger.trigger(event, false) != gtk::gdk::KeyMatch::None
-                && fires_binding(surface, &root, binding)
+                && fires(binding)
         })
         .map(|(_, binding)| *binding);
     if let Some(binding) = matched {
@@ -260,14 +249,14 @@ pub(crate) fn unhandled(
     if surface.input_paused.get() && !crate::text_input::is_replaying(surface) {
         return true;
     }
+    let fires = fires(surface, root, true);
     let matched = surface
         .keymap
         .fallbacks
         .borrow()
         .iter()
         .find(|(trigger, binding)| {
-            trigger.trigger(event, false) != gtk::gdk::KeyMatch::None
-                && fires_binding(surface, root, binding)
+            trigger.trigger(event, false) != gtk::gdk::KeyMatch::None && fires(binding)
         })
         .map(|(_, binding)| *binding);
     if let Some(binding) = matched {
@@ -346,6 +335,7 @@ pub(crate) fn claims(surface: &Surface, event: &gtk::gdk::Event) -> bool {
         .surface()
         .and_then(|s| crate::window::root_at(surface, &s))
         .unwrap_or_else(|| surface.root.clone());
+    let fires = fires(surface, &root, false);
     surface
         .keymap
         .triggers
@@ -354,7 +344,7 @@ pub(crate) fn claims(surface: &Surface, event: &gtk::gdk::Event) -> bool {
         .any(|(trigger, binding)| {
             !binding.pass_through
                 && trigger.trigger(event, false) != gtk::gdk::KeyMatch::None
-                && fires_binding(surface, &root, binding)
+                && fires(binding)
         })
 }
 
@@ -425,14 +415,11 @@ pub(crate) fn raw(surface: &Surface, event: &gtk::gdk::Event, repeat: bool) -> R
         .and_then(|s| crate::window::root_at(surface, &s))
         .unwrap_or_else(|| surface.root.clone());
     let (fired, binding) = {
+        let fires = fires(surface, &root, false);
         let triggers = surface.keymap.triggers.borrow();
-        pick(
-            &triggers[..],
-            root.id(),
-            repeat,
-            |binding| fires_binding(surface, &root, binding),
-            |trigger| trigger.trigger(event, false),
-        )
+        pick(&triggers[..], root.id(), repeat, fires, |trigger| {
+            trigger.trigger(event, false)
+        })
     };
     let Some(binding) = binding else {
         return fired;
@@ -479,8 +466,8 @@ fn pick(
                 exact = Some(*binding);
                 break;
             }
-            gtk::gdk::KeyMatch::Partial => {
-                partial.get_or_insert(*binding);
+            gtk::gdk::KeyMatch::Partial if partial.is_none() => {
+                partial = Some(*binding);
             }
             _ => {}
         };
@@ -528,21 +515,38 @@ fn focus_context(surface: &Surface, root: &NshView) -> Option<(bool, bool, Vec<N
     Some((editing, control, path))
 }
 
-/// Whether a binding fires where the focus is: never while it is in
-/// another surface, in a text field or hosted widget only when the binding
-/// may (`in_text`), and inside `within` when scoped.
-fn fires(
-    surface: &Surface,
+/// A pointer override must be eligible in the same window, focus and phase
+/// as the binding it supersedes.
+fn fires<'a>(
+    surface: &'a Surface,
     root: &NshView,
-    in_text: bool,
-    within: Option<NodeId>,
-    gives_way: bool,
-) -> bool {
-    focus_context(surface, root).is_some_and(|(editing, control, path)| {
-        (in_text || !editing)
-            && !(control && gives_way)
-            && within.is_none_or(|scope| path.contains(&scope))
-    })
+    fallback: bool,
+) -> impl Fn(&KeyBinding) -> bool + use<'a> {
+    let focus = focus_context(surface, root);
+    let composing = crate::text_input::composing_focused(surface);
+    let window = root.id();
+    move |binding| {
+        let Some((editing, control, path)) = &focus else {
+            return false;
+        };
+        let eligible = |b: &KeyBinding| {
+            b.window.is_none_or(|w| w == window)
+                && b.fallback == fallback
+                && (b.in_text || !editing)
+                && b.within.is_none_or(|scope| path.contains(&scope))
+                && !skipped(b)
+        };
+        !composing
+            && eligible(binding)
+            && (!control
+                || *editing
+                || surface
+                    .keymap
+                    .keymap
+                    .borrow()
+                    .as_ref()
+                    .is_none_or(|table| !table.gives_way(binding, eligible)))
+    }
 }
 
 /// The keyval that `key` types with Shift on the display's layout (`slash`

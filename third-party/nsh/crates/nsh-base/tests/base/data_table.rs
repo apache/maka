@@ -9,8 +9,8 @@ use std::{
 };
 
 use nsh_base::{
-    DataTableColumn, DataTableRows, DataTableSort, DataTableSortDirection, data_table,
-    resize_handle,
+    DataTableColumn, DataTableColumnGroup, DataTableRows, DataTableSort, DataTableSortDirection,
+    data_table, resize_handle,
 };
 use nsh_core::{
     Command, MountItem, NodeId, Size,
@@ -37,8 +37,7 @@ fn column(key: &str) -> DataTableColumn {
 }
 
 /// Quotes: a text, two number and a boolean column.
-#[component]
-fn Quotes() -> impl IntoElement {
+fn quotes_table() -> nsh_base::DataTableElement {
     let rows = DataTableRows::new(2)
         .texts("symbol", ["AAPL", "MSFT"])
         .numbers("last", [231.5, 412.0])
@@ -55,6 +54,11 @@ fn Quotes() -> impl IntoElement {
         .data(rows)
 }
 
+#[component]
+fn Quotes() -> impl IntoElement {
+    quotes_table()
+}
+
 #[test]
 fn rows_made_in_rust_show_their_cells() {
     let mut app = start::<Quotes>();
@@ -63,6 +67,71 @@ fn rows_made_in_rust_show_their_cells() {
     ] {
         app.wait_for(shown).unwrap();
     }
+}
+
+fn group(label: &str, span: u32) -> DataTableColumnGroup {
+    let mut group = DataTableColumnGroup::default();
+    group.label = label.to_owned().into();
+    group.span = span;
+    group
+}
+
+/// [`Quotes`] under two levels of group labels: three header rows.
+#[component]
+fn GroupedQuotes() -> impl IntoElement {
+    quotes_table().groups(vec![
+        vec![group("Prices", 2), group("State", 2)],
+        vec![group("Quote", 2)],
+    ])
+}
+
+#[test]
+fn header_and_body_rows_carry_the_row_role() {
+    let mut app = start::<GroupedQuotes>();
+    app.wait_for("AAPL").unwrap();
+    let grid = app
+        .screen()
+        .accessibility(Some("role:grid"))
+        .unwrap()
+        .expect("the grid");
+    let rows: Vec<_> = grid
+        .children
+        .iter()
+        .filter(|node| node.role == Some(AccessibilityRole::Row))
+        .collect();
+    assert_eq!(
+        rows.len(),
+        5,
+        "two group rows, the titles' row and two body rows"
+    );
+    assert_eq!(
+        rows.iter()
+            .filter(|row| row
+                .children
+                .iter()
+                .any(|cell| cell.role == Some(AccessibilityRole::ColumnHeader)))
+            .count(),
+        1,
+        "the titles' row"
+    );
+    assert_eq!(
+        rows.iter()
+            .filter(|row| {
+                row.children
+                    .iter()
+                    .any(|cell| cell.role == Some(AccessibilityRole::Cell))
+            })
+            .count(),
+        2,
+        "one row for each data row"
+    );
+    assert!(
+        !grid.children.iter().any(|node| matches!(
+            node.role,
+            Some(AccessibilityRole::Cell | AccessibilityRole::ColumnHeader)
+        )),
+        "no cell or title stands outside a row"
+    );
 }
 
 /// [`Quotes`] in a page that `id:toggle` hides with `display: none` and

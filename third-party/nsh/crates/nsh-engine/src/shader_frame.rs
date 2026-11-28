@@ -72,7 +72,48 @@ impl Frame {
         if self.stride == self.width * 4 {
             Cow::Borrowed(&self.pixels)
         } else {
-            Cow::Owned(self.rows().flatten().copied().collect())
+            // Row by row: a backend takes this every frame of every shader
+            // view, megabytes each, so it copies whole rows into one
+            // allocation rather than collecting bytes into a growing one.
+            let mut tight = Vec::with_capacity(self.width as usize * 4 * self.height as usize);
+            for row in self.rows() {
+                tight.extend_from_slice(row);
+            }
+            Cow::Owned(tight)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tight_drops_the_padding_between_rows() {
+        // 2×3 pixels, rows 12 bytes apart: 8 bytes of pixels, 4 of padding.
+        let pixels: Vec<u8> = (0..36).collect();
+        let frame = Frame {
+            pixels,
+            width: 2,
+            height: 3,
+            stride: 12,
+            serial: 1,
+        };
+        let tight = frame.tight();
+        assert!(matches!(tight, Cow::Owned(_)));
+        let want: Vec<u8> = [0..8, 12..20, 24..32].into_iter().flatten().collect();
+        assert_eq!(&*tight, &want[..]);
+    }
+
+    #[test]
+    fn tight_rows_are_borrowed() {
+        let frame = Frame {
+            pixels: (0..24).collect(),
+            width: 2,
+            height: 3,
+            stride: 8,
+            serial: 1,
+        };
+        assert!(matches!(frame.tight(), Cow::Borrowed(p) if p.len() == 24));
     }
 }

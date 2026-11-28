@@ -882,6 +882,17 @@ impl AreaResponder {
         self.clear_selection();
     }
 
+    /// Selects every text (`ref.selectAll()`), as the edit menu's Select
+    /// All does after a long press: with the handles and the edit menu.
+    pub(crate) fn select_everything(&self) {
+        self.hide_menu();
+        self.ivars().touch.set(true);
+        // Taking the first responder ends any other area's selection.
+        self.becomeFirstResponder();
+        // SAFETY: this class's own `selectAll:`, which takes any sender.
+        let _: () = unsafe { msg_send![self, selectAll: std::ptr::null::<AnyObject>()] };
+    }
+
     /// A mount batch was applied: while something is selected, the
     /// texts, highlight and handles follow what changed.
     pub(crate) fn batch_applied(&self) {

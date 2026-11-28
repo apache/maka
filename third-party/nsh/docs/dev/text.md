@@ -112,7 +112,8 @@
   own selection takes the clicks). Positions are (text index, UTF-16 offset),
   never inside a surrogate pair. A point outside every text is hit-tested in reading order: when it sits below a text
   in a closer, horizontally disjoint column than any text whose row contains it, it stays in that column (clamping to
-  the vertically nearer text above or below in the column); otherwise the horizontally nearest text on its row, above
+  the vertically nearer text above or below in the column, but never a text below the end of the point's row, as
+  the next row of a table whose wrapped cell makes this one taller); otherwise the horizontally nearest text on its row, above
   every text the first text's start, and between rows or below a column the vertically nearer edge in the point's
   column (falling back to document order when no column has width). Words are runs of letters, digits and `_`, runs
   of spaces, or single other characters (each CJK ideograph, kana, emoji or punctuation mark); a triple click selects
@@ -226,7 +227,12 @@
   baseline, so a line grows where an attachment reaches past the font, as Android's `ImageSpan` grows it. With a fixed
   `lineHeight` a line holding an attachment is at least as tall as its text's lines (the font with the line height
   spread around it, CSS's strut) and grows only where the attachment reaches past that box, on every engine: the
-  line height is never a cap that cuts an attachment to the line. CSS's
+  line height is never a cap that cuts an attachment to the line. The strut is the root `<Text>`'s, carried on
+  `AttributedText` as the hidden `paragraph_strut` `ResolvedTextStyle` (only its font size, weight, family, italic,
+  font variant and resolved line height count): a smaller nested span never lowers the paragraph or moves its baseline.
+  The core always sets it; a directly constructed text without one keeps the engines' historic first-span fallback
+  (`AttributedText::paragraph_strut_or_first`). Windows, Linux and GPUI put that box into every custom line;
+  CoreText uses it for the paragraph height and returns smaller-span-only lines to the strut baseline. CSS's
   `top` / `bottom` (the line box's) and `sub` / `super` / lengths are not offered: the engines size placeholders
   before lines exist. The headless engine's natural font is 1.2 em (ascent 1.2 em, descent 0, x height 0.5 em), with explicit `lineHeight` spread around that ascent by half-leading. After the final layout the core places its native view, a child of the text view (Android's
   `TextBox` is a ViewGroup for this), on the placeholder (`TextEngine::attachments`); attachments cut off by the line limit or

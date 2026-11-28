@@ -234,7 +234,8 @@ platform（`sdkmanager "platforms;android-36"`）：
 ### 权限
 
 manifest 会声明 NSH 自身功能需要的权限：`INTERNET`，[`network()`](./device-and-environment.md#网络) 用的 `ACCESS_NETWORK_STATE`，[通知](./sandbox-and-capabilities.md#notifications)用的 `POST_NOTIFICATIONS`，web view 的 `media`
-用的 `RECORD_AUDIO` 和 `CAMERA`。`android.permissions` 用来添加其他权限，供应用或扩展中直接调用 Android 的代码使用：不带点的名字是
+用的 `RECORD_AUDIO` 和 `CAMERA`，以及在 Android 13 之前让运行时注册的接收器只对应用自己开放的签名级权限
+`<package>.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION`（与 androidx 同名）。`android.permissions` 用来添加其他权限，供应用或扩展中直接调用 Android 的代码使用：不带点的名字是
 Android 自己的权限（`android.permission.<NAME>`），带点的名字按原样写入。
 
 ```json

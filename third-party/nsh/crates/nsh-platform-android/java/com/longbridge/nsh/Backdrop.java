@@ -181,10 +181,31 @@ final class Backdrop implements ViewTreeObserver.OnPreDrawListener, View.OnAttac
                 canvas.restoreToCount(save);
                 return;
             }
+            if (onlyBlurs(child)) {
+                canvas.restoreToCount(save);
+                continue;
+            }
             if (capture != null) capture.sampleWebViews(child);
             child.draw(canvas);
             canvas.restoreToCount(save);
         }
+    }
+
+    /**
+     * Whether `view` draws nothing but its own blurred backdrop (a layer of a
+     * progressive blur). A backdrop behind it leaves it out: its backdrop node
+     * holds everything behind it again, siblings like it included, so layers
+     * stacked this way each drew the window again for every layer under them
+     * (five layers of a progressive blur: 31 times, 37 ms of a Pixel 10 Pro's
+     * RenderThread a frame in `prepareTree`). Later layers then blur what is
+     * behind the stack rather than the blur of the layers under them, which
+     * looks the same.
+     */
+    private static boolean onlyBlurs(View view) {
+        if (view.getClass() != Box.class || !(view.getBackground() instanceof Decor)) return false;
+        Box box = (Box) view;
+        return ((Decor) view.getBackground()).onlyBackdrop() && box.getChildCount() == 0
+                && !box.hasShader() && view.getForeground() == null;
     }
 
     /** Draws the blurred backdrop (the caller clips to the view's shape). */

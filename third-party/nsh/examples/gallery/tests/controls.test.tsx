@@ -47,24 +47,6 @@ test("a switch turns a setting on and off, and one that needs it is disabled whi
   await app.waitFor("Images load at a lower quality");
 });
 
-test("on a phone the system's switch card leaves its switches to the system, not the gallery's drawn ones", async () => {
-  await show("Switch", "The system's switch");
-  expect(app.shows("Wi-Fi on · Bluetooth off")).toBe(true);
-  expect(app.shows("Ask to join networks")).toBe(true);
-  // The switches are the platform's native views, which headless runs do not
-  // draw: none of the gallery's drawn switches stand in.
-  expect(app.count("role:switch[/^Wi-Fi/]")).toBe(0);
-});
-
-test("off the phones the system's switch card falls back to the gallery's drawn switches", async () => {
-  const desk = await open("../App.tsx", { platform: "macos", width: 1200, height: 1700, clock: {} });
-  await desk.press("role:button[Switch]");
-  await desk.waitFor("The system's switch");
-  await desk.press("role:switch[/^Wi-Fi/]");
-  await desk.waitFor("Wi-Fi off · Bluetooth off");
-  expect(desk.enabled("Ask to join networks")).toBe(false);
-});
-
 test("a quick setting is a tile with a switch, and Focus silences the sounds", async () => {
   await show("Switch", "Quick settings");
   expect(app.enabled("Sounds")).toBe(true);
@@ -409,6 +391,18 @@ test("a sign-in code is sent, counts down to a resend, shakes off a wrong code a
   await app.waitFor("Signed in");
   await app.waitFor("Sign-in: verified");
   expect(app.enabled(code)).toBe(false);
+});
+
+test("an email code takes letters and digits, shown in capitals", async () => {
+  await show("OtpInput", "The code is AB12CD34");
+  const code = "label:Email code, 8 letters and digits";
+  await app.type(code, "ab1-2");
+  await app.waitFor("Email code: AB12");
+  expect(app.texts()).toContain("A");
+  expect(app.texts()).not.toContain("a");
+  await app.paste(code, { text: "ab12 cd34" });
+  await app.waitFor("Email code complete: AB12CD34");
+  expect(app.texts()).toContain("Verified");
 });
 
 test("a PIN is entered twice, masked: a mismatch starts over, a match sets it", async () => {

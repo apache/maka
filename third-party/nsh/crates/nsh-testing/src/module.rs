@@ -1052,51 +1052,6 @@ impl From<&nsh_core::picker::Pick> for PickRequest {
     }
 }
 
-/// How the user answers the share sheet (`app.onShare`).
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PropEnum)]
-pub enum ShareAnswerAction {
-    /// The user shares.
-    Shared,
-    /// The user closes the sheet without sharing.
-    #[default]
-    Dismissed,
-}
-
-/// How the user answers every share sheet (`app.onShare`).
-#[derive(Debug, Clone, Default, PartialEq, JsObject)]
-#[prop(exact)]
-pub struct ShareAnswer {
-    /// `"shared"` or `"dismissed"`.
-    pub action: ShareAnswerAction,
-    /// The target chosen when shared (`"com.apple.UIKit.activity.Mail"`);
-    /// none: the platform names none.
-    pub target: Option<String>,
-}
-
-/// What the app shared (`Share.show`), as a test reads it.
-#[derive(Debug, Clone, PartialEq, JsObject)]
-pub struct SharedContent {
-    /// The title; `null` when none was given.
-    pub title: Option<String>,
-    /// The text; `null` when none was given.
-    pub text: Option<String>,
-    /// The link; `null` when none was given.
-    pub url: Option<String>,
-    /// The files' real paths.
-    pub files: Vec<String>,
-}
-
-impl From<&nsh_core::share::ShareSheet> for SharedContent {
-    fn from(sheet: &nsh_core::share::ShareSheet) -> Self {
-        SharedContent {
-            title: sheet.title.clone(),
-            text: sheet.text.clone(),
-            url: sheet.url.clone(),
-            files: sheet.files.clone(),
-        }
-    }
-}
-
 /// What the app asked of the speaker (`Sound`, `AudioPlayer`), as a test
 /// reads it.
 #[derive(Debug, Clone, PartialEq, JsObject)]
@@ -2767,26 +2722,6 @@ impl App {
     /// quiet. Headless only.
     pub async fn fail_open_urls(this: Instance<Self>, url: String) -> Result<(), JsError> {
         step(&this, move |app| app.fail_open_urls(&url)).await
-    }
-
-    /// The platform shows a share sheet from now on (`Share.available()`
-    /// resolves `true`), and the user answers every one the app shows
-    /// (`Share.show`) as `answer` says: shared, to its `target` if it names
-    /// one, or dismissed. What the app shares is listed by `shares`. Then
-    /// waits until the app is quiet. Headless only: a real platform shows
-    /// its own sheet.
-    pub async fn on_share(this: Instance<Self>, answer: ShareAnswer) -> Result<(), JsError> {
-        let outcome = match answer.action {
-            ShareAnswerAction::Shared => nsh_core::share::ShareOutcome::shared(answer.target),
-            ShareAnswerAction::Dismissed => nsh_core::share::ShareOutcome::dismissed(),
-        };
-        step(&this, move |app| app.on_share(outcome)).await
-    }
-
-    /// What the app shared (`Share.show`), in order: recorded, never
-    /// shared, and answered as `onShare` says. Headless only.
-    pub fn shares(&self) -> Result<Vec<SharedContent>, JsError> {
-        self.with(|app| Ok(app.shares()?.iter().map(SharedContent::from).collect()))
     }
 
     /// Moves the app to `state`, as the system does when the user leaves it

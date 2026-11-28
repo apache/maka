@@ -25,7 +25,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { pathToFileURL } from 'node:url';
 
-const inventory = 'crate\tApache-2.0\tMIT\na@1\tX\t\nb@1\t\tX\nc@1\t\tX\n';
+const inventory = 'crate\tApache-2.0\tMIT\na@1\tX\t\nb@1\t\tX\nc@1\t\tX\nd@1\tX\t\n';
 
 async function fixture(t, existing = inventory) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'maka-dependencies-')));
@@ -64,6 +64,7 @@ childProcess.execFileSync = (command, args) => {
     const inventories = {
       'products/maka/cli/Cargo.toml': 'crate\\tMIT\\nb@1\\tX\\nc@1\\tX\\n',
       'products/maka/desktop-shell/Cargo.toml': 'crate\\tApache-2.0\\tMIT\\na@1\\tX\\t\\nb@1\\t\\tX\\n',
+      'products/maka/ios-shell/Cargo.toml': 'crate\\tApache-2.0\\nd@1\\tX\\n',
     };
     assert.ok(Object.hasOwn(inventories, values['manifest-path']), 'unexpected product manifest');
     inventory = inventories[values['manifest-path']];
@@ -86,7 +87,7 @@ syncBuiltinESMExports();
   };
 }
 
-test('native inventory generation merges both products and passes the resulting check', async (t) => {
+test('native inventory generation merges shipped products and passes the resulting check', async (t) => {
   const repo = await fixture(t, 'stale inventory\n');
   for (const mode of ['generate', 'check']) {
     const result = await repo.run(mode);

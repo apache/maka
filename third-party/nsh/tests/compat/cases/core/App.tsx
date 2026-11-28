@@ -20,6 +20,7 @@ import CoreOverlay from "./core-overlay";
 import CorePrimitives from "./core-primitives";
 import CoreReactive from "./core-reactive";
 import CoreClearSelection from "./core-clear-selection";
+import CoreSelectAll from "./core-select-all";
 import CoreRef from "./core-ref";
 import CoreResource from "./core-resource";
 import CoreReveal from "./core-reveal";
@@ -52,6 +53,7 @@ const cases: Record<string, () => JSX.Element> = {
   "core-primitives": CorePrimitives,
   "core-reactive": CoreReactive,
   "core-clear-selection": CoreClearSelection,
+  "core-select-all": CoreSelectAll,
   "core-ref": CoreRef,
   "core-resource": CoreResource,
   "core-reveal": CoreReveal,

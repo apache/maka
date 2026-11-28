@@ -154,6 +154,9 @@ pub(crate) struct Surface {
     /// What the main window keeps: its attributes, its state's
     /// bookkeeping ([`crate::window`]).
     pub(crate) main_window: RefCell<crate::window::MainWindow>,
+    /// The surface is [`crate::run_app`]'s: the standalone app's, filling a
+    /// window of its own, not one embedded in another app's.
+    pub(crate) standalone: Cell<bool>,
     /// The view the screen reader's focus is on while the keyboard focus
     /// is elsewhere ([`crate::access::focus`]).
     pub(crate) reader_focus: RefCell<glib::WeakRef<NshView>>,
@@ -294,6 +297,7 @@ impl Surface {
             nav: RefCell::default(),
             windows: RefCell::default(),
             main_window: RefCell::default(),
+            standalone: Cell::new(false),
             reader_focus: RefCell::default(),
             input: Default::default(),
             file_drop: Default::default(),
@@ -777,7 +781,11 @@ impl Surface {
                         f();
                     }
                 }
-                Message::Run(task) => task.run(),
+                // A module's main-thread function: this surface is current
+                // while it runs (`crate::native_view`, `crate::presenting_window`).
+                Message::Run(task) => {
+                    crate::presenting::run_for(Rc::downgrade(self), || task.run())
+                }
                 Message::RootResized(id, size) => crate::window::laid_out(self, id, size),
             }
         }

@@ -278,7 +278,7 @@ misses the deadline is not waited for again until it catches up (`docs/dev/macos
   it; an app's other bindings of those keys (a dialog's Return for its main action) give way to the control the user
   moved the focus to, on every platform (`Keymap::find_at`, `input::presses_focused_control`). A binding that takes
   them over a pointer's focus (`KeyOptions::over_focused`'s `OverFocused::Pointer`, TS's `overFocused: "pointer"`: a media player's Space)
-  fires instead, before the focus' own, while a pointer gave the focus: the core notes it as the focus is reported
+  fires instead, before the focus' own, when it is eligible in the current window and a pointer gave the focus: the core notes it as the focus is reported
   (the input modality then, or a popup a press opened giving it back, `Core::pointer_focus_back`) and mounts the
   keymap again as it changes, carrying it (`Keymap::pointer_focus`), only while a binding asks; the platforms ask
   `Keymap::find_with` or, matching the bindings themselves (GTK), `Keymap::gives_way`. Return and Space press
@@ -503,9 +503,7 @@ misses the deadline is not waited for again until it catches up (`docs/dev/macos
   send one, as its props change. The state words iOS and Android supply (checked, expanded, current, invalid...)
   are in the language of the app's text, as NSH's menus on the desktops are (`i18n::text_locale`): the core sends
   `Command::TextLocale` on the root of those surfaces when it changes, and the words of mounted views follow it the
-  next time a screen reader reads them. Android's `DateTimePicker` shows its value in that language too (the user's 12-
-  or 24-hour clock kept), formatted again when it changes, and its date and time dialogs their own words (buttons,
-  month and day names, the date dialog's header) from the next dialog opened.
+  next time a screen reader reads them.
   The `increment` / `decrement` actions make an element adjustable whatever its
   role: iOS adds the adjustable trait to the traits of its role (`native_view.rs` `traits`), so VoiceOver's swipe up /
   down performs them (an `image`, `Plot`'s role, stays an image), Android offers scroll forward / backward, Windows
@@ -644,6 +642,11 @@ misses the deadline is not waited for again until it catches up (`docs/dev/macos
   `KeyboardMotion::aligned`), and runs the scroll view's inset and scroll in one animation of that curve; Android takes
   the IME's `WindowInsetsAnimation` (interpolator, duration, start; API 30+) and fast-forwards its animators to it
   (`Mounter.keyboardAligned`), the scroll to the input included.
+- **Presses on inputs**: an input's field keeps its own clicks and taps (the caret, a selection, the focus, its edit
+  menu), on its text or on its padding; only an `Input` that listens to presses hears them, after the focus the press
+  gives the field, and no view around it does, on every platform. A drag or a touch held on the field is the field's,
+  not a press. An input that listens is still read as its text field, not as a button around it, and is no stop of
+  Tab of its own.
 - **Controlled inputs**: each native edit carries an edit count; a `value` from JS is applied only if it is based on the latest
   edit, so a slow JS round trip can never overwrite newer typing (React Native's eventCount).
   While an input method composes, a `value` is held natively and applied when the composition ends, if no edit came

@@ -246,7 +246,7 @@ blob（`blob:null/…`），都不允许。所有平台的检查方式相同。
 
 ### `share`
 
-`"share": true` 允许应用显示系统的分享面板（[`Share`](../modules/nsh.md#share)）：由用户决定内容发往哪里。分享的文件还需要能在 `fs.read` 下读取。
+`"share": true` 允许应用显示系统的分享面板（`nsh-extra` 的 [`Share`](./nshm.md#share)）：由用户决定内容发往哪里。分享的文件还需要能在 `fs.read` 下读取。
 
 ### `speech`
 
@@ -264,7 +264,7 @@ blob（`blob:null/…`），都不允许。所有平台的检查方式相同。
 
 ### `application`
 
-`"application": true` 允许应用作用于整个应用：在桌面上（[`nsh/desktop`](../modules/nsh-desktop.md)）是应用菜单（`Menu.setApplicationMenu`）、托盘、全局快捷键、`Application.quit()`、`Application.setQuitMode()`、`Application.restart()` 和 `Application.setLaunchAtLogin()`，在 iOS 和 Android 上是系统设置中本应用的页面（`nsh/mobile` 的 [`AppSettings.open()`](../modules/nsh-mobile.md#appsettings)；嵌入的视图打开宿主应用的页面）。没有这项能力时它们什么也不做，`Application.launchAtLogin()` 和 `AppSettings.available()` 返回 `false`，`setLaunchAtLogin` 和 `AppSettings.open()` 以 `ERR_ACCESS_DENIED`（`permission` 为 `"application"`）拒绝。右键菜单（`Menu.popup`）显示在应用自己的视图中，应用打开的窗口由 [`windows`](#windows) 授权，两者都不需要这项能力。
+`"application": true` 允许应用作用于整个应用：在桌面上（[`nsh/desktop`](../modules/nsh-desktop.md)）是应用菜单（`Menu.setApplicationMenu`）、托盘、全局快捷键、`Application.quit()`、`Application.setQuitMode()`、`Application.restart()` 和 `Application.setLaunchAtLogin()`，在 iOS 和 Android 上是系统设置中本应用的页面（`nsh/mobile` 的 [`AppSettings.open()`](../modules/nsh-mobile.md#appsettings)；嵌入的视图打开宿主应用的页面）。没有这项能力时它们什么也不做，`Application.launchAtLogin()` 和 `AppSettings.available()` 返回 `false`，`setLaunchAtLogin` 和 `AppSettings.open()` 以 `ERR_ACCESS_DENIED`（`permission` 为 `"application"`）拒绝。右键菜单（`Menu.popup`）显示在应用自己的视图中，应用打开的窗口由 [`windows`](#windows) 授权，两者都不需要这项能力。nsh.json 的 [`window`](./project-structure.md) 启动设置属于读取它的宿主，在应用运行前应用，同样不需要这项能力。
 
 ### `homeDir`
 
@@ -284,7 +284,7 @@ blob（`blob:null/…`），都不允许。所有平台的检查方式相同。
 | `kinds` | `string[]` | 可以打开的种类：`"normal"`、`"dialog"`、`"panel"`、`"popup"`、`"overlay"`。缺省：除 `"overlay"` 外的所有种类。 |
 | `levels` | `string[]` | 窗口可以使用的层级：`"normal"`、`"floating"`、`"aboveDock"`、`"desktopIcon"`。缺省：所有层级。 |
 | `max` | `number` | 同时可以打开的自己的窗口数，包含第一个窗口。缺省：不限。 |
-| `overlay` | `boolean` | 浮层和点击穿透的窗口（`pointerEvents: "none"`）。只有声明了才会授予，没有 `"capabilities"` 的应用也不例外。 |
+| `overlay` | `boolean` | 浮层和点击穿透的窗口（`pointerEvents: "none"` 或 `"box-none"`）。只有声明了才会授予，没有 `"capabilities"` 的应用也不例外。 |
 
 `overlay` 单独列出，是因为一个透明、点击穿透、位于所有窗口之上的窗口可以冒充系统自己的界面。每个窗口都需要授权，第一个窗口也不例外：没有特权窗口。
 

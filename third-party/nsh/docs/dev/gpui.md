@@ -315,7 +315,7 @@ layout when tokens are cleared, reinstalled or switched between light and dark.
 | Clipboard | `system.rs` | GPUI's (`write_to_clipboard` / `read_from_clipboard`): text, `ClipboardEntry::Image` (a format other than PNG, JPEG, GIF, BMP or WebP, such as TIFF, is made PNG on a worker thread) and `ExternalPaths` (files). GPUI reads one kind per item, preferring files, then text, then images, so an item with text and an image (a browser's copied image with its address) gives the text |
 | File drops | `file_drop.rs` | GPUI makes a drag from another application an internal drag of `ExternalPaths` that only its own elements hear, and the surface's hitbox blocks the mouse for those behind it: while a drag is active the `AppView` lays a layer over the surface whose drag moves and drop pick the destination (the closest `onFileDrop` listener under the pointer, within its modal: `input::file_drop_target`) and deliver absolute paths as `file:` URLs on entry as well as drop; moving between destinations leaves one and enters the next, and leaving the window, dropping, removal or disablement clear it. The first report after a drag enters is the platform's next move (the layer comes with the drag's frame) |
 | Networking | `nsh_engine::net` | ureq, the stack Windows and Linux use |
-| Dev | `dev.rs` | `AppView::connect_dev_server` (also what `AppSource::DevServer` runs): the dev client on its own thread (reconnecting with a backoff); its events, runtime errors and the reload key drained by a foreground task of the view, which ends when the view connects again; the status line and the error overlay are GPUI elements over the surface; the surface reports errors to the overlay and to the embedding app's `on_error` alike |
+| Dev | `dev.rs` | `AppView::connect_dev_server` (also what `AppSource::DevServer` runs): the dev client on its own thread (reconnecting with a backoff); its events, runtime errors and the reload key drained by a foreground task of the view, which ends when the view connects again; the status line and the error overlay are GPUI elements over the surface; the surface reports errors to the overlay and to the embedding app's `on_error` alike; logs reach the dev server through `DevLogger` (`init_logging`) or `dev::forward`, which an embedding app's own logger calls (both send to the latest connection) |
 
 ## Frame statistics: `--fps`
 
@@ -483,7 +483,10 @@ parent's input), `panel` to a floating one, `popup` and `overlay` to a pop-up on
 has calls for go through GPUI; the others go to the native window under it (`window/native.rs`: AppKit's window
 on macOS, the Win32 window on Windows; levels, workspaces, showing and hiding, moving, ownership and the like). The
 close, Escape and blur policies are answered on the main thread; states, close presses and title bar areas are
-reported per window, moves and resizes once they settle. A hidden title bar gets the main window's drawn controls
+reported per window, moves and resizes once they settle. `pointerEvents: "box-none"` asks the input's picking
+(`input::takes_pointer`, the root aside) where the window takes the pointer, or for its rectangles
+(`input::pointer_rects`) where the system takes an input shape; `window/box_none.rs` lets the pointer through
+elsewhere on each desktop. A host's window an embedded surface draws in is left as it is. A hidden title bar gets the main window's drawn controls
 on Windows and Linux. Views with `windowDrag`, `windowControl` and `windowResize` act as the title bar, the system's
 buttons and the frame's edges.
 

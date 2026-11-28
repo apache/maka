@@ -222,6 +222,7 @@ final class Effects {
                 effect = RenderEffect.createBlendModeEffect(shadow, source, BlendMode.SRC_OVER);
             }
             v.setRenderEffect(effect);
+            v.setTag(R_EFFECT, effect != null ? Boolean.TRUE : null);
         }
         Paint paint = null;
         if (!renderEffects && f.matrix != null) {
@@ -242,6 +243,16 @@ final class Effects {
 
     /** Tag key marking layers this class set (an id unlikely to clash). */
     private static final int R_LAYER = 0x7f0e7f01;
+    /** Tag key marking views this class gave a render effect. */
+    private static final int R_EFFECT = 0x7f0e7f02;
+
+    /**
+     * Whether `v` draws through a layer of its own: a render effect (a filter)
+     * or a layer for its blend mode or color matrix.
+     */
+    static boolean layered(View v) {
+        return v.getTag(R_EFFECT) != null || v.getLayerType() != View.LAYER_TYPE_NONE;
+    }
 
     @TargetApi(29)
     private static BlendMode blendMode(int code) {

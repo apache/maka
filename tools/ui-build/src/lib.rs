@@ -17,6 +17,7 @@
  * under the License.
  */
 
+use nsh_core::element::description::SetDescription;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -87,6 +88,36 @@ pub fn compile_cached_with_locales(
     compiler: &str,
     include_locales: bool,
 ) -> Result<CompiledUi> {
+    compile_cached_impl(
+        entry,
+        output,
+        asset_root,
+        compiler,
+        include_locales,
+        Vec::new(),
+    )
+}
+
+/// Additional native modules must be linked into the caller so its compiler
+/// identity also covers their registration and JSX contracts.
+pub fn compile_cached_with_modules(
+    entry: &Path,
+    output: &Path,
+    asset_root: Option<&Path>,
+    compiler: &str,
+    modules: Vec<SetDescription>,
+) -> Result<CompiledUi> {
+    compile_cached_impl(entry, output, asset_root, compiler, false, modules)
+}
+
+fn compile_cached_impl(
+    entry: &Path,
+    output: &Path,
+    asset_root: Option<&Path>,
+    compiler: &str,
+    include_locales: bool,
+    modules: Vec<SetDescription>,
+) -> Result<CompiledUi> {
     let entry = fs::canonicalize(entry)?;
     let output = std::path::absolute(output)?;
     let asset_root = asset_root.map(fs::canonicalize).transpose()?;
@@ -110,7 +141,13 @@ pub fn compile_cached_with_locales(
         }
     }
     let started = SystemTime::now();
-    let manifest = compile_with_locales(&entry, &output, asset_root.as_deref(), include_locales)?;
+    let manifest = compile_ui(
+        &entry,
+        &output,
+        asset_root.as_deref(),
+        include_locales,
+        modules,
+    )?;
     let inputs = fingerprint(&manifest.inputs)?;
     let outputs = fingerprint(
         &std::iter::once(manifest.module.clone())
@@ -153,6 +190,16 @@ pub fn compile_with_locales(
     asset_root: Option<&Path>,
     include_locales: bool,
 ) -> Result<CompiledUi> {
+    compile_ui(entry, output, asset_root, include_locales, Vec::new())
+}
+
+fn compile_ui(
+    entry: &Path,
+    output: &Path,
+    asset_root: Option<&Path>,
+    include_locales: bool,
+    modules: Vec<SetDescription>,
+) -> Result<CompiledUi> {
     let entry = fs::canonicalize(entry)?;
     let output = std::path::absolute(output)?;
     let mut host = nsh_core::element::Registry::ui_set("maka/host");
@@ -171,6 +218,7 @@ pub fn compile_with_locales(
         .into_iter()
         .map(Into::into)
         .chain(std::iter::once(host.into()))
+        .chain(modules)
         .collect();
     let (manifest_path, locales) = if include_locales {
         bundled_locales(&entry)?

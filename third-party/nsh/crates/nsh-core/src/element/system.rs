@@ -114,6 +114,25 @@ impl System {
         }
     }
 
+    /// The real path of the local file `path` names (absolute, or a
+    /// placeholder path such as `${dataDir}/report.pdf`), checked as
+    /// `fs/promises` reads it: within the roots `capabilities.fs.read`
+    /// grants (the app's declaration and the host's grant), or a file the
+    /// user pasted or dropped, its links resolved and still inside
+    /// the root that grants it. For a module that hands a file the app
+    /// names to the system or to another app (a share sheet, a print job,
+    /// an upload), so the file is checked as the app's own reads are.
+    ///
+    /// Rejects as `fs/promises` would: `ERR_ACCESS_DENIED` for a path no
+    /// grant covers or a link leading out of its root, `ENOENT` for one that
+    /// does not exist, `EISDIR` for a folder (`EINVAL` for a FIFO or device),
+    /// `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` where the app's
+    /// files are not native files (the web) or the platform has no native
+    /// filesystem.
+    pub fn readable_file(&self, path: &str) -> Result<PathBuf, JsError> {
+        crate::runtime::fs::readable_file(self, path)
+    }
+
     /// Refuses the app's connections with what `refuse` gives
     /// ([`System::refuse_connections`]).
     pub fn with_refuse_connections(mut self, refuse: Option<RefuseConnections>) -> Self {

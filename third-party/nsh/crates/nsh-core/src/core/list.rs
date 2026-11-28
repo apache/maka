@@ -1594,7 +1594,7 @@ impl ListState {
         self.parent_offsets_changed |= self.parent;
         let gap = self.main_gap() as f64;
         let rows = (0..self.row_count()).map(|r| self.row_size(r) as f64 + gap);
-        self.rows = Fenwick::from_sizes(rows.collect::<Vec<_>>().into_iter());
+        self.rows = Fenwick::from_sizes(rows);
         self.dirty = true;
     }
 
@@ -2439,6 +2439,34 @@ impl ListState {
         )
     }
 
+    /// The natural span whose items are bound with the viewport at `at`:
+    /// the viewport and the overscan on each side. Near an end, the part of
+    /// the overscan the items leave empty there (the list's start, a
+    /// header) goes to the other side, at most the window's own length: the
+    /// list keeps about as many cells wherever it is, so scrolling away from
+    /// an end binds cells made in the idle frames before it rather than
+    /// making new ones as it goes.
+    fn item_window(&self, at: f32) -> (f32, f32) {
+        let overscan = self.viewport * OVERSCAN;
+        let (start, end) = (at - overscan, at + self.viewport + overscan);
+        // In a page, the window is where the page's viewport meets the
+        // list: what lies outside the list is the page's, not empty.
+        if self.parent {
+            return (start, end);
+        }
+        let body = self.blocks().body;
+        // Past the items altogether (an offset the content shrank under,
+        // not yet clamped), the window binds nothing there: moving the
+        // overscan back would bind rows far from the viewport.
+        if end < body || start > body + self.items_len() {
+            return (start, end);
+        }
+        let length = end - start;
+        let before = (body - start).clamp(0.0, length);
+        let after = (end - (body + self.items_len())).clamp(0.0, length);
+        (start - after, end + before)
+    }
+
     /// The sticky item currently pinned to the viewport's start (or its
     /// sticky offset from it): the last one that starts before that.
     pub(super) fn active_sticky(&self) -> Option<u32> {
@@ -2526,9 +2554,9 @@ impl ListState {
             return Edges::default();
         }
         let at = self.natural_offset();
-        let overscan = self.viewport * OVERSCAN;
+        let (start, end) = self.item_window(at);
         let range = (self.viewport > 0.0)
-            .then(|| self.items_in(at - overscan, at + self.viewport + overscan))
+            .then(|| self.items_in(start, end))
             .flatten();
         let sticky = (self.viewport > 0.0)
             .then(|| self.active_sticky())
@@ -2864,8 +2892,9 @@ mod tests {
         let mut l = list(1000, 50.0, 400.0);
         let mut binds = Vec::new();
         l.update_window(&mut binds, None);
-        // [0, 800] at 50 per item -> items 0..=16.
-        assert_eq!(binds.len(), 17);
+        // [0, 800], and the overscan the start leaves empty below it:
+        // [0, 1200] at 50 per item -> items 0..=24.
+        assert_eq!(binds.len(), 25);
         assert_eq!(binds[0], (0, 0));
 
         // Scroll down a screen: items scrolled far above are recycled.
@@ -2875,8 +2904,56 @@ mod tests {
         let indices: Vec<u32> = binds.iter().map(|b| b.1).collect();
         assert_eq!(indices.first(), Some(&32));
         assert_eq!(indices.last(), Some(&56));
-        // Slots were reused, not grown without bound.
-        assert!(l.slots.len() <= 25 + 17, "{}", l.slots.len());
+        // The cells made at the start are all there is: none were made.
+        assert_eq!(l.slots.len(), 25);
+
+        // At the end, the overscan past it goes before the viewport.
+        l.offset = 1000.0 * 50.0 - 400.0;
+        binds.clear();
+        l.update_window(&mut binds, None);
+        let indices: Vec<u32> = binds.iter().map(|b| b.1).collect();
+        assert_eq!(indices.first(), Some(&976));
+        assert_eq!(indices.last(), Some(&999));
+        assert_eq!(l.slots.len(), 25);
+    }
+
+    /// Content shrunk under the offset (a terminal's rows going from 24 to
+    /// 5 before the offset is clamped) leaves the window past the items:
+    /// it binds none rather than taking the overscan back to the start,
+    /// which would bind rows far from the viewport for the scroll anchor
+    /// to keep in place.
+    #[test]
+    fn window_past_the_items_binds_none() {
+        let mut l = list(24, 18.0, 90.0);
+        l.offset = 342.0;
+        let mut binds = Vec::new();
+        l.update_window(&mut binds, None);
+        assert!(!binds.is_empty());
+        l.set_count(5);
+        binds.clear();
+        l.update_window(&mut binds, None);
+        assert!(binds.is_empty(), "{binds:?}");
+    }
+
+    /// A header at the top leaves the window's overscan above empty and
+    /// part of the viewport too: the window takes as much more below, so
+    /// scrolling past the header binds the cells it made rather than making
+    /// new ones.
+    #[test]
+    fn window_keeps_its_cells_past_a_header() {
+        let mut l = list(1000, 50.0, 400.0);
+        l.extras[0].cell = 0;
+        l.extras[0].size = 300.0;
+        let mut binds = Vec::new();
+        l.update_window(&mut binds, None);
+        // Rows from 300 to 300 + 1200: items 0..=24.
+        assert_eq!(binds.len(), 25);
+        for offset in [100.0, 400.0, 800.0, 1500.0, 3000.0] {
+            l.offset = offset;
+            binds.clear();
+            l.update_window(&mut binds, None);
+            assert!(l.slots.len() <= 26, "{offset}: {}", l.slots.len());
+        }
     }
 
     #[test]
@@ -3480,7 +3557,8 @@ mod tests {
         let mut binds = Vec::new();
         l.update_window(&mut binds, None);
         assert_eq!(binds.first().map(|b| b.1), Some(0));
-        assert!(binds.iter().all(|b| b.1 <= 16));
+        // The overscan past the end goes the other way: items 0..=24.
+        assert!(binds.iter().all(|b| b.1 <= 24));
         // Older items load (appended): the visible content stays put.
         l.set_count(120);
         assert_eq!(l.anchor_end(0.0), 1000.0);
@@ -4608,6 +4686,70 @@ mod perf {
     use std::time::Instant;
 
     use super::*;
+
+    /// `cargo test -p nsh-core --release bench_list_rebuild_offsets -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn bench_list_rebuild_offsets() {
+        use std::{hint::black_box, time::Duration};
+
+        use crate::geometry::px;
+
+        for rows in [0u32, 1, 8, 1024, 65_536] {
+            for columns in [1, 3] {
+                let mut l = ListState::new();
+                l.estimated = 25.5;
+                l.columns = columns;
+                // Multi-column cases end with a partial row.
+                l.count = rows * columns - u32::from(rows > 0 && columns > 1);
+                l.sizes = (0..l.count)
+                    .map(|i| {
+                        if i % 11 == 0 {
+                            f32::NAN
+                        } else {
+                            (i % 113) as f32 * 0.25
+                        }
+                    })
+                    .collect();
+                l.content.row_gap = px(2.25);
+                l.content.column_gap = px(3.5);
+                l.horizontal = columns > 1;
+                let gap = if l.horizontal { 3.5 } else { 2.25 };
+                let mut expected = vec![0.0];
+                for items in l.sizes.chunks(columns as usize) {
+                    let mut height = 0.0f32;
+                    for &size in items {
+                        height = height.max(if size.is_nan() { 25.5 } else { size });
+                    }
+                    expected.push(expected.last().unwrap() + height as f64 + gap);
+                }
+                for _ in 0..32 {
+                    black_box(&mut l).rebuild_offsets();
+                }
+                let iterations = (1_000_000 / rows.max(1)).clamp(32, 100_000);
+                let mut samples = [Duration::ZERO; 7];
+                for sample in &mut samples {
+                    let start = Instant::now();
+                    for _ in 0..iterations {
+                        black_box(&mut l).rebuild_offsets();
+                        black_box(&l.rows);
+                    }
+                    *sample = start.elapsed() / iterations;
+                }
+                assert_eq!(l.rows.len(), rows as usize);
+                for (row, expected) in expected.iter().enumerate() {
+                    assert_eq!(l.rows.prefix(row), *expected, "row {row}");
+                }
+                assert!(l.dirty);
+                samples.sort_unstable();
+                eprintln!(
+                    "list offsets {rows} rows {columns} columns: min / median {} / {} ns per rebuild",
+                    samples[0].as_nanos(),
+                    samples[3].as_nanos(),
+                );
+            }
+        }
+    }
 
     /// `cargo test -p nsh-core --release perf -- --ignored --nocapture`
     #[test]

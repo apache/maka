@@ -5,9 +5,9 @@
 //! Shift-Tab indent when enabled. Ported from
 //! `@tiptap/extension-code-block`.
 
-use serde_json::Value;
-
 use std::sync::Arc;
+
+use serde_json::Value;
 
 use super::helpers::{Step, chain, clear_nodes, insert_default_block};
 use crate::rich_editor::{
@@ -19,11 +19,54 @@ use crate::rich_editor::{
 /// The key of [`code_block_highlight_plugin`].
 pub const CODE_BLOCK_HIGHLIGHT: &str = "codeBlockHighlight";
 
-struct CodeBlockHighlight;
+/// The options of the `codeBlockHighlight` extension
+/// (`kit::code_block_highlight_with`): the language a code block that
+/// names none is colored as. It is the view's, never written to the
+/// document. A block's own `language` comes first, then
+/// `detect_language`, then `default_language`; with neither, such a block
+/// stays plain.
+#[derive(Clone, Default)]
+#[non_exhaustive]
+pub struct CodeBlockHighlightOptions {
+    /// The language of a block that names none and that `detect_language`
+    /// gives none for (Tiptap's `defaultLanguage`; default none).
+    pub default_language: Option<String>,
+    /// Names the language of a block that names none, from its code, as
+    /// Tiptap's `CodeBlockLowlight` guesses one with `highlightAuto` (the
+    /// app's own guess). Called on the engine thread while the block is
+    /// drawn, once each time such a block's code changes; `None` falls
+    /// back to `default_language`. Default none.
+    // Spelled out rather than behind a public alias: the options are the
+    // extension's only public surface.
+    #[allow(clippy::type_complexity)]
+    pub detect_language: Option<Arc<dyn Fn(&str) -> Option<String> + Send + Sync>>,
+}
+
+impl std::fmt::Debug for CodeBlockHighlightOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CodeBlockHighlightOptions")
+            .field("default_language", &self.default_language)
+            .field("detect_language", &self.detect_language.is_some())
+            .finish()
+    }
+}
+
+struct CodeBlockHighlight {
+    options: CodeBlockHighlightOptions,
+}
 
 impl PluginSpec for CodeBlockHighlight {
     fn key(&self) -> PluginKey {
         PluginKey::new(CODE_BLOCK_HIGHLIGHT)
+    }
+
+    // The options, where the view reads them.
+    fn init_state(
+        &self,
+        _: &crate::rich_editor::state::EditorStateConfig,
+        _: &EditorState,
+    ) -> Option<crate::rich_editor::state::PluginState> {
+        Some(Arc::new(self.options.clone()))
     }
 }
 
@@ -32,7 +75,19 @@ impl PluginSpec for CodeBlockHighlight {
 /// colors fenced code (feature `highlight`; without it code stays plain).
 /// It changes nothing in the document: the colors are the view's.
 pub fn code_block_highlight_plugin() -> Plugin {
-    Arc::new(CodeBlockHighlight)
+    code_block_highlight_plugin_with(CodeBlockHighlightOptions::default())
+}
+
+// The plugin, with the language of blocks that name none.
+pub(crate) fn code_block_highlight_plugin_with(options: CodeBlockHighlightOptions) -> Plugin {
+    Arc::new(CodeBlockHighlight { options })
+}
+
+// The options of `state`'s `codeBlockHighlight` plugin, if it has one.
+pub(crate) fn code_block_highlight_options(
+    state: &EditorState,
+) -> Option<Arc<CodeBlockHighlightOptions>> {
+    PluginKey::new(CODE_BLOCK_HIGHLIGHT).get_state::<CodeBlockHighlightOptions>(state)
 }
 
 /// Whether `state` has [`code_block_highlight_plugin`].

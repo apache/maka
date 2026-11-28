@@ -6,7 +6,10 @@
 //!   a day selects it (`CalendarState::select_date`): with `range` the
 //!   first press starts a range and the second ends it (an earlier day
 //!   starts it again). `onChange({ value })` reports a complete value only
-//!   (`CalendarEvent::Selected`); a half range shows until it completes.
+//!   (`CalendarEvent::Selected`); a half range shows until it completes,
+//!   and `onChangeStart({ value })` reports it (`[start, null]`), so the
+//!   app can show its start elsewhere and wait for the end. An app that
+//!   sets `value` to it owns it: a value it sets next replaces it.
 //! - **Views**: the days of `numberOfMonths` months side by side, the
 //!   twelve months of the shown year (`monthToggle`) or a page of twenty
 //!   years of `yearRange` (`yearToggle`); picking a month or a year goes
@@ -654,11 +657,19 @@ pub struct CalendarProps {
 
 /// The events of a [`Calendar`].
 #[derive(Debug, Clone, PartialEq, Event)]
+#[non_exhaustive]
 pub enum CalendarEvent {
     /// The user picked a complete value (`gpui-base`'s `Selected`): a day,
     /// or a range's end. A `value` the app passes is never reported.
     #[args(value)]
     Change(Date),
+    /// The user started a range (`[start, null]`): the first press, or a
+    /// press that starts it again. It shows half picked until a press ends
+    /// it, which `onChange` reports. An app that sets `value` to it owns
+    /// it: a value the app sets next (the one before, on a Cancel)
+    /// replaces it.
+    #[args(value)]
+    ChangeStart(Date),
 }
 
 /// Which view the calendar shows (`gpui-base`'s `CalendarView`).
@@ -943,17 +954,16 @@ impl Grid {
         });
     }
 
-    /// The user picked `day`: the new value, reported to `changed` once
-    /// complete (`CalendarState::activate_date`).
+    /// The user picked `day`: the new value, reported to `changed`
+    /// whether complete (`CalendarState::activate_date`) or a range's
+    /// start.
     fn pick(self, day: NaiveDate, changed: &dyn Fn(Date)) {
         if untracked(|| self.disabled(day)) {
             return;
         }
         let next = self.shown.get_untracked().picked(day);
         self.show(next);
-        if next.is_complete() {
-            changed(next);
-        }
+        changed(next);
     }
 
     /// The days are on screen: their month is shown.
@@ -1117,8 +1127,9 @@ impl Grid {
     }
 }
 
-/// Makes a calendar: the header and the body of `grid`, reporting complete
-/// values to `changed`.
+/// Makes a calendar: the header and the body of `grid`, reporting each
+/// pick to `changed`: a complete value, or a range's start
+/// ([`Date::is_complete`] tells them apart).
 pub(crate) fn calendar_view(grid: Grid, changed: Rc<dyn Fn(Date)>) -> Vec<AnyElement> {
     let config = grid.config;
     grid.bind_keys(changed.clone());
@@ -1983,7 +1994,8 @@ fn day(grid: Grid, cell: Cell, changed: Rc<dyn Fn(Date)>) -> AnyElement {
 /// `numberOfMonths` months; the toggles show the months of the year or a
 /// page of years to pick from. The value is `value` and `onChange` (or the
 /// calendar's own, from `defaultValue`): one date, or with `range` a start
-/// and an end; `disabledMatcher` says which dates cannot be picked. The
+/// and an end (`onChangeStart` reports the start while the end is still to
+/// pick); `disabledMatcher` says which dates cannot be picked. The
 /// arrows, Home, End and Page Up / Down move among the days, Return and
 /// Space pick. It looks like nothing: the app styles the parts or draws the
 /// items (`renderItem`).
@@ -2022,7 +2034,13 @@ pub fn Calendar(props: CalendarProps, cx: Scope<CalendarEvent>) -> impl IntoElem
         render_item: props.render_item,
     };
     let grid = Grid::new(config, value);
-    let changed: Rc<dyn Fn(Date)> = Rc::new(move |date| {
+    let changed: Rc<dyn Fn(Date)> = Rc::new(move |date: Date| {
+        // A half range is the grid's until it completes: the own value
+        // stays the last complete one.
+        if !date.is_complete() {
+            cx.emit(CalendarEvent::ChangeStart(date));
+            return;
+        }
         if matches!(props.value.get_untracked(), CalendarValue::Uncontrolled) {
             own.set(date);
         }

@@ -19,7 +19,7 @@
 
 import { platform, safeAreaInsets, Scroll, Text, View, token, type JSX } from 'nsh';
 import { AlertDialog, Input, MenuButton, NavPage, Switch as BaseSwitch } from 'nsh/base';
-import { isAvailable, Switch as NativeSwitch } from 'nsh/mobile';
+import { Switch as NativeSwitch } from 'nsh-system-controls';
 import { tr } from '../../locale';
 import { hostById } from '../../state/hostPool';
 import type { SettingsWork } from '../../state/settings/rpc';
@@ -189,7 +189,7 @@ export function SettingSwitchControl(props: {
 }) {
   return (
     <If
-      when={isAvailable}
+      when={platform.os === 'ios' || platform.os === 'android'}
       else={
         <BaseSwitch
           accessibilityLabel={props.accessibilityLabel}

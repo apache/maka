@@ -6,7 +6,7 @@ order: 2
 
 # nsh
 
-`nsh` is the core module: the reactive API (signals, computed values, effects, context), `mount`, `token`, `setTheme`, the host elements `View`, `Text`, `Scroll` and `Overlay`, [selectable views](#selectable-views), [the safe area and the keyboard](#safe-area-and-keyboard), [animation](#animation), [the device and its environment](#device), [`PanResponder`](#panresponder), the [clipboard](#clipboard), the [photo picker](#picker), the [share sheet](#share), [sound](#sound), [storage](#storage), the [host channel](#host), [keyboard shortcuts](#keymap), [native components and modules](#nativecomponent-and-nativemodule), [GPU views](#gpuview), [accessibility](#accessibility), and the TypeScript types of elements, styles and events. The reactive graph itself runs natively in Rust; reading a signal is a call into the runtime that costs a few nanoseconds, and only your own closures run in the JavaScript interpreter.
+`nsh` is the core module: the reactive API (signals, computed values, effects, context), `mount`, `token`, `setTheme`, the host elements `View`, `Text`, `Scroll` and `Overlay`, [selectable views](#selectable-views), [the safe area and the keyboard](#safe-area-and-keyboard), [animation](#animation), [the device and its environment](#device), [`PanResponder`](#panresponder), the [clipboard](#clipboard), the [photo picker](#picker), [sound](#sound), [storage](#storage), the [host channel](#host), [keyboard shortcuts](#keymap), [native components and modules](#nativecomponent-and-nativemodule), [GPU views](#gpuview), [accessibility](#accessibility), and the TypeScript types of elements, styles and events. The reactive graph itself runs natively in Rust; reading a signal is a call into the runtime that costs a few nanoseconds, and only your own closures run in the JavaScript interpreter.
 
 ```ts
 import { batch, cleanup, computed, context, effect, ErrorBoundary, mount, Overlay, Scroll, signal, split, Text, token, untracked, View } from "nsh";
@@ -2172,175 +2172,6 @@ and without a handler a pick is cancelled. See [Testing](../docs/testing-and-tra
 > `"picker"` and `resource` `""`. In Rust, `pick_images` and `pick_files` answer no files and the refusal is logged. See
 > [Sandbox and capabilities](../docs/sandbox-and-capabilities.md).
 
-## Share
-
-The share API hands text, a link or local files to the system's share sheet, where the user sends them on: to another
-app, a message, a mail, AirDrop or a saved file. On iOS it is `UIActivityViewController`, on Android the chooser of
-`Intent.ACTION_SEND`, on macOS the share menu (`NSSharingServicePicker`) and in a browser `navigator.share`. Rust code
-calls `share` of `nsh_core::prelude`; TSX imports `Share` from `nsh`.
-
-```tsx tabs
-import { Share, type ShareResult } from "nsh";
-```
-
-```rust tabs
-use nsh_core::share::{ShareAction, ShareRequest};
-use nsh_core::prelude::*; // share, share_available
-```
-
-```ts
-const Share: {
-  available(): Promise<boolean>;
-  show(content: ShareContent): Promise<ShareResult>;
-};
-
-interface ShareContent {
-  title?: string; // the subject (a mail's subject line) and the sheet's title where it has one
-  text?: string;
-  url?: string; // a link: http(s), mailto, an app's own scheme
-  files?: string[]; // local files by absolute path (up to 100)
-  anchor?: ViewRef; // the view the sheet points at where it is a popover (iPad, macOS)
-}
-
-interface ShareResult {
-  action: "shared" | "dismissed";
-  target: string | null; // what the user shared with, as the platform names it
-}
-```
-
-| TS | Rust |
-|---|---|
-| `await Share.available()` | `share_available().await -> bool` |
-| `await Share.show(content)` | `share(request).await -> Result<ShareOutcome, ShareError>` |
-| `title`, `text`, `url`, `files` | `ShareRequest::new().title(..).text(..).url(..).file(..)` |
-| `anchor` | `.anchor(&element_ref)` |
-| `result.action`, `.target` | `outcome.action` (`ShareAction`), `outcome.target` |
-| `error.code` | `error.code` |
-
-### Share.show
-
-```ts
-show(content: ShareContent): Promise<ShareResult>;
-```
-
-Shows the share sheet and resolves with what the user did: `"shared"` with the `target` the user shared with (an
-activity type on iOS, an app's package on Android, a service's title on macOS, `null` where the platform does not say),
-or `"dismissed"` when the user closed the sheet. A dismissal is the user's answer, not a failure. Rust: `share(request)`,
-an answer to await in a task (`spawn`, or an `async` module function).
-
-`"shared"` says as much as the platform knows:
-
-| Platform | `"shared"` means |
-|---|---|
-| iOS | The target finished sharing (a cancelled mail or message is `"dismissed"`) |
-| macOS | The service reported that it finished, or it reported nothing and the user came back to the window the menu opened from (after copying or adding to a list, and also with a mail draft still open); a service that reports a cancel is `"dismissed"`, and so is one that reports nothing while the user stays away for ten minutes |
-| Android | The user chose an app; Android tells nothing of what the app does next |
-| Web | `navigator.share` resolved |
-
-`show` never throws; every failure rejects the promise:
-
-- content with none of `text`, `url` and `files` (empty text counts as none), or a URL that does not parse or that runs
-  code (`javascript:`) or names a local file (`file:`; share it as `files`): a `TypeError`;
-- more than 100 files, text or a title past 1 MiB, or a URL past 16 KiB: a `RangeError`;
-- a file the app's `capabilities.fs.read` does not grant: `ERR_ACCESS_DENIED`, and a file that does not exist: `ENOENT`;
-- a share where the platform has no share sheet, or of content it does not share (a file outside an Android app's own
-  storage, files in a browser, a browser that does not allow sharing here or still shows an earlier share's sheet): an
-  `Error` whose `code` is `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`. `Share.available()` tells beforehand where the platform has no sheet.
-
-A `show` while a sheet is open resolves the earlier promise `"dismissed"` at once. On iOS and macOS the new sheet takes
-the earlier one's place; on Android and the web the earlier sheet stays until the user closes it, and a browser
-refuses the new share while it is open. On an iPad and on macOS the sheet is a popover: give `anchor` the view that opened it (the share button,
-in a page, a header, a dialog or another window), and without one it shows at the middle of the window.
-
-On iOS the sheet offers saving an image to Photos when the app says why it adds to the photo library:
-`NSPhotoLibraryAddUsageDescription` in `ios.infoPlist` ([Info.plist keys](../docs/packaging.md#infoplist-keys-and-entitlements)).
-
-A trip planner shares a trip from its share button:
-
-```tsx tabs
-import { Share, Text, View, type ViewRef } from "nsh";
-
-function ShareButton(props: { trip: string }) {
-  let button: ViewRef | undefined;
-  const share = async () => {
-    try {
-      const { action } = await Share.show({
-        title: "Weekend in Kyoto",
-        url: `https://example.com/trips/${props.trip}`,
-        anchor: button,
-      });
-      if (action === "shared") console.log("shared");
-    } catch (e) {
-      console.warn("cannot share", e);
-    }
-  };
-  return (
-    <View ref={button} role="button" accessibilityLabel="Share" onPress={share}>
-      <Text>Share</Text>
-    </View>
-  );
-}
-```
-
-```rust tabs
-use nsh_core::prelude::*;
-use nsh_core::share::{ShareAction, ShareRequest};
-
-fn share_button(trip: &'static str) -> impl IntoElement {
-    let button = element_ref();
-    view()
-        .element_ref(&button)
-        .role(AccessibilityRole::Button)
-        .accessibility_label("Share")
-        .on_press(move || {
-            let request = ShareRequest::new()
-                .title("Weekend in Kyoto")
-                .url(format!("https://example.com/trips/{trip}"))
-                .anchor(&button);
-            let shared = share(request);
-            spawn(async move {
-                match shared.await {
-                    Ok(outcome) if outcome.action == ShareAction::Shared => log::info!("shared"),
-                    Ok(_) => {}
-                    Err(error) => log::warn!("cannot share: {error}"),
-                }
-            });
-        })
-        .child(text("Share"))
-}
-```
-
-| Platform | Share sheet | Files |
-|---|---|---|
-| iOS | `UIActivityViewController`; a popover on an iPad | Any file the app reads |
-| Android | The chooser of `ACTION_SEND` (`ACTION_SEND_MULTIPLE` for several files) | Files in the app's own storage (`process.dataDir`, the cache), as `content:` URIs |
-| macOS | The share menu, `NSSharingServicePicker` | Any file the app reads |
-| Web | `navigator.share`, where the browser has it and the page allows `web-share` | Text and links |
-
-On Windows, Linux and in GPUI windows, `Share.available()` resolves `false` and `show` rejects with
-`ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`, so the app can offer another way (copying the link, say).
-
-### Share.available
-
-```ts
-available(): Promise<boolean>;
-```
-
-Whether `show` can show a share sheet here: the platform has one and the app's capabilities grant it. An app shows its
-share button by it. Rust: `share_available()`.
-
-### Tests
-
-`nsh test` answers shares in headless runs: `app.onShare({ action, target })` sets the answer (`"dismissed"` until one
-is set) and makes `Share.available()` true, and `app.shares()` returns what the app shared (`{ title, text, url, files }`).
-See [Testing](../docs/testing-and-trace.md).
-
-> [!NOTE]
-> When your app declares `capabilities` in `nsh.json`, the share sheet must be granted with `"share": true`, and each
-> shared file must also be readable by `fs.read`. Without the grant `Share.available()` resolves `false` and `show`
-> rejects with an `Error` whose `code` is `"ERR_ACCESS_DENIED"`, `permission` `"share"` and `resource` `""`. See
-> [Sandbox and capabilities](../docs/sandbox-and-capabilities.md).
-
 ## Notifications
 
 `Notifications` shows system notifications and sets the app's icon badge, the Dock's on macOS. Ask for the permission
@@ -2460,7 +2291,30 @@ UrlScheme.on("open", ({ url }) => {
 `open` reports every link the system hands the app, at launch and while it runs. A link that comes while nothing
 listens, the one that launched the app included, waits for the next listener (up to 16, the oldest dropped), so listen
 when the app starts or once the screen that handles links is ready. Rust code awaits `next_url_scheme_open()` of
-`nsh_core::prelude`; a Rust app's generated code passes its schemes to its root (`Root::url_schemes`).
+`nsh_core::prelude`; every call waiting when a link comes gets it. A task that called it listens for as long as it
+lives: its next call first gets the links that came since its last one (the last 16 at most), so a loop hears every
+link, even those that came while it handled the one before. Await it in a loop, or in a task that ends once it stops
+listening; a task that calls it again much later gets every link that came meanwhile. A listener that starts later does
+not get the links that came before it, except those that came while nothing listened. A Rust app's generated code
+passes its schemes to its root (`Root::url_schemes`).
+
+A native module that waits for one link, such as a sign-in session waiting for the provider to redirect back to
+`myapp://signed-in`, awaits `next_url_scheme_open_for("myapp")` instead. While it waits, the next link of that scheme
+goes to it alone: `open` listeners and `next_url_scheme_open()` do not hear it, and `url()` does not change. Links of
+other schemes, and the scheme's links before and after the wait, reach the app as usual. Call it before opening the
+page that will send the link back, since the wait starts with the call; dropping its answer ends the wait. The wait
+takes every link of the scheme, so give callbacks a scheme of the app's own: waiting for `https` would take all of the
+app's web links meanwhile.
+
+```rust
+use nsh_core::prelude::*;
+
+spawn(async {
+    let callback = next_url_scheme_open_for("myapp");
+    open_url("https://accounts.example.com/authorize?...").await;
+    let url = callback.await; // myapp://signed-in?code=...
+});
+```
 
 A link is input from outside the app: any page or app can open `myapp://` with any path and query. Check what a
 link asks for before acting on it (an id that exists, an action the user confirms), as for any other input. NSH only

@@ -1,14 +1,17 @@
-//! `Share.show`: the system's share sheet, `UIActivityViewController`
-//! ([`nsh_core::share`]). The text and the link are items of their own, the
-//! files file URLs; the title is the subject the first item gives (a mail's
-//! subject line). On an iPad the sheet is a popover pointing at the anchor
-//! view, or at the middle of the surface without an arrow. Its completion
-//! answers the root's `Share` event: shared with the activity type that
-//! finished, or dismissed. A new share closes the surface's sheet still
-//! showing, once its transitions end, and shows in its place.
+//! The share sheet on iOS: `UIActivityViewController`, presented over the
+//! top controller of the surface's window (`nsh::presenting_controller`'s
+//! surface, found with `nsh::native_view`). The text and the link are items
+//! of their own, the files file URLs; the title is the subject the first
+//! item gives (a mail's subject line). On an iPad the sheet is a popover
+//! pointing at the anchor's view, or at the middle of the surface without
+//! an arrow. Its completion answers the share: shared with the activity
+//! type that finished, or dismissed. A new share of the same engine closes
+//! its sheet still showing, once its transitions end, and shows in its
+//! place.
 
 use std::{
     cell::{Cell, RefCell},
+    collections::HashMap,
     ptr::NonNull,
     rc::Rc,
 };
@@ -16,10 +19,9 @@ use std::{
 use block2::RcBlock;
 use dispatch2::{DispatchQueue, DispatchTime, MainThreadBound};
 use nsh_core::{
-    EventKind, ROOT_ID,
-    share::{ShareError, ShareOutcome, ShareSheet},
+    ROOT_ID,
+    element::{EngineId, run_on_main_thread},
 };
-use nsh_engine::EngineControl;
 use objc2::{
     AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send,
     rc::Retained,
@@ -32,6 +34,71 @@ use objc2_ui_kit::{
     UIPopoverArrowDirection, UIView, UIViewController, UIViewControllerTransitionCoordinator,
     UIViewControllerTransitionCoordinatorContext,
 };
+
+use super::{Reply, ShareError, ShareOutcome, ShareSheet};
+
+/// The most main-thread turns a share looks for its surface's views on.
+/// A batch being applied holds the surface, and UIKit can run the main
+/// queue inside one, so a turn may find no view; the share then looks
+/// again on a later turn, as the mounter's own deferred calls do. A
+/// surface that stays without views (closed) gives up after these.
+const MAX_BUSY: u32 = 60;
+
+/// Whether this engine's surface shows a share sheet: it is a UIKit
+/// surface (always, for an engine iOS runs).
+pub(super) async fn available() -> bool {
+    for _ in 0..MAX_BUSY {
+        let found = run_on_main_thread(|| {
+            MainThreadMarker::new()
+                .is_some_and(|mtm| nsh_platform_ios::native_view(mtm, ROOT_ID).is_some())
+        })
+        .await;
+        match found {
+            Ok(true) => return true,
+            Ok(false) => continue,
+            Err(_) => return false,
+        }
+    }
+    false
+}
+
+/// Shows the share sheet for `sheet` in the calling engine's surface, and
+/// answers `reply` once.
+pub(super) async fn show(sheet: ShareSheet, reply: Reply) {
+    let owner = reply.0.owner;
+    let mut sheet = sheet;
+    for _ in 0..MAX_BUSY {
+        let task = reply.clone();
+        let tried = run_on_main_thread(move || {
+            // `sheet` comes back when the surface's views were not found.
+            if present(owner, &sheet, task) {
+                None
+            } else {
+                Some(sheet)
+            }
+        })
+        .await;
+        match tried {
+            Ok(None) => return,
+            Ok(Some(back)) => sheet = back,
+            Err(error) => {
+                reply.send(Err(ShareError::failed(format!(
+                    "share: the share sheet cannot be shown: {error}"
+                ))));
+                return;
+            }
+        }
+    }
+    reply.send(Err(ShareError::failed("share: the surface has no view")));
+}
+
+thread_local! {
+    /// Each engine's open share, which its next share replaces (main
+    /// thread). A share's entry goes when the share ends on the screen
+    /// (its sheet answers, or it is refused) or a newer one takes its
+    /// place, so the table holds open shares only.
+    static CURRENT: RefCell<HashMap<Option<EngineId>, Last>> = RefCell::new(HashMap::new());
+}
 
 /// What one shared item holds: the item and the subject it gives.
 pub(crate) struct ItemIvars {
@@ -89,11 +156,8 @@ fn object<T: objc2::Message>(value: Retained<T>) -> Retained<AnyObject> {
     unsafe { Retained::cast_unchecked(value) }
 }
 
-/// A surface's share sheet: the one waiting to be presented, else the one
+/// An engine's open share: the one waiting to be presented, else the one
 /// UIKit last got, while it lives. A new share replaces it.
-#[derive(Default)]
-pub(crate) struct Current(RefCell<Option<Last>>);
-
 struct Last {
     /// The share while it waits to be presented (its waits hold it).
     waiting: std::rc::Weak<Presenting>,
@@ -121,49 +185,72 @@ struct Earlier {
     phase: Rc<Cell<Phase>>,
 }
 
-impl Current {
-    /// Makes `next` the surface's share, and returns the sheet it has to
-    /// close first: the one shown, or the one a share still waiting was to
-    /// close (that share now never shows).
-    fn replace(&self, next: &Rc<Presenting>) -> Option<Earlier> {
-        let last = self.0.replace(Some(Last {
-            waiting: Rc::downgrade(next),
-            sheet: objc2::rc::Weak::from_retained(&next.controller),
-            phase: next.phase.clone(),
-        }))?;
-        if last.phase.get() == Phase::Waiting {
-            let waiting = last.waiting.upgrade()?;
-            waiting.replaced.set(true);
-            return waiting.earlier.take();
-        }
-        last.sheet.load()?;
-        Some(Earlier {
-            sheet: last.sheet,
-            phase: last.phase,
-        })
+/// Makes `next` `owner`'s open share, and returns the sheet it has to
+/// close first: the one shown, or the one a share still waiting was to
+/// close (that share now never shows).
+fn replace(owner: Option<EngineId>, next: &Rc<Presenting>) -> Option<Earlier> {
+    let last = CURRENT.with_borrow_mut(|current| {
+        current.insert(
+            owner,
+            Last {
+                waiting: Rc::downgrade(next),
+                sheet: objc2::rc::Weak::from_retained(&next.controller),
+                phase: next.phase.clone(),
+            },
+        )
+    })?;
+    if last.phase.get() == Phase::Waiting {
+        let waiting = last.waiting.upgrade()?;
+        waiting.replaced.set(true);
+        return waiting.earlier.take();
     }
+    last.sheet.load()?;
+    Some(Earlier {
+        sheet: last.sheet,
+        phase: last.phase,
+    })
 }
 
-/// Shows the share sheet for `sheet` over the top controller of `root`'s
-/// window (the surface's root view), pointing at `anchor` (the anchor
-/// node's own view, in whatever modal it is) where it is a popover, and
-/// answers request `id` once: when it closes, or at once when it cannot
-/// be presented. The surface's share sheet still showing (`current`) is
-/// closed first, with what its target presented over it.
-pub(crate) fn show(
-    id: u32,
-    sheet: &ShareSheet,
-    root: &UIView,
-    anchor: Option<&UIView>,
-    current: &Current,
-    control: &EngineControl,
-) {
+/// Drops `owner`'s entry if it is still the share of `phase`: that share
+/// ended on the screen. A newer share's entry stays.
+fn ended(owner: Option<EngineId>, phase: &Rc<Cell<Phase>>) {
+    CURRENT.with_borrow_mut(|current| {
+        if current
+            .get(&owner)
+            .is_some_and(|last| Rc::ptr_eq(&last.phase, phase))
+        {
+            current.remove(&owner);
+        }
+    });
+}
+
+/// Shows the share sheet for `sheet` over the top controller of the
+/// window of the surface's root view, pointing at the anchor node's own
+/// view (in whatever modal it is) where it is a popover, and answers
+/// `reply` once: when it closes, or at once when it cannot be presented.
+/// `owner`'s share sheet still showing is closed first, with what its
+/// target presented over it. Runs in a main-thread task, with the surface
+/// current, so it finds its views as a module's system UI does. Returns
+/// `false`, answering nothing, when no view of the surface is found on
+/// this turn (a batch holds it, or it closed). A share answered before its
+/// turn (a later one replaced it while it waited) shows nothing.
+fn present(owner: Option<EngineId>, sheet: &ShareSheet, reply: Reply) -> bool {
+    if reply.is_answered() {
+        return true;
+    }
     let fail = |error: ShareError| {
-        control.dispatch_event(ROOT_ID, EventKind::Share, error.payload(id));
+        reply.send(Err(error));
+        true
     };
     let Some(mtm) = MainThreadMarker::new() else {
         return fail(ShareError::failed("share: not on the main thread"));
     };
+    let Some(root) = nsh_platform_ios::native_view(mtm, ROOT_ID) else {
+        return false;
+    };
+    let anchor = sheet
+        .anchor
+        .and_then(|anchor| nsh_platform_ios::native_view(mtm, anchor));
     if root.window().is_none() {
         return fail(ShareError::failed("share: the surface is in no window"));
     }
@@ -206,10 +293,11 @@ pub(crate) fn show(
         let save = unsafe { UIActivityTypeSaveToCameraRoll };
         controller.setExcludedActivityTypes(Some(&NSArray::from_slice(&[save])));
     }
+    let phase = Rc::new(Cell::new(Phase::Waiting));
     let answer = Rc::new(Answer {
-        id,
-        control: control.clone(),
-        answered: Cell::new(false),
+        reply,
+        owner,
+        phase: phase.clone(),
     });
     let shown = objc2::rc::Weak::from_retained(&controller);
     let completion = {
@@ -235,32 +323,34 @@ pub(crate) fn show(
                         .unwrap_or_default();
                     return watch(mtm, shown.clone(), presenter, answer.clone());
                 }
-                let payload = match error {
+                let result = match error {
                     Some(error) => {
-                        ShareError::failed(error.localizedDescription().to_string()).payload(id)
+                        Err(ShareError::failed(error.localizedDescription().to_string()))
                     }
                     None if completed.as_bool() => {
-                        ShareOutcome::shared(activity.map(ToString::to_string)).payload(id)
+                        Ok(ShareOutcome::shared(activity.map(ToString::to_string)))
                     }
-                    None => ShareOutcome::dismissed().payload(id),
+                    None => Ok(ShareOutcome::dismissed()),
                 };
-                answer.send(payload);
+                answer.send(result);
             },
         )
     };
     // SAFETY: the block lives as long as UIKit keeps it (it copies it).
     unsafe { controller.setCompletionWithItemsHandler(RcBlock::as_ptr(&completion)) };
-    controller.setOverrideUserInterfaceStyle(crate::system::appearance());
+    // The app's appearance, which NSH sets on the root view: a presented
+    // controller takes its window's, not the root's.
+    controller.setOverrideUserInterfaceStyle(root.overrideUserInterfaceStyle());
     if let Some(popover) = controller.popoverPresentationController() {
         // iPad and Mac: a popover pointing at the anchor's own view, else
         // at the middle of the surface without an arrow.
         match anchor.filter(|view| view.window().is_some()) {
             Some(view) => {
-                popover.setSourceView(Some(view));
+                popover.setSourceView(Some(&view));
                 popover.setSourceRect(view.bounds());
             }
             None => {
-                popover.setSourceView(Some(root));
+                popover.setSourceView(Some(&root));
                 let bounds = root.bounds();
                 popover.setSourceRect(CGRect::new(
                     CGPoint::new(bounds.size.width / 2.0, bounds.size.height / 2.0),
@@ -273,17 +363,19 @@ pub(crate) fn show(
     let presenting = Rc::new(Presenting {
         mtm,
         controller,
-        phase: Rc::new(Cell::new(Phase::Waiting)),
-        root: root.retain(),
+        phase,
+        root,
         answer,
         waits: Cell::new(0),
         requested: Cell::new(0),
         replaced: Cell::new(false),
         earlier: RefCell::new(None),
     });
-    // The surface's earlier sheet gives way (the core answered it already).
-    *presenting.earlier.borrow_mut() = current.replace(&presenting);
+    // The engine's earlier sheet gives way (the module answered it
+    // already).
+    *presenting.earlier.borrow_mut() = replace(owner, &presenting);
     presenting.go();
+    true
 }
 
 /// Whether the sheet is still presented and not on its way out.
@@ -315,7 +407,9 @@ const WATCH_MS: u64 = 500;
 /// Answers dismissed once `sheet` is gone, with nothing presented in its
 /// place over `presenter`, without its completion having answered: after
 /// a share extension was cancelled some systems call the completion no
-/// more, whichever way the sheet then closes.
+/// more, whichever way the sheet then closes. Watches until then even when
+/// a newer share answered this one, so the share's entry goes with its
+/// sheet.
 fn watch(
     mtm: MainThreadMarker,
     sheet: objc2::rc::Weak<UIActivityViewController>,
@@ -323,14 +417,11 @@ fn watch(
     answer: Rc<Answer>,
 ) {
     later(mtm, WATCH_MS, move || {
-        if answer.answered.get() {
-            return;
-        }
         if held(&sheet, &presenter) {
             return watch(mtm, sheet, presenter, answer);
         }
         // Gone, or going: a completion still to come answers first.
-        next_turn(move || answer.send(ShareOutcome::dismissed().payload(answer.id)));
+        next_turn(move || answer.send(Ok(ShareOutcome::dismissed())));
     });
 }
 
@@ -347,19 +438,21 @@ fn later(mtm: MainThreadMarker, ms: u64, f: impl FnOnce() + 'static) {
     }
 }
 
-/// One share's answer, sent once whoever sends it.
+/// One share's answer, sent once whoever sends it, by the share's end on
+/// the screen: the sheet's completion, the sheet gone, or a refusal.
 struct Answer {
-    id: u32,
-    control: EngineControl,
-    answered: Cell<bool>,
+    reply: Reply,
+    owner: Option<EngineId>,
+    /// The share's phase, which tells its entry in [`CURRENT`].
+    phase: Rc<Cell<Phase>>,
 }
 
 impl Answer {
-    fn send(&self, payload: nsh_core::EventPayload) {
-        if !self.answered.replace(true) {
-            self.control
-                .dispatch_event(ROOT_ID, EventKind::Share, payload);
-        }
+    /// Answers the share (unless a newer one answered it already) and
+    /// drops its entry: it is no longer open.
+    fn send(&self, result: super::Answered) {
+        self.reply.send(result);
+        ended(self.owner, &self.phase);
     }
 }
 
@@ -376,7 +469,7 @@ struct Presenting {
     /// The looks so far for the earlier sheet to begin presenting.
     requested: Cell<u32>,
     /// A newer share replaced this one before it was presented: it never
-    /// is (the core answered it already).
+    /// is (the module answered it already).
     replaced: Cell<bool>,
     /// The surface's earlier sheet, to close before this one shows.
     earlier: RefCell<Option<Earlier>>,
@@ -407,7 +500,7 @@ impl Presenting {
             .as_ref()
             .map(|e| (e.sheet.load(), e.phase.get()));
         let Some((earlier, phase)) = earlier else {
-            let Some(top) = crate::system::top_controller(&self.root) else {
+            let Some(top) = top_controller(&self.root) else {
                 return self.refuse();
             };
             return self.present_over(top);
@@ -511,13 +604,23 @@ impl Presenting {
 
     /// Answers the request as a sheet UIKit cannot show.
     fn refuse(&self) {
-        self.answer.send(
-            ShareError::failed(
-                "share: the share sheet could not be presented (another view is being presented)",
-            )
-            .payload(self.answer.id),
-        );
+        self.answer.send(Err(ShareError::failed(
+            "share: the share sheet could not be presented (another view is being presented)",
+        )));
     }
+}
+
+/// The controller to present over in `view`'s window: its root
+/// controller's top presented one that is not leaving.
+fn top_controller(view: &UIView) -> Option<Retained<UIViewController>> {
+    let mut top = view.window()?.rootViewController()?;
+    while let Some(next) = top.presentedViewController() {
+        if next.isBeingDismissed() {
+            break;
+        }
+        top = next;
+    }
+    Some(top)
 }
 
 /// The first controller in a transition from `sheet` up through what is

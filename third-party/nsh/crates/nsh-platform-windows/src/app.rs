@@ -388,6 +388,14 @@ impl AppView {
         if !crate::window_state::top_level(hwnd) {
             return;
         }
+        // The content size the window has before the attributes apply (the
+        // size it was made at, else what the user left it at): a frame the
+        // attributes change (a hidden title bar, no frame, the system's
+        // again) keeps the outer size and moves the caption's strip into or
+        // out of the client area, which this size undoes. A minimized
+        // window has no client area to keep.
+        let usable = |s: &Size<nsh_core::Points>| s.width.0 >= 1.0 && s.height.0 >= 1.0;
+        let made = content_size(hwnd).filter(usable);
         crate::shell::apply(&self.surface, hwnd, &launch.attributes);
         let mode = match kept {
             Some(placement) => {
@@ -395,24 +403,23 @@ impl AppView {
                 placement.mode
             }
             None => {
-                let content = launch
-                    .default_size
-                    .filter(|s| s.width.0 >= 1.0 && s.height.0 >= 1.0);
+                let content = launch.default_size.filter(usable).or(made);
                 match (launch.default_position, launch.display) {
                     (Some(WindowPosition::At(at)), display) => {
-                        let content = content.or_else(|| content_size(hwnd));
                         if let Some(content) = content {
                             crate::window_state::open_at(hwnd, content, Some(at), None, display);
                         }
                     }
                     // The main window has no parent: centered on its display.
                     (Some(_), display) | (None, display @ Some(_)) => {
-                        if let Some(content) = content.or_else(|| content_size(hwnd)) {
+                        if let Some(content) = content {
                             crate::window_state::open_at(hwnd, content, None, None, display);
                         }
                     }
                     (None, None) => {
-                        if let Some(content) = content {
+                        if let Some(content) = content
+                            && content_size(hwnd) != Some(content)
+                        {
                             crate::window_state::size_content(hwnd, content);
                         }
                     }
@@ -1083,6 +1090,35 @@ mod tests {
         );
         crate::shell::apply(surface, hwnd, &backdrop(Backdrop::None));
         assert!(!surface.transparent());
+        // SAFETY: the test's own window.
+        let _ = unsafe { DestroyWindow(hwnd) };
+    }
+
+    /// A window made at a content size keeps it when the app's options
+    /// hide its title bar (a development host's `--window-size`, the
+    /// gallery's `titleBar.style: "hidden"`): the caption's strip is not
+    /// added to the content.
+    #[test]
+    fn hiding_the_title_bar_keeps_the_content_size() {
+        // Larger than the system's smallest window, which would grow it.
+        let view = AppView::make(
+            None,
+            AppOptions {
+                size: (480, 320),
+                skip_taskbar: true,
+                ..Default::default()
+            },
+            true,
+        )
+        .unwrap();
+        let hwnd = view.hwnd();
+        let made = content_size(hwnd).expect("a client area");
+        let mut title_bar = nsh_core::desktop::TitleBarOptions::default();
+        title_bar.style = nsh_core::desktop::TitleBarStyle::Hidden;
+        let mut launch = MainWindowOptions::default();
+        launch.attributes.title_bar = Some(title_bar);
+        view.place_main_window(&launch, None);
+        assert_eq!(content_size(hwnd), Some(made));
         // SAFETY: the test's own window.
         let _ = unsafe { DestroyWindow(hwnd) };
     }

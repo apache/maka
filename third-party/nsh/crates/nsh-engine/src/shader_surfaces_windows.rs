@@ -235,12 +235,16 @@ impl Surfaces {
         let Some(newest) = newest else {
             return false;
         };
+        let chosen_serial = self.slots[newest].serial;
         for (i, s) in self.slots.iter().enumerate() {
-            if i != newest && s.state.load(Ordering::Acquire) == state::DONE {
+            if i != newest
+                && s.serial <= chosen_serial
+                && s.state.load(Ordering::Acquire) == state::DONE
+            {
                 s.state.store(state::IDLE, Ordering::Release);
             }
         }
-        if self.slots[newest].serial <= shown_serial {
+        if chosen_serial <= shown_serial {
             self.slots[newest]
                 .state
                 .store(state::IDLE, Ordering::Release);

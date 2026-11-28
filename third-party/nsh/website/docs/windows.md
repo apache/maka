@@ -99,6 +99,11 @@ without any extra tools; packaging on another system keeps the default icon. The
 the taskbar. `--run` launches the app after packaging it. The executable is not signed: sign it with your own
 certificate (`signtool`) to distribute it.
 
+A TSX app's executable has only the parts of `nsh/base` the app imports. On x86_64, `nsh package` links nsh's release
+runner again from its prebuilt objects (`runtime\windows\nsh-windows-app.link\`) and leaves out the other parts. This
+needs neither Rust nor Visual Studio: the linker is the `windows-linker` [component](./installation.md#components),
+which the first package downloads. If the link fails, the app gets the prebuilt runner, with every part.
+
 ## Embedding in a Win32 app
 
 The `nsh-platform-windows` crate (from the NSH repository) gives a Rust Win32 app `AppView`: one NSH engine in a child
@@ -175,6 +180,17 @@ Native components are registered with `AppView::register_component`; see
 [Native components](./native-components.md#registering-on-windows-rust). `set_ui_sets(sets)` sets the UI sets every
 engine serves: NSH's (`nsh_base::registry()`) and your crates' (`my_app::registry()`, which `#[native_module]`
 makes), so the TSX a view loads imports your Rust components and modules too.
+
+## Presenting from Rust
+
+Rust code that shows system UI (a menu, a dialog, a share flyout) shows it from the surface whose code asked. In a
+main-thread task (`run_on_main_thread`), `nsh_platform_windows::presenting_window()` is the top-level window to own
+UI that no element anchors: the surface's visible window the user is in; `None` when the surface shows in no visible
+window. NSH draws its elements itself, so an element has no window of its own: `element_bounds(node)` gives the window
+an element of that surface shows in (the node of its `ref`, a `NodeRef` argument of a module function; `ROOT_ID` for
+the surface's root), its bounds in that window's client area in points, and the window's scale factor, for a menu
+that opens at the element. Read both while the task runs. They are for anchoring and presenting system UI only: a
+module never changes, re-parents, restyles or destroys a window NSH owns, nor draws into it.
 
 ## What differs on Windows
 

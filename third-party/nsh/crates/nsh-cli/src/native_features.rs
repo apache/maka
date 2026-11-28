@@ -207,6 +207,37 @@ pub(crate) fn choose(
     out
 }
 
+/// The features that are parts of `nsh/base` of their own: a Windows
+/// runner linked for an app ([`crate::windows_link`]) has a part when
+/// [`choose`] keeps its feature.
+const PART_FEATURES: &[&str] = &["editor", "rich-editor", "plot", "term", "emoji-picker"];
+
+/// The gates of the parts of `nsh/base` a runner linked for the app keeps:
+/// those its bundle links ([`linked_gates`]), and those of the part
+/// features [`choose`] keeps.
+pub(crate) fn part_gates(
+    uses: Option<&nsh_bundler::NativeUse>,
+    keep: &[String],
+    rust: RustCodeUse,
+) -> Vec<String> {
+    let mut gates = linked_gates(uses);
+    for choice in choose(uses, keep, rust) {
+        if !choice.keep || !PART_FEATURES.contains(&choice.feature) {
+            continue;
+        }
+        let need = BY_GATE
+            .iter()
+            .find(|(feature, _)| *feature == choice.feature)
+            .map_or(&[][..], |(_, need)| *need);
+        for gate in need {
+            if !gates.iter().any(|g| g == gate) {
+                gates.push((*gate).to_owned());
+            }
+        }
+    }
+    gates
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -254,6 +285,22 @@ mod tests {
             RustCodeUse::default(),
         ));
         assert!(!k.contains(&"editor"), "{k:?}");
+    }
+
+    #[test]
+    fn a_linked_runner_keeps_the_parts_imported_or_named() {
+        let button = bundle("import { Button } from 'nsh/base'; Button;");
+        let gates = part_gates(Some(&button), &[], RustCodeUse::default());
+        assert!(!gates.iter().any(|g| g == "nsh_part_editor"), "{gates:?}");
+        let gates = part_gates(Some(&button), &["plot".into()], RustCodeUse::default());
+        assert!(gates.iter().any(|g| g == "nsh_part_plot"), "{gates:?}");
+        let editor = bundle("import { Editor } from 'nsh/base'; Editor;");
+        let gates = part_gates(Some(&editor), &[], RustCodeUse::default());
+        assert!(gates.iter().any(|g| g == "nsh_part_editor"), "{gates:?}");
+        // Highlighting is kept with a `TextView`, but is not a part.
+        let text = bundle("import { TextView } from 'nsh/base'; TextView;");
+        let gates = part_gates(Some(&text), &[], RustCodeUse::default());
+        assert!(!gates.iter().any(|g| g == "nsh_part_editor"), "{gates:?}");
     }
 
     #[test]

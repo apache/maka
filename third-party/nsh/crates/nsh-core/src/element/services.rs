@@ -284,18 +284,6 @@ pub(crate) fn render_canvas(
     (answer, Action::RenderCanvas(Box::new(request), slot))
 }
 
-/// Shows the system's share sheet for `request`; the answer is how it
-/// ended, or why it could not share.
-pub(crate) fn share(
-    request: crate::share::ShareRequest,
-) -> (
-    Answer<Result<crate::share::ShareOutcome, crate::share::ShareError>>,
-    Action,
-) {
-    let (answer, slot) = Answer::new();
-    (answer, Action::Share(request, slot))
-}
-
 /// The color the user picks on the screen (none when cancelled).
 pub(crate) fn pick_screen_color() -> (Answer<Option<crate::Hsla>>, Action) {
     let (answer, slot) = Answer::new();

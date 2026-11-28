@@ -336,8 +336,6 @@ pub fn Combobox(props: ComboboxProps, cx: Scope<ComboboxEvent>) -> impl IntoElem
     let width = signal(None::<Points>);
     let focused = signal(false);
     let opening = stored(Opening::Press);
-    // Why it closed last: a press outside leaves the focus where it went.
-    let closed_by = stored(None::<OpenChangeReason>);
     let change: Rc<dyn Fn(bool, OpenChangeReason)> = Rc::new(move |next, reason| {
         if next && props.disabled.get_untracked() {
             return;
@@ -345,10 +343,8 @@ pub fn Combobox(props: ComboboxProps, cx: Scope<ComboboxEvent>) -> impl IntoElem
         if open.get_untracked() == next {
             return;
         }
-        if !next {
-            closed_by.replace(Some(reason));
-        }
-        open.request(next, || {
+        // The reason a close keeps says where the keyboard goes (`back`).
+        open.request_for(next, reason, || {
             cx.emit(ComboboxEvent::OpenChange(next, reason));
         });
     });
@@ -506,9 +502,8 @@ pub fn Combobox(props: ComboboxProps, cx: Scope<ComboboxEvent>) -> impl IntoElem
         // Back to the input, unless a press outside, Tab or the app's
         // `onChange` took the keyboard somewhere else.
         back: Rc::new(move |popup| {
-            let by = closed_by.replace(None);
             if !matches!(
-                by,
+                open.take_closed_by(),
                 Some(OpenChangeReason::PressOutside | OpenChangeReason::Focus)
             ) {
                 field.focus_back(popup);
@@ -630,7 +625,7 @@ pub fn Combobox(props: ComboboxProps, cx: Scope<ComboboxEvent>) -> impl IntoElem
         })
         // A press on the input opens and closes the list in every idiom,
         // as `gpui-component`'s trigger does (after the focus it gave,
-        // which the platforms report first).
+        // which every platform reports first).
         .on_press(move || {
             if focus_opened.replace(false) || props.disabled.get_untracked() {
                 return;

@@ -145,14 +145,14 @@ Markdown），以及按 schema 的 `renderHTML` 写出的 HTML，邮件、文档
 
 ### 粘贴和拖入的文件
 
-文件交给应用，由应用决定它们变成什么（图片节点、附件、指向上传副本的链接）；编辑器不为它们插入任何内容，选区保持不变，应用在选区处插入自己生成的内容。粘贴图片或在文件管理器中复制的文件时调用 `onPasteFiles`，参数为 `{ files, uris }`：`files` 是带字节的图片，`uris` 是被复制文件的 `file:` URL。在桌面平台上，从其他应用拖到编辑器上的文件调用它的 `onFileDrop`，参数为 `{ uris, mimeTypes }`，与[视图的文件拖放](./view.md#桌面文件拖放)相同；`onFileDragEnter` / `onFileDragLeave` 跟随拖动，可用于显示「松开以添加附件」之类的提示。没有 `onFileDrop` 时，拖入的文件交给外层监听的视图。
+文件交给应用，由应用决定它们变成什么（图片节点、附件、指向上传副本的链接）；编辑器不为它们插入任何内容，选区保持不变，应用在选区处插入自己生成的内容。粘贴图片或在文件管理器中复制的文件时调用 `onPasteFiles`，参数为 `{ paste: { files, uris } }`：`files` 是带字节的图片（`{ name, mime, data }`），`uris` 是被复制文件的 `file:` URL。在桌面平台上，从其他应用拖到编辑器上的文件调用它的 `onFileDrop`，参数为 `{ uris, mimeTypes }`，与[视图的文件拖放](./view.md#桌面文件拖放)相同；`onFileDragEnter` / `onFileDragLeave` 跟随拖动，可用于显示「松开以添加附件」之类的提示。没有 `onFileDrop` 时，拖入的文件交给外层监听的视图。
 
 从其他应用或其他视图拖到编辑器上的文字插在松手的位置：光标移到那里，文字像粘贴一样插入（拖动带 HTML 时一并使用，经过 `transformPasted` 和 `handlePaste`），算一步撤销。目前 iOS 会派发文字拖放；桌面平台和 Android 上文字拖动仍由平台处理。
 
 ```tsx
 <RichEditor
   editor={editor}
-  onPasteFiles={({ files }) => attach(files)}
+  onPasteFiles={({ paste }) => attach(paste.files)}
   onFileDrop={({ uris, mimeTypes }) => attachFiles(uris, mimeTypes)}
 />
 ```
@@ -246,9 +246,19 @@ editor.run(command("toggleBold"));
 
 `StarterKit` 包含 `Document`、`Paragraph`、文本节点、`Heading`、`Blockquote`、`BulletList`、`OrderedList`、`ListItem`、`TaskList`、`TaskItem`、`CodeBlock`、`CodeBlockHighlight`、`HardBreak`、`HorizontalRule`、`RichImage`（Tiptap 的 `Image`）、`Bold`、`Italic`、`Strike`、`Code`、`Underline`、`RichLink`（Tiptap 的 `Link`）、`Highlight`、`Subscript`、`Superscript`、`RichTextStyle`（Tiptap 的 `TextStyle`）、`TextAlign`、`History`、`TrailingNode`、`Typography` 和 `ListKeymap`。以某个扩展命名的选项设为 `false` 即不包含它，设为对象则配置它（`heading: { levels }`、`history: { depth }`、`textAlign: { types }`、`codeBlock: { enableTabIndentation }`）。每个类的 `configure(options)` 与 `extend({...})` 生成 `RichExtension`，它有 `name`、`type`、`priority` 和 `options`。每个编辑器还带有核心键位（Enter、Backspace、Delete、全选）。
 
-写明语言的代码块（` ```rust `、`toggleCodeBlock({ language: "rust" })`）会按 `TextView` 给围栏代码着色的方式着色，语法库和配色都相同：这由 `CodeBlockHighlight` 负责，相当于 Tiptap 的 `CodeBlockLowlight`，只是不用传入高亮器。`StarterKit.configure({ codeBlockHighlight: false })` 让代码不着色。在长代码块里打字不用等着色：颜色在引擎线程之外算出，稍后显示。Web 上语法库在第一次需要时从页面下载一次，与 `TextView` 共用，不在首屏下载里。没有开启平台的 feature `highlight` 时，代码不着色。
+写明语言的代码块（` ```rust `、`toggleCodeBlock({ language: "rust" })`）会按 `TextView` 给围栏代码着色的方式着色，语法库和配色都相同：这由 `CodeBlockHighlight` 负责，相当于 Tiptap 的 `CodeBlockLowlight`，只是不用传入高亮器。`StarterKit.configure({ codeBlockHighlight: false })` 让代码不着色。在长代码块里打字不用等着色：颜色在引擎线程之外算出，稍后显示。Web 上语法库在第一次需要时从页面下载一次，与 `TextView` 共用，不在首屏下载里。没有开启平台的 feature `highlight` 时，代码不着色。代码块的 `language` 认得 highlight.js 和 lowlight 用的语言名（`objectivec`、`plist`、`shellsession` 等），整段围栏信息按第一个词取语言（`ts title="a.ts"`、`rust,ignore`），从其他编辑器迁移来的文档也能保持着色。
 
-Rust 里是 `kit::code_block_highlight()`，包含在 `kit::starter_kit()` 和 `starter::plugins` 里。
+没写语言的代码块不着色，除非扩展替它指定一种语言。`defaultLanguage`（Tiptap 的同名选项）给所有这样的代码块指定语言：`CodeBlockHighlight.configure({ defaultLanguage: "rust" })`，或 `StarterKit.configure({ codeBlockHighlight: { defaultLanguage: "rust" } })`。这个语言只用于着色，不写进文档，协作者和保存的内容都看不到变化。
+
+Rust 里是 `kit::code_block_highlight()`，包含在 `kit::starter_kit()` 和 `starter::plugins` 里。`kit::code_block_highlight_with(options)` 还接受 `CodeBlockHighlightOptions`：`default_language`，以及 `detect_language`（`Arc<dyn Fn(&str) -> Option<String> + Send + Sync>`），即应用自己按代码内容猜代码块的语言，相当于 Tiptap 的 `CodeBlockLowlight` 在没设 `defaultLanguage` 时做的自动识别。优先级依次是代码块自己的 `language`、`detect_language`、`default_language`；都没有给出语言时，代码块不着色。没写语言的代码块每次代码变化时调用一次 `detect_language`，在引擎线程上执行，所以要保持很快。它只在 Rust 里提供：内置扩展的 TSX 选项里如果放函数，打字时就要执行 JS。
+
+```rust
+let mut options = CodeBlockHighlightOptions::default();
+options.detect_language = Some(Arc::new(|code: &str| {
+    code.trim_start().starts_with("fn ").then(|| "rust".to_owned())
+}));
+let highlight = kit::code_block_highlight_with(options);
+```
 
 每个扩展都加入 Tiptap 的命令，由 `command(name, args)` 运行：`toggleBold`、`setItalic`、`unsetStrike`、`toggleHeading({ level })`、`setParagraph`、`toggleBlockquote`、`toggleBulletList`、`toggleOrderedList`、`toggleTaskList`、`toggleCodeBlock({ language })`、`setHardBreak`、`setHorizontalRule`、`setImage({ src })`、`toggleHighlight({ color })`、`setTextAlign("center")`、`unsetTextAlign`，以及下文的链接、字数统计与建议命令。图片的 `src` 与 `Image` 接受的相同（URL、文件路径或 `file:` URL、`data:` URI）；不设 `width` 和 `height` 时按原始尺寸显示，只设其一时按该边和图片的宽高比显示。
 

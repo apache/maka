@@ -123,6 +123,23 @@ Rust 中对应的是 `TextSelectionEvent::anchor` 和 `focus`（`TextSelectionEn
 
 在可选择视图（或它里面的视图）的 ref 上调用 `clearSelection()` 会清除选区，效果和点击别处一样：高亮消失，`onSelectionChange` 收到 `""`。选区上方的操作栏在完成操作后调用它即可。Rust 中为 `ElementRef::clear_selection`。
 
+`ref.selectAll()` 正好相反：它选中这个节点所在（或本身就是）的可选择视图里的全部文字，效果和选区菜单里的“全选”一样。在手机上会显示选择手柄和编辑菜单，用户可以再缩小选区、只复制一部分。长按已经另有用途时用它，比如聊天消息长按弹出菜单，菜单里有“选择文本”：
+
+```tsx
+let message!: ViewRef;
+
+<View ref={message} selectable>
+  <Text>
+    Prices rose <Text class="font-bold">4%</Text> this quarter.
+  </Text>
+</View>;
+
+// 菜单里的“选择文本”：
+message.selectAll();
+```
+
+文字保留原有样式，换成 `Input` 就会丢掉。`onSelectionChange` 收到选中的文字，和拖动选择之后一样。Rust 中为 `ElementRef::select_all`。
+
 ### 读取为 Markdown 或 HTML
 
 设置了 `selectable` 的 `TextView` 可以通过 ref 在需要时读取选区：`selectedText({ format })` 返回选中的文字（`"plain"`，默认值，与复制得到的相同），或把选中的那部分文档按 `"markdown"`、`"html"` 返回。内容由选区覆盖的节点重新生成，所以周围的强调、链接、列表项和代码块都会保留（有序列表保留编号，表格的行保留表头）。选中全部时，若文档本来就是这种格式，则原样返回源文。没有选中内容时返回 `""`。Rust 中为 `TextViewApi::selected_text`，传入 `TextSelectionOptions::format(TextSelectionFormat::Markdown)`。

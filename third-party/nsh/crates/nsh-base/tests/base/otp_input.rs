@@ -9,7 +9,7 @@ use std::{
     time::Duration,
 };
 
-use nsh_base::{OtpInputCompleteEvent, input, otp_input};
+use nsh_base::{OtpInputCompleteEvent, OtpInputValidationType, input, otp_input};
 use nsh_core::{
     AutoFill, Color, Command, EventKind, EventPayload, MountItem, NodeId, PasteEvent, PayloadValue,
     Size, prelude::*,
@@ -115,6 +115,24 @@ fn Uncontrolled() -> impl IntoElement {
             ),
         )
         .child(view().test_id("other").child(input()))
+        .child(log.view())
+}
+
+/// Eight letters and digits of its own, as a sign-in code.
+#[component]
+fn Alphanumeric() -> impl IntoElement {
+    let log = Log::new();
+    view()
+        .child(
+            view().test_id("otp").child(
+                sized(otp_input())
+                    .length(8u32)
+                    .validation_type(OtpInputValidationType::Alphanumeric)
+                    .accessibility_label("Code")
+                    .on_change(move |v: &SharedString| log.change(v))
+                    .on_complete(move |e: &OtpInputCompleteEvent| log.complete(e)),
+            ),
+        )
         .child(log.view())
 }
 
@@ -506,4 +524,74 @@ fn filled_cells_take_their_data_filled_classes() {
     app.wait(Duration::from_millis(50)).unwrap();
     assert_eq!(field(&mut app, "id:otp"), "12");
     assert_eq!(filled_cells(&styles), 4);
+}
+
+#[test]
+fn an_alphanumeric_code_takes_letters_upper_cased_and_digits() {
+    let mut app = start::<Alphanumeric>();
+    app.type_text("id:otp", "a1-b").unwrap();
+    see(&mut app, "Changes [A,A1,A1B]");
+    assert_eq!(field(&mut app, "id:otp"), "A1B");
+    assert!(
+        app.shows("A") && app.shows("B"),
+        "{:?}",
+        app.screen().texts()
+    );
+    assert!(!app.shows("a") && !app.shows("-"));
+}
+
+#[test]
+fn an_alphanumeric_code_takes_full_width_letters_and_digits_as_ascii() {
+    let mut app = start::<Alphanumeric>();
+    app.type_text("id:otp", "ａＢ１").unwrap();
+    see(&mut app, "Changes [A,AB,AB1]");
+    assert_eq!(field(&mut app, "id:otp"), "AB1");
+}
+
+#[test]
+fn backspace_removes_the_last_character_of_an_alphanumeric_code() {
+    let mut app = start::<Alphanumeric>();
+    app.type_text("id:otp", "ab").unwrap();
+    app.press_key("backspace").unwrap();
+    see(&mut app, "Changes [A,AB,A]");
+    assert!(!app.shows("B"));
+    assert_eq!(field(&mut app, "id:otp"), "A");
+}
+
+#[test]
+fn a_pasted_alphanumeric_code_replaces_the_code() {
+    let mut app = start::<Alphanumeric>();
+    app.type_text("id:otp", "z").unwrap();
+    app.paste("id:otp", &PasteEvent::new("ab12-cd34")).unwrap();
+    see(&mut app, "Changes [Z,AB12CD34]");
+    see(&mut app, "Completes [AB12CD34]");
+    assert_eq!(field(&mut app, "id:otp"), "AB12CD34");
+}
+
+/// The keyboards `C`'s one-time code field asks for, as it is mounted.
+fn keyboards<C: Component<Props = ()>>() -> Vec<KeyboardType> {
+    let mut app = Headless::start(EngineConfig {
+        viewport: Size::new(px(390.0), px(844.0)),
+        ..EngineConfig::new(nsh_testing::windowed_root::<C>())
+    })
+    .unwrap();
+    let keyboards = Arc::new(Mutex::new(Vec::new()));
+    let seen = keyboards.clone();
+    app.observe(move |_, batch| {
+        for item in &batch.items {
+            if let MountItem::Input { config, .. } = item
+                && config.auto_fill == AutoFill::OneTimeCode
+            {
+                seen.lock().unwrap().push(config.keyboard);
+            }
+        }
+    });
+    app.first_render().unwrap();
+    keyboards.lock().unwrap().clone()
+}
+
+#[test]
+fn a_numeric_code_shows_the_number_pad_and_an_alphanumeric_one_the_keyboard() {
+    assert_eq!(keyboards::<Uncontrolled>(), [KeyboardType::Number]);
+    assert_eq!(keyboards::<Alphanumeric>(), [KeyboardType::Default]);
 }

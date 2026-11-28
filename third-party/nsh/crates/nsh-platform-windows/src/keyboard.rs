@@ -81,9 +81,9 @@ pub(crate) fn reset(surface: &Surface) {
     surface.keyboard.focus.borrow_mut().clear();
 }
 
-/// Whether Tab stops at `view`: it takes presses or is `focusable`, and
-/// the pointer could reach it. A text field is a stop of its own
-/// ([`crate::text_input`]) and not one of these.
+/// Whether Tab stops at `view`: it takes presses or is `focusable`, it has
+/// an area and the pointer could reach it. A text field is a stop of its
+/// own ([`crate::text_input`]) and not one of these.
 pub(crate) fn is_stop(view: &NshView) -> bool {
     {
         let state = view.state();
@@ -95,7 +95,56 @@ pub(crate) fn is_stop(view: &NshView) -> bool {
             return false;
         }
     }
-    targetable(view)
+    has_area(view) && targetable(view)
+}
+
+/// Whether `view` has an area. `display: none` lays out each view it holds
+/// at no size and hides none of them, so without this Tab would stop at
+/// them and a focused one that hides would keep taking keys (as on macOS,
+/// `seen_by_keys`).
+pub(crate) fn has_area(view: &NshView) -> bool {
+    let size = view.state().frame.size;
+    size.width.0 > 0.0 && size.height.0 > 0.0
+}
+
+/// Whether the keyboard may act on `view`: it has an area and neither it
+/// nor a view around it is `visibility: hidden` (macOS's `seen_by_keys`).
+pub(crate) fn seen(view: &NshView) -> bool {
+    if !has_area(view) {
+        return false;
+    }
+    let mut current = Some(view.clone());
+    while let Some(view) = current {
+        if view.state().style.hidden {
+            return false;
+        }
+        current = view.parent_view();
+    }
+    true
+}
+
+/// A batch is applied: the keyboard focus leaves a custom view, or a text
+/// field, that the batch hid (`display: none` around it lays it out at no
+/// size, or `visibility: hidden`), and its blur is reported, as on macOS
+/// (`release_hidden_focus`). Neither hides a window, so the keys would
+/// still act on what the user cannot see.
+pub(crate) fn release_hidden_focus(surface: &Surface) {
+    if let Some(field) = crate::text_input::focused(surface)
+        && !seen(&field)
+    {
+        crate::text_input::blur(&field);
+    }
+    let hidden: Vec<NodeId> = surface
+        .keyboard
+        .focus
+        .borrow()
+        .iter()
+        .filter(|(_, view)| view.attached() && !seen(view))
+        .map(|(window, _)| *window)
+        .collect();
+    for window in hidden {
+        clear(surface, window);
+    }
 }
 
 /// Whether the pointer may reach `view` (it and its ancestors are shown,
@@ -917,7 +966,11 @@ pub(crate) fn activate(surface: &std::rc::Rc<Surface>, event: &KeyEvent) -> bool
     let Some(view) = focused_control(surface) else {
         return false;
     };
-    surface.event(view.id(), EventKind::Press, EventPayload::None);
+    // A held key presses once: its auto-repeats stay the control's without
+    // pressing it again, as on macOS and Linux.
+    if !event.repeat {
+        surface.event(view.id(), EventKind::Press, EventPayload::None);
+    }
     true
 }
 
@@ -1397,8 +1450,23 @@ mod tests {
             }],
         );
         assert!(focused_control(&surface).is_some());
+        surface.record_events();
         assert!(activate(&surface, &key(0x0D)), "Return");
         assert!(activate(&surface, &key(0x20)), "Space");
+        assert_eq!(
+            surface.take_events(),
+            vec![
+                (view.id(), EventKind::Press, EventPayload::None),
+                (view.id(), EventKind::Press, EventPayload::None),
+            ]
+        );
+        // Auto-repeats stay consumed by the control without pressing it again.
+        for vk in [0x0D, 0x20] {
+            let mut held = key(vk);
+            held.repeat = true;
+            assert!(activate(&surface, &held), "a repeat stays the control's");
+        }
+        assert!(surface.take_events().is_empty(), "repeats press nothing");
         assert!(!activate(&surface, &key(0x41)), "another key");
         let mut ctrl = key(0x0D);
         ctrl.modifiers.ctrl = true;
@@ -1676,6 +1744,49 @@ mod tests {
             translated(&event, &state).is_none(),
             "{vk:#x} composed with itself: the dead key was stored"
         );
+    }
+
+    /// A stop `display: none` holds (laid out at no size) is passed by Tab,
+    /// and a focused stop that hides so gives up the focus once the batch
+    /// that hid it is applied, as on macOS.
+    #[test]
+    fn tab_passes_a_stop_at_no_size_and_a_hidden_focus_is_given_up() {
+        let surface = surface();
+        let gone = focusable(&surface, 2);
+        let shown = focusable(&surface, 4);
+        let empty = rect(0.0, 0.0, 0.0, 0.0);
+        apply(
+            &surface,
+            &[MountItem::Frame {
+                id: 2,
+                frame: empty,
+            }],
+        );
+        assert!(!is_stop(&gone));
+        assert!(crate::input::tab(&surface, &key(0x09)));
+        assert_eq!(focused_in(&surface, ROOT_ID).as_ref(), Some(&shown));
+        // The focused stop hides: the batch's end takes the focus from it.
+        apply(
+            &surface,
+            &[MountItem::Frame {
+                id: 4,
+                frame: empty,
+            }],
+        );
+        release_hidden_focus(&surface);
+        assert!(surface.keyboard.focus.borrow().is_empty());
+        // `visibility: hidden` around a focused stop does too.
+        apply(
+            &surface,
+            &[MountItem::Frame {
+                id: 4,
+                frame: rect(0.0, 0.0, 100.0, 40.0),
+            }],
+        );
+        assert!(focus_control(&surface, &shown));
+        surface.root.state_mut().style.hidden = true;
+        release_hidden_focus(&surface);
+        assert!(surface.keyboard.focus.borrow().is_empty());
     }
 
     #[test]

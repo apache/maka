@@ -162,6 +162,7 @@ import type {
   NavStackProps,
   NavStackState,
   OtpInputProps,
+  OtpInputValidationType,
   PaginationItemState,
   PaginationProps,
   ProgressProps,
@@ -341,7 +342,7 @@ use nsh_base::{
 
 ### Select
 
-从以数据形式给出的一组条目（`items`：每个条目有值和标题，可以禁用或归入分组）中选出一个值，本身没有外观。应用的触发元素打开列表：在桌面平台上是触发元素处的弹出层，在手机和平板上是屏幕底部的 sheet。选择框负责键盘（Up、Down、Home、End、Page Up 和 Page Down、输入跳转、Return 和 Escape）、搜索（`searchable`）、高亮的行（`itemClass` 上的 `focus:`；`renderItem` 只收到条目本身，从不收到状态），以及屏幕阅读器读到的组合框、列表框和选项角色。值由应用持有（`value`、`onChange`），或交给选择框自己保存（`defaultValue`）；应用为每个部件设置样式，或者自己绘制行。见 [Select](../elements/select.md)。
+从以数据形式给出的一组条目（`items`：每个条目有值和标题，可以禁用或归入分组）中选出一个值，本身没有外观。应用的触发元素打开列表：在桌面平台上是触发元素处的弹出层，在手机和平板上是屏幕底部的 sheet。选择框负责键盘（Up、Down、Home、End、Page Up 和 Page Down、输入跳转、Return 和 Escape）、搜索（`searchable`）、高亮的行（`itemClass` 上的 `focus:`；`renderItem` 只收到条目本身，从不收到状态），以及屏幕阅读器读到的组合框、列表框和选项角色。值由应用持有（`value`、`onChange`），或交给选择框自己保存（`defaultValue`）；搜索词可以由应用持有（`query`、`onQueryChange`）；应用为每个部件设置样式，或者自己绘制行。见 [Select](../elements/select.md)。
 
 ### Combobox
 
@@ -349,7 +350,7 @@ use nsh_base::{
 
 ### Calendar
 
-从按周排列的月份中选出一个日期，或在 `range` 时选出一段日期，本身没有外观。并排显示一个或几个月（`numberOfMonths`）；头部翻月，并能打开月份视图或一页年份。值是一个 ISO 日期（`"2026-10-28"`）或 `[start, end]`，由应用持有（`value`、`onChange`），或交给日历自己保存（`defaultValue`）；`disabledMatcher` 让某些日期不能被选中，所有日期作为 Tab 的一站接受键盘操作。应用为各部件设置样式并绘制条目（`renderItem` 只收到条目本身；状态是条目的类，范围中的日期是 `selected:`，并带 `data-range-start:`、`data-range-middle:`、`data-range-end:`，选择结束日时到鼠标或键盘所在那一天的日期带 `data-range-preview-*:`）。见 [Calendar](../elements/calendar.md)。
+从按周排列的月份中选出一个日期，或在 `range` 时选出一段日期，本身没有外观。并排显示一个或几个月（`numberOfMonths`）；头部翻月，并能打开月份视图或一页年份。值是一个 ISO 日期（`"2026-10-28"`）或 `[start, end]`，由应用持有（`value`、`onChange`），或交给日历自己保存（`defaultValue`）；范围的结束日选好之前，`onChangeStart` 会先报告开始日；`disabledMatcher` 让某些日期不能被选中，所有日期作为 Tab 的一站接受键盘操作。应用为各部件设置样式并绘制条目（`renderItem` 只收到条目本身；状态是条目的类，范围中的日期是 `selected:`，并带 `data-range-start:`、`data-range-middle:`、`data-range-end:`，选择结束日时到鼠标或键盘所在那一天的日期带 `data-range-preview-*:`）。见 [Calendar](../elements/calendar.md)。
 
 ### TimeField
 

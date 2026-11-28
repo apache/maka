@@ -171,7 +171,7 @@ const page = signal({ start: 0, rows: load(0) });
 
 行从数据中的 0 开始计数，列是它在 `columns` 中的索引，不受用户移动后顺序的影响。`onSelectionChange` 报告用户的选择（没有选择时为 `null`）。`selection` 属性由应用设置选择；不设置时由表格自己保存。`onDoublePress` 报告一行、一个单元格或一个标题被连按两次，`onContextMenu` 报告次要按下或长按，并给出应用打开 [`Menu`](./menu.md) 的位置。两者都指出指针下的单元格（`row` 和 `column`）、行号（只有 `row`）或标题（只有 `column`）。在下一次按下之前，请求菜单的单元格带有 `cellActive` 部件；单元格不可选时，则是它所在的行带有 `rowActive` 部件。
 
-屏幕阅读器得到一个网格（名称来自 `accessibilityLabel`），由列标题和单元格组成，被选中的会读出为已选中。
+屏幕阅读器得到一个网格（名称来自 `accessibilityLabel`），其表头和表体中的每一行都包含自己的分组标签、列标题和单元格；被选中的会读出为已选中。
 
 ### 拖选单元格区域
 

@@ -6,7 +6,7 @@ export function createDom(invoke, values, reactive, live, wake) {
   const handlers = new WeakMap(), owners = new WeakMap(), heldProps = new WeakMap();
   let touches, measure, hot, platform, base;
   const prototype = Object.create(null);
-  for (const name of ["focus", "blur", "clearSelection", "scrollTo", "zoomTo", "scrollToIndex", "scrollToEnd", "reveal", "reload", "goBack", "goForward", "stopLoading", "injectJavaScript", "postMessage", "insertText", "sendInput", "load", "seek"]) {
+  for (const name of ["focus", "blur", "clearSelection", "selectAll", "scrollTo", "zoomTo", "scrollToIndex", "scrollToEnd", "reveal", "reload", "goBack", "goForward", "stopLoading", "injectJavaScript", "postMessage", "insertText", "sendInput", "load", "seek"]) {
     prototype[name] = function (argument) { const id = values.nodeIds.get(this); if (id === undefined) throw new TypeError("nsh: not a node"); return call(314, [id, name, argument]); };
   }
   // A page's web view is an iframe whose document the app may not read:

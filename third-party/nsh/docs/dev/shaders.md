@@ -189,7 +189,7 @@ is. Views out of sight stop rendering until they show again.
 | Linux (GTK 4) | each view's tick callback | a `GdkMemoryTexture` appended in the view's snapshot, after the background, under text, images and children | `reveal` on the frame clock's layout, for views outside a clipping ancestor or the window |
 | macOS (AppKit) | one frame callback of the surface's display link while frames change with time, pictures are due or anything else wants frames; a view that only changed renders after the batch and shows its frame when the GPU says it is done (`Renderer::when_done`), without the display link; at the view's device pixels per point (`view::backing_scale_of`) | an IOSurface (`show_on_surfaces`), the contents of a sublayer under the children (`decor.rs` shapes it); a `CGImage` without Metal | `shown`, from `Mounter::revisit` (rows scrolled away, screens under another) |
 | iOS | a `CADisplayLink` of its own, at the screen's scale | an IOSurface (`show_on_surfaces`), the contents of a sublayer under the children; a `CGImage` without Metal | `sight::shown` on each tick (the macOS geometry, `nsh_platform_apple::sight`, read from UIKit's views): views outside any window, hidden, or clipped away by an ancestor (rows scrolled out of their list) skip their frames; a scroll and `revisit` wake the link for what fell due |
-| Android | the UI-thread animator's `Choreographer`, kept ticking by `UiAnimation::outputs` while a view wants a frame | a bitmap of `Box.java`, filled by `NshView.shaderFrame` | — |
+| Android | the UI-thread animator's `Choreographer`, kept ticking by `UiAnimation::outputs` while a view wants a frame | a bitmap of `Box.java`, filled by `NshView.shaderFrame` | `NshView.shadersInSight` once a tick for the views with a frame due: views not shown (a page under another, a hidden box) or clipped away by an ancestor (scrolled out of a scroll view) skip their frames, and the ticks go on until they show |
 | Windows | the surface's frame ticker (`Surface::on_frame`), at the window's scale | a Direct2D bitmap drawn under the children: a texture shared with the renderer's device (`show_on_surfaces`), else the pixels read back (made again after a device loss) | `reveal`: hidden, concealed or detached views |
 | GPUI | a frame client of its surface | a GPUI image (BGRA, straight, the view's opacity multiplied in, as canvases' pixmaps), whose replaced image leaves GPUI's atlases | views not drawn in the last frame |
 | Web | `requestAnimationFrame` | a `<canvas>` under the children (an effect's and a running transition's over them) | `IntersectionObserver` |
@@ -493,6 +493,9 @@ dialog's `transitionShader`) take their pictures from the DOM. `shader.rs` also 
   the process about as often as keeping it running at the screen's rate. A view that only changed
   (`ShaderView::animates` false, no pictures) renders after the batch and is collected when the GPU tells, so the
   display link stays paused.
+- **Copying a read-back frame byte by byte.** `Frame::tight` once collected the rows' bytes one at a time into a
+  growing `Vec`: on a Pixel 10 Pro the gallery's Shader page spent about 40 % of its UI thread there (and in the
+  reallocations), every frame of every view. It copies whole rows into one allocation.
 - **A CGImage per frame on macOS and iOS.** Read back, a frame became a `CGImage` in sRGB; Core Animation converted each one to
   the display's colour space (Display P3) on the main thread at commit (`CA::Render::copy_image`, vImage), and with
   the copy out of the read-back buffer a window-sized animated shader took 70 % of a core at 120 Hz. macOS and iOS

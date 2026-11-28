@@ -56,6 +56,7 @@ web view 接受 [view](./view.md) 的属性（它没有子元素），另外还�
 | `html` | `web_view_html(html, base_url)`、`.html(html, base_url)` | `string` | | 内联 HTML，代替 `src` 显示。 |
 | `baseUrl` | `web_view_html` / `.html` 的 `base_url` | `string` | | `html` 中相对链接的解析基准。它需要与该地址的页面相同的授权（`webview.hosts`）；未授权时 HTML 不带基准 URL 加载，`onError` 报告 `ERR_ACCESS_DENIED`。 |
 | `allowOrigin` | `.allow_origin(..)` | `string` | | 除 `webview.hosts` 之外，这个网页视图还可以显示和导航到的一个源，用于应用运行时才知道的源（例如用户填写的服务器）：`scheme://host[:port]`，`http` 或 `https`，精确匹配（相同的 scheme、主机和端口，不包括子域名）。需要在 [`capabilities.webview`](../docs/sandbox-and-capabilities.md#webview) 中声明 `"runtimeOrigin": true`；其他值会被拒绝并给出提示。与 `src` 在同一次渲染中设置时，对这个 `src` 生效；之后再改，从下一次导航开始生效。其他网页视图和页面打开的窗口都没有它。 |
+| `allowNavigation` | `.allow_navigation(..)` | `string[]` | | 收窄这个网页视图可以显示和导航到的主机，写法与 `webview.hosts` 相同（`*`、`*.example.com` 或主机名）。不在其中的页面在发出请求前就被拒绝，并通过 `onError` 报告，`code` 为 `ERR_ACCESS_DENIED`，带上 `url`。它不会放宽应用的授权；空列表拒绝所有网页；无法解析的模式会被拒绝并给出提示。其他 scheme（`about:blank`、应用自己的文件和 URL scheme）仍按应用自己的规则。 |
 | `injectedJavaScript` | `.injected_java_script(..)` | `string` | | 每个页面加载完成后执行。 |
 | `injectedJavaScriptBeforeContentLoaded` | `.injected_java_script_before_content(..)` | `string` | | 在每个页面自身的脚本之前执行。 |
 | `userAgent` | `.user_agent(..)` | `string` | | 浏览器的 user agent 字符串。 |

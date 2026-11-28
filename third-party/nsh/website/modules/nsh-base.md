@@ -175,6 +175,7 @@ import type {
   NavStackProps,
   NavStackState,
   OtpInputProps,
+  OtpInputValidationType,
   PaginationItemState,
   PaginationProps,
   ProgressProps,
@@ -389,7 +390,8 @@ section), with no look. The app's trigger opens the list: a popup at the trigger
 bottom on phones and tablets. The select owns the keyboard (Up, Down, Home, End, Page Up and Down, typeahead, Return
 and Escape), search (`searchable`), the highlighted row (`focus:` on `itemClass`; `renderItem` gets what an item is, never its state) and
 the combobox, listbox and option roles for screen readers. The app owns the value (`value`, `onChange`) or leaves it
-to the select (`defaultValue`), and styles each part or draws the rows. See [Select](../elements/select.md).
+to the select (`defaultValue`), can own the search's query (`query`, `onQueryChange`), and styles each part or draws
+the rows. See [Select](../elements/select.md).
 
 ### Combobox
 
@@ -405,11 +407,11 @@ the combobox (`defaultValue`); `onConfirm` tells it as the list closes. The quer
 A date, or with `range` a range of dates, picked from months of days, with no look. One month or several
 (`numberOfMonths`) show side by side; the header turns them and opens a view of the months or a page of years. The
 value is an ISO date (`"2026-10-28"`) or `[start, end]` the app owns (`value`, `onChange`) or leaves to the calendar
-(`defaultValue`); `disabledMatcher` keeps days from being picked, and the days take the keyboard as one stop of Tab.
-The app styles the parts and draws the items (`renderItem`, given what an item is; its states are its classes, a
-range's days `selected:` with `data-range-start:`, `data-range-middle:` and `data-range-end:`, and while its end is
-chosen `data-range-preview-*:` up to the day under the mouse or the keyboard). See
-[Calendar](../elements/calendar.md).
+(`defaultValue`), and `onChangeStart` reports a range's start before its end is picked; `disabledMatcher` keeps days
+from being picked, and the days take the keyboard as one stop of Tab. The app styles the parts and draws the items
+(`renderItem`, given what an item is; its states are its classes, a range's days `selected:` with `data-range-start:`,
+`data-range-middle:` and `data-range-end:`, and while its end is chosen `data-range-preview-*:` up to the day under the
+mouse or the keyboard). See [Calendar](../elements/calendar.md).
 
 ### TimeField
 

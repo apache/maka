@@ -191,6 +191,9 @@ pub(crate) fn resolve(
         dead_end: None,
         tries: 0,
     };
+    search
+        .fetch
+        .prefetch(&locked_downloads(deps, lock, fresh, search.fetch.root()));
     let mut chosen = BTreeMap::new();
     if !search.solve(&mut chosen)? {
         bail!(
@@ -203,6 +206,57 @@ pub(crate) fn resolve(
     let resolved: Vec<Resolved> = chosen.into_values().collect();
     check_specifiers(&resolved)?;
     Ok(resolved)
+}
+
+/// The crates.io packages of `lock` the search will install as locked and
+/// that are not installed: all the app reaches through the lock, which
+/// must hold each of them, else none (the search finds them one by one).
+fn locked_downloads(
+    deps: &[Dep],
+    lock: &Lock,
+    fresh: &dyn Fn(&str) -> bool,
+    root: &Path,
+) -> Vec<(String, Candidate)> {
+    let mut out = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut queue: Vec<&str> = deps.iter().map(|d| d.name.as_str()).collect();
+    while let Some(name) = queue.pop() {
+        if !seen.insert(name) {
+            continue;
+        }
+        if fresh(name) {
+            return Vec::new();
+        }
+        let Some(locked) = lock.find(name) else {
+            return Vec::new();
+        };
+        let Ok(candidate) = locked.candidate() else {
+            return Vec::new();
+        };
+        // The app asks for it elsewhere, or for another version: resolved
+        // anew, with what it depends on.
+        if let Some(dep) = deps.iter().find(|d| d.name == name)
+            && (locked.origin().ok().as_ref() != Some(&dep.origin)
+                || !candidate
+                    .version
+                    .as_ref()
+                    .is_some_and(|v| dep.version_req().matches(v)))
+            && !OWN_NSHM.contains(&name)
+        {
+            continue;
+        }
+        queue.extend(locked.dependencies.iter().map(String::as_str));
+        if !locked.origin().is_ok_and(|o| o == Origin::Registry)
+            // nsh's own nshm from crates.io is the version of this nsh.
+            || (OWN_NSHM.contains(&name) && locked.version != VERSION)
+            || locked.dir.as_ref().is_some_and(|d| root.join(d).is_dir())
+        {
+            continue;
+        }
+        out.push((name.to_owned(), candidate));
+    }
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
 }
 
 /// A resolution in progress.
@@ -760,6 +814,72 @@ mod tests {
             .iter()
             .map(|r| format!("{}@{}", r.locked.name, r.locked.version))
             .collect()
+    }
+
+    fn locked(name: &str, version: &str, deps: &[&str]) -> Locked {
+        Locked {
+            name: name.into(),
+            version: version.into(),
+            source: Origin::Registry.lock_source(),
+            path: None,
+            commit: None,
+            checksum: Some(format!("sha256-{name}")),
+            dir: Some(format!("{name}/{version}")),
+            module: None,
+            exports: BTreeMap::new(),
+            platform: None,
+            dependencies: deps.iter().map(|d| (*d).to_owned()).collect(),
+        }
+    }
+
+    /// What a full lock has and is not installed is downloaded ahead; a
+    /// lock without a package the app reaches leaves the search to it.
+    #[test]
+    fn a_full_locks_missing_packages_are_downloaded_ahead() {
+        let root = std::env::temp_dir().join(format!("nsh-resolve-ahead-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("chart/0.1.0")).unwrap();
+        let lock = Lock {
+            version: LOCK_VERSION,
+            packages: vec![
+                locked("ui", "1.1.0", &["icons"]),
+                locked("icons", "1.3.0", &[]),
+                locked("chart", "0.1.0", &["icons"]),
+                locked("unused", "1.0.0", &[]),
+            ],
+        };
+        let deps = [dep("ui", "^1"), dep("chart", "*")];
+        let names = |list: Vec<(String, Candidate)>| -> Vec<String> {
+            list.into_iter()
+                .map(|(n, c)| format!("{n}@{}", c.version.unwrap()))
+                .collect()
+        };
+        // chart is installed, unused not reached.
+        assert_eq!(
+            names(locked_downloads(&deps, &lock, &|_| false, &root)),
+            ["icons@1.3.0", "ui@1.1.0"]
+        );
+        assert_eq!(
+            locked_downloads(&deps, &lock, &|_| false, &root)[1]
+                .1
+                .checksum
+                .as_deref(),
+            Some("sha256-ui")
+        );
+        // The app asks for another version: resolved anew.
+        assert_eq!(
+            names(locked_downloads(
+                &[dep("ui", "^2")],
+                &lock,
+                &|_| false,
+                &root
+            )),
+            Vec::<String>::new()
+        );
+        // Not in the lock, or to update: one by one.
+        assert!(locked_downloads(&[dep("new", "*")], &lock, &|_| false, &root).is_empty());
+        assert!(locked_downloads(&deps, &lock, &|n| n == "ui", &root).is_empty());
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

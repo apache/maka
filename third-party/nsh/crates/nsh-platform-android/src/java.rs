@@ -43,6 +43,7 @@ pub(crate) struct Java {
     pub(crate) activities_start: JStaticMethodID,
     pub(crate) activities_can_start: JStaticMethodID,
     pub(crate) activities_output_file: JStaticMethodID,
+    pub(crate) activities_content_uri: JStaticMethodID,
     /// `com.longbridge.nsh.Picker`: the picker's image preparation (any
     /// thread).
     pub(crate) picker: GlobalRef,
@@ -51,6 +52,11 @@ pub(crate) struct Java {
     /// Rust ([`crate::proxy`]; any thread).
     pub(crate) proxy: GlobalRef,
     pub(crate) proxy_create: JStaticMethodID,
+    /// `com.longbridge.nsh.NativeReceiver`: broadcasts received in Rust
+    /// ([`crate::receiver`]; any thread).
+    pub(crate) receiver: GlobalRef,
+    pub(crate) receiver_register: JStaticMethodID,
+    pub(crate) receiver_unregister: JStaticMethodID,
     /// `com.longbridge.nsh.NshView` instance methods.
     pub(crate) view_submit: JMethodID,
     pub(crate) view_report_error: JMethodID,
@@ -59,10 +65,19 @@ pub(crate) struct Java {
     /// `runMainThreadTasks()`: posts `Native.runMainThreadTasks` to the UI
     /// thread, after the batches before it.
     pub(crate) view_run_main_thread_tasks: JMethodID,
+    /// `nativeView(int)`: the view of a node, or null (UI thread;
+    /// [`crate::native_view`]).
+    pub(crate) view_native_view: JMethodID,
+    /// `presentingActivity()`: the activity the view shows in, or null
+    /// (UI thread; [`crate::presenting_activity`]).
+    pub(crate) view_presenting_activity: JMethodID,
     /// `shaderFrame(int, ByteBuffer, int, int, boolean, float)`: a shader
     /// view's new frame, whether it replaces the view's children and the
     /// pixels it overflows by (UI thread).
     pub(crate) view_shader_frame: JMethodID,
+    /// `shadersInSight(int[])`: which of these shader views can be seen
+    /// (UI thread).
+    pub(crate) view_shaders_in_sight: JMethodID,
     pub(crate) view_app_stopped: JMethodID,
     pub(crate) view_host_message: JMethodID,
     pub(crate) view_open_url_message: JMethodID,
@@ -103,6 +118,8 @@ pub(crate) fn init(vm: JavaVM) -> jni::errors::Result<()> {
     let picker_class: &JClass<'_> = picker.as_obj().into();
     let proxy = class(&mut env, "com/longbridge/nsh/NativeProxy")?;
     let proxy_class: &JClass<'_> = proxy.as_obj().into();
+    let receiver = class(&mut env, "com/longbridge/nsh/NativeReceiver")?;
+    let receiver_class: &JClass<'_> = receiver.as_obj().into();
     let view_class: &JClass<'_> = view.as_obj().into();
     let java = Java {
         text_prepare: env.get_static_method_id(
@@ -176,6 +193,11 @@ pub(crate) fn init(vm: JavaVM) -> jni::errors::Result<()> {
             "outputFile",
             "(Ljava/lang/String;)[Ljava/lang/Object;",
         )?,
+        activities_content_uri: env.get_static_method_id(
+            activities_class,
+            "contentUri",
+            "(Ljava/lang/String;)[Ljava/lang/Object;",
+        )?,
         picker_prepare_file: env.get_static_method_id(
             picker_class,
             "prepareFile",
@@ -186,16 +208,33 @@ pub(crate) fn init(vm: JavaVM) -> jni::errors::Result<()> {
             "create",
             "([Ljava/lang/String;J)Ljava/lang/Object;",
         )?,
+        receiver_register: env.get_static_method_id(
+            receiver_class,
+            "register",
+            "(Ljava/lang/String;J)Ljava/lang/Object;",
+        )?,
+        receiver_unregister: env.get_static_method_id(
+            receiver_class,
+            "unregister",
+            "(Ljava/lang/Object;)V",
+        )?,
         view_submit: env.get_method_id(view_class, "submit", "([B[Ljava/lang/Object;J)V")?,
         view_report_error: env.get_method_id(view_class, "reportError", "(Ljava/lang/String;)V")?,
         view_read_asset: env.get_method_id(view_class, "readAsset", "(Ljava/lang/String;)[B")?,
         view_request_frame: env.get_method_id(view_class, "requestJsFrame", "()V")?,
         view_run_main_thread_tasks: env.get_method_id(view_class, "runMainThreadTasks", "()V")?,
+        view_native_view: env.get_method_id(view_class, "nativeView", "(I)Landroid/view/View;")?,
+        view_presenting_activity: env.get_method_id(
+            view_class,
+            "presentingActivity",
+            "()Landroid/app/Activity;",
+        )?,
         view_shader_frame: env.get_method_id(
             view_class,
             "shaderFrame",
             "(ILjava/nio/ByteBuffer;IIZF)V",
         )?,
+        view_shaders_in_sight: env.get_method_id(view_class, "shadersInSight", "([I)[Z")?,
         view_app_stopped: env.get_method_id(view_class, "appStopped", "()V")?,
         view_host_message: env.get_method_id(
             view_class,
@@ -221,6 +260,7 @@ pub(crate) fn init(vm: JavaVM) -> jni::errors::Result<()> {
         activities,
         picker,
         proxy,
+        receiver,
         vm,
     };
     let _ = JAVA.set(java);

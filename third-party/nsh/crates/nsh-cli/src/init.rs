@@ -399,6 +399,12 @@ fn write_types_of(dir: &Path, app: &Path) {
         "nsh/tokens.d.ts".to_owned(),
         nsh_bundler::tokens_declaration(&tokens),
     ));
+    // Translation errors are the build's to report: leave them empty meanwhile.
+    let translations = nsh_i18n::read_translations(app).unwrap_or_default();
+    definitions.push((
+        "nsh/translations.d.ts".to_owned(),
+        nsh_bundler::translations_declaration(&translations),
+    ));
     // The TSX nshm the app installed (`nsh.lock`): their declarations are
     // their sources, so the checker reads them as the bundler does.
     match nsh_bundler::nshm::exports(app) {
@@ -790,5 +796,47 @@ mod tests {
             .unwrap()
             .1;
         assert!(main.contains(r#"title: "a\"b\nc".to_owned()"#));
+    }
+
+    #[test]
+    fn write_types_generates_translations_from_locales_and_empty_without() {
+        let dir = directory("translations");
+        init(&dir, None, Template::Ts, None).unwrap();
+
+        // Without `locales/`, `.nsh/types/nsh/translations.d.ts` does not augment
+        // `Translations`, leaving `t()` accepting any `string`.
+        let base = read(&dir, ".nsh/tsconfig.json");
+        assert!(base.contains("./types/nsh/translations.d.ts"), "{base}");
+        let empty = read(&dir, ".nsh/types/nsh/translations.d.ts");
+        assert!(!empty.contains("declare module \"nsh/i18n\""), "{empty}");
+
+        // With `locales/` (`_version: 1` and `_version: 2`), `write_types`
+        // declares the locales, keys and `%{name}` parameters.
+        fs::create_dir_all(dir.join("locales")).unwrap();
+        fs::write(
+            dir.join("locales/en.yml"),
+            "hello: Hello\nmessages:\n  hello: \"Hello, %{name}!\"\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("locales/zh.yml"),
+            "hello: 你好\nmessages:\n  hello: \"你好，%{name}！\"\n",
+        )
+        .unwrap();
+        write_types(&dir);
+
+        let generated = read(&dir, ".nsh/types/nsh/translations.d.ts");
+        assert!(generated.contains("\"en\": true;"), "{generated}");
+        assert!(generated.contains("\"zh\": true;"), "{generated}");
+        assert!(
+            generated.contains("\"hello\": Record<never, never>;"),
+            "{generated}"
+        );
+        assert!(
+            generated.contains("\"messages.hello\": { \"name\": string | number };"),
+            "{generated}"
+        );
+
+        fs::remove_dir_all(dir).unwrap();
     }
 }

@@ -2632,14 +2632,16 @@ style label:2026-10-06 backgroundColor #00ff00ff
 style label:2026-10-07 backgroundColor #0000ffff
 style text:D10.6 color #00ff00ff
 style label:2026-09-27 opacity 0.5
-# The first press starts a range, shown but not reported until the
-# second ends it; then the popup closes. Half a range is its start,
-# selected, with no range marked.
+# The first press starts a range: no value until the second ends it,
+# its start reported by `onChangeStart` (`[start, null]`), the popup
+# open for the end. Half a range is its start, selected, with no range
+# marked.
 tap label:2026-10-12
 prop label:2026-10-12 accessibilityState selected=true
 nostyle label:2026-10-12 backgroundColor
 nostyle label:2026-10-06 backgroundColor
-expect Trip: none
+expect Trip: start ["2026-10-12",null]
+expect M11
 # The mouse moving over a later day previews the range a press there
 # makes: the days from the start to it styled by the item's
 # `data-range-preview-start:`, `data-range-preview-middle:` and
@@ -2650,7 +2652,7 @@ style label:2026-10-13 backgroundColor #ffff00ff
 style label:2026-10-14 backgroundColor #00ffffff
 prop label:2026-10-13 accessibilityState {}
 nostyle label:2026-10-15 backgroundColor
-expect Trip: none
+expect Trip: start ["2026-10-12",null]
 tap label:2026-10-14
 expect Trip: ["2026-10-12","2026-10-14"]
 absent M11
@@ -2662,6 +2664,11 @@ expect Week
 prop label:Week role button
 style label:Week backgroundColor #00ff00ff
 style parent:label:Week backgroundColor #0000ffff
+# Its description: a second line in the look of its own part, which
+# screen readers read after the label.
+expect Oct 19-25
+prop label:Week accessibilityDescription Oct 19-25
+style text:"Oct 19-25" color #ff0000ff
 tap label:Week
 expect Trip: ["2026-10-19","2026-10-25"]
 absent Week
@@ -2672,6 +2679,8 @@ covers [props] DatePicker.itemClass
 covers [props] DatePicker.presets
 covers [props] DatePicker.presetsStyle
 covers [props] DatePicker.presetStyle
+covers [props] DatePicker.presetDescriptionStyle
+covers [events] DatePicker.onChangeStart
 # A date and time (`timePrecision`) on a 12-hour clock (`hourCycle`):
 # heard with the time; the popup holds the app's label of the time and
 # the field's segments (`renderSegment`, `segmentStyle`).
@@ -2708,6 +2717,57 @@ covers [props] DatePicker.timeLabel
 covers [props] DatePicker.timeAccessibilityLabel
 covers [props] DatePicker.renderSegment
 covers [props] DatePicker.segmentStyle
+# Kept open on a `select` (`open`): the sheet holds the app's header above the
+# calendar and its footer below; a range's two days are reported and
+# shown selected, the sheet still open, until the app's Apply in the
+# footer commits the pending value and closes it (`open`).
+tap id:stay
+expect StayHeader
+expect StayApply
+tap label:2026-10-12
+tap label:2026-10-14
+prop label:2026-10-13 accessibilityState selected=true
+expect StayHeader
+expect Stay: none
+tap id:stayApply
+expect Stay: ["2026-10-12","2026-10-14"]
+absent StayHeader
+prop label:Stay accessibilityValue text=2026/10/12 - 2026/10/14
+covers [props] DatePicker.header
+covers [props] DatePicker.footer
+covers [props] DatePicker.open
+
+# base-calendar
+tap id:case-base-calendar
+# The app's range, every day of it selected for screen readers.
+expect Draft: ["2026-10-05","2026-10-07"]
+prop label:2026-10-06 accessibilityState selected=true
+# The first press starts a range: no value yet, its start reported by
+# `onChangeStart` (`[start, null]`), which the app keeps as its value and
+# shows outside the grid; the range before is no longer selected.
+tap label:2026-10-12
+expect Heard: start ["2026-10-12",null]
+expect Draft: ["2026-10-12",null]
+prop label:2026-10-12 accessibilityState selected=true
+prop label:2026-10-06 accessibilityState {}
+# The app's Cancel sets the range before back, which replaces the start:
+# the next press starts a range again rather than ending that one.
+tap id:cancel
+expect Draft: ["2026-10-05","2026-10-07"]
+prop label:2026-10-06 accessibilityState selected=true
+prop label:2026-10-12 accessibilityState {}
+tap label:2026-10-20
+expect Heard: start ["2026-10-20",null]
+# The second press ends it: `onChange` reports the complete range.
+tap label:2026-10-22
+expect Heard: change ["2026-10-20","2026-10-22"]
+expect Draft: ["2026-10-20","2026-10-22"]
+prop label:2026-10-21 accessibilityState selected=true
+covers [nsh/base] Calendar
+covers [props] Calendar.range
+covers [props] value
+covers [events] Calendar.onChangeStart
+covers [events] onChange
 
 # base-select
 tap id:case-base-select
@@ -2891,6 +2951,38 @@ covers [props] Select.searchTestID
 covers [props] Select.searchClass
 covers [props] Select.searchStyle
 covers [props] Select.empty
+# The app's query (`query`, `onQueryChange`): typing in the search field is
+# reported, the app's query filters, and the app's rows mark the match from
+# it; the app clears it once the list is gone (`onClose`).
+tap id:ask
+expect Apple
+type label:AskField rr
+expect Query: rr
+expect Che_rr_y
+expect Ca_rr_ot
+absent Apple
+event label:Cherry onCancel
+absent Che_rr_y
+expect Query: none
+tap id:ask
+expect Apple
+expect Cherry
+tap below:parent:scroll:label:Apple
+absent Apple
+covers [props] Select.query
+covers [events] Select.onQueryChange
+# The field's own query starts each opening from `defaultQuery`.
+tap id:preset
+expect Carrot
+absent Apple
+event label:Carrot onCancel
+absent Carrot
+tap id:preset
+expect Carrot
+absent Apple
+event label:Carrot onCancel
+absent Carrot
+covers [props] Select.defaultQuery
 
 # base-color-picker
 tap id:case-base-color-picker
@@ -3062,16 +3154,40 @@ prop label:Volume accessibilityValue min=0 max=100 now=60 text=60
 frame label:Volume 120 2 10 10
 # A range: a thumb each, the start's value up to the end, the end's from
 # the start. A press on the track moves the nearer thumb there (at 75%,
-# past the middle of the two at 40%: the end's).
+# past the middle of the two at 40%: the end's), which is dragging from
+# the press to the release: the content `renderThumb` draws in it shows
+# `group-data-dragging:`, the start's not (see below).
 expect Price 200-600
 prop label:"Min price" accessibilityValue min=0 max=600 now=200 text=200
 prop label:"Max price" accessibilityValue min=200 max=1000 now=600 text=600
 frame label:"Min price" 40 2 10 10
 frame label:"Max price" 120 2 10 10
+nostyle id:max-bubble backgroundColor
 touch start parent:parent:label:"Max price" 150 10
+style id:max-bubble backgroundColor #ff0000ff
+nostyle id:min-bubble backgroundColor
 touch end
+nostyle id:max-bubble backgroundColor
 expect Price 200-750
 prop label:"Min price" accessibilityValue min=0 max=750 now=200 text=200
+# Content in each thumb (`renderThumb`, told which it is), in its corner:
+# it follows its own thumb's states through `group-*:` classes. A press
+# on a thumb marks it dragging (`group-data-dragging:`) before it moves,
+# the other not; the release ends it. The pointer over a thumb is its
+# `group-hover:`.
+frame id:max-bubble 0 0 4 4
+nostyle id:max-bubble backgroundColor
+touch start label:"Max price" 5 5
+style id:max-bubble backgroundColor #ff0000ff
+nostyle id:min-bubble backgroundColor
+touch end
+nostyle id:max-bubble backgroundColor
+expect Price 200-750
+state label:"Min price" hovered
+style id:min-bubble backgroundColor #00ff00ff
+nostyle id:max-bubble backgroundColor
+state label:"Min price" none
+nostyle id:min-bubble backgroundColor
 # Its own value, on a logarithmic scale along a vertical axis: a screen
 # reader's increment steps it by 1.
 prop label:Zoom accessibilityValue min=1 max=1000 now=10 text=10
@@ -3113,6 +3229,7 @@ covers [props] Slider.rangeClass
 covers [props] Slider.rangeStyle
 covers [props] Slider.thumbClass
 covers [props] Slider.thumbStyle
+covers [props] Slider.renderThumb
 covers [events] onChange
 covers [events] Slider.onChangeEnd
 
@@ -4719,6 +4836,7 @@ expect Editable: false
 expect Both: threw
 expect Duplicate: threw
 expect Classes: starterKit,doc,paragraph,heading,blockquote,bulletList,orderedList,listItem,taskList,taskItem,codeBlock,codeBlockHighlight,hardBreak,horizontalRule,image,bold,italic,strike,code,underline,link,highlight,subscript,superscript,textStyle,textAlign,history,trailingNode,typography,listKeymap
+expect Language: null rust true
 covers [nsh/base] Blockquote
 covers [nsh/base] Bold
 covers [nsh/base] BulletList
@@ -5004,3 +5122,38 @@ absent No files
 expect Pinned files
 covers [props] Tree.header
 covers [props] Tree.empty
+
+# base-host-accessibility
+# A component's host takes a view's accessibility props, as a view does.
+tap id:case-base-host-accessibility
+prop id:button accessibilityDescription Deletes the draft
+prop id:details accessible true
+prop id:details role region
+prop id:details accessibilityLabel Details
+prop id:details accessibilityHint Shows the details
+prop id:details accessibilityState expanded=true
+prop id:details accessibilityValue text=three
+prop id:details accessibilityElementsHidden false
+prop id:details accessibilityLiveRegion polite
+prop id:details accessibilityActions activate
+# The error line's text describes the details while it is there.
+prop id:details accessibilityDescription Enter a name
+listens id:details onAccessibilityAction
+# "no-hide-descendants": not an element, and its subtree hidden.
+prop id:hidden accessible false
+prop id:hidden accessibilityElementsHidden true
+# `accessibilityElementsHidden`: the host's subtree hidden.
+prop id:hidden-elements accessibilityElementsHidden true
+covers [props] accessibilityDescription
+covers [props] accessible
+covers [props] role
+covers [props] accessibilityLabel
+covers [props] accessibilityHint
+covers [props] accessibilityState
+covers [props] accessibilityValue
+covers [props] accessibilityElementsHidden
+covers [props] accessibilityLiveRegion
+covers [props] accessibilityActions
+covers [props] accessibilityDescribedBy
+covers [props] importantForAccessibility
+covers [events] onAccessibilityAction

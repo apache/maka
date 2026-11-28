@@ -1652,6 +1652,17 @@ impl WebView {
         })
     }
 
+    /// The hosts the web view may show and navigate to, narrower than
+    /// `webview.hosts`: the same host patterns (`*`, `*.example.com`, a host
+    /// name); an empty list refuses every web page
+    /// ([`crate::access::WebHosts`]). The platform refuses any other `http`
+    /// or `https` page before its request is made and reports `on_error`
+    /// with `ERR_ACCESS_DENIED`. It never widens the app's grant.
+    pub fn allow_navigation<S: Into<Arc<str>>>(self, hosts: impl IntoIterator<Item = S>) -> Self {
+        let hosts = hosts.into_iter().map(Into::into).collect();
+        self.set(Prop::Native(NativeProp::AllowNavigation(Some(hosts))))
+    }
+
     /// Runs before each page's own scripts.
     pub fn injected_java_script_before_content(self, script: impl IntoReactive<String>) -> Self {
         self.bind_prop(script, |script: String| {
@@ -2054,6 +2065,12 @@ impl From<Points> for CanvasArg {
     }
 }
 
+impl From<Point<Points>> for Point<CanvasArg> {
+    fn from(point: Point<Points>) -> Self {
+        point.map(Into::into)
+    }
+}
+
 /// An angle (arcs, rotations).
 impl From<Radians> for CanvasArg {
     fn from(n: Radians) -> Self {
@@ -2315,27 +2332,28 @@ impl Painter {
     }
 
     /// A quadratic Bézier curve to `to` (`quadraticCurveTo`).
-    pub fn quadratic_curve_to(self, control: Point<Points>, to: Point<Points>) -> Self {
-        let c = |v: Points| Num::Const(v.0);
-        self.path(PathOp::QuadTo([
-            c(control.x),
-            c(control.y),
-            c(to.x),
-            c(to.y),
-        ]))
+    /// Each coordinate can be a constant or an animated value.
+    pub fn quadratic_curve_to(
+        mut self,
+        control: impl Into<Point<CanvasArg>>,
+        to: impl Into<Point<CanvasArg>>,
+    ) -> Self {
+        let (control, to) = (control.into(), to.into());
+        let coords = [control.x, control.y, to.x, to.y].map(|v| self.num(v));
+        self.path(PathOp::QuadTo(coords))
     }
 
     /// A cubic Bézier curve to `to` (`bezierCurveTo`).
-    pub fn bezier_curve_to(self, c1: Point<Points>, c2: Point<Points>, to: Point<Points>) -> Self {
-        let c = |v: Points| Num::Const(v.0);
-        self.path(PathOp::CubicTo([
-            c(c1.x),
-            c(c1.y),
-            c(c2.x),
-            c(c2.y),
-            c(to.x),
-            c(to.y),
-        ]))
+    /// Each coordinate can be a constant or an animated value.
+    pub fn bezier_curve_to(
+        mut self,
+        c1: impl Into<Point<CanvasArg>>,
+        c2: impl Into<Point<CanvasArg>>,
+        to: impl Into<Point<CanvasArg>>,
+    ) -> Self {
+        let (c1, c2, to) = (c1.into(), c2.into(), to.into());
+        let coords = [c1.x, c1.y, c2.x, c2.y, to.x, to.y].map(|v| self.num(v));
+        self.path(PathOp::CubicTo(coords))
     }
 
     /// A circular arc around (`x`, `y`); angles clockwise from the x axis
@@ -2827,8 +2845,74 @@ mod tests {
             AnimatedValue,
             reactive::{Runtime, create_root, signal},
         },
+        geometry::{point, px},
         shader::{ShaderUniforms, UniformValue},
     };
+
+    #[test]
+    fn curves_accept_point_literals_and_record_constant_coordinates() {
+        use Num::Const;
+
+        let drawing = Painter::new()
+            .quadratic_curve_to(point(px(1.0), px(2.0)), point(px(3.0), px(4.0)))
+            .bezier_curve_to(
+                point(px(5.0), px(6.0)),
+                point(px(7.0), px(8.0)),
+                point(px(9.0), px(10.0)),
+            )
+            .finish();
+
+        assert!(drawing.slots.is_empty());
+        assert_eq!(
+            drawing.ops,
+            [
+                CanvasOp::Path(PathOp::QuadTo([1.0, 2.0, 3.0, 4.0].map(Const))),
+                CanvasOp::Path(PathOp::CubicTo([5.0, 6.0, 7.0, 8.0, 9.0, 10.0].map(Const))),
+            ]
+        );
+    }
+
+    #[test]
+    fn curves_share_animation_slots_across_control_points_and_endpoints() {
+        use Num::{Const, Slot};
+
+        let runtime = Runtime::default();
+        let _entered = runtime.enter();
+        let executor = std::rc::Rc::new(super::super::task::Executor::default());
+        let (_owner, (x, y)) = create_root(|| {
+            (
+                AnimatedValue::new(&executor, 10.0),
+                AnimatedValue::new(&executor, 20.0),
+            )
+        });
+        let drawing = Painter::new()
+            .quadratic_curve_to(
+                point(CanvasArg::from(&x), 2.0.into()),
+                point(3.0.into(), CanvasArg::from(&y)),
+            )
+            .bezier_curve_to(
+                point(CanvasArg::from(&y), 6.0.into()),
+                point(7.0.into(), CanvasArg::from(&x)),
+                point(CanvasArg::from(&y), 10.0.into()),
+            )
+            .finish();
+
+        assert_eq!(drawing.slots, [x.node().id(), y.node().id()]);
+        assert_eq!(
+            drawing.ops,
+            [
+                CanvasOp::Path(PathOp::QuadTo([Slot(0), Const(2.0), Const(3.0), Slot(1)])),
+                CanvasOp::Path(PathOp::CubicTo([
+                    Slot(1),
+                    Const(6.0),
+                    Const(7.0),
+                    Slot(0),
+                    Slot(1),
+                    Const(10.0),
+                ])),
+            ]
+        );
+    }
 
     fn uniforms(attrs: &super::super::builder::Attrs) -> ShaderUniforms {
         attrs

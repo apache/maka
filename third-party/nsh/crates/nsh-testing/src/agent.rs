@@ -15,6 +15,11 @@
 //! app's own waiting to show for 100 ms, 2 s at most. [`Native`]'s calls
 //! come from that thread; implementations do their work on the main thread
 //! and return when it is done.
+//!
+//! `nsh test --attach` takes the same steps on the app of a development
+//! session that runs already (`nsh run`, `nsh dev`): a host that takes them
+//! keeps its model in every such session ([`Tester::with_attach`]), so the
+//! steps find the views the app shows however long it ran.
 
 use std::{
     sync::{Arc, Condvar, Mutex, MutexGuard},
@@ -153,9 +158,14 @@ struct State {
     batches: u64,
     /// When the last one was.
     last: Option<Instant>,
-    /// What the app threw since the last step looked.
+    /// What the app threw since the last step looked: the latest
+    /// [`KEPT_ERRORS`], as a development session's app may run long
+    /// without a step looking.
     errors: Vec<String>,
 }
+
+/// How many of the app's errors a [`Model`] keeps for the next step.
+const KEPT_ERRORS: usize = 64;
 
 impl Model {
     /// Takes in a batch the host applied (on its main thread, after
@@ -183,7 +193,12 @@ impl Model {
     /// The app threw `message` (an exception that escaped a callback, a
     /// bundle that did not load): the step taken meanwhile fails with it.
     pub fn error(&self, message: impl Into<String>) {
-        self.lock().errors.push(message.into());
+        let mut state = self.lock();
+        if state.errors.len() == KEPT_ERRORS {
+            state.errors.remove(0);
+        }
+        state.errors.push(message.into());
+        drop(state);
         self.changed.notify_all();
     }
 
@@ -333,10 +348,19 @@ impl Model {
     /// The engine [`Model::set_up_engine`] set up started: the test moves
     /// its clock through it.
     pub fn engine_started(&self, engine: nsh_engine::EngineControl) {
-        // Steps reach every view of a page, below its fold too, as the
-        // headless driver's do.
-        engine.set_content_culling(false);
+        // The views of the app it replaced are gone: an app reloaded in a
+        // development session starts on a fresh screen, in the same window.
+        {
+            let mut state = self.lock();
+            if state.batches > 0 {
+                state.screen = state.screen.restarted();
+            }
+        }
         if let Some(setup) = &mut *self.setup.lock().unwrap_or_else(|e| e.into_inner()) {
+            // A test's steps reach every view of a page, below its fold
+            // too, as the headless driver's do; an attached session leaves
+            // the app as it runs.
+            engine.set_content_culling(false);
             setup.engine = Some(engine);
         }
     }
@@ -1489,6 +1513,11 @@ impl Worker {
     }
 }
 
+/// What attaches a [`Model`] to the host's surface and makes the platform's
+/// [`Native`] ([`Tester`]).
+#[cfg(not(target_arch = "wasm32"))]
+type KeepModel = dyn Fn(std::sync::Arc<Model>) -> Box<dyn Native> + Send + Sync;
+
 #[cfg(not(target_arch = "wasm32"))]
 /// A dev host's test session: when the server says it runs one
 /// ([`nsh_dev::DevEvent::Testing`]), it makes the app's [`Model`] and the
@@ -1496,7 +1525,10 @@ impl Worker {
 /// before the first bundle comes) and takes the steps that follow on a
 /// [`Worker`], answering each through the dev client.
 pub struct Tester {
-    start: Box<dyn Fn(std::sync::Arc<Model>) -> Box<dyn Native> + Send + Sync>,
+    start: Box<KeepModel>,
+    /// What attaches the model to the surface in a development session
+    /// `nsh test --attach` may drive ([`Tester::with_attach`]).
+    attach: Option<Box<KeepModel>>,
     /// Shared with the closures that answer: the dev client's thread makes
     /// them, maybe before the thread that started it sets the client.
     client: Arc<std::sync::OnceLock<std::sync::Weak<nsh_dev::DevClient>>>,
@@ -1513,6 +1545,27 @@ impl Tester {
     ) -> std::sync::Arc<Tester> {
         std::sync::Arc::new(Tester {
             start: Box::new(start),
+            attach: None,
+            client: Arc::default(),
+            worker: Mutex::new(None),
+            model: Mutex::new(None),
+        })
+    }
+
+    /// A host's tester that takes the steps of `nsh test --attach` in a
+    /// development session too ([`nsh_dev::DevEvent::Attachable`]): there
+    /// `attach` (on the dev client's thread) attaches the model to the
+    /// surface before the first bundle comes, as `start` does in a test
+    /// session, but leaves the app as it runs: no test drives it, so the
+    /// user's own input and the platform's settings stay as they are. The
+    /// host says it takes them ([`nsh_dev::HostInfo::attach`]).
+    pub fn with_attach(
+        start: impl Fn(std::sync::Arc<Model>) -> Box<dyn Native> + Send + Sync + 'static,
+        attach: impl Fn(std::sync::Arc<Model>) -> Box<dyn Native> + Send + Sync + 'static,
+    ) -> std::sync::Arc<Tester> {
+        std::sync::Arc::new(Tester {
+            start: Box::new(start),
+            attach: Some(Box::new(attach)),
             client: Arc::default(),
             worker: Mutex::new(None),
             model: Mutex::new(None),
@@ -1530,7 +1583,11 @@ impl Tester {
     /// back the others.
     pub fn event(&self, event: nsh_dev::DevEvent) -> Option<nsh_dev::DevEvent> {
         match event {
-            nsh_dev::DevEvent::Testing => self.start(),
+            nsh_dev::DevEvent::Testing => self.start(&*self.start),
+            nsh_dev::DevEvent::Attachable => match &self.attach {
+                Some(attach) => self.start(&**attach),
+                None => log::warn!("the dev server offers attached steps this host does not take"),
+            },
             nsh_dev::DevEvent::Step { id, step } => self.take(id, step),
             nsh_dev::DevEvent::TestSetup {
                 storage,
@@ -1570,14 +1627,16 @@ impl Tester {
         self.model.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
-    fn start(&self) {
+    /// Makes the app's model and the worker taking its steps, once:
+    /// `start` attaches the model to the surface.
+    fn start(&self, start: &KeepModel) {
         let mut worker = self.worker.lock().unwrap_or_else(|e| e.into_inner());
         if worker.is_some() {
             return;
         }
         let model = std::sync::Arc::new(Model::default());
         *self.model.lock().unwrap_or_else(|e| e.into_inner()) = Some(model.clone());
-        let native = (self.start)(model.clone());
+        let native = start(model.clone());
         let client = self.client.clone();
         let started = Worker::spawn(Agent::new(model, native), move |id, outcome| {
             if let Some(client) = client.wait().upgrade() {
@@ -1881,7 +1940,7 @@ impl Agent {
                 serde_json::to_value(self.scene.view_style(&selector)?).map_err(|e| e.to_string())
             }
             TestStep::Layout { selector } => {
-                serde_json::to_value(self.scene.layout(&selector)?).map_err(|e| e.to_string())
+                serde_json::to_value(self.layout(&selector)?).map_err(|e| e.to_string())
             }
             TestStep::Accessibility { selector } => {
                 serde_json::to_value(self.scene.accessibility(selector.as_deref())?)
@@ -2102,6 +2161,41 @@ impl Agent {
         target: PickTarget,
     ) -> Result<(NodeId, Point<Points>), String> {
         self.find_at(selector, what, target, None)
+    }
+
+    /// Where the view `selector` names is ([`Scene::layout`]), placed
+    /// where the platform shows it when it is inside a scroll view. The
+    /// scene knows only the scrolls the core asked for; one the native
+    /// scroll view made itself (a wheel, a finger, [`Native::scroll`], the
+    /// content kept in place as rows above it go) moves the view on screen
+    /// alone, so its place and whether its scroll views cut it come from
+    /// the platform's views.
+    fn layout(&self, selector: &str) -> Result<Option<ViewLayout>, String> {
+        let Some(mut layout) = self.scene.layout(selector)? else {
+            return Ok(None);
+        };
+        let Pick::One(id) = self.scene.pick(selector, PickTarget::View)? else {
+            return Ok(Some(layout));
+        };
+        let scrollers = self.scene.scroll_ancestors(id)?;
+        if scrollers.is_empty() {
+            return Ok(Some(layout));
+        }
+        let Some(bounds) = self.native.bounds(id) else {
+            return Ok(Some(layout));
+        };
+        let bounds = Bounds::new(
+            bounds.origin,
+            Size::new(Points(layout.width), Points(layout.height)),
+        );
+        layout.x = bounds.origin.x.0;
+        layout.y = bounds.origin.y.0;
+        layout.clipped = scrollers.iter().any(|&(scroller, _)| {
+            self.native
+                .bounds(scroller)
+                .is_some_and(|b| b.intersect(&bounds) != bounds)
+        });
+        Ok(Some(layout))
     }
 
     /// [`Agent::find`] for a press at `position` in the view `selector`
@@ -3317,6 +3411,43 @@ mod tests {
     }
 
     #[test]
+    fn layout_places_a_view_where_its_natively_scrolled_scroll_view_shows_it() {
+        use nsh_core::{MountItem, ViewProps};
+        // The scroll view was scrolled down 200 points natively (a wheel, a
+        // finger): the scene still has it at its top.
+        let layout = |target: f32| {
+            let model = page_model();
+            let props = ViewProps {
+                test_id: Some("row".into()),
+                ..ViewProps::default()
+            };
+            let frame = Bounds::new(point(px(0.0), px(target)), size(px(320.0), px(40.0)));
+            model.apply(&MountBatch {
+                items: vec![
+                    MountItem::ViewProps {
+                        id: 4,
+                        props: Box::new(props),
+                    },
+                    MountItem::Frame { id: 4, frame },
+                ],
+            });
+            let page = Page {
+                offset: Mutex::new(200.0),
+                target,
+                ..Page::default()
+            };
+            let agent = Agent::new(model, Box::new(page));
+            let layout = agent.layout("id:row").unwrap().unwrap();
+            (layout.y, layout.clipped)
+        };
+        // 600 points down its content, it shows 400 points down the window,
+        // inside the scroll view.
+        assert_eq!(layout(600.0), (400.0, false));
+        // Scrolled past, it is cut.
+        assert_eq!(layout(100.0), (-100.0, true));
+    }
+
+    #[test]
     fn a_view_left_under_a_header_fails_the_step_instead_of_pressing_the_header() {
         let ok = StepOutcome::Done {
             value: serde_json::Value::Null,
@@ -4516,12 +4647,12 @@ mod tests {
         let (tests, (set_up, is_set_up)) = (tester.clone(), std::sync::mpsc::channel());
         let client = DevClient::start(
             format!("ws://{}{WS_PATH}", server.local_addr()),
-            HostInfo {
-                device: "tester".into(),
-                platform: HostPlatform::MacOs,
-                bytecode_version: "bc".into(),
-                ui_sets: Vec::new(),
-                tests: true,
+            {
+                let mut host = HostInfo::new(HostPlatform::MacOs);
+                host.device = "tester".into();
+                host.bytecode_version = "bc".into();
+                host.tests = true;
+                host
             },
             move |event| {
                 let setup = matches!(event, DevEvent::TestSetup { .. });

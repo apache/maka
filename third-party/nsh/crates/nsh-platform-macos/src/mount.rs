@@ -857,6 +857,11 @@ impl Mounter {
                     surface.selection.area.clear_in(surface, view);
                 }
             }
+            Command::SelectAll => {
+                if let Some(view) = view {
+                    surface.selection.area.select_in(surface, view);
+                }
+            }
             Command::Reload
             | Command::GoBack
             | Command::GoForward

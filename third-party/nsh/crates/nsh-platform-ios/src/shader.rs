@@ -520,12 +520,17 @@ impl Shaders {
                 continue;
             }
             // Out of sight (out of every window, hidden, or clipped away by
-            // an ancestor: a row scrolled out of its list): not rendered.
-            // Its pictures stay due; the link keeps asking while it wants
-            // frames, so it renders once it shows again, and a view out of
-            // every window is woken by [`Shaders::revisit`].
+            // an ancestor): defer rendering and taking pictures, but retire a
+            // collapsed view's frame even if it stays out of sight.
             if !crate::sight::shown(&state.host) {
-                wants |= state.view.wants_frame();
+                let bounds = state.host.bounds().size;
+                if bounds.width <= 0.0 || bounds.height <= 0.0 {
+                    if state.view.render(renderer, now) {
+                        state.show();
+                    }
+                } else {
+                    wants |= state.view.wants_frame();
+                }
                 continue;
             }
             state.take_pictures(renderer, now);

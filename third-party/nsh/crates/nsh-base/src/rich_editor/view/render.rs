@@ -1334,6 +1334,7 @@ fn text_block(rv: Rv, item: ReadSignal<BlockItem>, owner: u64) -> impl IntoEleme
     // thread, and the code being highlighted there.
     let highlighted: Signal<Option<(String, Tokens)>> = signal(None);
     let pending: Rc<RefCell<Option<String>>> = Rc::default();
+    let detected: Detected = Rc::default();
     let content = computed(move || {
         inline_rv.deco_rev.get();
         let it = item.get();
@@ -1358,7 +1359,7 @@ fn text_block(rv: Rv, item: ReadSignal<BlockItem>, owner: u64) -> impl IntoEleme
             start,
             &decorations,
             head.zip(composition.as_deref()),
-            &code_tokens(&inline_rv, &it.node, highlighted, &pending),
+            &code_tokens(&inline_rv, &it.node, highlighted, &pending, &detected),
             |n| inline_rv.leaf_text(n),
         );
         if let Some(geo) = inline_rv.geo.borrow_mut().texts.get_mut(&id) {
@@ -1404,28 +1405,65 @@ fn text_block(rv: Rv, item: ReadSignal<BlockItem>, owner: u64) -> impl IntoEleme
         .child(text)
 }
 
+/// A code block's code when it last named no language, and the language
+/// the app's `detect_language` gave for it.
+type Detected = Rc<RefCell<Option<(String, Option<String>)>>>;
+
 /// The tokens coloring code block `node`'s text, as offsets in its
 /// content, when the editor highlights code blocks (`codeBlockHighlight`)
-/// and the block names a language: those that cost little now (as
-/// `TextView`'s code blocks), the rest set in `highlighted` from off the
-/// engine thread.
+/// and the block has a language (its own, else the extension's
+/// `detect_language` or `default_language`): those that cost little now
+/// (as `TextView`'s code blocks), the rest set in `highlighted` from off
+/// the engine thread.
 fn code_tokens(
     rv: &Rv,
     node: &Node,
     highlighted: Signal<Option<(String, Tokens)>>,
     pending: &Rc<RefCell<Option<String>>>,
+    detected: &Detected,
 ) -> Vec<(usize, usize, Token)> {
-    use crate::rich_editor::extensions::code_block::highlights_code_blocks;
+    use crate::rich_editor::extensions::code_block::{
+        code_block_highlight_options, highlights_code_blocks,
+    };
     if !node.ty().spec().code
         || !node.content().iter().all(Node::is_text)
         || !highlights_code_blocks(&rv.st.borrow())
     {
         return Vec::new();
     }
-    let Some(language) = node.attrs().get("language").and_then(Value::as_str) else {
-        return Vec::new();
-    };
     let code = node.text_content();
+    let own = node
+        .attrs()
+        .get("language")
+        .and_then(Value::as_str)
+        .filter(|l| !l.is_empty());
+    let fallback;
+    let language = match own {
+        Some(language) => language,
+        None => {
+            let Some(options) = code_block_highlight_options(&rv.st.borrow()) else {
+                return Vec::new();
+            };
+            // The app's guess is asked once per change of the code, not
+            // each time the block is drawn again.
+            let guess = options.detect_language.as_ref().and_then(|detect| {
+                let mut last = detected.borrow_mut();
+                match &*last {
+                    Some((done, guess)) if *done == code => guess.clone(),
+                    _ => {
+                        let guess = detect(&code).filter(|l| !l.is_empty());
+                        *last = Some((code.clone(), guess.clone()));
+                        guess
+                    }
+                }
+            });
+            fallback = guess.or_else(|| options.default_language.clone());
+            match fallback.as_deref() {
+                Some(language) => language,
+                None => return Vec::new(),
+            }
+        }
+    };
     let tokens = match crate::text_view::highlight::tokens_now(language, &code) {
         None => return Vec::new(),
         Some(Ok(tokens)) => tokens,

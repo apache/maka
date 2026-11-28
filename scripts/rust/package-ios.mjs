@@ -30,6 +30,7 @@ import { cargoBuild } from './cargo.mjs';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const executable = 'maka-ios-shell';
+const legalResources = ['LICENSE', 'NOTICE'];
 const ipaName = 'Maka-ios-arm64.ipa';
 const minimumOS = '15.0';
 const localizedUsageDescriptions = {
@@ -267,7 +268,7 @@ async function signApp(app, signing, bundleId, staging) {
 
 export function validateIpa(path) {
   const entries = new Set(command('unzip', ['-Z1', path]).trimEnd().split('\n'));
-  for (const file of ['Info.plist', executable]) {
+  for (const file of ['Info.plist', executable, ...legalResources]) {
     const entry = `Payload/Maka.app/${file}`;
     if (!entries.has(entry)) throw new Error(`IPA missing ${entry}`);
   }
@@ -466,6 +467,7 @@ async function stageApp(app, binary, settings) {
   await mkdir(app, { recursive: true });
   await copyFile(binary, join(app, executable));
   await chmod(join(app, executable), 0o755);
+  for (const file of legalResources) await copyFile(join(root, file), join(app, file));
   await writeFile(join(app, 'Info.plist'), plist(appInfo(settings)));
   await stageLocalizations(app);
   for (const [name, png] of appIcons(await readFile(join(root, 'assets/logo.png'))))

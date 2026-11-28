@@ -146,6 +146,8 @@ fn workspace() -> impl IntoElement {
 
 `renderToolbar` 为组当前显示的标签页绘制标签栏末尾的工具栏：这个面板自己的操作，例如新建标签页或放大按钮，对应 GPUI dock 面板的 toolbar buttons。它拿到的是和 `renderTab` 相同的 `DockTab`（`panel`、`group`、`index`、`zoomed` 等），所以不同面板可以显示不同的操作，ref 的 `toggleZoom(tab.group)` 作用于它所在的组。它是标签栏里位于标签页滚动视图之后的子元素，标签页滚动时它保持原位，由标签栏自己的布局摆放（在 `flex-row` 的标签栏里，给返回的元素加 `ml-auto` 可以把它推到末尾）。在紧凑方式中，唯一的标签栏以当前显示的标签页的工具栏结尾。
 
+`renderTabBarPrefix` 对应标签栏开头，位于标签页滚动视图之前，拿到同样的 `DockTab`：放标签页滚动时保持原位的留白或控件，例如只给左上角的组给窗口按钮留位（`tabBarStyle` 会给所有组都留）。
+
 ```tsx
 renderToolbar={(tab) => (
   <View class="ml-auto flex-row items-center gap-2 px-2">
@@ -194,7 +196,7 @@ let area!: DockAreaRef;
 | 组内容的中间 | 加入那个组 |
 | 组内容的边缘（每侧外沿 35%） | 分开那个组：在那一侧新建一个只有它的组 |
 
-拖动悬停时，区域在面板将占据的那部分组上显示放置指示（加入时是全部内容，分开时是一半）：这是由应用设置样式的部件（`dropIndicatorClass`），应用也可以绘制其中的内容（`renderDropIndicator`，它会得到 `group`、要分出的 `side` 或标签栏的 `index`）。放置指示以原生方式移到每个新位置：缓动过去，换到另一个组时淡入，上一个组的淡出（用户要求减少动态效果时直接到位）。跟随指针或手指的内容也属于应用（`renderDragPreview`）。一次放下是布局的一次改动，只报告一次；不会带来变化的放下什么也不改变。
+拖动悬停在组的内容上时，区域在面板将占据的那部分组上显示放置指示（加入时是全部内容，分开时是一半）：这是由应用设置样式的部件（`dropIndicatorClass`），应用也可以绘制其中的内容（`renderDropIndicator`，它会得到 `group` 和要分出的 `side`）。沿标签栏拖动时（紧凑布局的标签条也一样），区域改为在面板将落入的两个标签之间画一条插入线：2 点宽、与标签栏等高（竖向标签栏中为横线），颜色取主题的 `ring`，内容区不着色。放置指示以原生方式移到每个新位置：缓动过去，换到另一个组时淡入，上一个组的淡出（用户要求减少动态效果时直接到位）。跟随指针或手指的内容也属于应用（`renderDragPreview`）。一次放下是布局的一次改动，只报告一次；不会带来变化的放下什么也不改变。
 
 锁定的区域、放大的区域，以及旁边没有其他内容的组里的最后一个面板，都不能拖动。
 
@@ -306,7 +308,8 @@ const terminalOpen = signal(true);
 | `renderPanel` | `.render_panel(\|panel\| ..)` | `(panel: DockPanel) => JSX.Element` | 无 | 面板的内容，按它的键（`panel.id`）。 |
 | `renderTab` | `.render_tab(\|tab\| ..)` | `(tab: DockTab) => JSX.Element` | 面板的键 | 标签页显示的内容。 |
 | `renderToolbar` | `.render_toolbar(\|tab\| ..)` | `(tab: DockTab) => JSX.Element` | 无 | 标签栏末尾的工具栏，对应组当前显示的标签页：这个面板自己的操作（新建标签页、放大按钮）。 |
-| `renderDropIndicator` | `.render_drop_indicator(\|drop\| ..)` | `(drop: DockDropIndicator) => JSX.Element` | 无 | 放置指示里的内容：`group`、`side`、`index`。 |
+| `renderTabBarPrefix` | `.render_tab_bar_prefix(\|tab\| ..)` | `(tab: DockTab) => JSX.Element` | 无 | 标签栏开头、标签页之前的内容，对应组当前显示的标签页。 |
+| `renderDropIndicator` | `.render_drop_indicator(\|drop\| ..)` | `(drop: DockDropIndicator) => JSX.Element` | 无 | 组内容上方放置指示里的内容：`group`、`side`（标签栏上显示插入线，不调用它）。 |
 | `renderDock` | `.render_dock(\|dock\| ..)` | `(dock: DockInfo) => JSX.Element` | 无 | 停靠区自己的装饰，位于它的布局之前：`placement`、`open`（在当前呈现方式中是否显示）、`size`、`collapsible`。 |
 | `renderEmpty` | `.render_empty(\|placement\| ..)` | `(placement: DockPlacement) => JSX.Element` | 无 | 中心区域为空时显示的内容。 |
 | `renderDragPreview` | `.render_drag_preview(\|tab\| ..)` | `(tab: DockTab) => JSX.Element` | 无 | 拖动标签页时跟随指针或手指的内容。 |
@@ -348,12 +351,13 @@ const terminalOpen = signal(true);
 | 标签组 | 区域里 | `groupClass`、`groupStyle` | |
 | 标签栏 | 组里 | `tabBarClass`、`tabBarStyle` | |
 | 标签页 | 标签栏里 | `tabClass`、`tabStyle`；`renderTab` | `selected:`、`active:`、`hover:` |
+| 标签栏前缀 | 标签栏开头 | `renderTabBarPrefix` | |
 | 工具栏 | 标签栏末尾 | `renderToolbar` | |
 | 组的内容 | 组里 | `contentClass`、`contentStyle`；`renderPanel` | |
 | 手柄的指示器 | 分栏的组之间、停靠区的边缘 | `handleClass`、`handleStyle` | `group-hover:`、`group-active:` |
 | 手柄的握把 | 居中在手柄的线上 | `handleThumbClass`、`handleThumbStyle` | `group-hover:`、`group-active:`（直到拖动结束都保持按下） |
 | 停靠区 | 边缘 | `dockClass`、`dockStyle`；`renderDock` | |
-| 放置指示 | 拖动时位于组上方 | `dropIndicatorClass`、`dropIndicatorStyle`；`renderDropIndicator` | |
+| 放置指示 | 拖动时位于组的内容上方（标签栏上为插入线） | `dropIndicatorClass`、`dropIndicatorStyle`；`renderDropIndicator` | |
 | 拖动预览 | 指针或手指下方 | `renderDragPreview` | |
 | 空的中心区域 | 中心区域 | `renderEmpty` | |
 | 抽屉、底部面板、背景层 | 中心区域之上，紧凑方式 | `drawerClass`、`sheetClass`、`backdropClass`（及对应的样式） | |

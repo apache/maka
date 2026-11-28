@@ -8,9 +8,13 @@ pub(crate) struct Fenwick {
 }
 
 impl Fenwick {
-    /// Builds from item sizes in O(n).
+    /// Builds from item sizes in O(n). No items make the empty tree, which
+    /// allocates nothing.
     pub(crate) fn from_sizes(sizes: impl ExactSizeIterator<Item = f64>) -> Self {
         let n = sizes.len();
+        if n == 0 {
+            return Self::default();
+        }
         let mut tree = vec![0.0; n + 1];
         for (i, size) in sizes.enumerate() {
             tree[i + 1] += size;
@@ -127,6 +131,9 @@ mod tests {
     fn push_and_truncate_match_a_rebuild() {
         let sizes: Vec<f64> = (0..777).map(|i| (i % 11 + 1) as f64 * 2.5).collect();
         let mut f = Fenwick::default();
+        // An empty build is the unallocated tree pushes start from.
+        let empty = Fenwick::from_sizes(sizes[..0].iter().copied());
+        assert_eq!(empty.tree.capacity(), 0);
         for (i, &s) in sizes.iter().enumerate() {
             f.push(s);
             let built = Fenwick::from_sizes(sizes[..=i].iter().copied());

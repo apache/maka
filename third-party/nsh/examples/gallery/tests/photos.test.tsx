@@ -7,7 +7,7 @@ test("scrolling the list shows the rows further down", async () => {
   await app.waitFor("Ridge 0001");
   // The rows are buttons, found inside the list.
   expect(app.count("id:photos >> role:button")).toBeGreaterThan(5);
-  expect(app.shows("Dunes 0030")).toBe(false);
-  await app.scroll("id:photos", 2400);
-  await app.waitFor("Dunes 0030");
+  expect(app.shows("Dunes 0057")).toBe(false);
+  await app.scroll("id:photos", 4000);
+  await app.waitFor("Dunes 0057");
 });

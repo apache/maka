@@ -85,6 +85,7 @@ nsh component remove gpui
 | `web` | The web runtimes (`--target web`) | Every platform |
 | `gpui` | The [GPUI](./gpui.md) development host (`--target gpui`) | Every platform, built for it |
 | `tui` | The terminal development host (`--target tui`) | Every platform, built for it |
+| `windows-linker` | The linker that gives a TSX app's executable only the parts of `nsh/base` it imports (`nsh package --target windows`) | Windows x86_64 |
 
 A component always comes from the same build as the CLI. `nsh update` adds the installed components again from the release it updates to. A nightly build's components are replaced every night, so a nightly `nsh` from an earlier night asks you to run `nsh update` first.
 
@@ -199,6 +200,8 @@ The CLI is then `./target/debug/nsh`:
 git clone https://github.com/longbridge/nsh.git && cd nsh
 cargo build -p nsh-cli
 ```
+
+A CLI built into a target directory outside the checkout (`CARGO_TARGET_DIR`) uses NSH's released crates and runtimes, and says so.
 
 The commands for the iOS and Android runtimes and the release runners are in the repository's [AGENTS.md](https://github.com/longbridge/nsh/blob/main/AGENTS.md#commands).
 

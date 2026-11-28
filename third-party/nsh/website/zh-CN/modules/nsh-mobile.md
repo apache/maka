@@ -1,6 +1,6 @@
 ---
 title: nsh/mobile
-description: iOS 和 Android 的 API：系统标签栏 TabBar、系统日期时间选择器 DateTimePicker、iOS 的系统分段控件 SegmentedControl、系统开关 Switch、触感反馈 Haptics、系统设置中本应用的页面 AppSettings、iOS 的 InputAccessoryView、Android 的 BackHandler，以及 isAvailable。
+description: iOS 和 Android 的 API：系统标签栏 TabBar、触感反馈 Haptics、系统设置中本应用的页面 AppSettings、iOS 的 InputAccessoryView、Android 的 BackHandler，以及 isAvailable。
 order: 12.2
 ---
 
@@ -11,11 +11,8 @@ order: 12.2
 | API | 用途 | 平台 |
 |---|---|---|
 | `TabBar` | 系统标签栏 | iOS、Android |
-| [`DateTimePicker`](#datetimepicker) | 系统日期时间选择器 | iOS、Android |
-| [`Switch`](#switch) | 系统开关 | iOS、Android |
 | [`Haptics`](#haptics) | 设备触感反馈 | iOS、Android |
 | [`AppSettings`](#appsettings) | 系统设置里本应用的页面 | iOS、Android |
-| [`SegmentedControl`](#segmentedcontrol) | 系统分段控件 | iOS |
 | [`InputAccessoryView`](#inputaccessoryview) | 键盘上方的工具栏 | iOS |
 | [`BackHandler`](#backhandler) | 返回键 | Android |
 
@@ -25,35 +22,23 @@ order: 12.2
 import {
   AppSettings,
   BackHandler,
-  DateTimePicker,
   Haptics,
   InputAccessoryView,
   isAvailable,
-  SegmentedControl,
-  Switch,
   TabBar,
 } from "nsh/mobile";
-import type {
-  DateTimePickerMode,
-  DateTimePickerProps,
-  SegmentedControlItem,
-  SegmentedControlProps,
-  SwitchProps,
-  TabBarItem,
-  TabBarProps,
-} from "nsh/mobile";
+import type { TabBarItem, TabBarProps } from "nsh/mobile";
 ```
 
 ```rust tabs
-use nsh_core::mobile::{
-    DateTimePickerMode, DateTimePickerValue, SegmentedControlItem, TabBarItem, date_time_picker, segmented_control,
-    switch, tab_bar,
-};
+use nsh_core::mobile::{TabBarItem, tab_bar};
 ```
 
 ## 模块范围
 
-这个模块提供移动平台专属的能力，例如用于应用顶层导航的系统标签栏。通用控件属于 [`nsh/base`](./nsh-base.md)：例如 [Switch](../elements/switch.md) 在手机、桌面和 Web 上共享行为与 API，轨道、滑块和各状态的样式由应用提供。`TabBar` 服务于移动应用导航，`Tabs` 服务于跨平台的标签内容切换。这个模块仅接受具有移动平台专属交互语义的能力。系统外观、尺寸或动画本身仍属于通用控件的共享职责。这个职责区别决定哪些能力适合放在这里（[目标与设计原则](../docs/goals.md)）。`SegmentedControl` 是系统自己的控件，供确实需要 iOS 原生分段控件的应用使用；在所有平台上以应用自己的外观做选择，用 `nsh/base` 的 [ToggleGroup](../elements/toggle.md) 或 [RadioGroup](../elements/radio.md)。同样，`DateTimePicker` 是手机上系统自己的日期时间选择器；在所有平台上以应用自己的外观选择日期和时间，用 `nsh/base` 的 [DatePicker](../elements/date-picker.md) 或 [TimeField](../elements/time-field.md)。`Switch` 同理：它是系统自己的开关，供确实需要 iOS 和 Android 原生开关的应用使用；在所有平台上以应用自己的外观显示开关，用 `nsh/base` 的 [Switch](../elements/switch.md)。
+这个模块提供移动平台专属的能力，例如用于应用顶层导航的系统标签栏。通用控件属于 [`nsh/base`](./nsh-base.md)：例如 [Switch](../elements/switch.md) 在手机、桌面和 Web 上共享行为与 API，轨道、滑块和各状态的样式由应用提供。`TabBar` 服务于移动应用导航，`Tabs` 服务于跨平台的标签内容切换。这个模块仅接受具有移动平台专属交互语义的能力。系统外观、尺寸或动画本身仍属于通用控件的共享职责。这个职责区别决定哪些能力适合放在这里（[目标与设计原则](../docs/goals.md)）。
+
+系统自己的分段控件、开关和日期时间选择器在 [nshm](../docs/nshm.md) [nsh-system-controls](https://github.com/longbridge/nsh-system-controls) 中：用 `nsh add nsh-system-controls` 添加，把 `SegmentedControl`、`Switch` 和 `DateTimePicker` 的导入从 `"nsh/mobile"` 改为 `"nsh-system-controls"`。要在所有平台上使用应用自己外观的控件，用 `nsh/base` 的 [ToggleGroup](../elements/toggle.md) 或 [RadioGroup](../elements/radio.md)、[Switch](../elements/switch.md)，以及 [DatePicker](../elements/date-picker.md) 或 [TimeField](../elements/time-field.md)。
 
 ## isAvailable
 
@@ -159,140 +144,6 @@ fn sections() -> impl IntoElement {
 - **iOS 和 Mac Catalyst**：`UITabBar`，采用当前 iOS 版本的系统外观：iOS 26 上是悬浮的 Liquid Glass 标签栏及其选中效果。图标是 SF Symbols。主题的 `primary` 是标签栏的 `tintColor`，即选中标签的颜色；其他标签保持系统的颜色。角标是标签项的 `badgeValue`：文字完整显示，`""` 是系统没有文字的角标，大小与一位数字的角标相同。
 - **Android**：Material 3 的导航栏，由平台的 View 组成：每个标签的文字上方是放在激活指示器中的图标，按压时有水波纹；Android 12 及以上使用系统的动态颜色，更早的版本使用 Material 的基准颜色；浅色或深色跟随应用的外观。位于窗口底部时，它延伸到导航栏下方，高度增加导航栏的 inset，与 Material 的一致。图标是应用的 drawable（由标签栏着色）。选中标签的图标和文字使用主题的 `primary`，激活指示器是这个颜色的 12% 不透明度；其他标签保持系统的颜色。角标采用 Material 3 的样式：`""` 是位于图标角上的小角标（圆点），文字是从图标中部开始的大角标，使用它的 error 颜色，超出激活指示器的部分以省略号结尾。大角标与 Material 的一样只容纳简短的文字，即一个数字或不超过四个字符的词：更长的文字会被截断（`"Updated"` 显示为“Up…”），而 iOS 会完整显示。TalkBack 把 `""` 读作系统的“新通知”。
 - **桌面（macOS、Windows、Linux、GPUI）和 Web**：各个部分用 [Tabs](../elements/tabs.md) 显示，外观由应用决定。`TabBar` 在这些平台上不占空间，所以一个布局可以同时包含两者，用 `platform.os`（[`nsh` 的设备 API](./nsh.md#device)）来选择。
-
-## SegmentedControl
-
-分段控件在原地从少数几个选项中选一个：浅色或深色，日、周或月。`SegmentedControl` 在 iOS 和 iPadOS 上就是系统自己的 `UISegmentedControl`，因此有系统的外观（iOS 26 及以后为 Liquid Glass）、动效、VoiceOver 朗读（“浅色，按钮，已选中，第 1 项，共 2 项”）和键盘焦点。
-
-```tsx
-import { signal } from "nsh";
-import { SegmentedControl } from "nsh/mobile";
-
-const appearance = signal(0);
-
-<SegmentedControl
-  items={[{ title: "浅色", icon: "sun.max" }, { title: "深色", icon: "moon" }]}
-  selectedIndex={appearance()}
-  onChange={({ index }) => appearance.set(index)}
-  style={{ alignSelf: "stretch" }}
-/>;
-```
-
-选择由应用掌握：点按时 `onChange` 报告分段的序号（`{ index }`），控件像系统的一样立即显示这个选择，应用再把序号作为 `selectedIndex` 传回。新的 `items` 原地更新分段（分段数量不变时控件保持原样，改名或禁用的分段不会闪烁）。样式未指定的尺寸取系统的尺寸；样式给出的宽度由各分段平分。在 Rust 中，`segmented_control()` 创建一个，每个属性有对应的 setter，事件用 `.on_change(..)`；`SegmentedControlItem::new(title).icon(name).disabled(true)` 创建一个分段。
-
-### 属性
-
-| 属性 | Rust | 类型 | 默认值 | 说明 |
-|---|---|---|---|---|
-| `items` | `.items(..)` | `SegmentedControlItem[]` | `[]` | 各分段，按顺序。 |
-| `selectedIndex` | `.selected_index(..)` | `number` | `0` | 选中的分段序号；超出分段数量的序号表示不选中任何分段。 |
-| `disabled` | `.disabled(..)` | `boolean` | `false` | 不能选择任何分段：系统将控件调暗。 |
-| `class`、`style` | 样式方法 | `string`、`StyleProp<ViewStyle>` | 无 | 控件的位置和尺寸。外观由系统决定。 |
-| `testID` | `.test_id(..)` | `string` | 无 | 在测试和 `nsh test --trace` 中找到这个控件。 |
-
-#### SegmentedControlItem
-
-| 字段 | Rust | 类型 | 说明 |
-|---|---|---|---|
-| `title` | `SegmentedControlItem::new(title)` | `string` | 分段的标题：显示的内容，也是 VoiceOver 朗读的内容。 |
-| `icon` | `.icon(name)` | `string` | 代替标题显示的 [SF Symbol](https://developer.apple.com/sf-symbols/)，VoiceOver 仍朗读标题。 |
-| `disabled` | `.disabled(..)` | `boolean` | 这个分段不能选择。 |
-
-### 事件
-
-| 事件 | Rust | 说明 |
-|---|---|---|
-| `onChange` | `.on_change(\|index: &u32\| ..)` | 用户选择了另一个分段：`{ index }`。控件立即显示这个选择；应用设置 `selectedIndex`。 |
-
-### 平台说明
-
-- **iOS 和 Mac Catalyst**：`UISegmentedControl`，外观取决于 iOS 版本和应用链接的 SDK：iOS 26 及以后为 Liquid Glass。
-- **Android、桌面和 Web**：`SegmentedControl` 不占空间、不显示，因此同一布局可兼顾两者：在这些平台上用 [ToggleGroup](../elements/toggle.md) 或 [RadioGroup](../elements/radio.md) 显示选择，按 `platform.os` 选用。
-
-## Switch
-
-开关打开或关闭一项设置。`Switch` 是系统自己的开关：iOS 和 iPadOS 上是 `UISwitch`，Android 上是 Material 3 的开关。它有系统的外观（iOS 26 及以后为 Liquid Glass）、拨动和拖动时的动效、触感反馈和读屏朗读（“无线局域网，开关按钮，开”）。
-
-```tsx
-import { signal } from "nsh";
-import { Switch } from "nsh/mobile";
-
-const wifi = signal(true);
-
-<Switch accessibilityLabel="无线局域网" checked={wifi()} onChange={({ checked }) => wifi.set(checked)} />;
-```
-
-值由应用掌握：拨动时 `onChange` 报告用户要的值（`{ checked }`），开关像系统的一样立即移过去，应用再把值作为 `checked` 传回。应用不采纳（拒绝这次拨动）时，开关移回原值。样式未指定的尺寸取系统的尺寸，所以一行里可以和其他内容一起摆放。打开时用主题的 `primary` 色；没有时用系统的颜色。在 Rust 中，`switch()` 创建一个，每个属性有对应的 setter，事件用 `.on_change(..)`。
-
-### 属性
-
-| 属性 | Rust | 类型 | 默认值 | 说明 |
-|---|---|---|---|---|
-| `checked` | `.checked(..)` | `boolean` | `false` | 开或关。 |
-| `disabled` | `.disabled(..)` | `boolean` | `false` | 不能拨动：系统将它调暗。 |
-| `accessibilityLabel` | `.accessibility_label(..)` | `string` | 无 | 读屏随状态朗读的名字：它打开的那项设置。 |
-| `class`、`style` | 样式方法 | `string`、`StyleProp<ViewStyle>` | 无 | 开关的位置。外观和尺寸由系统决定。 |
-| `testID` | `.test_id(..)` | `string` | 无 | 在测试和 `nsh test --trace` 中找到这个开关。 |
-
-### 事件
-
-| 事件 | Rust | 说明 |
-|---|---|---|
-| `onChange` | `.on_change(\|checked: &bool\| ..)` | 用户拨动了开关：`{ checked }`，它要的值。开关立即移过去；应用设置 `checked`。 |
-
-### 平台说明
-
-- **iOS 和 Mac Catalyst**：`UISwitch`，外观取决于 iOS 版本和应用链接的 SDK：iOS 26 及以后为 Liquid Glass。
-- **Android**：框架的开关，画成 Material 3 的轨道和滑块，Android 12 及以后用系统的动态颜色（之前用 Material 的基准颜色），跟随应用的浅色或深色外观。
-- **桌面和 Web**：`Switch` 不占空间、不显示，因此同一布局可兼顾两者：在这些平台上用 `nsh/base` 的 [Switch](../elements/switch.md) 显示这项设置，按 `isAvailable` 选用。
-
-## DateTimePicker
-
-日期时间选择器设置一个日期、一个时刻或两者：提醒的时间、日程的结束日期。`DateTimePicker` 是系统自己的选择器，因此有系统的外观、格式、日历和无障碍：在 iOS 和 iPadOS 上是紧凑样式的 `UIDatePicker`，值显示在胶囊里，点开是系统的日历或时间滚轮；在 Android 上值显示在字段里，点开是系统的日期或时间对话框。
-
-```tsx
-import { signal } from "nsh";
-import { DateTimePicker } from "nsh/mobile";
-
-const at = signal("2026-11-17T09:30");
-
-<DateTimePicker
-  mode="dateTime"
-  value={at()}
-  min="2026-11-17T00:00"
-  minuteInterval={5}
-  accessibilityLabel="提醒时间"
-  onChange={({ value }) => at.set(value)}
-/>;
-```
-
-值是对应模式的 ISO 字符串，与 HTML 的日期和时间输入框相同：`date` 是 `"2026-11-17"`，`time` 是 `"09:30"`，`dateTime` 是 `"2026-11-17T09:30"`。它们是挂钟时间：选择器原样显示，由应用对应到它所指的时区。值由应用掌握：选择后 `onChange` 报告新值（`{ value }`），选择器像系统的一样立即显示它，应用再把它作为 `value` 传回。没有值时选择器显示当前时刻。形式不属于当前模式的 `value`、`min` 或 `max` 不会被当作别的值显示：NSH 记录一条警告并忽略它。样式未指定的尺寸取系统的尺寸。在 Rust 中，`date_time_picker()` 创建一个，每个属性有对应的 setter，事件用 `.on_change(..)`；值是 `DateTimePickerValue`，可由 `chrono` 的 `NaiveDate`、`NaiveTime` 和 `NaiveDateTime` 得到。
-
-### 属性
-
-| 属性 | Rust | 类型 | 默认值 | 说明 |
-|---|---|---|---|---|
-| `mode` | `.mode(..)` | `"date" \| "time" \| "dateTime"` | `"date"` | 选什么：日期、时刻，或两者。 |
-| `value` | `.value(..)` | `string \| null` | `null` | 显示的值，取当前模式的形式；`null` 显示当前时刻。 |
-| `min` | `.min(..)` | `string \| null` | `null` | 用户能选的最早的值。 |
-| `max` | `.max(..)` | `string \| null` | `null` | 用户能选的最晚的值。 |
-| `minuteInterval` | `.minute_interval(..)` | `number` | `1` | 可选的分钟之间相隔的分钟数：1 到 30 之间 60 的约数。其他数字记录警告，按 1 分钟。 |
-| `disabled` | `.disabled(..)` | `boolean` | `false` | 不能修改：系统将它调暗。 |
-| `accessibilityLabel` | `.accessibility_label(..)` | `string` | 无 | 读屏随值朗读的名字：它设置的是什么。选择器只显示值，所以传入它所在那一行的名称。 |
-| `class`、`style` | 样式方法 | `string`、`StyleProp<ViewStyle>` | 无 | 选择器的位置和尺寸。外观由系统决定。 |
-| `testID` | `.test_id(..)` | `string` | 无 | 在测试和 `nsh test --trace` 中找到这个选择器。 |
-
-### 事件
-
-| 事件 | Rust | 说明 |
-|---|---|---|
-| `onChange` | `.on_change(\|value: &DateTimePickerValue\| ..)` | 用户选了一个值：`{ value }`，取当前模式的形式。选择器立即显示它；应用设置 `value`。 |
-
-### 平台说明
-
-- **iOS 和 Mac Catalyst**：紧凑样式的 `UIDatePicker`；`dateTime` 时日期和时刻是两个胶囊。日历和时间滚轮是系统的，使用用户的语言区域、日历和时钟制式。
-- **Android**：值以应用语言（[国际化](../docs/i18n.md)，包括 `setLocale` 选的语言）的格式和用户的 12 或 24 小时制显示，每部分一个字段；按下时打开系统的日期或时间对话框，使用同一语言。时间对话框提供每一分钟：落在 `minuteInterval` 两档之间的选择取前一档，超出 `min` 或 `max` 的选择取边界。
-- **桌面和 Web**：`DateTimePicker` 不占空间、不显示，因此同一布局可兼顾两者：在这些平台上用 [DatePicker](../elements/date-picker.md) 或 [TimeField](../elements/time-field.md) 选择，按 `platform.os` 选用。
 
 ## InputAccessoryView
 

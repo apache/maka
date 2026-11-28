@@ -53,17 +53,17 @@ impl DevSession {
         let weak = Arc::downgrade(&host);
         let state = Arc::new(Mutex::new(DevState::default()));
         let client_state = state.clone();
-        let host_info = HostInfo {
-            device: device_name(),
-            platform: HostPlatform::Android,
-            bytecode_version: BYTECODE_VERSION.to_owned(),
-            ui_sets: crate::ui_sets()
-                .iter()
-                .flat_map(nsh_core::element::Registry::sets)
-                .filter_map(|set| set.specifier().map(str::to_owned))
-                .collect(),
-            tests: true,
-        };
+        let mut host_info = HostInfo::new(HostPlatform::Android);
+        host_info.device = device_name();
+        host_info.bytecode_version = BYTECODE_VERSION.to_owned();
+        host_info.ui_sets = crate::ui_sets()
+            .iter()
+            .flat_map(nsh_core::element::Registry::sets)
+            .filter_map(|set| set.specifier().map(str::to_owned))
+            .collect();
+        host_info.tests = true;
+        // It keeps no model in a development session (`nsh test --attach`).
+        host_info.attach = false;
         // A test session (`nsh test --target android`): the host keeps the
         // model the agent's steps see, from the first bundle on (the
         // client's events come in order on its thread).
@@ -134,6 +134,7 @@ fn handle(host: &Arc<Host>, state: &Mutex<DevState>, event: DevEvent) {
         DevEvent::Disconnected => host.dev_status(Some("Dev server disconnected — reconnecting…")),
         // The client's thread hands them to the test agent.
         DevEvent::Testing
+        | DevEvent::Attachable
         | DevEvent::Step { .. }
         | DevEvent::TestSetup { .. }
         | DevEvent::Fetch { .. } => {}
@@ -170,6 +171,7 @@ fn handle(host: &Arc<Host>, state: &Mutex<DevState>, event: DevEvent) {
             source_map,
             capabilities,
             app_id,
+            url_schemes,
             window,
             application,
             limits,
@@ -194,6 +196,7 @@ fn handle(host: &Arc<Host>, state: &Mutex<DevState>, event: DevEvent) {
                 bundle = bundle.with_source_map(map);
             }
             bundle = bundle
+                .with_url_schemes(url_schemes)
                 .with_app_id(app_id.as_deref())
                 .with_main_window(window.as_deref())
                 .with_application(application.as_deref());
@@ -242,6 +245,8 @@ fn handle(host: &Arc<Host>, state: &Mutex<DevState>, event: DevEvent) {
                 host.dev_error(None, false);
             }
         }
+        // Events added later for other hosts (`DevEvent` is non-exhaustive).
+        _ => {}
     }
 }
 

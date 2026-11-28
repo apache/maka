@@ -243,7 +243,9 @@ fn span_at(spans: &[TextSpan], index: u32) -> usize {
 /// Metrics of a font a run is set in.
 #[derive(Debug)]
 struct FontInfo {
-    /// `Font::describe_with_absolute_size`, to load it on the main thread.
+    /// `Font::describe_with_absolute_size`, then a newline and the font's
+    /// file when Fontconfig knows it: the main thread loads that same file
+    /// (#3583).
     desc: Arc<str>,
     /// Em size (points).
     size: f32,
@@ -345,6 +347,10 @@ pub(crate) struct Prepared {
     layout: pango::Layout,
     /// UTF-16 offset of each byte offset of the text.
     utf16: Box<[u32]>,
+    /// How far the root strut's baseline is below its line's top with a
+    /// fixed `lineHeight` (`None`: no fixed line height), and the root
+    /// font's size.
+    strut: Option<(f32, f32)>,
     /// Byte offsets of the attachments' placeholders, in order, with how
     /// far the attachment's top is above the baseline
     /// (`TextAttachment::ascent`).
@@ -401,6 +407,7 @@ fn natural_line_heights(
     s: &str,
     natural: &[(u32, u32, i32, i32)],
     placeholders: &[(u32, u32)],
+    root_height: i32,
 ) {
     if natural.is_empty() {
         return;
@@ -432,7 +439,7 @@ fn natural_line_heights(
     }
     let insert = |start: u32, end: u32, height: i32| {
         if end > start {
-            let mut attr = pango::AttrInt::new_line_height_absolute(height);
+            let mut attr = pango::AttrInt::new_line_height_absolute(height.max(root_height));
             attr.set_start_index(start);
             attr.set_end_index(end);
             attrs.insert(attr);
@@ -645,8 +652,13 @@ impl PangoTextEngine {
         // scaled to the size asked for.
         desc.set_absolute_size(f64::from(size) * f64::from(pango::SCALE));
         let metrics = font.metrics(None);
+        let mut desc = desc.to_str().to_string();
+        if let Some(file) = font_file_of(font) {
+            desc.push('\n');
+            desc.push_str(&file);
+        }
         let info = Arc::new(FontInfo {
-            desc: desc.to_str().as_str().into(),
+            desc: desc.into(),
             size,
             underline: (
                 from_pango(metrics.underline_position()),
@@ -778,11 +790,21 @@ impl TextEngine for PangoTextEngine {
         hyphens.set_start_index(0);
         hyphens.set_end_index(u32::MAX);
         attrs.insert(hyphens);
-        let base = text
-            .spans
-            .first()
-            .map_or_else(ResolvedTextStyle::default, |s| s.style);
-        layout.set_font_description(Some(&font_description(&base, &self.ui_family)));
+        let root_strut = text.paragraph_strut_or_first();
+        layout.set_font_description(Some(&font_description(&root_strut, &self.ui_family)));
+        let root_height = if root_strut.line_height.0 > 0.0 {
+            to_pango(root_strut.line_height.0)
+        } else {
+            0
+        };
+        let strut = if root_height > 0 {
+            let desc = font_description(&root_strut, &self.ui_family);
+            let (ascent, descent) = self.natural_metrics(context, &desc);
+            let up = ascent + (root_height - ascent - descent) / 2;
+            Some((from_pango(up), root_strut.font_size.0))
+        } else {
+            None
+        };
         // The attachments' placeholders (byte ranges): they make their
         // line as tall as they are.
         let mut placeholders = Vec::with_capacity(text.attachments.len());
@@ -827,7 +849,7 @@ impl TextEngine for PangoTextEngine {
                 // run under it exactly that height, so an attachment
                 // taller than the line would not grow it. Their shapes
                 // reserve the line's own box instead (below).
-                let height = to_pango(style.line_height.0);
+                let height = to_pango(style.line_height.0).max(root_height);
                 let mut from = start;
                 for (a, b) in placeholders
                     .iter()
@@ -883,13 +905,22 @@ impl TextEngine for PangoTextEngine {
             let style = text
                 .span_at(a.index)
                 .map_or_else(Default::default, |s| s.style);
-            if style.line_height.0 > 0.0 {
-                let desc = font_description(&style, &self.ui_family);
+            let reserve = |style: &ResolvedTextStyle, height: f32| {
+                let desc = font_description(style, &self.ui_family);
                 let (ascent, descent) = self.natural_metrics(context, &desc);
-                let height = to_pango(style.line_height.0);
+                let height = to_pango(height);
                 let above = ascent + (height - ascent - descent) / 2;
+                (above, height - above)
+            };
+            if root_strut.line_height.0 > 0.0 {
+                let (above, below) = reserve(&root_strut, root_strut.line_height.0);
                 up = up.max(above);
-                down = down.max(height - above);
+                down = down.max(below);
+            }
+            if style.line_height.0 > 0.0 {
+                let (above, below) = reserve(&style, style.line_height.0);
+                up = up.max(above);
+                down = down.max(below);
             }
             let ink = pango::Rectangle::new(
                 0,
@@ -910,7 +941,7 @@ impl TextEngine for PangoTextEngine {
             attrs.insert(pango::AttrLanguage::new(&lang));
         }
         layout.set_attributes(Some(&attrs));
-        natural_line_heights(&layout, &attrs, s, &natural, &placeholders);
+        natural_line_heights(&layout, &attrs, s, &natural, &placeholders, root_height);
         let flush = match alignment {
             pango::Alignment::Center => 0.5,
             pango::Alignment::Right => 1.0,
@@ -919,6 +950,7 @@ impl TextEngine for PangoTextEngine {
         Prepared {
             layout,
             utf16: utf16_offsets(s),
+            strut,
             attachments,
             attachment_extents,
             max_lines: text.max_lines,
@@ -1119,6 +1151,33 @@ impl TextEngine for PangoTextEngine {
                 baseline,
             });
         }
+        if let Some((strut_up, strut_size)) = prepared.strut {
+            for line in &mut out.lines {
+                let current = line.baseline - line.info.y.0;
+                if current >= strut_up - 0.01 {
+                    continue;
+                }
+                let runs = &out.runs[line.runs.clone()];
+                // Attachments reserve the strut themselves; larger fonts
+                // and ellipsis lines keep the layout they already had.
+                let large = runs.iter().any(|r| r.font.size > strut_size + 0.01);
+                let ellipsis = runs.iter().any(|r| r.ellipsis);
+                let attachment = prepared
+                    .attachment_extents
+                    .iter()
+                    .any(|&(at, _)| at >= line.info.start && at < line.info.end);
+                if large || ellipsis || attachment {
+                    continue;
+                }
+                let delta = strut_up - current;
+                line.baseline += delta;
+                line.info.ascender += Points(delta);
+                line.info.descender = Points((line.info.descender.0 - delta).max(0.0));
+                for run in &mut out.runs[line.runs.clone()] {
+                    run.baseline += delta;
+                }
+            }
+        }
         TextLayout(Arc::new(out))
     }
 
@@ -1214,11 +1273,20 @@ mod fontconfig {
         pub(super) fn FcInitLoadConfigAndFonts() -> *mut c_void;
         pub(super) fn FcConfigDestroy(config: *mut c_void);
         pub(super) fn FcConfigAppFontAddFile(config: *mut c_void, file: *const c_char) -> c_int;
+        pub(super) fn FcConfigCreate() -> *mut c_void;
+        pub(super) fn FcPatternGetString(
+            pattern: *mut c_void,
+            object: *const c_char,
+            n: c_int,
+            value: *mut *const u8,
+        ) -> c_int;
     }
 
     #[link(name = "pangoft2-1.0")]
     unsafe extern "C" {
         pub(super) fn pango_fc_font_map_get_type() -> usize;
+        pub(super) fn pango_fc_font_get_type() -> usize;
+        pub(super) fn pango_fc_font_get_pattern(font: *mut c_void) -> *mut c_void;
         #[cfg(test)]
         pub(super) fn pango_fc_font_map_get_config(map: *mut c_void) -> *mut c_void;
         pub(super) fn pango_fc_font_map_set_config(map: *mut c_void, config: *mut c_void);
@@ -1271,6 +1339,69 @@ fn set_font_files(map: &pango::FontMap, files: &[PathBuf]) -> Result<(), String>
     Ok(())
 }
 
+/// The file Fontconfig loaded `font` from, if it is a Fontconfig font.
+fn font_file_of(font: &pango::Font) -> Option<String> {
+    let ptr: *mut pango::ffi::PangoFont = font.to_glib_none().0;
+    // SAFETY: a GType query, then an instance check on the live `font`.
+    let is_fc = unsafe {
+        let fc_type = fontconfig::pango_fc_font_get_type();
+        gtk::glib::gobject_ffi::g_type_check_instance_is_a(ptr.cast(), fc_type as _) != 0
+    };
+    if !is_fc {
+        return None;
+    }
+    // SAFETY: `ptr` is a PangoFcFont; the pattern is owned by it and the
+    // string by the pattern, both alive while `font` is.
+    unsafe {
+        let pattern = fontconfig::pango_fc_font_get_pattern(ptr.cast());
+        let mut file = std::ptr::null();
+        if pattern.is_null()
+            || fontconfig::FcPatternGetString(pattern, c"file".as_ptr(), 0, &mut file) != 0
+            || file.is_null()
+        {
+            return None;
+        }
+        let file = std::ffi::CStr::from_ptr(file.cast()).to_str().ok()?;
+        (!file.contains('\n')).then(|| file.to_owned())
+    }
+}
+
+/// A font map whose Fontconfig configuration holds only `file`, without
+/// the user's rules: a description resolves to a face of that file, never
+/// to another font a `<match>` rule prefers (#3583).
+fn single_file_font_map(file: &str) -> Option<pango::FontMap> {
+    struct Config(*mut c_void);
+    impl Drop for Config {
+        fn drop(&mut self) {
+            // SAFETY: our owned reference to a non-null FcConfig.
+            unsafe { fontconfig::FcConfigDestroy(self.0) };
+        }
+    }
+    let path = std::ffi::CString::new(file).ok()?;
+    // SAFETY: an owned, empty config, not the process's current one.
+    let config = unsafe { fontconfig::FcConfigCreate() };
+    if config.is_null() {
+        return None;
+    }
+    let config = Config(config);
+    // SAFETY: the config is ours alone; the path outlives the call.
+    if unsafe { fontconfig::FcConfigAppFontAddFile(config.0, path.as_ptr()) } == 0 {
+        return None;
+    }
+    let map: pango::FontMap = pangocairo::FontMap::new().upcast();
+    let ptr: *mut pango::ffi::PangoFontMap = map.to_glib_none().0;
+    // SAFETY: as in set_font_files; pangocairo's map on Linux is a
+    // PangoFcFontMap (checked), which takes its own reference.
+    unsafe {
+        let fc_type = fontconfig::pango_fc_font_map_get_type();
+        if gtk::glib::gobject_ffi::g_type_check_instance_is_a(ptr.cast(), fc_type as _) == 0 {
+            return None;
+        }
+        fontconfig::pango_fc_font_map_set_config(ptr.cast(), config.0);
+    }
+    Some(map)
+}
+
 /// Writes font data to `<user cache>/nsh/fonts/<hash>.ttf` (once).
 fn font_file(data: &[u8]) -> std::io::Result<PathBuf> {
     use std::hash::{Hash, Hasher};
@@ -1291,6 +1422,8 @@ fn font_file(data: &[u8]) -> std::io::Result<PathBuf> {
 struct MainFonts {
     context: pango::Context,
     fonts: FxHashMap<Arc<str>, Option<pango::Font>>,
+    /// A context per font file, see [`single_file_font_map`].
+    files_contexts: FxHashMap<Box<str>, Option<pango::Context>>,
     /// How many of [`FONT_FILES`] were added to the font map.
     files: usize,
 }
@@ -1305,6 +1438,7 @@ fn main_font(desc: &Arc<str>) -> Option<pango::Font> {
         let fonts = fonts.get_or_insert_with(|| MainFonts {
             context: context(&pangocairo::FontMap::default(), font_rendering(), true),
             fonts: FxHashMap::default(),
+            files_contexts: FxHashMap::default(),
             files: 0,
         });
         if let Some(font) = fonts.fonts.get(desc) {
@@ -1321,8 +1455,25 @@ fn main_font(desc: &Arc<str>) -> Option<pango::Font> {
             fonts.context.changed();
         }
         drop(files);
-        let font = fonts.context.font_map().and_then(|map| {
-            map.load_font(&fonts.context, &pango::FontDescription::from_string(desc))
+        let (description, file) = desc.split_once('\n').unwrap_or((desc, ""));
+        let description = pango::FontDescription::from_string(description);
+        let mut font = None;
+        if !file.is_empty() {
+            if fonts.files_contexts.len() >= 64 {
+                fonts.files_contexts.clear();
+            }
+            let file_context = fonts.files_contexts.entry(file.into()).or_insert_with(|| {
+                single_file_font_map(file).map(|map| context(&map, font_rendering(), true))
+            });
+            font = file_context
+                .as_ref()
+                .and_then(|c| c.font_map()?.load_font(c, &description));
+        }
+        let font = font.or_else(|| {
+            fonts
+                .context
+                .font_map()
+                .and_then(|map| map.load_font(&fonts.context, &description))
         });
         if font.is_none() {
             log::warn!("cannot load font {desc}");
@@ -2492,8 +2643,45 @@ mod tests {
     /// #2504: the engine measures on its own thread while the main thread
     /// draws with cairo-ft. Over more than ten font files, cairo-ft evicts
     /// faces across threads unsafely, so the engine must not use it.
+    ///
+    /// The race runs in a process of its own (#3531): in this binary the
+    /// tests' GTK thread draws with cairo-ft too, for other tests' frames,
+    /// so racing it here would crash that thread instead of testing the
+    /// engine.
     #[test]
     fn engine_measuring_does_not_race_main_thread_cairo() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "text::tests::engine_measuring_races_main_thread_cairo_worker",
+                "--ignored",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .stdin(std::process::Stdio::null())
+            .output()
+            .unwrap();
+        let log = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        // The worker reports whether it raced, so a filter that matches no
+        // test cannot pass silently.
+        assert!(
+            output.status.success() && log.contains(RACE_DONE),
+            "cairo race worker: {}\n{log}",
+            output.status
+        );
+    }
+
+    const RACE_DONE: &str = "cairo race worker:";
+
+    /// The race for [`engine_measuring_does_not_race_main_thread_cairo`],
+    /// run in its own process.
+    #[test]
+    #[ignore = "run in its own process by engine_measuring_does_not_race_main_thread_cairo"]
+    fn engine_measuring_races_main_thread_cairo_worker() {
         use pangocairo::cairo;
         let families: Vec<String> = {
             let map = pangocairo::FontMap::new();
@@ -2507,7 +2695,9 @@ mod tests {
             f.into_iter().take(30).collect()
         };
         if families.len() <= 10 {
-            return; // Too few fonts to reach cairo's face eviction.
+            // Too few fonts to reach cairo's face eviction.
+            println!("{RACE_DONE} skipped, {} families", families.len());
+            return;
         }
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let engine_families = families.clone();
@@ -2542,6 +2732,7 @@ mod tests {
         }
         stop.store(true, std::sync::atomic::Ordering::Relaxed);
         engine.join().unwrap();
+        println!("{RACE_DONE} raced {} families", families.len());
     }
 
     #[test]
@@ -2646,6 +2837,79 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The paragraph's fixed line height is its root strut's, not the line
+    /// height of a smaller inline span that happens to start the text.
+    #[test]
+    fn the_paragraph_line_height_is_the_root_struts() {
+        let root = ResolvedTextStyle {
+            font_size: Points(14.0),
+            line_height: Points(22.75),
+            ..Default::default()
+        };
+        let small = ResolvedTextStyle {
+            font_size: Points(12.6),
+            line_height: Points(20.475),
+            ..Default::default()
+        };
+        let make = |first_small| {
+            let mut t = if first_small {
+                text(&[("`code`", small), (" 中文正文", root)])
+            } else {
+                text(&[("中文正文 ", root), ("`code`", small)])
+            };
+            t.paragraph_strut = Some(root);
+            t
+        };
+        let engine = PangoTextEngine::new("sans-serif".into());
+        let measure = |first_small| {
+            let t = make(first_small);
+            let prepared = engine.prepare(&t);
+            let size = engine.measure(&prepared, Some(Points(300.0)));
+            let baseline = engine
+                .first_baseline(&prepared, Points(300.0))
+                .expect("a first line");
+            (size.height.0, baseline.0)
+        };
+        let small_first = measure(true);
+        let plain_first = measure(false);
+        assert!(
+            (small_first.0 - plain_first.0).abs() < 0.01,
+            "height: small first {small_first:?}, plain first {plain_first:?}"
+        );
+        assert!(
+            (small_first.1 - plain_first.1).abs() < 0.01,
+            "baseline: small first {small_first:?}, plain first {plain_first:?}"
+        );
+        assert!(plain_first.0 >= 22.75, "{plain_first:?}");
+
+        // Even when no root-sized glyph is present, the strut keeps the
+        // smaller inline box from lowering the paragraph or moving its baseline.
+        let only = |small_style| {
+            let mut t = text(&[("`code`", if small_style { small } else { root })]);
+            t.paragraph_strut = Some(root);
+            t
+        };
+        let measure_only = |small_style| {
+            let t = only(small_style);
+            let prepared = engine.prepare(&t);
+            let size = engine.measure(&prepared, Some(Points(300.0)));
+            let baseline = engine
+                .first_baseline(&prepared, Points(300.0))
+                .expect("a first line");
+            (size.height.0, baseline.0)
+        };
+        let small_only = measure_only(true);
+        let root_only = measure_only(false);
+        assert!(
+            (small_only.0 - root_only.0).abs() < 0.01,
+            "height: small only {small_only:?}, root only {root_only:?}"
+        );
+        assert!(
+            (small_only.1 - root_only.1).abs() < 0.01,
+            "baseline: small only {small_only:?}, root only {root_only:?}"
+        );
     }
 
     /// A text's first baseline (what `align-items: baseline` lines it up
@@ -3033,6 +3297,56 @@ mod tests {
             "{}",
             l.runs[0].font.desc
         );
+    }
+
+    /// Fontconfig rules like these make a description of the CJK face the
+    /// text was shaped in resolve to a Latin one; the main thread must draw
+    /// with the shaped face's file anyway (#3583). Runs itself in a child
+    /// process, as the rules must be in place before Fontconfig starts.
+    #[test]
+    fn the_main_thread_draws_with_the_shaped_face() {
+        const RULES: &str = r#"<?xml version="1.0"?><fontconfig>
+<include ignore_missing="yes">/etc/fonts/fonts.conf</include>
+<match target="pattern"><test name="family"><string>sans-serif</string></test>
+<edit name="family" mode="prepend" binding="strong"><string>Noto Sans CJK SC</string><string>Noto Sans</string></edit></match>
+<match target="pattern"><test name="lang" compare="contains"><string>en</string></test>
+<test name="family" compare="contains"><string>Noto Sans CJK</string></test>
+<edit name="family" mode="prepend" binding="strong"><string>Noto Sans</string></edit></match>
+</fontconfig>"#;
+        if std::env::var_os("NSH_TEST_FONT_RULES").is_none() {
+            let dir = std::env::temp_dir().join(format!("nsh-3583-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let conf = dir.join("fonts.conf");
+            std::fs::write(&conf, RULES).unwrap();
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "text::tests::the_main_thread_draws_with_the_shaped_face",
+                ])
+                .args(["--nocapture", "--test-threads=1"])
+                .env("NSH_TEST_FONT_RULES", "1")
+                .env("FONTCONFIG_FILE", &conf)
+                .env("LC_ALL", "en_US.UTF-8")
+                .env("LANGUAGE", "en_US")
+                .status()
+                .unwrap();
+            let _ = std::fs::remove_dir_all(&dir);
+            assert!(status.success());
+            return;
+        }
+        let engine = PangoTextEngine::new("sans-serif".into());
+        let t = text(&[("中文", ResolvedTextStyle::default())]);
+        let prepared = engine.prepare(&t);
+        let layout = engine.layout(&prepared, engine.measure(&prepared, None));
+        let l = layout.downcast::<LinuxLayout>().unwrap();
+        let desc = &l.runs[0].font.desc;
+        if !desc.starts_with("Noto Sans CJK") {
+            eprintln!("skipped: Noto Sans CJK is not installed ({desc})");
+            return;
+        }
+        let (_, shaped) = desc.split_once('\n').expect("the shaped face's file");
+        let drawn = main_font(desc).expect("a font");
+        assert_eq!(font_file_of(&drawn).as_deref(), Some(shaped));
     }
 
     #[test]

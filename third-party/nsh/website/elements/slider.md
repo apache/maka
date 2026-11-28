@@ -149,6 +149,7 @@ const price = signal<[number, number]>([200, 800]);
 | `indicatorClass`, `indicatorStyle` | `.indicator_style(\|s\| ..)` | `string`, `StyleProp<ViewStyle>` | none | The indicator, the rail the values map onto. |
 | `rangeClass`, `rangeStyle` | `.range_style(\|s\| ..)` | `string`, `StyleProp<ViewStyle>` | none | The range, from `min` to the thumb (between a range's thumbs), placed by the slider. |
 | `thumbClass`, `thumbStyle` | `.thumb_style(\|s\| ..)` | `string`, `StyleProp<ViewStyle>` | none | Each thumb, centered on its value. |
+| `renderThumb` | `.render_thumb(\|thumb: &SliderThumbContext\| ..)` | `(thumb: SliderThumbContext) => JSX.Element` | none | Content in each thumb, from which thumb it is (`{ start }`): a value bubble. See [Content in a thumb](#content-in-a-thumb). |
 | `children` | `.child(..)` | `JSX.Element` | none | The content after the track: a label, the value as text. |
 | `class`, `style` | style methods | `string`, `StyleProp<ViewStyle>` | none | The slider itself: the column (or row) around the track and the label. |
 
@@ -168,6 +169,7 @@ const price = signal<[number, number]>([200, 800]);
 | The indicator | the track | `indicatorClass`, `indicatorStyle` |
 | The range | the indicator, placed by the values | `rangeClass`, `rangeStyle` |
 | A thumb (two on a range) | the indicator, centered on its value | `thumbClass`, `thumbStyle` |
+| A thumb's content | the thumb, over its box | its own elements (`renderThumb`) |
 | The label | the slider, after the track | its own elements (`children`) |
 
 The track takes presses and drags. The indicator's length is the range of values, from `min` at its leading edge (at
@@ -181,7 +183,10 @@ size. Two ways to lay them out:
 
 States the parts show:
 
-- A thumb: `hover:` under the pointer, `active:` while it is dragged, `focus-visible:` with the keyboard focus (`focus:` after a drag too), `disabled:`.
+- A thumb: `hover:` under the pointer, `active:` while it is dragged, `data-dragging:` while a press on it or on the
+  track moves it (from the press, before any move, to the release), `focus-visible:` with the keyboard focus (`focus:`
+  after a drag too), `disabled:`. Each thumb is a `group`, so its content takes `group-hover:`, `group-active:`,
+  `group-data-dragging:` and `group-focus-visible:` from it.
 - The track: `active:` while a press on it drags; it is a `group`, so the indicator, the range and the thumbs take
   `group-hover:` and `group-active:` from it.
 - Every part: `disabled:` while the slider is.
@@ -190,6 +195,51 @@ The thumbs move as the value changes, and follow a drag at once. Motion of the t
 (`transition` for a thumb that brightens on `hover:` and `active:`), and `motion-reduce:` keeps it still for
 people who ask for less motion. The keyboard focus is a thumb's: its `focus-visible:` classes ring it while the
 keyboard moved the focus there, and not after a press or a drag.
+
+## Content in a thumb
+
+`renderThumb` draws content in each thumb: a bubble with the value above it, a grip. It is told which thumb it draws in
+(`start` is `true` for a range's start thumb), never the thumb's state: the content shows the states of its own thumb
+through `group-*:` classes, so a range's bubble appears over the thumb the pointer is on, the one being dragged (a press
+on the track drags the nearer thumb) or the one the keyboard moves, and not over the other. The content moves with its
+thumb in the same frame as the pointer, and the states change natively, so hovering, pressing and dragging draw nothing
+again. It is laid out in the thumb's box, over the thumb (an `absolute` bubble places itself from the thumb), and takes
+no pointer: presses beside the thumb reach the track. Screen readers skip it: each thumb tells them its own label and
+value.
+
+```tsx
+const price = signal<[number, number]>([200, 800]);
+
+<Slider
+  value={price()}
+  onChange={({ value }) => price.set(value as [number, number])}
+  max={1000}
+  step={10}
+  accessibilityLabel="Maximum price"
+  startAccessibilityLabel="Minimum price"
+  trackClass="h-8 justify-center"
+  indicatorClass="h-1.5 rounded-full bg-muted"
+  rangeClass="rounded-full bg-primary"
+  thumbClass="size-4 rounded-full bg-background shadow"
+  renderThumb={({ start }) => (
+    <View class="absolute bottom-6 left-1/2 -translate-x-1/2 rounded-md bg-foreground px-1.5 py-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-data-dragging:opacity-100 group-focus-visible:opacity-100 motion-reduce:transition-none">
+      <Text class="whitespace-nowrap text-xs text-background">{`$${price()[start ? 0 : 1]}`}</Text>
+    </View>
+  )}
+/>;
+```
+
+The text follows the app's value; in a terminal a thumb is its glyph alone. Some details of the example:
+
+- A range's end thumb draws over its start thumb, and so does its content. A bubble above its thumb clears the other
+  thumb; where the two values meet and both bubbles show (the pointer over one thumb, the keyboard focus on the
+  other), the end's covers the start's. To keep both in view there, place the start's bubble below the track:
+  ``class={`absolute ${start ? "top-6" : "bottom-6"} ...`}``.
+- `whitespace-nowrap` keeps the value on one line: the bubble is placed from the thumb's box, which is narrower than the
+  text.
+- The nearest `group` around the content is its thumb, so the content's `group-hover:` follows the thumb. Content that
+  follows a `group` of the app around the slider (a card that shows the values while the pointer is over it) names it:
+  `group/card` on the card, `group-hover/card:` in the content.
 
 ## Keyboard
 

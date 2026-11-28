@@ -35,7 +35,7 @@ const cargo = ['deny', '--locked', '--config', 'deny.toml'];
 execFileSync('cargo-deny', [...cargo, 'check', 'licenses'], { cwd: root, stdio: 'inherit' });
 const crates = new Map();
 const licenses = new Set();
-for (const crate of ['cli', 'desktop-shell']) {
+for (const crate of ['cli', 'desktop-shell', 'ios-shell']) {
   const listing = execFileSync(
     'cargo-deny',
     [

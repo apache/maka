@@ -613,11 +613,21 @@ impl Decor {
             // SAFETY: clearing the mask of the decoration's own shape.
             unsafe { m.setMask(None) };
         }
+        // The size a running layout animation takes the box to.
+        let heading = s
+            .live
+            .as_ref()
+            .and_then(|l| l.frame_target())
+            .map(|to| CGSize::new(to.size.width.0 as CGFloat, to.size.height.0 as CGFloat));
         match &mut self.visual {
-            Some(visual) => visual.apply(view, layer, style, local, radii, kind, covered, corner),
+            Some(visual) => visual.apply(
+                view, layer, style, local, radii, kind, covered, corner, heading,
+            ),
             None => {
                 let mut visual = crate::visual::Visual::default();
-                visual.apply(view, layer, style, local, radii, kind, covered, corner);
+                visual.apply(
+                    view, layer, style, local, radii, kind, covered, corner, heading,
+                );
                 if !visual.is_empty() {
                     self.visual = Some(Box::new(visual));
                 }

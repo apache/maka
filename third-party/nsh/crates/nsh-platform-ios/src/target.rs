@@ -82,6 +82,16 @@ define_class!(
             if recognizer.release() {
                 match link {
                     Some(link) => self.link_event(&link, EventKind::Press, id, at),
+                    // An input's field takes the focus as UIKit hands it the
+                    // touch, after the recognizers acted: its press comes
+                    // after that focus, as on the other platforms.
+                    None if recognizer.on_editor() => {
+                        let target = MainThreadBound::new(self.retain(), self.mtm());
+                        DispatchQueue::main().exec_async(move || {
+                            let mtm = MainThreadMarker::new().expect("main queue");
+                            target.get(mtm).with_mounter(move |m| m.pressed(id, at));
+                        });
+                    }
                     None => self.with_mounter(move |m| m.pressed(id, at)),
                 }
             }

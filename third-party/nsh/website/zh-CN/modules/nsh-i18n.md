@@ -17,24 +17,35 @@ import { addTranslations, availableLocales, setLocale, t } from "nsh/i18n";
 ## t
 
 ```ts
-function t(key: string, options?: { locale?: string; [name: string]: unknown }): string;
+function t<K extends TranslationKey>(
+  key: K,
+  options?: Translations[K] & { locale?: LocaleTag },
+): string;
+// 没有 `locales/` 时：
+// function t(key: string, options?: { locale?: string; [name: string]: unknown }): string;
 ```
 
 返回 `key` 在应用显示的语言下的文本：用户偏好语言（`localeSettings().languages`）中第一个应用有翻译的语言，否则为 `locale()` 的语言。
 
+- **类型检查**：当应用存在 `locales/` 目录时，`nsh` 会自动生成 `.nsh/types/nsh/translations.d.ts`（与 `.nsh/types/nsh/tokens.d.ts` 相同模式），扩展 `Translations` 和 `TranslationLocales` 接口，使 `nsh check` 与编辑器校验 `key`（`TranslationKey`）、在消息包含 `%{name}` 占位符时要求传入对应参数（无占位符时 `options` 可选），并提供 `LocaleTag` 自动补全。没有 `locales/` 目录时，`TranslationKey` 与 `LocaleTag` 退回为 `string`。
+- 存在 `locales/` 时，如果向 `t(key)` 传入普通的 `string` 变量，需要为变量标注类型（如 `TranslationKey` 或 `` `status.${kind}` `` 模板字面量联合类型）或做类型断言（`key as TranslationKey`）；对于仅在运行时通过 `addTranslations` 添加且带动态参数的 key，可对 `t` 做类型断言（例如 `(t as (key: string, options?: { locale?: LocaleTag; [name: string]: unknown }) => string)`）。
 - `options` 中除 `locale` 外的成员会填入文本的 `%{name}` 占位符，按文本写出（`String(value)`）。
 - `options.locale` 用于取另一种语言的文本。
 - 某个语言缺少的 key，会依次从去掉最后一个子标签的语言（`zh-Hant-TW`、`zh-Hant`、`zh`）中查找，再从英语（`en`）中查找。所有语言都没有时，文本为 `<locale>.<key>`。
 - 读取它会订阅语言和翻译：显示它的文本会随 `setLocale`、用户设置以及开发中的文件变化而更新。
 
 ```tsx
-<Text>{t("cart.items", { count: items().length })}</Text>
+t("hello");
+t("messages.hello", { name: "Jason" });
+t("hello", { locale: "zh-CN" });
+
+<Text>{t("cart.items", { count: items().length })}</Text>;
 ```
 
 ## setLocale
 
 ```ts
-function setLocale(locale: string | null): void;
+function setLocale(locale: LocaleTag | null): void;
 ```
 
 让应用显示 `locale`（BCP 47 标签，`"zh-CN"`），而不管用户的语言：`t`、`locale()`、`localeSettings().languages` 的第一项和 `Intl` 的默认 locale 会立即跟随它。`null` 重新跟随用户的语言。不是语言标签的字符串会抛出 `RangeError`。这个选择在应用运行期间有效，只作用于它所在的 surface。

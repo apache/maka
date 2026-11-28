@@ -786,6 +786,28 @@ fn select_all(surface: &Rc<Surface>, id: NodeId) {
     }
 }
 
+/// `ref.selectAll()` on `view` (`Command::SelectAll`): selects every text
+/// of the selectable view `view` is or is inside, as Ctrl+A does, and
+/// clears the other areas' selections as a press there would.
+pub(crate) fn select_in(surface: &Rc<Surface>, view: &NshView) {
+    let Some(area) = area_of(view) else {
+        return;
+    };
+    let id = area.id();
+    let others: Vec<NodeId> = surface
+        .selection
+        .areas
+        .borrow()
+        .iter()
+        .filter(|&(&other, a)| other != id && !a.model.is_empty())
+        .map(|(&other, _)| other)
+        .collect();
+    for other in others {
+        clear(surface, other);
+    }
+    select_all(surface, id);
+}
+
 /// `ref.clearSelection()` on `view` (`Command::ClearSelection`): clears
 /// the selections of the areas that are `view`, inside it or around it.
 pub(crate) fn clear_in(surface: &Surface, view: &NshView) {

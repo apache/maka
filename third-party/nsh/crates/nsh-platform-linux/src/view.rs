@@ -19,7 +19,7 @@
 //! [`ViewState::natives`]: placed at their own rectangles, after the app's
 //! children.
 
-use std::cell::{Ref, RefCell, RefMut};
+use std::cell::{Cell, Ref, RefCell, RefMut};
 
 use gtk4::{self as gtk, glib, graphene, gsk, prelude::*, subclass::prelude::*};
 // The scroll position, extent and motion of a `ViewKind::Scroll` view.
@@ -30,6 +30,18 @@ use nsh_core::{
     animation::AnimValues,
     geometry::{AbsoluteLength, DefiniteLength, REM_SIZE},
 };
+
+thread_local! {
+    /// How many times views were allocated: a count that moves when GTK
+    /// lays views out again ([`allocations`]).
+    static ALLOCATIONS: Cell<u64> = const { Cell::new(0) };
+}
+
+/// A count of views' allocations: unchanged, no view moved, resized or
+/// changed its transform since it was read.
+pub(crate) fn allocations() -> u64 {
+    ALLOCATIONS.get()
+}
 
 /// A native GTK widget a view hosts at `rect` (view coordinates).
 #[derive(Debug, Clone)]
@@ -568,6 +580,7 @@ mod imp {
         }
 
         fn size_allocate(&self, width: i32, height: i32, _baseline: i32) {
+            ALLOCATIONS.set(ALLOCATIONS.get().wrapping_add(1));
             if let Some(resized) = &*self.resized.borrow() {
                 resized(width as f32, height as f32);
             }
@@ -637,8 +650,12 @@ mod imp {
         fn snapshot(&self, snapshot: &gtk::Snapshot) {
             // The root's snapshot is the whole tree's that changed, which
             // the performance monitor reports ([`crate::fps`]).
-            let started = (self.resized.borrow().is_some() && crate::fps::measuring())
-                .then(nsh_core::time::Instant::now);
+            let root = self.resized.borrow().is_some();
+            if root {
+                // Its window is laid out, and this frame not yet shown.
+                crate::window::root_drawing(&self.obj());
+            }
+            let started = (root && crate::fps::measuring()).then(nsh_core::time::Instant::now);
             self.draw(snapshot);
             if let Some(started) = started {
                 crate::fps::snapshotted(started.elapsed());

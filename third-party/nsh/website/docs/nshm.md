@@ -180,6 +180,7 @@ crate, imported from `nsh-extra` in TSX and called as `nsh_extra::<module>` in R
 | `location` | `Location` | Reads the device's position once the user allows it, on macOS, iOS and the web |
 | `photos` | `Photos` | Reads the user's recent photos on iOS, once the user allows it |
 | `push` | `Push` | Receives remote notifications from any push service on iOS, and on Android through the service's binding |
+| `share` | `Share` | Hands text, a link or local files to the system's share sheet on iOS, Android, macOS and the web |
 | `speech` | `Speech` | Turns what the user says into text as they speak, on macOS, iOS, Android, Windows and the web |
 
 ```tsx
@@ -416,6 +417,160 @@ implements `PushProvider` (it registers the device with its service), sets it wi
 `provide_registration_failure`, `provide_notification` and `provide_background`. A press of a notification the binding
 posted opens the app with the payload as the intent's extras, and reaches `press` with them as its `payload` (Android
 does not say which notification it was, so it has no `id` or `threadId`).
+
+### Share
+
+`Share` hands text, a link or local files to the system's share sheet, where the user sends them on: to another app, a
+message, a mail, AirDrop or a saved file. iOS shows `UIActivityViewController`, Android the chooser of
+`Intent.ACTION_SEND`, macOS the share menu (`NSSharingServicePicker`) and a browser `navigator.share`.
+
+```sh
+nsh add nsh-extra --features share
+```
+
+```ts
+const Share: {
+  available(): Promise<boolean>;
+  show(content: ShareContent): Promise<ShareResult>;
+};
+
+interface ShareContent {
+  title?: string; // the subject (a mail's subject line) and the sheet's title where it has one
+  text?: string;
+  url?: string; // a link: http(s), mailto, an app's own scheme
+  files?: string[]; // local files by absolute path, or `${dataDir}/…` (up to 100)
+  anchor?: ViewRef; // the view the sheet points at where it is a popover (iPad, macOS)
+}
+
+interface ShareResult {
+  action: "shared" | "dismissed";
+  target: string | null; // what the user shared with, as the platform names it
+}
+```
+
+A trip planner shares a trip from its share button:
+
+```tsx
+import { Text, View, type ViewRef } from "nsh";
+import { Share } from "nsh-extra";
+
+function ShareButton(props: { trip: string }) {
+  let button: ViewRef | undefined;
+  const share = async () => {
+    try {
+      const { action } = await Share.show({
+        title: "Weekend in Kyoto",
+        url: `https://example.com/trips/${props.trip}`,
+        anchor: button,
+      });
+      if (action === "shared") console.log("shared");
+    } catch (e) {
+      console.warn("cannot share", e);
+    }
+  };
+  return (
+    <View ref={button} role="button" accessibilityLabel="Share" onPress={share}>
+      <Text>Share</Text>
+    </View>
+  );
+}
+```
+
+- `show` resolves with what the user did: `"shared"` with the `target` the user shared with (an activity type on
+  iOS, an app's package on Android, a service's title on macOS, `null` where the platform does not say), or
+  `"dismissed"` when the user closed the sheet. A dismissal is the user's answer, not a failure. `"shared"` says as
+  much as the platform knows: on iOS the target finished sharing (a cancelled mail is `"dismissed"`); on macOS the
+  service reported that it finished, or it reported nothing and the user came back to the window the menu opened
+  from (after copying or adding to a list, and also with a mail draft still open), while a service that reports a
+  cancel, or reports nothing while the user stays away for ten minutes, is `"dismissed"`; on Android the user chose
+  an app, and Android tells nothing of what the app does next; on the web `navigator.share` resolved.
+- `show` rejects with a `TypeError` for content with none of `text`, `url` and `files` (empty text counts as none),
+  or a URL that does not parse, runs code (`javascript:`) or names a local file (`file:`; share it as `files`); a
+  `RangeError` for more than 100 files, text or a title past 1 MiB, or a URL past 16 KiB; `ERR_ACCESS_DENIED` for a
+  file `capabilities.fs.read` does not grant, `ENOENT` for one that does not exist, `EISDIR` for a folder; and
+  `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` where there is no share sheet, or for content the platform does not share (a
+  file outside an Android app's own storage, files in a browser, a browser that does not allow sharing here or still
+  shows an earlier share's sheet).
+- A `show` while a sheet is open resolves the earlier promise `"dismissed"` at once. On iOS and macOS the new sheet
+  takes the earlier one's place; on Android and the web the earlier sheet stays until the user closes it, and a
+  browser refuses the new share while it is open.
+- On an iPad and on macOS the sheet is a popover: give `anchor` the view that opened it (the share button, in a page,
+  a header, a dialog or another window); without one it shows at the middle of the window.
+- `available()` resolves `true` on iOS, Android, macOS (AppKit windows) and in browsers with `navigator.share` whose
+  page allows `web-share`, when the app's capabilities grant it; `false` on Windows, Linux, in GPUI windows, in
+  terminal apps and in headless runs until the test answers, where `show` rejects with
+  `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`, so the app can offer another way (copying the link, say).
+- An app that declares `"capabilities"` grants `Share` with [`"share": true`](./sandbox-and-capabilities.md#share),
+  and each shared file must also be readable by `fs.read`. Without the grant `available()` resolves `false` and
+  `show` rejects with an `Error` whose `code` is `"ERR_ACCESS_DENIED"`, `permission` `"share"`.
+
+| Platform | Share sheet | Files |
+|---|---|---|
+| iOS | `UIActivityViewController`; a popover on an iPad | Any file the app reads |
+| Android | The chooser of `ACTION_SEND` (`ACTION_SEND_MULTIPLE` for several files) | Files in the app's own storage (`process.dataDir`, the cache), as `content:` URIs |
+| macOS | The share menu, `NSSharingServicePicker` | Any file the app reads |
+| Web | `navigator.share`, where the browser has it and the page allows `web-share` | Text and links |
+
+The feature needs no declaration. On iOS the sheet offers saving an image to Photos when the app says why it adds to
+the photo library: `NSPhotoLibraryAddUsageDescription` in `ios.infoPlist`
+([Info.plist keys](./packaging.md#infoplist-keys-and-entitlements)).
+
+Rust code uses `nsh_extra::share`: `show(ShareRequest).await` resolves with a `ShareOutcome` (`action`, a
+`ShareAction`, and `target`) or a `ShareError` (`code`, `message`), and `available().await` tells whether a
+sheet shows here.
+
+| TS | Rust |
+|---|---|
+| `await Share.available()` | `available().await -> bool` |
+| `await Share.show(content)` | `show(request).await -> Result<ShareOutcome, ShareError>` |
+| `title`, `text`, `url`, `files` | `ShareRequest::new().title(..).text(..).url(..).file(..)` |
+| `anchor` | `.anchor(&element_ref)` |
+| `result.action`, `.target` | `outcome.action` (`ShareAction`), `outcome.target` |
+| `error.code` | `error.code` |
+
+```rust
+use nsh_core::prelude::*;
+use nsh_extra::share::{self, ShareAction, ShareRequest};
+
+fn share_button(trip: &'static str) -> impl IntoElement {
+    let button = element_ref();
+    view()
+        .element_ref(&button)
+        .role(AccessibilityRole::Button)
+        .accessibility_label("Share")
+        .on_press(move || {
+            let request = ShareRequest::new()
+                .title("Weekend in Kyoto")
+                .url(format!("https://example.com/trips/{trip}"))
+                .anchor(&button);
+            spawn(async move {
+                match share::show(request).await {
+                    Ok(outcome) if outcome.action == ShareAction::Shared => log::info!("shared"),
+                    Ok(_) => {}
+                    Err(error) => log::warn!("cannot share: {error}"),
+                }
+            });
+        })
+        .child(text("Share"))
+}
+```
+
+In `nsh test` (and `nsh_testing::Headless`), shares reach the module's fake share sheet, named `"nsh-extra/share"`.
+Until the test answers there is no sheet: `available()` resolves `false` and `show` rejects with
+`ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`. The test answers for the user with [`app.fake`](./testing-and-trace.md)
+(`Headless::call_fake` in Rust):
+
+| Method | `args` | What it does, and its answer |
+|---|---|---|
+| `answer` | `[{ action, target }]` | The run has a share sheet from now on, and the user answers every share with it: `"shared"` (to `target`, if given) or `"dismissed"`. Resolves with `null`. |
+| `hold` | `[]` | The run has a share sheet from now on, and the user leaves each one open: the next share answers it `"dismissed"`. Resolves with `null`. |
+| `shares` | `[]` | Resolves with what the app shared, in order: `[{ title, text, url, files, anchored }]` (`null` for what was not given, `files` their real paths, `anchored` whether the sheet points at the share's `anchor`). |
+
+```tsx
+await app.fake("nsh-extra/share", "answer", [{ action: "shared", target: "com.apple.UIKit.activity.Mail" }]);
+await app.press("label:Share");
+expect(await app.fake("nsh-extra/share", "shares")).toHaveLength(1);
+```
 
 ### Speech
 
@@ -730,6 +885,29 @@ translations, which would say something else than the app's text. Two crates tra
 by the app as above, in `ios.infoPlistStrings` (`macos.infoPlistStrings`).
 
 Develop it beside an app with `nsh add --path ../my-gauge`, which reads the directory as it is. Publish it as any crate (`cargo publish`), with the keyword `nshm` so that it can be found on [crates.io](https://crates.io/keywords/nshm), or push it to Git and tag its versions.
+
+### System UI and files from Rust
+
+A module that shows system UI (a picker, a share sheet, a menu) or hands a file to the system works through the
+same public hooks NSH's own modules use, so it behaves as they do:
+
+| Need | Hook |
+|---|---|
+| A file path the app passes, checked as `fs/promises` reads it | `sys.readable_file(path)` (a `sys: System` argument): the real path within `capabilities.fs.read` or a file the user pasted or dropped, else `ERR_ACCESS_DENIED`, `ENOENT`, `EISDIR` for a folder, or `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` on the web |
+| What to present over (iOS) | `nsh_platform_ios::presenting_controller(mtm)` in a `run_on_main_thread` task ([iOS](./ios.md#presenting-from-rust)) |
+| What to show from (macOS) | `nsh_platform_macos::presenting_view(mtm)` in a `run_on_main_thread` task ([macOS](./macos.md#presenting-from-rust)) |
+| What to show over (Android) | `nsh::presenting_activity(env)` in a `run_on_main_thread` task ([Android](./android.md#presenting-from-rust)) |
+| The window that owns it (Windows, Linux) | `presenting_window()` of `nsh_platform_windows` (an `HWND`) or `nsh_platform_linux` (a `gtk::Window`) in a `run_on_main_thread` task ([Windows](./windows.md#presenting-from-rust), [Linux](./linux.md#presenting-from-rust)) |
+| The view of an element, for a popover or a menu that belongs to it | `native_view` with the node of the element's `ref` (a `NodeRef` argument): `native_view(mtm, node)` of `nsh_platform_ios` or `nsh_platform_macos`, `nsh::native_view(env, node)` on Android, `nsh_platform_linux::native_view(node)`; on Windows, where NSH draws its elements, `nsh_platform_windows::element_bounds(node)`: the element's window and its bounds there |
+| Another app, started for a result (Android) | `nsh::activity::start_for_result` ([Android](./android.md#activities-from-rust)) |
+| A file of the app's storage another app reads (Android) | `nsh::activity::content_uri(env, path)` |
+| A Java listener or callback (Android) | `nsh::proxy::implement` ([Android](./android.md#java-listeners-in-rust)) |
+| A broadcast an API answers with (Android) | `nsh::receiver::register(env, action, handler)` ([Android](./android.md#broadcasts-in-rust)) |
+
+Check the path first, then hand it on: a file the app may not read never reaches the other app. Native views and
+windows are for anchoring and presenting system UI only: a module never changes, re-parents, restyles or removes a
+view NSH owns. Under an embedding backend without these hooks (GPUI) the views and windows are `None`, so a module
+falls back or reports the UI unavailable.
 
 ### Wrapping a native SDK
 

@@ -36,7 +36,9 @@ pub mod notifications;
 mod package;
 pub mod permissions;
 pub mod picker;
+mod presenting;
 pub mod proxy;
+pub mod receiver;
 mod selectable_view;
 mod shader;
 mod svg;
@@ -50,6 +52,7 @@ pub use host::{run_root, set_runtime};
 pub use nsh_core::element::Registry;
 /// What [`root!`] gives.
 pub use nsh_engine::Root;
+pub use presenting::{native_view, presenting_activity};
 
 /// The UI sets apps import ([`set_ui_sets`]; by default `nsh/base`).
 static UI_SETS: std::sync::RwLock<Option<Vec<nsh_core::element::Registry>>> =

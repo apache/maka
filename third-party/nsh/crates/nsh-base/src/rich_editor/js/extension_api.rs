@@ -773,7 +773,7 @@ extension_classes! {
     TaskList => "taskList", "Task lists (`taskList`): `Mod-Shift-9`; `toggleTaskList`.";
     TaskItem => "taskItem", "Tasks (`taskItem`), checked or not: `[ ] ` / `[x] `; the option `nested` allows `Tab`.";
     CodeBlock => "codeBlock", "Code blocks (`codeBlock`): fences, `Mod-Alt-c`, leaving on a third Enter; `setCodeBlock`, `toggleCodeBlock`.";
-    CodeBlockHighlight => "codeBlockHighlight", "Colors code blocks by their `language`, as `TextView` colors fenced code: the same syntaxes and palette, highlighted off the engine thread (on the web from the page's syntaxes, fetched once). Part of `StarterKit`; `StarterKit.configure({ codeBlockHighlight: false })` leaves code plain. Needs the platform's feature `highlight`.";
+    CodeBlockHighlight => "codeBlockHighlight", "Colors code blocks by their `language`, as `TextView` colors fenced code: the same syntaxes and palette, highlighted off the engine thread (on the web from the page's syntaxes, fetched once). Its option `defaultLanguage` (Tiptap's; none by default) colors the blocks that name no language, without writing it into the document; without it they stay plain. Part of `StarterKit`; `StarterKit.configure({ codeBlockHighlight: false })` leaves code plain. Needs the platform's feature `highlight`.";
     HardBreak => "hardBreak", "Line breaks (`hardBreak`): `Mod-Enter`, `Shift-Enter`; `setHardBreak`.";
     HorizontalRule => "horizontalRule", "Horizontal rules (`horizontalRule`): `---`; `setHorizontalRule`.";
     RichImage => "image", "Images (`image`, Tiptap's `Image`): `![alt](src)`; `setImage`.";

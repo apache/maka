@@ -3749,9 +3749,9 @@ pub trait Styled: Sized {
     }
 
     /// The color a system control shows its state in (`accentColor`, CSS's
-    /// `accent-color`, Tailwind's `accent-*`): the track of
-    /// a system switch when on. Set on the control itself; it is
-    /// not inherited.
+    /// `accent-color`, Tailwind's `accent-*`), which a native component gets
+    /// as its `accentColor` prop, such as the track of a system switch when
+    /// on. Set on the control itself; it is not inherited.
     fn accent_color(mut self, color: impl IntoReactive<AdaptiveColor>) -> Self {
         self.style().bind_value(color, |s, color: AdaptiveColor| {
             s.color(&[StyleKey::AccentColor], color);

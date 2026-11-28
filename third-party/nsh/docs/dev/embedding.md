@@ -47,7 +47,8 @@
   reads with the app's id (`nsh_engine::Bundle::url_schemes`; a Rust app's `Root::url_schemes`), never
   from the app's code. The platform reports every URL the system opens the app with as the root's `UrlScheme` event; the
   core drops the links of other schemes and keeps the rest until the app listens (`UrlScheme.on("open")`,
-  `next_url_scheme_open()`). Links are untrusted input: the app checks what they ask for, and nothing navigates on its own.
+  `next_url_scheme_open()`; a native module waiting for a link of one scheme, `next_url_scheme_open_for(scheme)`,
+  takes those alone while it waits). Links are untrusted input: the app checks what they ask for, and nothing navigates on its own.
   A signed package embedded in another app claims no schemes: the embedding app owns them.
 - Handoff: `nsh.json` `"handoff": true` makes `nsh package` declare `<id>.url` in `NSUserActivityTypes` on macOS and
   iOS; the release runners turn it on when their bundle declares it (`nsh_platform_apple::handoff::declared`), and an
@@ -87,6 +88,8 @@
   initial default; explicit main-window attributes and later window updates take precedence. Standard hosts
   leave that option false but can request transparency through their window configuration. A view's
   `behindWindow` material does not enable window transparency. An `AppView` never changes its host's window.
+  An embedded macOS `AppView` (not `run_app`'s) mounts a plain JS root (`mount(App)`, no `<Window>`) in itself,
+  as it does a Rust app, rather than in an implicit `main` window (#3514); the app's `<Window>`s still open windows.
   GPUI and GPUI Kit apps use `nsh_platform_gpui::AppView`, a GPUI view (`gpui.md`): set `AppOptions::inline_root`
   to `true`, create the view with `cx.new(|cx| AppView::new(options, window, cx))` inside a window, load the plain JS
   root with `view.read(cx).load(App::Js(bundle))`, then put the entity in any element tree (in a GPUI Kit window, as
@@ -445,7 +448,9 @@ NSH draws (`src/layers.rs`).
   from the next load. A new kind of cache is one more `CachePolicy` field, never another option per platform.
 - **Development.** With feature `dev`, `view.update(cx, |view, cx| view.connect_dev_server(url, cx))` loads the app
   from a `nsh dev` server and reloads it on every change, as `connectDevServer` on iOS and Android: the server's
-  assets, logs forwarded to the developer's terminal, the status line and the error overlay over the view, the reload
+  assets, logs forwarded to the developer's terminal (through the `DevLogger` of `dev::init_logging`, or, in an app
+  with a `log` logger of its own, through `dev::forward` called from that logger; `init_logging` warns when another
+  logger is installed), the status line and the error overlay over the view, the reload
   key. The embedding app's `on_error` keeps hearing the app's errors next to the overlay; connecting again replaces
   the session. `dev` keeps the optional parts the app's build chose ([features.md](features.md)), so an app
   importing a part its release leaves out fails here as it would there. `crates/gpui/nsh-platform-gpui/examples/embed.rs` takes a dev server's URL.

@@ -464,6 +464,16 @@ final class Decor extends Drawable {
         backdrop.setBlur(px);
     }
 
+    /** Whether this draws a blurred backdrop and nothing else. */
+    boolean onlyBackdrop() {
+        if (backdrop == null || Color.alpha(fill) > 0 || gradients.length > 0 || hasBorder()) return false;
+        if (outlineWidth > 0 && Color.alpha(outlineColor) > 0) return false;
+        for (int color : boxShadowColors) {
+            if (Color.alpha(color) > 0) return false;
+        }
+        return true;
+    }
+
     /** Distance shadow casters are moved away to draw only their shadows. */
     private static final float AWAY = 1 << 14;
     private final Path shadowPath = new Path();

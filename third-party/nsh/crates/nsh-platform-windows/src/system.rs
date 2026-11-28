@@ -261,6 +261,8 @@ pub(crate) fn environment_applied(surface: &Surface) {
     crate::app_window::appearance_changed(surface);
     // Menus follow the scheme; the caption buttons are drawn again.
     crate::chrome::appearance_changed(surface);
+    // Web views follow the scheme (`prefers-color-scheme`).
+    crate::native::appearance_changed(surface);
 }
 
 /// `MountItem::Appearance`: the app forces light or dark (or follows the

@@ -3814,8 +3814,9 @@ fn list_renders_window_and_recycles_cells() {
     );
     c.commit();
     let (mut next_id, mut cells) = (100, Vec::new());
-    // Estimated 50 pt rows: viewport + one screen of overscan = 17 rows.
-    assert_eq!(render_binds(&mut c, &mut next_id, &mut cells, 100.0), 17);
+    // Estimated 50 pt rows: the viewport, its screen of overscan and the
+    // one the start leaves empty above it = 25 rows.
+    assert_eq!(render_binds(&mut c, &mut next_id, &mut cells, 100.0), 25);
     let batch = c.commit().unwrap();
     // Rows are really 100 pt: positioned by measured sizes.
     assert_eq!(
@@ -3826,10 +3827,10 @@ fn list_renders_window_and_recycles_cells() {
         MountItem::ScrollContent { id: 2, size } => Some(size.height.0),
         _ => None,
     });
-    assert_eq!(content, Some(17.0 * 100.0 + 983.0 * 50.0));
+    assert_eq!(content, Some(25.0 * 100.0 + 975.0 * 50.0));
 
     // Scroll far down into unmeasured (50 pt estimated) rows: the window
-    // needs 25 rows; all 17 existing cells are reused and 8 are added.
+    // needs 25 rows; the 25 existing cells are reused, none are added.
     c.set_scroll_offset(2, point(px(0.0), px(10_000.0)), u32::MAX);
     c.commit();
     assert_eq!(render_binds(&mut c, &mut next_id, &mut cells, 50.0), 25);
@@ -4483,7 +4484,7 @@ fn spare_list_cells_are_hidden_until_placed_again() {
     thousand_rows(&mut c);
     c.commit();
     let (mut next_id, mut cells) = (100, Vec::new());
-    assert_eq!(render_binds(&mut c, &mut next_id, &mut cells, 50.0), 17);
+    assert_eq!(render_binds(&mut c, &mut next_id, &mut cells, 50.0), 25);
     let batch = c.commit().unwrap();
     for &cell in &cells {
         assert_eq!(
@@ -4534,7 +4535,7 @@ fn spare_list_cells_are_hidden_until_placed_again() {
         }],
     );
     c.commit();
-    assert_eq!(render_binds(&mut c, &mut next_id, &mut cells, 50.0), 14);
+    assert_eq!(render_binds(&mut c, &mut next_id, &mut cells, 50.0), 22);
     let batch = c.commit().unwrap();
     let mut rows: Vec<f32> = cells[3..]
         .iter()
@@ -4550,32 +4551,37 @@ fn spare_list_cells_are_hidden_until_placed_again() {
     rows.sort_by(f32::total_cmp);
     assert_eq!(
         rows,
-        (3..17).map(|row| 50.0 * row as f32).collect::<Vec<_>>()
+        (3..25).map(|row| 50.0 * row as f32).collect::<Vec<_>>()
     );
 
-    // Far down, the window takes all 17 cells and 8 more; back at the
-    // top, the 8 it no longer needs stay where the window left them,
-    // showing their own rows there, out of sight. Screen readers skip the
-    // cells the window left behind (the rows there may have moved since
-    // they were laid out) until their new rows are bound: nothing else is
-    // mounted before.
+    // Far down, the rows are 30 pt: the window takes all 25 cells and
+    // more; back at the top, the ones it no longer needs stay where the
+    // window left them, showing their own rows there, out of sight. Screen
+    // readers skip the cells the window left behind (the rows there may
+    // have moved since they were laid out) until their new rows are bound:
+    // nothing else is mounted before.
     c.set_scroll_offset(2, point(px(0.0), px(10_000.0)), u32::MAX);
     c.commit();
-    assert_eq!(render_binds(&mut c, &mut next_id, &mut cells, 50.0), 25);
+    assert_eq!(render_binds(&mut c, &mut next_id, &mut cells, 30.0), 25);
     c.commit();
+    while render_binds(&mut c, &mut next_id, &mut cells, 30.0) > 0 {
+        c.commit();
+    }
+    let made = cells.len();
+    assert!(made > 25, "{made}");
     c.set_scroll_offset(2, point(px(0.0), px(0.0)), u32::MAX);
     let left = c.commit().expect("the cells left behind");
     for &cell in &cells {
         assert_eq!(hidden_in(&left, cell), (None, Some(true)), "cell {cell}");
         assert_eq!(frame_of(&left, cell), None, "cell {cell}");
     }
-    assert_eq!(render_binds(&mut c, &mut next_id, &mut cells, 50.0), 17);
+    assert_eq!(render_binds(&mut c, &mut next_id, &mut cells, 50.0), 25);
     let placed = c.commit().unwrap();
     let mut spare = Vec::new();
     for &cell in &cells {
         match frame_of(&placed, cell) {
             Some(frame) => {
-                assert!(frame.origin.y.0 <= 800.0, "cell {cell} at {frame:?}");
+                assert!(frame.origin.y.0 <= 1200.0, "cell {cell} at {frame:?}");
                 assert_eq!(hidden_in(&placed, cell), (None, Some(false)), "cell {cell}");
             }
             None => {
@@ -4584,7 +4590,7 @@ fn spare_list_cells_are_hidden_until_placed_again() {
             }
         }
     }
-    assert_eq!(spare.len(), 8);
+    assert_eq!(spare.len(), made - 25);
     // Once the items change, the rows they show may be gone: hidden.
     apply(
         &mut c,
@@ -4677,7 +4683,7 @@ fn a_list_under_display_none_keeps_its_window_and_cells() {
     );
     c.commit();
     let (mut next_id, mut cells) = (100, Vec::new());
-    assert_eq!(render_binds(&mut c, &mut next_id, &mut cells, 50.0), 17);
+    assert_eq!(render_binds(&mut c, &mut next_id, &mut cells, 50.0), 25);
     c.commit();
 
     // A page kept alive under `display: none`: its list has no size, which
@@ -4710,7 +4716,7 @@ fn a_list_under_display_none_keeps_its_window_and_cells() {
     rows.sort_by(f32::total_cmp);
     assert_eq!(
         rows,
-        (0..17).map(|row| 50.0 * row as f32).collect::<Vec<_>>()
+        (0..25).map(|row| 50.0 * row as f32).collect::<Vec<_>>()
     );
     assert_eq!(render_binds(&mut c, &mut next_id, &mut cells, 50.0), 0);
 }
@@ -4721,7 +4727,7 @@ fn list_cells_unbound_before_they_are_placed_are_hidden() {
     thousand_rows(&mut c);
     c.commit();
     let (mut next_id, mut cells) = (100, Vec::new());
-    assert_eq!(render_binds(&mut c, &mut next_id, &mut cells, 50.0), 17);
+    assert_eq!(render_binds(&mut c, &mut next_id, &mut cells, 50.0), 25);
     // The data shrinks before the new cells were placed: those without a
     // row show the content made for it, with no frame to move them away.
     apply(
@@ -4753,9 +4759,9 @@ fn spare_list_cells_waiting_for_a_paced_bind_show_when_it_lands() {
     thousand_rows(&mut c);
     c.commit();
     let (mut next_id, mut cells) = (100, Vec::new());
-    assert_eq!(render_binds(&mut c, &mut next_id, &mut cells, 50.0), 17);
+    assert_eq!(render_binds(&mut c, &mut next_id, &mut cells, 50.0), 25);
     c.commit();
-    // Shrunk to 3 rows, the other 14 cells are hidden; grown back, the
+    // Shrunk to 3 rows, the other 22 cells are hidden; grown back, the
     // viewport's rows bind at once and the overscan's wait.
     apply(
         &mut c,
@@ -4793,9 +4799,9 @@ fn spare_list_cells_waiting_for_a_paced_bind_show_when_it_lands() {
             other => panic!("cell {cell}: {other:?}"),
         }
     }
-    assert_eq!(waiting.len(), 9);
+    assert_eq!(waiting.len(), 17);
     // The paced binds land: those cells show, at their rows.
-    assert_eq!(render_binds(&mut c, &mut next_id, &mut cells, 50.0), 9);
+    assert_eq!(render_binds(&mut c, &mut next_id, &mut cells, 50.0), 17);
     assert!(!c.has_paced_list_binds());
     let batch = c.commit().unwrap();
     let mut rows: Vec<f32> = waiting
@@ -4812,7 +4818,7 @@ fn spare_list_cells_waiting_for_a_paced_bind_show_when_it_lands() {
     rows.sort_by(f32::total_cmp);
     assert_eq!(
         rows,
-        (8..17).map(|row| 50.0 * row as f32).collect::<Vec<_>>()
+        (8..25).map(|row| 50.0 * row as f32).collect::<Vec<_>>()
     );
 }
 
@@ -9985,6 +9991,46 @@ fn dark_mode_and_breakpoints_restyle_natively() {
     c.set_viewport(size_pt(1024.0, 768.0));
     let batch = c.commit().unwrap();
     assert_eq!(frame_of(&batch, 3).unwrap().origin.x.0, 32.0);
+}
+
+/// Under the window model the host's root view keeps its size while the
+/// app's primary window is resized: width variants follow the window the
+/// platform reports, as `windowSize()` does (#3526).
+#[test]
+fn breakpoints_follow_the_reported_window_not_the_host_root() {
+    let mut c = core();
+    view_with_classes(&mut c, 2, "p-2 max-[900px]:p-6");
+    apply(
+        &mut c,
+        vec![
+            Op::Create {
+                id: 3,
+                tag: Tag::View,
+            },
+            style_op(3, &[("height", StyleValue::Number(5.0))]),
+            Op::Insert {
+                parent: 2,
+                child: 3,
+                before: None,
+            },
+        ],
+    );
+    c.set_viewport(size_pt(1200.0, 800.0));
+    let window = |width| crate::element::Environment {
+        window: size_pt(width, 600.0),
+        ..Default::default()
+    };
+    c.set_environment(window(1100.0));
+    let batch = c.commit().unwrap();
+    assert_eq!(frame_of(&batch, 3).unwrap().origin.x.0, 8.0);
+    // The window narrows below 900 while the host root stays 1200 wide.
+    c.set_environment(window(760.0));
+    let batch = c.commit().unwrap();
+    assert_eq!(frame_of(&batch, 3).unwrap().origin.x.0, 24.0);
+    // And widens again.
+    c.set_environment(window(1136.0));
+    let batch = c.commit().unwrap();
+    assert_eq!(frame_of(&batch, 3).unwrap().origin.x.0, 8.0);
 }
 
 #[test]
@@ -19558,8 +19604,9 @@ mod components {
     /// other cell does, or nothing, so a row's elements are found once.
     #[test]
     fn spare_list_cells_never_show_a_row_another_cell_shows() {
-        // The window holds 34 rows in the middle of the list, 23 at either
-        // end: scrolled from the middle to an end, 11 cells are spare.
+        // The window holds about 34 rows wherever it is (one more in the
+        // middle, where both its edges cut a row): scrolled from the middle
+        // to an end, a cell is spare.
         let cases: [(&str, usize, &[f32], RowsChange); 8] = [
             // At the end: the gone row's cell stays spare, the rows after
             // it move up into theirs.
@@ -19653,7 +19700,10 @@ mod components {
                 settle(&mut c);
                 check(&c, format!("then at {y}"));
             }
-            if made != 0 {
+            // Two rows gone, one spare cell: the second new row takes a
+            // cell whose row went, and makes its content (a view, a text).
+            let allowed = if name == "drop two" { 2 } else { 0 };
+            if made != allowed {
                 failures.push(format!("{name}: {made} views made"));
             }
             // Back at the start, the rows in the viewport show, once each.
@@ -21034,101 +21084,6 @@ mod components {
         assert_eq!(shown.last().unwrap(), "picked 0 []");
     }
 
-    /// Shares a link from a button in a modal, pointing at the button, and
-    /// shows each answer in the order it came.
-    #[component]
-    fn Sharer() -> impl IntoElement {
-        let shown = signal(String::new());
-        let button = element_ref();
-        view()
-            .child(text(move || format!("shares{}", shown.get())))
-            .child(
-                // `nsh_base::dialog` is this, and nsh-base depends on the core.
-                #[allow(deprecated)]
-                modal().child(
-                    view()
-                        .h(px(10.0))
-                        .element_ref(&button)
-                        .on_press(move |_: &()| {
-                            let request = crate::share::ShareRequest::new()
-                                .url("https://example.com/trip")
-                                .anchor(&button);
-                            let answer = share(request);
-                            spawn(async move {
-                                let line = match answer.await {
-                                    Ok(outcome) => outcome.action.as_str().to_owned(),
-                                    Err(error) => error.message,
-                                };
-                                shown.set(format!("{} {line}", untracked(|| shown.get())));
-                            });
-                        }),
-                ),
-            )
-    }
-
-    /// Presses the share button and returns the shares that reached the
-    /// platform: their ids and anchors.
-    fn press_sharer(c: &mut Core<FakeEngine>, button: NodeId) -> Vec<(u32, Option<NodeId>)> {
-        assert!(c.component_event(button, EventKind::Press, &EventPayload::None));
-        let items = c.commit().map(|b| b.items).unwrap_or_default();
-        items
-            .into_iter()
-            .filter_map(|i| match i {
-                MountItem::Command {
-                    id: ROOT_ID,
-                    command: Command::Share { id, sheet },
-                } => Some((id, sheet.anchor)),
-                _ => None,
-            })
-            .collect()
-    }
-
-    #[test]
-    fn a_share_names_its_anchor_and_replaces_one_never_answered() {
-        let mut c = core();
-        c.set_environment(crate::element::Environment {
-            share: true,
-            ..Default::default()
-        });
-        c.mount_root(&crate::element::Root::new::<Sharer>(|| ()));
-        let batch = c.commit().unwrap();
-        let button = batch
-            .items
-            .iter()
-            .find_map(|i| match i {
-                MountItem::Events { id, events } if events.contains(EventKind::Press) => Some(*id),
-                _ => None,
-            })
-            .expect("the button");
-        // The anchor is the button itself, inside its modal: the platform
-        // places the sheet at its native view, not at a place in the root.
-        let first = press_sharer(&mut c, button);
-        assert_eq!(first.len(), 1);
-        assert_eq!(first[0].1, Some(button));
-        // The platform never answers it; the next share still reaches the
-        // platform, and the first ends as dismissed.
-        let second = press_sharer(&mut c, button);
-        assert_eq!(second.len(), 1);
-        assert_ne!(second[0].0, first[0].0);
-        let shown = run_until(&mut c, |s| s.iter().any(|t| t == "shares dismissed"));
-        assert_eq!(shown.last().unwrap(), "shares dismissed");
-        assert!(c.component_event(
-            ROOT_ID,
-            EventKind::Share,
-            &crate::share::ShareOutcome::shared(Some("mail".into())).payload(second[0].0)
-        ));
-        let shown = run_until(&mut c, |s| s.iter().any(|t| t == "shares dismissed shared"));
-        assert_eq!(shown.last().unwrap(), "shares dismissed shared");
-        // A late answer of the replaced share settles nothing.
-        assert!(c.component_event(
-            ROOT_ID,
-            EventKind::Share,
-            &crate::share::ShareOutcome::shared(None).payload(first[0].0)
-        ));
-        c.run_component_tasks();
-        assert!(c.commit().is_none_or(|b| texts(&b).is_empty()));
-    }
-
     /// Asks whether the app's settings page opens here and opens it when
     /// its button is pressed; shows both answers.
     #[component]
@@ -21451,6 +21406,350 @@ mod components {
             EventKind::SecondInstance,
             &EventPayload::None
         ));
+    }
+
+    /// Adds `line` to what `shown` says.
+    fn say(shown: Signal<String>, line: String) {
+        shown.set(format!("{} {line}", untracked(|| shown.get())));
+    }
+
+    /// Reports `url` as a link the system handed the app.
+    fn open_link(c: &mut Core<FakeEngine>, url: &str) {
+        c.component_event(
+            crate::ROOT_ID,
+            EventKind::UrlScheme,
+            &EventPayload::Map(vec![(
+                crate::url_scheme::URL,
+                crate::PayloadValue::Str(url.to_owned()),
+            )]),
+        );
+    }
+
+    /// Hears the app's links as long as it runs, as an app does, and once
+    /// more in a second task that starts after it, as a module waiting for
+    /// one link does.
+    #[component]
+    fn TwoLinkListeners() -> impl IntoElement {
+        let shown = signal(String::new());
+        spawn(async move {
+            loop {
+                say(shown, format!("app:{}", next_url_scheme_open().await));
+            }
+        });
+        spawn(async move {
+            say(shown, format!("once:{}", next_url_scheme_open().await));
+        });
+        view().child(text(move || format!("links{}", shown.get())))
+    }
+
+    #[test]
+    fn a_later_link_listener_leaves_the_earlier_listening() {
+        let mut c = core();
+        c.set_url_schemes(["myapp"]);
+        c.mount_root(&crate::element::Root::new::<TwoLinkListeners>(|| ()));
+        c.commit();
+        c.run_component_tasks();
+        c.commit();
+        open_link(&mut c, "myapp://a");
+        run_until(&mut c, |s| s.iter().any(|t| t.contains("once:")));
+        open_link(&mut c, "myapp://b");
+        let shown = run_until(&mut c, |s| s.iter().any(|t| t.contains("app:myapp://b")));
+        // Both heard the first; the app's listener still hears the next.
+        assert_eq!(
+            shown.last().unwrap(),
+            "links app:myapp://a once:myapp://a app:myapp://b"
+        );
+    }
+
+    /// Runs the tasks and commits for 100 ms, past the listeners' timers,
+    /// adding the texts shown.
+    fn settle(c: &mut Core<FakeEngine>, shown: &mut Vec<String>) {
+        let end = std::time::Instant::now() + std::time::Duration::from_millis(100);
+        while std::time::Instant::now() < end {
+            run_briefly(c, shown);
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    }
+
+    /// Runs the tasks and commits a few times, adding the texts shown: not
+    /// long enough for the listeners' timers.
+    fn run_briefly(c: &mut Core<FakeEngine>, shown: &mut Vec<String>) {
+        for _ in 0..5 {
+            c.run_component_tasks();
+            if let Some(batch) = c.commit() {
+                shown.extend(texts(&batch));
+            }
+        }
+    }
+
+    /// The last text shown that starts with `prefix`.
+    fn last_shown(shown: &[String], prefix: &str) -> String {
+        shown
+            .iter()
+            .rfind(|t| t.starts_with(prefix))
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// The node that takes presses.
+    fn pressable(items: &[MountItem]) -> NodeId {
+        items
+            .iter()
+            .find_map(|i| match i {
+                MountItem::Events { id, events } if events.contains(EventKind::Press) => Some(*id),
+                _ => None,
+            })
+            .unwrap()
+    }
+
+    /// Two listeners hearing the app's links as long as it runs, as the TS
+    /// runtime's and a Rust module's, each taking a while over a link; a
+    /// press starts a third.
+    #[component]
+    fn LinkLoops() -> impl IntoElement {
+        let a = signal(String::new());
+        let b = signal(String::new());
+        let c = signal(String::new());
+        let listen = move |heard: Signal<String>| {
+            spawn(async move {
+                loop {
+                    say(heard, next_url_scheme_open().await);
+                    timer(std::time::Duration::from_millis(20)).await;
+                }
+            });
+        };
+        listen(a);
+        listen(b);
+        view()
+            .child(text(move || format!("a:{}", a.get())))
+            .child(text(move || format!("b:{}", b.get())))
+            .child(text(move || format!("c:{}", c.get())))
+            .child(view().h(px(10.0)).on_press(move |_: &()| listen(c)))
+    }
+
+    #[test]
+    fn listeners_in_a_loop_hear_every_link_of_a_burst() {
+        let mut c = core();
+        c.set_url_schemes(["myapp"]);
+        // The link that launched the app, before anything listened.
+        open_link(&mut c, "myapp://launch");
+        c.mount_root(&crate::element::Root::new::<LinkLoops>(|| ()));
+        let mut shown: Vec<String> = c.commit().map(|b| texts(&b)).unwrap_or_default();
+        settle(&mut c, &mut shown);
+        // Links in a burst, before the listeners run again.
+        open_link(&mut c, "myapp://1");
+        open_link(&mut c, "myapp://2");
+        open_link(&mut c, "myapp://3");
+        settle(&mut c, &mut shown);
+        // Each loop hears the links that came while it handled the one
+        // before; the one that came while nothing listened goes to the
+        // first listener only.
+        assert_eq!(
+            [last_shown(&shown, "a:"), last_shown(&shown, "b:")],
+            [
+                "a: myapp://launch myapp://1 myapp://2 myapp://3",
+                "b: myapp://1 myapp://2 myapp://3"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_new_listener_does_not_hear_links_that_came_while_others_listened() {
+        let mut c = core();
+        c.set_url_schemes(["myapp"]);
+        c.mount_root(&crate::element::Root::new::<LinkLoops>(|| ()));
+        let batch = c.commit().unwrap();
+        let button = pressable(&batch.items);
+        let mut shown = texts(&batch);
+        settle(&mut c, &mut shown);
+        // The second comes while both loops handle the first: theirs, not
+        // the third listener's, which starts after it and asks before they
+        // ask again.
+        open_link(&mut c, "myapp://1");
+        run_briefly(&mut c, &mut shown);
+        open_link(&mut c, "myapp://2");
+        assert!(c.component_event(button, EventKind::Press, &EventPayload::None));
+        run_briefly(&mut c, &mut shown);
+        settle(&mut c, &mut shown);
+        open_link(&mut c, "myapp://3");
+        settle(&mut c, &mut shown);
+        assert_eq!(
+            [
+                last_shown(&shown, "a:"),
+                last_shown(&shown, "b:"),
+                last_shown(&shown, "c:")
+            ],
+            [
+                "a: myapp://1 myapp://2 myapp://3",
+                "b: myapp://1 myapp://2 myapp://3",
+                "c: myapp://3"
+            ]
+        );
+    }
+
+    /// Hears the app's links in a loop; a second task listens once, then
+    /// again only after a later launch of the app.
+    #[component]
+    fn OccasionalLinkListener() -> impl IntoElement {
+        let a = signal(String::new());
+        let once = signal(String::new());
+        spawn(async move {
+            loop {
+                say(a, next_url_scheme_open().await);
+            }
+        });
+        spawn(async move {
+            say(once, next_url_scheme_open().await);
+            next_second_instance().await;
+            say(once, next_url_scheme_open().await);
+            say(once, next_url_scheme_open().await);
+        });
+        view()
+            .child(text(move || format!("a:{}", a.get())))
+            .child(text(move || format!("once:{}", once.get())))
+    }
+
+    #[test]
+    fn a_task_that_listened_hears_what_came_since_at_its_next_call() {
+        use crate::single_instance::SecondInstance;
+        let mut c = core();
+        c.set_url_schemes(["myapp"]);
+        c.mount_root(&crate::element::Root::new::<OccasionalLinkListener>(|| ()));
+        let mut shown: Vec<String> = c.commit().map(|b| texts(&b)).unwrap_or_default();
+        settle(&mut c, &mut shown);
+        for url in ["myapp://1", "myapp://2", "myapp://3"] {
+            open_link(&mut c, url);
+            settle(&mut c, &mut shown);
+        }
+        c.component_event(
+            crate::ROOT_ID,
+            EventKind::SecondInstance,
+            &SecondInstance::new(Vec::new(), "/").to_payload(),
+        );
+        settle(&mut c, &mut shown);
+        // The task listens as long as it lives: its next calls get the
+        // links that came since its last, which the loop handled long ago.
+        assert_eq!(
+            [last_shown(&shown, "a:"), last_shown(&shown, "once:")],
+            [
+                "a: myapp://1 myapp://2 myapp://3",
+                "once: myapp://1 myapp://2 myapp://3"
+            ]
+        );
+    }
+
+    /// Hears the app's links as long as it runs; a press starts a sign-in
+    /// session that waits for one link of `auth`, and a second press one
+    /// it drops before the link comes.
+    #[component]
+    fn LinksAndSession() -> impl IntoElement {
+        let shown = signal(String::new());
+        let presses = std::rc::Rc::new(std::cell::Cell::new(0));
+        spawn(async move {
+            loop {
+                say(shown, format!("app:{}", next_url_scheme_open().await));
+            }
+        });
+        view()
+            .child(text(move || format!("links{}", shown.get())))
+            .child(view().h(px(10.0)).on_press(move |_: &()| {
+                presses.set(presses.get() + 1);
+                if presses.get() == 1 {
+                    spawn(async move {
+                        say(shown, "waits".into());
+                        let callback = next_url_scheme_open_for("Auth");
+                        say(shown, format!("session:{}", callback.await));
+                    });
+                } else {
+                    spawn(async move {
+                        drop(next_url_scheme_open_for("auth"));
+                        say(shown, "gave-up".into());
+                    });
+                }
+            }))
+    }
+
+    #[test]
+    fn a_wait_for_a_scheme_takes_its_link_and_leaves_the_app_listening() {
+        let mut c = core();
+        c.set_url_schemes(["myapp", "auth"]);
+        // Came before the session: the app's.
+        open_link(&mut c, "auth://early");
+        c.mount_root(&crate::element::Root::new::<LinksAndSession>(|| ()));
+        let batch = c.commit().unwrap();
+        let button = batch
+            .items
+            .iter()
+            .find_map(|i| match i {
+                MountItem::Events { id, events } if events.contains(EventKind::Press) => Some(*id),
+                _ => None,
+            })
+            .unwrap();
+        run_until(&mut c, |s| s.iter().any(|t| t.contains("app:auth://early")));
+        assert!(c.component_event(button, EventKind::Press, &EventPayload::None));
+        run_until(&mut c, |s| s.iter().any(|t| t.contains("waits")));
+        open_link(&mut c, "myapp://orders/1");
+        open_link(&mut c, "AUTH://cb?code=1");
+        open_link(&mut c, "myapp://orders/2");
+        open_link(&mut c, "auth://after");
+        let shown = run_until(&mut c, |s| s.iter().any(|t| t.contains("app:auth://after")));
+        // The session took its callback alone; the app heard the rest, the
+        // scheme's links after the session ended included.
+        assert_eq!(
+            shown.last().unwrap(),
+            "links app:auth://early waits app:myapp://orders/1 session:AUTH://cb?code=1 \
+             app:myapp://orders/2 app:auth://after"
+        );
+        // The callback is not the app's address.
+        assert_eq!(c.app_url_cell().get().as_deref(), Some("auth://after"));
+        // A session that gave up takes nothing.
+        assert!(c.component_event(button, EventKind::Press, &EventPayload::None));
+        run_until(&mut c, |s| s.iter().any(|t| t.contains("gave-up")));
+        open_link(&mut c, "auth://late");
+        let shown = run_until(&mut c, |s| s.iter().any(|t| t.contains("app:auth://late")));
+        assert!(shown.last().unwrap().ends_with("gave-up app:auth://late"));
+    }
+
+    /// Waits for a link and drops the wait before it comes (as the losing
+    /// branch of a `select!`), then, on a press, listens.
+    #[component]
+    fn DroppedLinkWait() -> impl IntoElement {
+        let shown = signal(String::new());
+        spawn(async move {
+            drop(next_url_scheme_open());
+            say(shown, "dropped".into());
+        });
+        view()
+            .child(text(move || format!("links{}", shown.get())))
+            .child(view().h(px(10.0)).on_press(move |_: &()| {
+                spawn(async move {
+                    say(shown, format!("heard:{}", next_url_scheme_open().await));
+                });
+            }))
+    }
+
+    #[test]
+    fn a_dropped_link_wait_leaves_the_link_for_the_next_listener() {
+        let mut c = core();
+        c.set_url_schemes(["myapp"]);
+        c.mount_root(&crate::element::Root::new::<DroppedLinkWait>(|| ()));
+        let batch = c.commit().unwrap();
+        let button = batch
+            .items
+            .iter()
+            .find_map(|i| match i {
+                MountItem::Events { id, events } if events.contains(EventKind::Press) => Some(*id),
+                _ => None,
+            })
+            .unwrap();
+        c.run_component_tasks();
+        c.commit();
+        // Nothing listens: kept for the next listener, not given to the
+        // dropped wait.
+        open_link(&mut c, "myapp://kept");
+        assert!(c.component_event(button, EventKind::Press, &EventPayload::None));
+        let shown = run_until(&mut c, |s| s.iter().any(|t| t.contains("heard:")));
+        assert_eq!(shown.last().unwrap(), "links dropped heard:myapp://kept");
     }
 
     /// Asks for the permission, shows a notification and sets the badge when
@@ -32474,6 +32773,76 @@ mod rust_windows {
         }
     }
 
+    /// nsh.json's `"window"` belongs to the host that reads it, not to the
+    /// app's capabilities: an app that declares capabilities without
+    /// `application` still gets its launch window attributes. Its own sets
+    /// of the main window still need `application`.
+    #[test]
+    fn launch_window_defaults_apply_without_the_application_capability() {
+        use crate::desktop::{MainWindowOptions, WindowAttributes};
+        let mut c = core();
+        let access = |application: bool| {
+            std::sync::Arc::new(crate::access::Access {
+                declared: crate::access::Capabilities::from_json(&serde_json::json!({
+                    "application": application,
+                }))
+                .unwrap(),
+                granted: None,
+            })
+        };
+        c.set_access(access(false));
+        c.set_environment(crate::element::Environment {
+            os: crate::platform::Os::MacOs,
+            ..Default::default()
+        });
+        c.set_main_window(&MainWindowOptions {
+            attributes: WindowAttributes {
+                title: Some("Notes".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        let sent = |c: &mut Core<FakeEngine>| -> Vec<WindowAttributes> {
+            c.commit()
+                .map(|batch| batch.items)
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|item| match item {
+                    MountItem::Command {
+                        id: ROOT_ID,
+                        command: Command::Desktop(command),
+                    } => match *command {
+                        DesktopCommand::SetAttributes(attributes) => Some(*attributes),
+                        _ => None,
+                    },
+                    _ => None,
+                })
+                .collect()
+        };
+        let launch = sent(&mut c);
+        assert_eq!(launch.len(), 1, "{launch:?}");
+        assert_eq!(launch[0].title.as_deref(), Some("Notes"));
+        // The app's own set of the main window is what `application` grants.
+        let set = |c: &mut Core<FakeEngine>| {
+            let _ = c.apply_op(Op::Command {
+                id: ROOT_ID,
+                command: Command::Desktop(Box::new(DesktopCommand::SetAttributes(Box::new(
+                    WindowAttributes {
+                        title: Some("Inbox".into()),
+                        ..Default::default()
+                    },
+                )))),
+            });
+        };
+        set(&mut c);
+        assert!(sent(&mut c).is_empty(), "without `application`");
+        c.set_access(access(true));
+        set(&mut c);
+        let granted = sent(&mut c);
+        assert_eq!(granted.len(), 1, "{granted:?}");
+        assert_eq!(granted[0].title.as_deref(), Some("Inbox"));
+    }
+
     /// Every window request the app root's ref takes, and an attribute it
     /// sets and an attention request it asks for.
     #[component]
@@ -39537,6 +39906,7 @@ fn a_page_list_in_an_overscan_cell_above_the_viewport_does_not_double_anchor_or_
                         .child(view().h(px(28.0)))
                         .child(
                             virtual_list(1, |_| view().h(px(300.0)))
+                                .estimated_item_size(px(50.0))
                                 .viewport(crate::ListViewport::Parent),
                         )
                         .into_element()
@@ -39564,9 +39934,11 @@ fn a_page_list_in_an_overscan_cell_above_the_viewport_does_not_double_anchor_or_
         rig.y, 0.0,
         "128 upward steps never reached the top; corrections issued: {first_pass:?}"
     );
-    assert_eq!(first_pass, [(false, 248.0)]);
+    // Initial overscan measures the outer cell with the inner list's estimate:
+    // 28 + 50. Entering the page viewport replaces 50 with 300 exactly once.
+    assert_eq!(first_pass, [(false, 250.0)]);
 
-    // Retire and recycle item 12 below overscan, then scroll back up:
+    // Retire and recycle item 12, then scroll back up:
     // remounting the already-measured 328pt cell must emit no ScrollBy.
     for y in [2000.0, 1600.0] {
         assert_eq!(rig.scroll_to(y), []);
@@ -40630,6 +41002,167 @@ fn headless_text_frames_respect_inherited_and_updated_line_heights() {
             );
         }
     }
+}
+
+/// Nested spans resolve a unitless line height against their own font, but
+/// the paragraph keeps the root `<Text>`'s resolved strut separately.
+#[test]
+fn nested_spans_do_not_redefine_the_root_line_height() {
+    for first_small in [true, false] {
+        let mut c = Core::new(crate::ApproxTextEngine, size_pt(320.0, 480.0));
+        let insert = |parent, child| Op::Insert {
+            parent,
+            child,
+            before: None,
+        };
+        let mut ops = vec![
+            Op::Create {
+                id: 2,
+                tag: Tag::Text,
+            },
+            Op::SetStyle {
+                id: 2,
+                style: style(&[
+                    ("fontSize", StyleValue::Number(14.0)),
+                    // Strings are CSS-like unitless multiples; numbers are points.
+                    ("lineHeight", StyleValue::Str("1.625")),
+                ]),
+                patch: Default::default(),
+            },
+            Op::Create {
+                id: 3,
+                tag: Tag::Text,
+            },
+            Op::SetStyle {
+                id: 3,
+                style: style(&[("fontSize", StyleValue::Str("0.9em"))]),
+                patch: Default::default(),
+            },
+            Op::CreateText {
+                id: 4,
+                text: "`code`".into(),
+            },
+            Op::CreateText {
+                id: 5,
+                text: " 中文正文".into(),
+            },
+            insert(3, 4),
+        ];
+        if first_small {
+            ops.extend([insert(2, 3), insert(2, 5)]);
+        } else {
+            ops.extend([insert(2, 5), insert(2, 3)]);
+        }
+        ops.push(insert(ROOT_ID, 2));
+        for op in ops {
+            c.apply(op).unwrap();
+        }
+        let batch = c.commit().unwrap();
+        let text = batch
+            .items
+            .iter()
+            .find_map(|i| match i {
+                MountItem::Text { id: 2, text, .. } => Some(text),
+                _ => None,
+            })
+            .unwrap();
+        let strut = text.paragraph_strut.expect("core sets the root strut");
+        assert!(
+            (strut.line_height.0 - 22.75).abs() < 0.001,
+            "{first_small}: {:?}",
+            strut.line_height
+        );
+        assert_eq!(strut.font_size, px(14.0));
+        let small = text
+            .spans
+            .iter()
+            .map(|s| s.style.line_height.0)
+            .fold(f32::INFINITY, f32::min);
+        assert!((small - 20.475).abs() < 0.001, "{first_small}: {small}");
+        assert_eq!(
+            c.measure(2).unwrap().frame.size.height,
+            px(23.0),
+            "{first_small}"
+        );
+    }
+}
+
+/// `items-baseline` uses the body text's root-strut baseline even when the
+/// whole body is a smaller inline-code span.
+#[test]
+fn a_baseline_row_uses_the_body_texts_root_strut() {
+    let mut c = Core::new(crate::ApproxTextEngine, size_pt(320.0, 480.0));
+    let insert = |parent, child| Op::Insert {
+        parent,
+        child,
+        before: None,
+    };
+    for op in [
+        Op::Create {
+            id: 2,
+            tag: Tag::View,
+        },
+        class_op(2, "flex-row items-baseline"),
+        Op::Create {
+            id: 3,
+            tag: Tag::Text,
+        },
+        Op::SetStyle {
+            id: 3,
+            style: style(&[
+                ("fontSize", StyleValue::Number(10.0)),
+                ("lineHeight", StyleValue::Number(24.375)),
+            ]),
+            patch: Default::default(),
+        },
+        Op::CreateText {
+            id: 4,
+            text: "•".into(),
+        },
+        Op::Create {
+            id: 5,
+            tag: Tag::Text,
+        },
+        Op::SetStyle {
+            id: 5,
+            style: style(&[
+                ("fontSize", StyleValue::Number(15.0)),
+                ("lineHeight", StyleValue::Str("1.625")),
+            ]),
+            patch: Default::default(),
+        },
+        Op::Create {
+            id: 6,
+            tag: Tag::Text,
+        },
+        Op::SetStyle {
+            id: 6,
+            style: style(&[("fontSize", StyleValue::Str("0.9em"))]),
+            patch: Default::default(),
+        },
+        Op::CreateText {
+            id: 7,
+            text: "`useState`".into(),
+        },
+        insert(3, 4),
+        insert(6, 7),
+        insert(5, 6),
+        insert(2, 3),
+        insert(2, 5),
+        insert(ROOT_ID, 2),
+    ] {
+        c.apply(op).unwrap();
+    }
+    let batch = c.commit().unwrap();
+    let top = |id| frame_of(&batch, id).map(|f| f.origin.y.0);
+    // Approx's body baseline is 15 × 1.2 plus half of 24.375 - 15 × 1.2 =
+    // 21.1875. The 10pt marker's is 18.1875, so it starts 3pt lower.
+    assert_eq!(top(5), Some(0.0));
+    assert!(
+        (top(3).unwrap() - 3.0).abs() < 0.001,
+        "marker top {:?}",
+        top(3)
+    );
 }
 
 #[test]
@@ -44407,14 +44940,16 @@ mod built_in_scrollbars {
                     stack.apply(&batch);
                 }
                 render_binds(&mut c, &mut next_id, &mut cells, 50.0);
-                let batch = c.commit().unwrap();
-                // Every set the list pins keeps its bar, last (on top).
-                for item in &batch.items {
-                    if let MountItem::StickyCells { id: 2, cells } = item {
-                        assert_eq!(cells.last().map(|c| c.cell), Some(bar), "{cells:?}");
+                // Nothing to commit when the window already held the rows.
+                if let Some(batch) = c.commit() {
+                    // Every set the list pins keeps its bar, last (on top).
+                    for item in &batch.items {
+                        if let MountItem::StickyCells { id: 2, cells } = item {
+                            assert_eq!(cells.last().map(|c| c.cell), Some(bar), "{cells:?}");
+                        }
                     }
+                    stack.apply(&batch);
                 }
-                stack.apply(&batch);
                 assert_eq!(
                     stack.views.last(),
                     Some(&bar),
@@ -59632,5 +60167,153 @@ mod resolved_style_cache {
             "restyle_dark {count} views | {ms:>7.2} ms/toggle | {} mount items/toggle",
             total_items / rounds
         );
+    }
+}
+
+/// `allowNavigation` reaches the web view's backend as host patterns, and
+/// a list with a pattern that does not read is refused with a message and
+/// leaves the web view not narrowed.
+#[test]
+fn allow_navigation_reaches_the_web_view() {
+    let narrowed = |hosts: &[&str]| {
+        let mut c = core();
+        c.set_access(Arc::new(crate::access::Access {
+            declared: crate::access::Capabilities::from_json(
+                &serde_json::json!({ "webview": { "hosts": ["*"] } }),
+            )
+            .unwrap(),
+            granted: None,
+        }));
+        let prop = Prop::Native(NativeProp::AllowNavigation(Some(
+            hosts.iter().map(|h| Arc::<str>::from(*h)).collect(),
+        )));
+        apply(
+            &mut c,
+            vec![
+                Op::Create {
+                    id: 2,
+                    tag: Tag::WebView,
+                },
+                Op::SetProp { id: 2, prop },
+                Op::Insert {
+                    parent: ROOT_ID,
+                    child: 2,
+                    before: None,
+                },
+            ],
+        );
+        let batch = c.commit().unwrap();
+        let hosts = batch.items.iter().rev().find_map(|i| match i {
+            MountItem::NativeProps {
+                id: 2,
+                props: crate::NativeProps::WebView(p),
+            } => Some(p.allow_navigation.clone()),
+            _ => None,
+        });
+        (hosts.flatten(), c.denied.clone())
+    };
+    let (hosts, denied) = narrowed(&["127.0.0.1", "*.localhost"]);
+    let hosts = hosts.expect("narrowed");
+    assert!(hosts.allows("http://127.0.0.1:8001/"));
+    assert!(!hosts.allows("http://127.0.0.1:8002.evil.test/"));
+    assert!(denied.is_empty(), "{denied:?}");
+    let (hosts, denied) = narrowed(&["http://127.0.0.1:*"]);
+    assert!(hosts.is_none());
+    assert!(
+        denied.iter().any(|m| m.starts_with("`allowNavigation`")),
+        "{denied:?}"
+    );
+}
+
+/// A tab bar (a horizontal scroll view) that gets 60 tabs in one turn,
+/// past the 45 it has: every tab's views are made within a few display
+/// frames, the turns between them making none (NsVim's `nsvim *.rs`).
+#[test]
+fn a_tab_bar_makes_every_tab_added_in_one_turn_over_frames() {
+    let mut c = core();
+    let mut ops = vec![
+        Op::Create {
+            id: 2,
+            tag: Tag::Scroll,
+        },
+        Op::SetProp {
+            id: 2,
+            prop: Prop::Horizontal(true),
+        },
+        style_op(2, &[("height", StyleValue::Number(30.0))]),
+        Op::Insert {
+            parent: ROOT_ID,
+            child: 2,
+            before: None,
+        },
+    ];
+    // A tab: a row of an icon, a label and a close button, narrow enough
+    // for all 105 to be in content culling's window (a viewport past the
+    // bar's), so pacing alone holds them back.
+    let tab = |ops: &mut Vec<Op>, i: u32| {
+        let id = 1000 + i * 10;
+        ops.extend(child_view(
+            id,
+            2,
+            30.0,
+            &[
+                ("width", StyleValue::Number(6.0)),
+                ("flexDirection", StyleValue::Str("row")),
+            ],
+        ));
+        for (n, w) in [1.0, 4.0, 1.0].into_iter().enumerate() {
+            ops.extend(child_view(
+                id + 1 + n as u32,
+                id,
+                30.0,
+                &[("width", StyleValue::Number(w))],
+            ));
+        }
+    };
+    for i in 0..45 {
+        tab(&mut ops, i);
+    }
+    apply(&mut c, ops);
+    let mut made = Vec::new();
+    let frame = |c: &mut Core<FakeEngine>, made: &mut Vec<NodeId>| {
+        // A turn between two frames (a timer), then the frame's.
+        c.begin_mount_turn();
+        c.hold_paced_mounts();
+        if let Some(batch) = c.commit() {
+            made.extend(created_in(&batch));
+        }
+        c.begin_mount_turn();
+        if let Some(batch) = c.commit() {
+            made.extend(created_in(&batch));
+        }
+    };
+    for _ in 0..20 {
+        frame(&mut c, &mut made);
+        if !c.has_paced_mounts() {
+            break;
+        }
+    }
+    assert!(!c.has_paced_mounts());
+    assert_eq!(made.iter().filter(|&&id| id >= 1000).count(), 45 * 4);
+    let mut ops = Vec::new();
+    for i in 45..105 {
+        tab(&mut ops, i);
+    }
+    apply(&mut c, ops);
+    let mut frames = 0;
+    loop {
+        frame(&mut c, &mut made);
+        frames += 1;
+        if !c.has_paced_mounts() {
+            break;
+        }
+        assert!(frames < 40, "still waiting after {frames} frames");
+    }
+    assert!(frames > 1, "the tabs were paced over frames ({frames})");
+    for i in 0..105u32 {
+        for n in 0..4 {
+            let id = 1000 + i * 10 + n;
+            assert!(made.contains(&id), "tab {i} view {n} was never made");
+        }
     }
 }

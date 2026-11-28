@@ -178,6 +178,14 @@ TSX 应用用 [`<Window>` 和 `Window.open`](../modules/nsh-desktop.md#windows) 
 `set_ui_sets(sets)` 设置每个引擎提供的 UI 集合：NSH 的（`nsh_base::registry()`）和你的 crate 的（`my_app::registry()`，
 由 `#[native_module]` 生成），这样视图加载的 TSX 也能导入你的 Rust 组件和模块。
 
+## 在 Rust 中显示系统界面
+
+需要显示系统界面（popover、对话框、文件选择器）的 Rust 代码，从发起调用的那个 surface 显示它。在主线程任务（`run_on_main_thread`）里，
+`nsh_platform_linux::presenting_window()` 是对话框应当相对其成为临时窗口（transient）的窗口：surface 中用户所在的可见窗口；surface
+不在任何可见窗口里时为 `None`。`native_view(node)` 是这个 surface 中某个元素的 GTK 控件（元素 `ref` 的节点，即模块函数的 `NodeRef`
+参数；`ROOT_ID` 是 surface 的根控件），无论它在 surface 的哪个窗口里：属于这个元素的 popover 以它为父控件（popover 关闭后取消挂载，
+与 NSH 自己的菜单一样）。两者都要在任务运行时取得。它们只用于锚定和显示系统界面：模块绝不修改、重新挂载、改变样式或移除 NSH 拥有的控件。
+
 ## Linux 上的差异
 
 运行环境是桌面环境：安全区和键盘高度为 0，`idiom()` 是桌面（`platform.idiom` 为 `"desktop"`），`os_version()`（`platform.version`）为内核的主、次版本号，

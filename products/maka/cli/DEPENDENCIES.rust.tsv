@@ -114,10 +114,9 @@ blocking@1.7.0		X										X
 borrow-or-share@0.2.4													X							
 boxed_error@0.2.3												X								
 brotli-decompressor@4.0.3					X							X								
-brotli-decompressor@5.0.3					X							X								
-brotli-decompressor@6.0.1					X							X								
+brotli-decompressor@6.4.0					X							X								
 brotli@6.0.0					X							X								
-brotli@9.0.0					X							X								
+brotli@9.1.3					X							X								
 bstr@1.13.1		X										X								
 bumpalo@3.20.3		X										X								
 by_address@1.2.1		X										X								
@@ -648,6 +647,8 @@ keccak@0.1.6		X										X
 keccak@0.2.2		X										X								
 keyring-core@1.0.1		X										X								
 keyring@4.2.0		X										X								
+kqueue-sys@1.1.2												X								
+kqueue@1.2.1												X								
 kurbo@0.13.1		X										X								
 lazy_static@1.5.1		X										X								
 lazy-regex-proc_macros@3.6.2												X								
@@ -710,6 +711,7 @@ maka-i18n-build@0.3.0		X
 maka-i18n@0.3.0		X																		
 maka-interactions-api@0.3.0		X																		
 maka-interactions-native@0.3.0		X																		
+maka-ios-shell@0.3.0		X																		
 maka-js-runtime@0.3.0		X																		
 maka-mcp@0.3.0		X																		
 maka-model@0.3.0		X																		
@@ -723,6 +725,7 @@ maka-product-native@0.3.0		X
 maka-provider-protocol@0.3.0		X																		
 maka-providers@0.3.0		X																		
 maka-python-runtime@0.3.0		X																		
+maka-remote-client@0.3.0		X																		
 maka-remote-pairing@0.3.0		X																		
 maka-remote-transport@0.3.0		X																		
 maka-sandbox@0.3.0		X																		
@@ -829,10 +832,12 @@ nsh-js@0.7.2		X
 nsh-macros@0.7.2		X																		
 nsh-package@0.7.2		X																		
 nsh-platform-apple@0.7.2		X																		
+nsh-platform-ios@0.7.2		X																		
 nsh-platform-linux@0.7.2		X																		
 nsh-platform-macos@0.7.2		X																		
 nsh-platform-tui@0.7.2		X																		
 nsh-platform-windows@0.7.2		X																		
+nsh-system-controls@0.1.0		X																		
 nsh-terminal@0.7.2		X																		
 nsh-updater@0.7.2		X																		
 ntapi@0.4.3		X										X								
@@ -854,12 +859,15 @@ num@0.4.3		X										X
 objc-sys@0.3.5												X								
 objc2-app-kit@0.2.2												X								
 objc2-app-kit@0.3.2		X										X								X
+objc2-authentication-services@0.3.2		X										X								X
+objc2-av-foundation@0.3.2		X										X								X
 objc2-cf-network@0.3.2		X										X								X
 objc2-cloud-kit@0.3.2		X										X								X
 objc2-core-data@0.3.2		X										X								X
 objc2-core-foundation@0.3.2		X										X								X
 objc2-core-graphics@0.3.2		X										X								X
 objc2-core-image@0.3.2		X										X								X
+objc2-core-location@0.3.2		X										X								X
 objc2-core-services@0.3.2		X										X								X
 objc2-core-text@0.3.2		X										X								X
 objc2-core-video@0.3.2		X										X								X
@@ -874,6 +882,8 @@ objc2-quartz-core@0.3.2		X										X								X
 objc2-screen-capture-kit@0.3.2		X										X								X
 objc2-security@0.3.2		X										X								X
 objc2-system-configuration@0.3.2		X										X								X
+objc2-ui-kit@0.3.2		X										X								X
+objc2-user-notifications@0.3.2		X										X								X
 objc2@0.5.3												X								
 objc2@0.6.5												X								
 object@0.36.7		X										X								
@@ -1542,7 +1552,7 @@ wl-clipboard-rs@0.9.4		X										X
 wmi@0.18.4		X										X								
 wnaf@0.14.1		X										X								
 writeable@0.6.4																	X			
-wuff@0.2.9												X								
+wuff@0.2.10												X								
 wyz@0.5.1												X								
 x11@2.21.0												X								
 x11rb-protocol@0.13.2		X										X								

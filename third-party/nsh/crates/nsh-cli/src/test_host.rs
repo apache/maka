@@ -383,6 +383,7 @@ pub(crate) fn serve(
         built.source_map,
         AppInfo {
             capabilities,
+            url_schemes: built.url_schemes,
             id: crate::package::app_id(entry).ok(),
             window: crate::package::window_json(entry),
             application: crate::package::application_json(entry),
@@ -420,6 +421,48 @@ pub(crate) fn indented(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_test_publish_keeps_checked_url_claims() {
+        use nsh_dev::protocol::{PROTOCOL_VERSION, ServerMessage, WS_PATH};
+        use tungstenite::Message;
+        let dir =
+            std::env::temp_dir().join(format!("nsh-native-test-claims-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("nsh.json"), r#"{"schemes":["Claim-Test"]}"#).unwrap();
+        std::fs::write(dir.join("App.tsx"), "export {};\n").unwrap();
+        let server = serve(&dir.join("App.tsx"), &HostOptions::default(), false).unwrap();
+        let (mut socket, _) =
+            tungstenite::connect(format!("ws://{}{WS_PATH}", server.local_addr())).unwrap();
+        if let tungstenite::stream::MaybeTlsStream::Plain(stream) = socket.get_mut() {
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+        }
+        socket
+            .send(Message::Text(
+                serde_json::json!({
+                    "type": "hello",
+                    "protocol": PROTOCOL_VERSION,
+                    "bytecode_version": "source-fallback",
+                    "device": "claims-test",
+                    "ui_sets": []
+                })
+                .to_string()
+                .into(),
+            ))
+            .unwrap();
+        loop {
+            if let Message::Text(text) = socket.read().unwrap()
+                && let Ok(ServerMessage::Bundle { url_schemes, .. }) = serde_json::from_str(&text)
+            {
+                assert_eq!(url_schemes, ["claim-test"]);
+                break;
+            }
+        }
+        let _ = socket.close(None);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     /// `--foreground` goes with the hosts that run apps in the background:
     /// the other targets refuse it before anything is built or started.

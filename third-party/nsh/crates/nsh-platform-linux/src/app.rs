@@ -2,7 +2,7 @@
 //! standalone app ([`run_app`]: one `AppView` filling a window).
 
 use std::{
-    cell::{Cell, RefCell},
+    cell::RefCell,
     path::PathBuf,
     rc::Rc,
     sync::{Arc, RwLock},
@@ -264,9 +264,6 @@ pub struct AppView {
     /// ([`crate::chrome`]).
     outer: gtk::Box,
     options: RefCell<AppOptions>,
-    /// The view is [`run_app`]'s: the standalone app's, not one embedded in
-    /// another app.
-    standalone: Cell<bool>,
     #[cfg(feature = "dev")]
     pub(crate) dev: RefCell<Option<crate::dev::DevSession>>,
 }
@@ -295,7 +292,6 @@ impl AppView {
             overlay,
             outer,
             options: RefCell::new(options),
-            standalone: Cell::new(false),
             #[cfg(feature = "dev")]
             dev: RefCell::new(None),
         });
@@ -461,7 +457,7 @@ impl AppView {
         &self,
         options: &AppOptions,
     ) -> Option<Arc<dyn nsh_core::desktop::LoginItemBackend>> {
-        (options.login_item && self.standalone.get()).then(|| {
+        (options.login_item && self.surface.standalone.get()).then(|| {
             Arc::new(crate::login_item::LoginItem::new(
                 &options.app_id,
                 &options.title,
@@ -816,7 +812,8 @@ pub fn run_app(source: AppSource, mut options: AppOptions) -> glib::ExitCode {
             .build();
         window.add_css_class("nsh-window");
         let view = AppView::new(options.clone());
-        view.standalone.set(true);
+        // Before the launch attributes apply: the main window is the app's.
+        view.surface.standalone.set(true);
         window.set_child(Some(&view.widget()));
         crate::window::launch_main(
             &view.surface,
@@ -1150,7 +1147,7 @@ mod desktop_entry_tests {
             assert!(embedded.login_item(&options).is_none());
             // `run_app`'s own view, when its runner turns it on.
             let standalone = AppView::new(options.clone());
-            standalone.standalone.set(true);
+            standalone.surface.standalone.set(true);
             assert!(standalone.login_item(&options).is_some());
             assert!(standalone.login_item(&AppOptions::default()).is_none());
             STANDALONE.with(|s| s.borrow_mut().take());

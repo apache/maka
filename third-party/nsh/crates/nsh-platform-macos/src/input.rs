@@ -1713,6 +1713,13 @@ struct Hit {
     native: Option<Retained<objc2_app_kit::NSView>>,
 }
 
+/// Whether a press at `(x, y)` (root coordinates) lands on a view in
+/// `root` that takes it, the root aside, as if it were `box-none`: where a
+/// window whose `pointerEvents` is `"box-none"` takes the pointer.
+pub(crate) fn takes_pointer(root: &NshView, x: f32, y: f32) -> bool {
+    pick(root, x, y).is_some_and(|hit| hit.native.is_some() || hit.view.id() != root.id())
+}
+
 /// The innermost view at `(x, y)` (root coordinates).
 fn pick(root: &NshView, x: f32, y: f32) -> Option<Hit> {
     pick_in(root, (x, y))
@@ -2120,10 +2127,20 @@ fn down(
     for v in views.iter().filter(|v| v.kind() == ViewKind::Scroll) {
         caught |= crate::scroll::catch(surface, v);
     }
-    let press = if native || caught {
+    // A text field takes its own clicks (the caret, a selection, the focus)
+    // and AppKit still gets them; its `Input` hears them as a press, after
+    // the focus AppKit gives it (a combobox opens its list), but no view
+    // around it does. The input's pad holds the field, its padding too.
+    let input_view = native && hit.view.kind() == ViewKind::Input;
+    let press = if (native && !input_view) || caught {
         None
     } else {
-        find_press(surface, &hit.view, &views, x, y)
+        let pressable = if input_view {
+            std::slice::from_ref(&hit.view)
+        } else {
+            &views[..]
+        };
+        find_press(surface, &hit.view, pressable, x, y)
             .map(|p| p.clicked(modifiers(flags), clicks as u32))
     };
     if selecting.is_some()
@@ -2499,6 +2516,14 @@ fn up(surface: &Rc<Surface>, x: f32, y: f32, time: f64) {
     let Some(mut p) = take(surface) else {
         return;
     };
+    // A hosted editor's `mouseDown:` tracks the drags in a modal loop of its
+    // own, which no monitor or recognizer of ours sees (only its release
+    // comes, [`hosted_press_ended`]): a release past the slop from where
+    // the press went down was a drag (a selection), not a press. Elsewhere
+    // `motion` has already ended such a press.
+    if (x - p.start.0).hypot(y - p.start.1) > PRESS_SLOP.0 {
+        cancel_press(surface, &mut p);
+    }
     p.x = x;
     p.y = y;
     p.time = time;

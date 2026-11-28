@@ -188,11 +188,12 @@ frame id:inner2 8 8 374 20
 expect Plum
 absent No plums
 expect Nothing here
-# A viewport of overscan below the visible rows (100 pt): bound after the
-# first frame, never further.
+# A viewport of overscan below the visible rows (100 pt), and the one the
+# list's start leaves empty above them: bound after the first frame, never
+# further.
 expect Long 0
-expect Long 4
-absent Long 6
+expect Long 7
+absent Long 8
 drawing id:sep-0 fillStyle #ff0000ff
 drawing id:sep-1 fillStyle #ff0000ff
 tap id:reload
@@ -290,6 +291,12 @@ expect Cleared: no
 # Clearing a selectable view with nothing selected is no error.
 tap id:clear
 expect Cleared: yes
+# core-select-all
+tap id:case-core-select-all
+expect Selected all: no
+# Selecting all of a selectable view is no error.
+tap id:select-all
+expect Selected all: yes
 # core-ref
 tap id:case-core-ref
 # The signal and the function got their node when the views were made.

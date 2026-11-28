@@ -470,6 +470,14 @@ fn send(surface: &Surface, id: NodeId, selected: Selected) {
     surface.event(id, EventKind::SelectionChange, EventPayload::Map(fields));
 }
 
+/// `ref.selectAll()` on `view` (`Command::SelectAll`): selects every text
+/// of the selectable view `view` is or is inside, as Ctrl+A does.
+pub(crate) fn select_in(surface: &Surface, view: &NshView) {
+    if let Some(area) = area_of(view) {
+        select_all(surface.key(), &area);
+    }
+}
+
 /// `ref.clearSelection()` on `view` (`Command::ClearSelection`): ends the
 /// current area's selection when the area is `view`, inside it or around
 /// it.

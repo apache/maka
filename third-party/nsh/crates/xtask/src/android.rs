@@ -322,7 +322,7 @@ pub(crate) fn clippy() -> anyhow::Result<()> {
             "-p",
             "nsh-extra",
             "--features",
-            "nsh-extra/camera,nsh-extra/speech",
+            "nsh-extra/camera,nsh-extra/share,nsh-extra/speech",
             "--target",
             "aarch64-linux-android",
             "--all-targets",
@@ -541,6 +541,11 @@ pub(crate) fn make_aar(built: &Path, abis: &[String], dev: bool, aar: &Path) -> 
             r#"<?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.longbridge.nsh">
     <uses-sdk android:minSdkVersion="{MIN_SDK}" />
+    <!-- Keeps the receivers registered at run time to the app before
+        Android 13, as `RECEIVER_NOT_EXPORTED` does from 13: androidx's
+        name, so an app with androidx gets one permission. -->
+    <permission android:name="${{applicationId}}.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION" android:protectionLevel="signature" />
+    <uses-permission android:name="${{applicationId}}.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION" />
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- The default network's callback (`network()`). -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />

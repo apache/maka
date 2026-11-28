@@ -82,7 +82,7 @@ is an entity the dock holds, and reconciliation against the `NodeId` cache keeps
 tab groups are rendered by the area for each `NodeId` and the panels by the app for each `PanelId`, and both survive
 every edit that keeps them.
 
-The other parts the app draws are render props as well (`renderTab`, `renderDragPreview` and `renderToolbar` (the toolbar at the end of a group's tab bar, for its displayed tab) with a `DockTab`,
+The other parts the app draws are render props as well (`renderTab`, `renderDragPreview` and `renderToolbar` (the toolbar at the end of a group's tab bar, for its displayed tab), `renderTabBarPrefix` (what the bar starts with, before the tabs) with a `DockTab`,
 `renderDropIndicator` with a `DockDropIndicator`, `renderDock` with a `DockInfo`, `renderEmpty`), and every part
 takes `<part>Class` / `<part>Style` (group, tab bar, tab, content, drop indicator, handle, handle thumb, dock, and
 compact's drawer, sheet and backdrop). The drop indicator moves natively: when its target changes the area asks for a
@@ -108,8 +108,13 @@ The grant starts the drag: every group's tab bar, tabs and content frame are mea
 view's coordinates in one task, answered with the next commit. Each move resolves the target from those bounds: over
 a tab bar, the slot between the tabs the pointer is past (counted without the dragged tab); over a content frame, its
 middle merges and its outer 35% on each side splits (`split_placement_at`), except back onto its own group when that would change
-nothing. The drop indicator part covers what the panel would take in the target group
-(`DropPlaceholderBounds::for_placement`): it is one overlay in the root view, under the drag preview (overlays stack
+nothing. Over a content frame the drop indicator part covers what the panel would take in the target group
+(`DropPlaceholderBounds::for_placement`); over a tab bar (the compact strip's too) the target carries an insertion
+line instead (`DropAt::line`, `tab_group.rs` `slot_line`: 2 points across, the bar's height, centered on the boundary
+between the measured tabs around the slot, kept inside the bar; horizontal on a vertical bar), drawn by `drop_line` in
+the theme's `ring` color (in a terminal, which draws no fills, one Cell across with a border in `terminal::ACCENT`:
+`│` across a row of tabs, `─` down a column), and neither the indicator nor
+`renderDropIndicator` is drawn for it. Each is one overlay in the root view, under the drag preview (overlays stack
 in the order they open, and the indicator opens once the drag has a target, so the preview is mounted again after it, a
 row keyed by `AreaCx::indicator_shown`: a region run again keeps its node and its place), placed with the content frame the drag measured, so it draws above the handles, whose lines lie over
 the edges of the groups beside them, and no frame clips it, and the release applies one move (`PaneTree::move_panel` within a tree,

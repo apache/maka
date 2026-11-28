@@ -276,9 +276,7 @@ events! {
     DownloadOffer = "onDownloadOffer" as "": "A platform holds a download for the core (payload: [`EventPayload::Json`], [`crate::webview::DownloadOffer`]; never reaches a listener).",
     DownloadProgress = "onDownloadProgress" as "": "A held download received bytes (payload: [`EventPayload::Json`], [`crate::webview::DownloadProgress`]; never reaches a listener).",
     DownloadEnd = "onDownloadEnd" as "": "A platform's download ended (payload: [`EventPayload::Json`], [`crate::webview::DownloadEnd`]; never reaches a listener).",
-    Share = "onShare": "A [`Command::Share`] request finished (root only; payload: `id`, then `action` (`\"shared\"` with the `target` where the platform names it, or `\"dismissed\"`), or `error` with its `code`; [`crate::share`]).",
     DetentChange = "onDetentChange": "The user moved an iOS sheet dialog to another of its `detents` (dragging it, its grabber, a scroll at its edge, a screen reader; payload: [`EventPayload::Json`], `{ detent }`, [`SheetDetent::change_payload`]).",
-    AuthSession = "onAuthSession" as "": "A [`Command::AuthSession`] request finished (root only; payload: `id`, then the callback `url`, `action` `\"cancelled\"`, or `error` with its `code`; [`crate::auth_session`]; never reaches a listener).",
     FocusIn = "onFocusIn": "The keyboard focus came into the view: onto it or a view inside it, from outside (it entered `focus-within`; raised by the core). Moving between views inside it is no new coming in.",
     FocusOut = "onFocusOut": "The keyboard focus left the view: from it or a view inside it to one outside, or to none (it left `focus-within`; raised by the core).",
     TextDrop = "onTextDrop" as "": "Text dragged from another app or view was dropped on the view (payload: [`EventPayload::TextDrop`]): a Rust component's, such as `RichEditor`'s, which inserts it where it was let go (iOS).",
@@ -2831,6 +2829,9 @@ pub enum Command {
     /// Clear the selection of a selectable view (`ViewProps::selectable_view`)
     /// the view is, is inside or holds.
     ClearSelection,
+    /// Select all the text of the selectable view (`ViewProps::selectable_view`)
+    /// the view is or is inside, as the selection menu's Select All does.
+    SelectAll,
     /// Scroll a scroll view to an offset.
     ScrollTo {
         /// Horizontal offset.
@@ -3103,46 +3104,6 @@ pub enum Command {
         /// The request.
         id: u32,
     },
-    /// Show the system's share sheet for `sheet` (on the root;
-    /// `Share.show`, [`crate::share`]) and report how it ended as
-    /// [`EventKind::Share`] `id` ([`crate::share::ShareOutcome::payload`],
-    /// [`crate::share::ShareError::payload`]). Sent only on platforms whose
-    /// [`crate::platform::Environment::share`] is set. The platform answers
-    /// every request exactly once, failures included (a sheet it could not
-    /// present is an error): one it never answers leaves its promise
-    /// pending. The core answers a request still pending as dismissed
-    /// before it sends a new one; the platform then shows the new sheet in
-    /// the earlier one's place where it can (iOS, macOS), and answers
-    /// whatever the earlier sheet reports later under its own id.
-    Share {
-        /// The request.
-        id: u32,
-        /// What to share and where the sheet points.
-        sheet: Box<crate::share::ShareSheet>,
-    },
-    /// Show a web sign-in session for `page` (on the root;
-    /// [`crate::element::open_auth_session`], [`crate::auth_session`]) and
-    /// report how it ended as [`EventKind::AuthSession`] `id`
-    /// ([`crate::auth_session::AuthSessionOutcome::payload`],
-    /// [`crate::auth_session::AuthSessionError::payload`]). Sent only on
-    /// platforms whose [`crate::platform::Environment::auth_session`] is
-    /// set. iOS answers with the callback URL or a cancellation; Android
-    /// answers a cancellation when the user comes back to the app without
-    /// a callback, and the callback comes as a link of the app's scheme
-    /// ([`EventKind::UrlScheme`]), which ends the session first. A new
-    /// request replaces the one still showing: the core has answered it
-    /// as cancelled already, and the platform closes it where it can.
-    AuthSession {
-        /// The request.
-        id: u32,
-        /// The page and the callback scheme.
-        page: Box<crate::auth_session::AuthSessionPage>,
-    },
-    /// Close the sign-in session [`Command::AuthSession`] showed with this
-    /// id (on the root), without reporting how it ended: the app closed it
-    /// ([`crate::element::close_auth_session`]), and the core has answered
-    /// it as cancelled already. A session no longer showing is left alone.
-    CloseAuthSession(u32),
     /// Let the user pick a color anywhere on the screen (on the root; a
     /// color picker's eyedropper, [`crate::element::ambient::pick_screen_color`]):
     /// the system's color sampler or the browser's `EyeDropper`. Report it
@@ -4207,6 +4168,16 @@ pub enum NativeProp {
     /// the windows a page opens do not have it.
     #[prop(js = "allowOrigin", on = WEBVIEW)]
     AllowOrigin(Option<Arc<str>>),
+    /// `allowNavigation` (web views): the hosts this web view may show and
+    /// navigate to, narrower than `webview.hosts`: the same host patterns
+    /// (`*`, `*.example.com`, a host name), and an empty list refuses every
+    /// web page ([`crate::access::WebHosts`]). The platform refuses any
+    /// other `http` or `https` page before its request is made and reports
+    /// `onError` with `ERR_ACCESS_DENIED` and the `url`. It never widens
+    /// the app's grant. A list with a pattern that does not read is refused
+    /// with a message and the web view is not narrowed.
+    #[prop(js = "allowNavigation", on = WEBVIEW)]
+    AllowNavigation(Option<Vec<Arc<str>>>),
     /// `injectedJavaScript` (web views): runs after each page loads.
     #[prop(js = "injectedJavaScript", on = WEBVIEW)]
     InjectedJavaScript(Option<Arc<str>>),

@@ -86,6 +86,10 @@ JRSoftware.InnoSetup`）会把它编译成 `.nsh\out\<Name>-setup.exe`。安装�
 中的图标会直接嵌入可执行文件（资源管理器和任务栏都会显示它），不需要额外的工具；在其他系统上打包则保留默认图标。应用 id
 用于在任务栏中归组应用的窗口。`--run` 会在打包后启动应用。可执行文件没有签名：要分发，请用你自己的证书签名（`signtool`）。
 
+TSX 应用的可执行文件只包含应用导入的 `nsh/base` 部件。在 x86_64 上，`nsh package` 用 nsh 发布版运行器预先编好的目标文件
+（`runtime\windows\nsh-windows-app.link\`）重新链接，去掉其余部件。这一步不需要 Rust，也不需要 Visual Studio：链接器是
+`windows-linker` [组件](./installation.md#组件)，第一次打包时下载。链接失败时，应用使用预编译的运行器，包含所有部件。
+
 ## 嵌入 Win32 应用
 
 `nsh-platform-windows` crate（位于 NSH 仓库中）为 Rust 编写的 Win32 应用提供 `AppView`：一个在你的窗口的子窗口中运行的 NSH
@@ -148,6 +152,14 @@ QuickJS 字节码是受信任的输入，只能从你自己应用的文件中加
 原生组件通过 `AppView::register_component` 注册，见[原生组件](./native-components.md#在-windows-上注册rust)。
 `set_ui_sets(sets)` 设置每个引擎提供的 UI 集合：NSH 的（`nsh_base::registry()`）和你的 crate 的（`my_app::registry()`，
 由 `#[native_module]` 生成），这样视图加载的 TSX 也能导入你的 Rust 组件和模块。
+
+## 在 Rust 中显示系统界面
+
+需要显示系统界面（菜单、对话框、分享浮出控件）的 Rust 代码，从发起调用的那个 surface 显示它。在主线程任务（`run_on_main_thread`）里，
+`nsh_platform_windows::presenting_window()` 是拥有没有元素作为锚点的界面的顶层窗口：surface 中用户所在的可见窗口；surface 不在任何可见窗口里时为
+`None`。NSH 自己绘制元素，元素没有自己的窗口：`element_bounds(node)` 给出这个 surface 中某个元素（元素 `ref` 的节点，即模块函数的
+`NodeRef` 参数；`ROOT_ID` 是 surface 的根）所在的窗口、它在该窗口客户区中的边界（单位为点），以及窗口的缩放比例，供在元素处弹出的菜单使用。
+两者都要在任务运行时读取。它们只用于锚定和显示系统界面：模块绝不修改、重新挂载、改变样式或销毁 NSH 拥有的窗口，也不在其中绘制。
 
 ## Windows 上的差异
 
