@@ -50,6 +50,11 @@ pub(super) struct Metadata {
     pub native: Vec<maka_host_runtime::application::transport::NativeGrant>,
 }
 
+/// This CLI's real file, so launching it through a symlink keeps the same baseline.
+pub(super) fn helper() -> Result<PathBuf, HostError> {
+    Ok(dunce::canonicalize(std::env::current_exe()?)?)
+}
+
 pub(super) fn metadata(package: &Package) -> Result<Metadata, HostError> {
     if package.application_ref().id != ID {
         return Err("not a product baseline package".into());
@@ -184,11 +189,11 @@ pub(super) async fn rebase(
         .find(|bytes| bytes.application_ref() == base.package)
         .ok_or("installed product baseline bytes missing")?;
     let metadata = metadata(package)?;
-    if metadata.release == release && metadata.environment.helper == std::env::current_exe()? {
+    if metadata.release == release && metadata.environment.helper == helper()? {
         return Ok(None);
     }
     let mut environment = metadata.environment;
-    environment.helper = std::env::current_exe()?;
+    environment.helper = helper()?;
     let (_, package) = generate(
         environment,
         deployment,

@@ -84,7 +84,11 @@ impl TestEnv {
     }
 
     fn maka_command(&self) -> Command {
-        let mut cmd = Command::new(crate::maka_executable());
+        self.maka_command_at(&crate::maka_executable())
+    }
+
+    fn maka_command_at(&self, program: &Path) -> Command {
+        let mut cmd = Command::new(program);
         cmd.current_dir(&self.workspace)
             .env("HOME", &self.home)
             .env("USERPROFILE", &self.home)
@@ -1057,9 +1061,17 @@ async fn run_sigterm_detaches_a_wait_without_cancelling_the_run() {
         .expect("model request did not arrive")
         .expect("interactive turn handle");
 
-    let mut wait = tokio::process::Command::from(session_command(&env, &root, session));
-    wait.arg("--wait")
-        .env("MAKA_RUN_TRACE_WATCH", "1")
+    // The same CLI under another path must join the busy Host, not restart it.
+    let other = env.base_dir().join("maka-other");
+    std::fs::hard_link(crate::maka_executable(), &other)
+        .or_else(|_| std::fs::copy(crate::maka_executable(), &other).map(drop))
+        .expect("place the CLI at another path");
+    let mut wait = env.maka_command_at(&other);
+    wait.args(["run", "--root"])
+        .arg(&root)
+        .args(["--session", session, "--wait"]);
+    let mut wait = tokio::process::Command::from(wait);
+    wait.env("MAKA_RUN_TRACE_WATCH", "1")
         .kill_on_drop(true)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
