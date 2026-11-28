@@ -436,6 +436,10 @@ impl scheduler::Scheduler {
     ) -> Result<Vec<Mutation>, String> {
         let result = match &job.phase {
             Phase::Investigating { result } => result.clone(),
+            Phase::Converged { reason } => Some(Report::NoReport {
+                note: reason.message().into(),
+                notes: vec![],
+            }),
             Phase::Delivering | Phase::Stopping => return Ok(vec![]),
         };
         if result.is_none() && job.checkpoint.is_none() {
@@ -457,34 +461,13 @@ impl scheduler::Scheduler {
         .map(|(_, writes)| writes)
     }
 
-    pub(super) async fn opening_reference(
-        &self,
-        job: &Job,
-        previous: Option<&Run>,
-    ) -> Result<Option<Value>, String> {
-        let Some(run) = previous else { return Ok(None) };
-        let scope = job_scope(job)?;
-        let id = digest((&scope, "outcome", &run.id))?;
-        let record = self
-            .storage
-            .read(entry_key(&scope, &id)?)
-            .await
-            .map_err(reason)?;
-        Ok(record.and_then(|record| {
-            record
-                .data
-                .value()
-                .map(|_| serde_json::json!({"record":id,"at":run.at}))
-        }))
-    }
-
-    pub(super) async fn report_for_delivery(&self, job: &Job) -> Result<(String, String), String> {
+    pub(super) async fn report_for_delivery(&self, job: &Job) -> Result<String, String> {
         let id = outcome_id(job)?;
         match self.memory_entry(&job_scope(job)?, &id).await?.content {
             Content::Investigation {
                 result: Some(Report::Report { text, .. }),
                 ..
-            } => Ok((id, text)),
+            } => Ok(text),
             _ => Err("discovery_report_record_invalid".into()),
         }
     }

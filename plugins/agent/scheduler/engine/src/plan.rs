@@ -48,12 +48,28 @@ pub enum PauseSource {
     Bot,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FireSource {
+    #[default]
+    Schedule,
+    FileChange,
+}
+
+impl FireSource {
+    fn is_schedule(&self) -> bool {
+        *self == Self::Schedule
+    }
+}
+
 /// Persist before submitting to Host. A retry uses these frozen bytes and ID,
 /// never the task's potentially edited title, effect or instruction.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[serde(bound(deserialize = "E: Deserialize<'de>, A: Deserialize<'de>"))]
 pub struct Fire<E, A> {
+    #[serde(default, skip_serializing_if = "FireSource::is_schedule")]
+    pub source: FireSource,
     pub id: String,
     pub task_id: String,
     pub scheduled_at: i64,
@@ -252,6 +268,7 @@ impl<E: TaskEffect, A: Clone> TaskPlan<E, A> {
             return Ok(None);
         };
         self.pending = Some(Fire {
+            source: FireSource::Schedule,
             id: format!("fire-{}", uuid::Uuid::new_v4()),
             task_id: self.task.id.clone(),
             scheduled_at: at,

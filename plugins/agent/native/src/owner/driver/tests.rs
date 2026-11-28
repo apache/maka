@@ -562,6 +562,16 @@ impl Rig {
                 "sessionManage",
                 "schedule",
                 "schedules",
+                "dossiers",
+                "dossier",
+                "readDossierArtifact",
+                "watchDossiers",
+                "setDossierMuted",
+                "setDossierResolved",
+                "chooseDossierOption",
+                "setDiscoveryNotifications",
+                "dropDiscoveryLead",
+                "openDossierThread",
                 "metadata",
                 "changeSession",
                 "saveFile",
@@ -970,6 +980,7 @@ impl Rig {
         )?;
         self.cells = Some(cells.clone());
         let model = DriverModel {
+            discovery: None,
             memory: None,
             state: state.clone(),
             history: state.session_history(view.spec.owner.clone(), view.spec.session_id.clone()),

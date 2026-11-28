@@ -27,6 +27,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Default)]
 pub(super) struct RecordedInputs {
+    pub discovery_children: BTreeMap<FactId, (String, maka_agent_facts::durable::ContentRef)>,
+    pub discovery_steps: BTreeMap<StepId, usize>,
+    pub discovery_last_results: BTreeMap<ModelAttemptId, FactId>,
     pub unfinished_provider_calls: BTreeSet<ToolKey>,
     pub cells: BTreeMap<CellId, FrozenCellKnowledge>,
     pub restricted_cells: RestrictedCells,
@@ -60,6 +63,11 @@ impl DriverModel {
         aliases: &BTreeMap<String, crate::tools::HistoryReader>,
     ) -> Result<RecordedInputs, RunError> {
         let mut original = RecordedInputs::default();
+        let discovery = self
+            .discovery
+            .as_ref()
+            .filter(|_| view.run == self.execution.run_id);
+        let mut provider_calls = BTreeSet::new();
         let mut cells = BTreeMap::<CellId, CellView>::new();
         let mut recovered = BTreeMap::new();
         let mut after = 0;
@@ -103,6 +111,33 @@ impl DriverModel {
                     break 'history;
                 }
                 after = fact.revision;
+                if discovery.is_some() {
+                    match &fact.fact {
+                        Fact::ModelObserved {
+                            attempt,
+                            part: ModelPart::ToolCall { call },
+                            ..
+                        } if call.provider_executed => {
+                            provider_calls.insert(ToolKey {
+                                attempt: *attempt,
+                                call: call.id.clone(),
+                            });
+                        }
+                        Fact::ModelObserved {
+                            attempt,
+                            part: ModelPart::ToolResult { .. },
+                            ..
+                        } => {
+                            original.discovery_last_results.insert(*attempt, fact.id);
+                        }
+                        Fact::ToolResultAccepted { tool, .. } if !provider_calls.contains(tool) => {
+                            original
+                                .discovery_last_results
+                                .insert(tool.attempt, fact.id);
+                        }
+                        _ => {}
+                    }
+                }
                 match &fact.fact {
                     Fact::ModelObserved {
                         attempt,
@@ -180,6 +215,18 @@ impl DriverModel {
                                     RunError::ReconciliationRequired(error.to_string())
                                 })?;
                         }
+                        if let Some(guard) = discovery
+                            && !guard.lock().unwrap().recorded(after)
+                            && let CellEvent::ChildResultRecorded { operation, .. }
+                            | CellEvent::LocalChildReturned { operation, .. } = event
+                            && let Some(child) =
+                                cells.get(&cell).and_then(|c| c.children.get(operation))
+                            && child.known_success()
+                        {
+                            original
+                                .discovery_children
+                                .insert(fact.id, (child.name.clone(), child.input.clone()));
+                        }
                     }
                     Fact::LocalToolReturned { tool, .. } if view.run != self.execution.run_id => {
                         let key = maka_agent_state::fold::tool_key(tool);
@@ -240,6 +287,11 @@ impl DriverModel {
                     if request.accounting.purpose != ModelPurpose::Main {
                         continue;
                     }
+                    if discovery.is_some() {
+                        original
+                            .discovery_steps
+                            .insert(step, original.discovery_steps.len() + 1);
+                    }
                     let frozen = self.frozen_input(reader, view.run, &request).await?;
                     if fact.revision <= covered_through {
                         for reference in &request.steering {
@@ -285,6 +337,12 @@ impl DriverModel {
                     );
                 }
             }
+        }
+        if let Some(guard) = discovery {
+            guard
+                .lock()
+                .unwrap()
+                .count_steps(original.discovery_steps.len());
         }
         original.cells.append(&mut recovered);
         Ok(original)

@@ -76,6 +76,7 @@ pub(in crate::owner) fn validate_native_compaction_producer(
 }
 
 pub(super) struct DriverModel {
+    pub discovery: Option<std::sync::Mutex<super::driver::discovery::Progress>>,
     pub memory: Option<Arc<maka_agent_facts::memory::MemoryProjection>>,
     pub state: Store,
     pub history: SessionHistory,

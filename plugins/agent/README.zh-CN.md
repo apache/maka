@@ -58,9 +58,9 @@
 
 ## 主动发现
 
-启用 Bot 和定时任务后，Bot 可以提议发现计划。新计划默认只读，用户批准工作区、模型和所选工具。Host 按绑定的服务或内置工具的用途确定类别，新建调查会话只获得当前工具上限内已批准的具体工具。一次性复查沿用这份清单，扩大范围需要用户批准。
+启用 Bot 和定时任务后，Bot 可以提议发现计划。新计划默认只读，用户批准工作区、模型和所选工具。Host 按绑定的服务或内置工具的用途确定类别，新建调查会话只获得当前工具上限内已批准的具体工具。
 
-一次调查从启动到执行清理和报告交接期间占用同一个执行位。worker 调用 `DiscoveryComplete` 静默结算或将发现交给 Bot，由 Bot 决定是否通知用户。计划、回执和共享调查记忆复用调度器存储，恢复时沿用原 Run 和回执。用户可以通过引用将反馈关联到原调查记录。
+一次调查从启动到执行清理期间占用同一个执行位。worker 用 `UpsertDossier` 分别更新各条主线，用 `FinishNoChange` 结束调查。档案版本和关联的一次性提醒在同一事务中更新。`DiscoveryComplete` 的报告也保存为档案。桌面订阅仅在全局通知开启、主线未静音时接收打扰事件，同一版本只打扰一次。Bot 应用户询问，用 `ListDossiers` 和 `ReadDossier` 读取档案。历史调查记录与原始运行回执仍可通过调度器查阅。
 
 参见[产品指南](../../products/maka/README.zh-CN.md#主动发现)、[调度契约](api/src/contract/scheduler.rs)和 [Host 测试](native/src/owner/driver/tests/model_recovery/discovery.rs)。
 

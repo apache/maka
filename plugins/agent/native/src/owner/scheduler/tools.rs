@@ -20,10 +20,6 @@
 use super::*;
 use maka_agent_facts::tool_call::ToolRejection;
 use maka_agent_facts::tools::*;
-use maka_agent_facts::{
-    durable::{ContentRef, RunId},
-    input::RunInput,
-};
 use maka_tool_catalog::input::ToolRequest;
 #[derive(Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(
@@ -44,7 +40,7 @@ enum Input {
         effect: Target,
         #[serde(default)]
         delivery: AutomationDelivery,
-        /// Optional tool profile for discoveries. Follow-ups normally reuse the approved profile.
+        /// Optional tool profile for a discovery proposal.
         worker_tools: Option<DiscoveryWorkerTools>,
         max_fires: Option<u32>,
         expires_at: Option<i64>,
@@ -103,11 +99,10 @@ impl Scheduler {
 }
 impl ToolPreparer for Scheduler {
     fn names(&self) -> Vec<String> {
-        vec![
-            "ScheduledTask".into(),
-            super::super::discovery::COMPLETE.into(),
-            super::super::discovery::MEMORY.into(),
-        ]
+        std::iter::once("ScheduledTask")
+            .chain(super::super::discovery::VISIBLE_TOOLS.iter().copied())
+            .map(str::to_owned)
+            .collect()
     }
     fn prepare(
         &self,
@@ -117,6 +112,17 @@ impl ToolPreparer for Scheduler {
         cancellation: CancellationToken,
     ) -> PreparationFuture {
         let owner = self.link.get().and_then(Weak::upgrade);
+        if matches!(
+            name.as_str(),
+            super::super::discovery::UPSERT
+                | super::super::discovery::FINISH
+                | super::super::discovery::LIST
+                | super::super::discovery::READ
+                | super::super::discovery::STAGE
+                | super::super::discovery::PREFERENCES
+        ) {
+            return self.prepare_dossier_tool(name, input, context, cancellation);
+        }
         if name == super::super::discovery::COMPLETE {
             return self.prepare_discovery(input, context, cancellation);
         }
@@ -192,116 +198,6 @@ impl ToolPreparer for Scheduler {
     }
 }
 impl Owner {
-    async fn followup_approval(
-        &self,
-        catalog: &repository::Catalog,
-        plan: &mut Plan,
-        requested_tools: Option<DiscoveryWorkerTools>,
-        run: RunId,
-        input: &ContentRef,
-        at: i64,
-    ) -> Result<Option<Approval>, String> {
-        let TaskSchedule::Once { run_at } = &plan.task.schedule else {
-            return Ok(None);
-        };
-        let ScheduledEffect::Discovery {
-            target,
-            model,
-            thinking_level,
-            worker_tools,
-            selected_tools,
-        } = &mut plan.task.effect
-        else {
-            return Ok(None);
-        };
-        let RunInput::Message {
-            source_messages, ..
-        } = self.run_content(run, input).await.map_err(reason)?
-        else {
-            return Ok(None);
-        };
-        let [source] = source_messages.as_slice() else {
-            return Ok(None);
-        };
-        let Some(MessageOrigin::DiscoveryReport { session_id }) = &source.message.origin else {
-            return Ok(None);
-        };
-        for saved in catalog.plans.values() {
-            let parent = &saved.plan;
-            let Some(Approval::Discovery {
-                approval,
-                tools: approved,
-                authority: DiscoveryAuthority::User { generation },
-            }) = &parent.authorization
-            else {
-                continue;
-            };
-            let ScheduledEffect::Discovery {
-                target: parent_target,
-                model: parent_model,
-                thinking_level: parent_thinking,
-                selected_tools: parent_selection,
-                ..
-            } = &parent.task.effect
-            else {
-                continue;
-            };
-            if target != parent_target
-                || model != parent_model
-                || thinking_level != parent_thinking
-                || parent.task.status != Status::Active
-                || parent
-                    .task
-                    .expires_at
-                    .is_some_and(|expiry| at.max(*run_at) >= expiry)
-            {
-                continue;
-            }
-            let profile = requested_tools.unwrap_or(approved.profile);
-            if profile == DiscoveryWorkerTools::Session
-                && approved.profile == DiscoveryWorkerTools::ReadOnly
-            {
-                continue;
-            }
-            let Some(fire) = parent.task.runs.iter().find(|fire| {
-                fire.outcome == Outcome::Ok
-                    && fire.session_id.as_ref() == Some(session_id)
-                    && source.message.message_id
-                        == format!("m_{}", super::super::discovery::report_identity(&fire.id))
-            }) else {
-                continue;
-            };
-            if self.scheduler.completed_report_generation(&fire.id).await? == Some(*generation) {
-                *worker_tools = profile;
-                let mut tools = approved.clone();
-                tools.profile = profile;
-                if profile == DiscoveryWorkerTools::ReadOnly {
-                    tools
-                        .names
-                        .retain(|name| self.read_only_discovery_tool(name));
-                }
-                *selected_tools = parent_selection.as_ref().map(|selection| {
-                    selection
-                        .iter()
-                        .filter(|(name, _)| tools.names.contains(name))
-                        .map(|(name, group)| (name.clone(), *group))
-                        .collect()
-                });
-                return Ok(Some(Approval::Discovery {
-                    approval: approval.clone(),
-                    tools,
-                    authority: DiscoveryAuthority::Followup {
-                        grant: FollowupGrant {
-                            task_id: parent.task.id.clone(),
-                            generation: *generation,
-                        },
-                    },
-                }));
-            }
-        }
-        Ok(None)
-    }
-
     async fn scheduled_tool(
         &self,
         input: Input,
@@ -514,20 +410,7 @@ impl Owner {
                 )
                 .map_err(reason)?;
                 plan.misfire = misfire;
-                plan.authorization =
-                    if matches!(plan.task.effect, ScheduledEffect::Discovery { .. }) {
-                        self.followup_approval(
-                            &catalog,
-                            &mut plan,
-                            worker_tools,
-                            view.run,
-                            &view.spec.input,
-                            at,
-                        )
-                        .await?
-                    } else {
-                        authorization
-                    };
+                plan.authorization = authorization;
                 if plan.authorization.is_none() {
                     plan = plan.pause(at);
                 }

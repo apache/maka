@@ -732,6 +732,7 @@ impl Owner {
                     PreparedSend::Ready {
                         value: SendResult::Queued { message_id, .. },
                         mut statement,
+                        ..
                     },
                     copies,
                 )) => {

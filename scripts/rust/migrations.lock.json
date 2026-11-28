@@ -265,6 +265,18 @@
       "plugins/agent/state/migrations/0067_catalog_live_runs_index.sql": {
         "version": 67,
         "sha384": "ba3edfc423b5363554af4e0a3c7a9bce6b0101216e097d4bc855bd99891e14a15ba091b1b1f25b6ad91439acdac8f48a"
+      },
+      "plugins/agent/state/migrations/0068_discovery_dossiers.sql": {
+        "version": 68,
+        "sha384": "31e720459ce9893e34849810b326e32c85051784af550ce4c47399f40496060a8fb95e5e9743f712b161edf086d52251"
+      },
+      "plugins/agent/state/migrations/0069_discovery_changes.sql": {
+        "version": 69,
+        "sha384": "3a27e49d1e7bec82c6b4ff6cea38f19f2e0965d2fe75c92cf33382c20dcd205e41b0297626a314da5f571d3cd7ada7ea"
+      },
+      "plugins/agent/state/migrations/0070_discovery_staging.sql": {
+        "version": 70,
+        "sha384": "94781185752f12ec1d1b59216415c003ddb64fb440fcfc45886a1f0d43df847da62fc7693b965d8cb8680a43246951f9"
       }
     },
     "checkpoint-repository": {

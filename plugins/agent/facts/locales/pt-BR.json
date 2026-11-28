@@ -89,6 +89,7 @@
     "ability_send_user": "SendUser (falar com o usuário)",
     "ability_sleep": "sleep (encerrar o turno e aguardar)",
     "ability_discovery_memory": "DiscoveryMemory (registros de investigação, decisões de notificação e feedback do usuário)",
+    "ability_discovery_dossiers": "{tools} (ler os dossiês de descoberta atuais mediante solicitação do usuário)",
     "ability_scheduled_task": "ScheduledTask (agendar um despertar ou acompanhamento único)",
     "ability_goals": "{tools} (metas)",
     "ability_recall": "as ferramentas Recall (pesquisar conversas anteriores)",

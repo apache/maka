@@ -58,9 +58,9 @@ User-controlled memory endpoints (`memories`, `memory`, `memoryHistory`, `change
 
 ## Proactive discovery
 
-The Bot can propose a discovery plan when Bot and scheduling are enabled. New plans default to read-only. The user approves the workspace, model and tool selection. The Host derives each tool's category from its bound service or built-in role. A fresh worker receives the approved names within its current tool ceiling. A one-time follow-up inherits that selection. Widening it requires user approval.
+The Bot can propose a discovery plan when Bot and scheduling are enabled. New plans default to read-only. The user approves the workspace, model and tool selection. The Host derives each tool's category from its bound service or built-in role. A fresh worker receives the approved names within its current tool ceiling.
 
-One investigation occupies the shared slot through cleanup and report handoff. The worker calls `DiscoveryComplete` to settle quietly or hand findings to the Bot. The Bot decides whether to notify the user. The scheduler keeps plans, receipts, and shared investigation memory in its existing store. Recovery follows the original Run and receipt. Quoted user feedback can refer directly to the investigation record.
+One investigation occupies the shared slot through cleanup. Workers update one topic at a time with `UpsertDossier` and finish with `FinishNoChange`. Dossier revisions and changes to linked one-time reminders commit together. `DiscoveryComplete` also settles into a dossier. The desktop subscription receives interrupts once per revision, subject to the global switch and topic mute. The Bot reads dossiers on demand with `ListDossiers` and `ReadDossier`. Investigation history and original run receipts remain available through the scheduler.
 
 See the [product guide](../../products/maka/README.md#proactive-discovery), [schedule contract](api/src/contract/scheduler.rs), and [Host tests](native/src/owner/driver/tests/model_recovery/discovery.rs).
 

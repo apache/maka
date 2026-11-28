@@ -67,6 +67,7 @@ pub(crate) struct SelectedTool {
     selection: ServiceTool,
     binding: String,
     pub(crate) discovery_group: crate::contract::DiscoveryToolGroup,
+    pub(crate) discovery_safe: bool,
 }
 
 /// The tool selected by the Agent's configuration, resolved through its current
@@ -113,12 +114,6 @@ pub(crate) struct SelectionSnapshot {
 impl SelectedTool {
     pub(crate) fn name(&self) -> &str {
         &self.selection.name
-    }
-    pub(crate) fn reads_session_content(&self) -> bool {
-        use crate::contract::DiscoveryToolGroup;
-        self.discovery_group == DiscoveryToolGroup::ReadFiles
-            || (self.discovery_group == DiscoveryToolGroup::History
-                && self.selection.method == "sessionRead")
     }
     pub(crate) fn permits_approval(&self, name: &str, method: &str, binding: &str) -> bool {
         self.selection.name == name
@@ -664,6 +659,8 @@ pub(crate) fn catalog(
                 (Projection::Direct, input_schema)
             };
             let selected = SelectedTool {
+                discovery_safe: matches!(discovery_group, Group::ReadFiles | Group::History | Group::Web | Group::Commands)
+                    || (discovery_group == Group::Other && method.mode == MethodMode::Query),
                 discovery_group,
                 history_reader: if contract == &file_contract && selection.method == "read" {
                     Some(HistoryReader::File)
@@ -1299,6 +1296,7 @@ mod tests {
             history_reader: None,
             selection: serde_json::from_value(selection).unwrap(),
             discovery_group: crate::contract::DiscoveryToolGroup::Other,
+            discovery_safe: false,
             binding: "sha256:20379da95853ba9498588b280113bf12e6e59301840666f025af97879bb548ee"
                 .into(),
         };
