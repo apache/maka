@@ -1567,14 +1567,25 @@ fn prepare(
     prepare_plan(packages, native, durable, plan)
 }
 
+fn has_js_host_entry(package: &Package) -> bool {
+    package
+        .manifest()
+        .application
+        .as_ref()
+        .and_then(|declaration| declaration.host.as_ref())
+        .is_some_and(|host| matches!(host.implementation, Implementation::JavaScript { .. }))
+}
+
 fn prepare_plan(
     packages: Vec<Package>,
     native: &NativeRegistry,
     durable: bool,
     plan: Plan,
 ) -> Result<(Plan, BTreeMap<PackageRef, Package>)> {
+    // Only JS Host entries read module bytes from Owner.sources at activation.
     let sources = packages
         .into_iter()
+        .filter(has_js_host_entry)
         .map(|p| (p.application_ref(), p))
         .collect();
     for instance in plan.instances().values().filter(|i| !i.disabled) {
@@ -1600,4 +1611,79 @@ fn prepare_plan(
         }
     }
     Ok((plan, sources))
+}
+
+#[cfg(test)]
+mod source_retention_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn retains_only_packages_with_js_host_entries() {
+        let native_pkg = Package::new(BTreeMap::from([(
+            maka_packages::MANIFEST_FILE.into(),
+            serde_json::to_vec(&json!({
+                "schemaVersion": 1,
+                "id": "example.native",
+                "application": {
+                    "host": {
+                        "implementation": { "kind": "native", "implementation": "example.native" },
+                        "configuration": { "type": "object" },
+                        "imports": {},
+                        "exports": {}
+                    }
+                }
+            }))
+            .unwrap(),
+        )]))
+        .unwrap();
+        let ui_pkg = Package::new(BTreeMap::from([
+            (
+                maka_packages::MANIFEST_FILE.into(),
+                serde_json::to_vec(&json!({
+                    "schemaVersion": 1,
+                    "id": "example.ui",
+                    "application": {
+                        "ui": { "module": "ui/index.js", "configuration": { "type": "object" }, "contributions": { "root": { "kind": "root" } } }
+                    }
+                }))
+                .unwrap(),
+            ),
+            (
+                "ui/index.js".into(),
+                b"export default function() {}".to_vec(),
+            ),
+        ]))
+        .unwrap();
+        let js_pkg = Package::new(BTreeMap::from([
+            (
+                maka_packages::MANIFEST_FILE.into(),
+                serde_json::to_vec(&json!({
+                    "schemaVersion": 1,
+                    "id": "example.js",
+                    "application": {
+                        "host": {
+                            "implementation": {
+                                "kind": "javascript",
+                                "module": "host/index.js",
+                                "realm": "shared"
+                            },
+                            "configuration": { "type": "object" },
+                            "imports": {},
+                            "exports": {}
+                        }
+                    }
+                }))
+                .unwrap(),
+            ),
+            (
+                "host/index.js".into(),
+                b"export default function() {}".to_vec(),
+            ),
+        ]))
+        .unwrap();
+        assert!(!has_js_host_entry(&native_pkg));
+        assert!(!has_js_host_entry(&ui_pkg));
+        assert!(has_js_host_entry(&js_pkg));
+    }
 }

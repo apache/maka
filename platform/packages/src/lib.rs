@@ -68,7 +68,7 @@ impl Package {
             .ok_or_else(|| Error::Invalid("package manifest is missing".into()))?;
         let manifest: Manifest = serde_json::from_slice(bytes)
             .map_err(|error| Error::Invalid(format!("manifest: {error}")))?;
-        manifest.validate()?;
+        maka_plugin_core::with_validation_cache(|| manifest.validate())?;
         for application in manifest.application.iter() {
             let host_module =
                 application
