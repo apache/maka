@@ -22,7 +22,14 @@ import { Button } from 'nsh/base';
 import { spacing, type } from '../theme/tokens';
 import { Icon, type IconName } from './Icon';
 
-export type ButtonVariant = 'primary' | 'secondary' | 'quiet' | 'destructive' | 'destructiveFilled';
+export type ButtonVariant =
+  | 'primary'
+  | 'secondary'
+  | 'glassSecondary'
+  | 'glassQuiet'
+  | 'quiet'
+  | 'destructive'
+  | 'destructiveFilled';
 
 export function ActionButton(props: {
   title: string;
@@ -37,6 +44,7 @@ export function ActionButton(props: {
 }) {
   const variant = () => props.variant ?? 'primary';
   const compact = () => !!props.compact;
+  const glass = () => variant() === 'glassSecondary' || variant() === 'glassQuiet';
 
   const backgroundColor = () => {
     switch (variant()) {
@@ -44,6 +52,10 @@ export function ActionButton(props: {
         return token('primary');
       case 'secondary':
         return token('primary-tint');
+      case 'glassSecondary':
+        return token('glass-action-bg');
+      case 'glassQuiet':
+        return token('surface-elevated');
       case 'destructive':
         return token('destructive-tint');
       case 'destructiveFilled':
@@ -61,6 +73,9 @@ export function ActionButton(props: {
       case 'secondary':
       case 'quiet':
         return token('primary');
+      case 'glassSecondary':
+      case 'glassQuiet':
+        return token('glass-accent');
       case 'destructive':
         return token('destructive');
     }
@@ -72,7 +87,12 @@ export function ActionButton(props: {
       accessibilityLabel={props.accessibilityLabel ?? props.title}
       disabled={props.disabled}
       onPress={props.onPress}
-      class="active:opacity-70 transition-opacity duration-150 disabled:opacity-45"
+      class={
+        glass()
+          ? 'disabled:opacity-45'
+          : 'active:opacity-70 transition-opacity duration-150 disabled:opacity-45'
+      }
+      activeStyle={glass() ? { backgroundColor: token('glass-action-pressed-bg') } : undefined}
       style={{
         minHeight: props.minHeight ?? (compact() ? 40 : spacing.buttonMinHeight),
         paddingHorizontal: compact() ? 14 : 18,
@@ -92,7 +112,7 @@ export function ActionButton(props: {
       <Text
         style={{
           ...(compact() ? type.subheadlineMedium : type.headline),
-          fontWeight: variant() === 'quiet' ? '500' : '600',
+          fontWeight: variant() === 'quiet' || variant() === 'glassQuiet' ? '500' : '600',
           color: foregroundColor(),
           textAlign: 'center',
         }}

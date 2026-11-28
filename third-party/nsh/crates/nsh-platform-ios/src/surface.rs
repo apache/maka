@@ -33,11 +33,12 @@ use objc2_ui_kit::{
     UIApplicationWillEnterForegroundNotification, UIApplicationWillResignActiveNotification,
     UIDevice, UIFocusAnimationCoordinator, UIFocusUpdateContext, UIFont, UIFontTextStyleBody,
     UIKeyboardAnimationCurveUserInfoKey, UIKeyboardAnimationDurationUserInfoKey,
-    UIKeyboardFrameEndUserInfoKey, UIKeyboardWillChangeFrameNotification,
-    UIKeyboardWillHideNotification, UIPress, UIPressesEvent, UIResponder, UISceneActivationState,
-    UISceneDidActivateNotification, UISceneDidEnterBackgroundNotification,
-    UISceneWillDeactivateNotification, UISceneWillEnterForegroundNotification, UITraitCollection,
-    UITraitEnvironment, UIUserInterfaceIdiom, UIUserInterfaceStyle, UIView, UIViewLayoutRegion,
+    UIKeyboardDidChangeFrameNotification, UIKeyboardFrameEndUserInfoKey,
+    UIKeyboardWillChangeFrameNotification, UIKeyboardWillHideNotification, UIPress, UIPressesEvent,
+    UIResponder, UISceneActivationState, UISceneDidActivateNotification,
+    UISceneDidEnterBackgroundNotification, UISceneWillDeactivateNotification,
+    UISceneWillEnterForegroundNotification, UITraitCollection, UITraitEnvironment,
+    UIUserInterfaceIdiom, UIUserInterfaceStyle, UIView, UIViewLayoutRegion,
     UIViewLayoutRegionAdaptivityAxis, UIWindowScene,
 };
 
@@ -150,6 +151,30 @@ struct Running {
     mounter: SharedMounter,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Keyboard {
+    Hidden,
+    Transitioning { inset: f32, until: f64 },
+    // A docked keyboard can remain shown outside the surface's bounds.
+    Shown(f32),
+}
+
+impl Keyboard {
+    fn inset(self) -> f32 {
+        match self {
+            Self::Hidden => 0.0,
+            Self::Transitioning { inset, .. } | Self::Shown(inset) => inset,
+        }
+    }
+
+    fn settle(self, guide_inset: impl FnOnce() -> f32) -> Self {
+        match self {
+            Self::Hidden => Self::Hidden,
+            Self::Transitioning { .. } | Self::Shown(_) => Self::Shown(guide_inset()),
+        }
+    }
+}
+
 pub(crate) struct RootViewIvars {
     /// The app, waiting for the first non-empty layout.
     pending: RefCell<Option<App>>,
@@ -159,8 +184,8 @@ pub(crate) struct RootViewIvars {
     on_error: SharedErrorHandler,
     /// A development update could not be applied in place.
     on_hot_failed: SharedHandler,
-    /// Keyboard height over the view and its animation duration.
-    keyboard: Cell<(f32, f32)>,
+    /// Keyboard state and its published animation duration in milliseconds.
+    keyboard: Cell<(Keyboard, f32)>,
     /// Whether the app is in use where the surface shows, as the
     /// notifications of its window's scene said last (the application's
     /// while it has none: [`RootView::observe_lifecycle`]).
@@ -221,9 +246,17 @@ define_class!(
             }
             self.ivars().size.set(size);
             let viewport = Size::new(Points(size.width as f32), Points(size.height as f32));
-            if let Some(running) = self.ivars().running.borrow().as_ref() {
-                running.engine.control().resize(viewport);
-                self.publish_environment();
+            let control = self
+                .ivars()
+                .running
+                .borrow()
+                .as_ref()
+                .map(|r| r.engine.control());
+            if let Some(control) = control {
+                control.resize(viewport);
+                if !self.reconcile_keyboard(false) {
+                    self.publish_environment();
+                }
                 return;
             }
             let pending = self.ivars().pending.borrow_mut().take();
@@ -404,7 +437,7 @@ impl RootView {
             options,
             on_error: Arc::new(MainThreadBound::new(RefCell::new(None), mtm)),
             on_hot_failed: Arc::new(MainThreadBound::new(RefCell::new(None), mtm)),
-            keyboard: Cell::new((0.0, 250.0)),
+            keyboard: Cell::new((Keyboard::Hidden, 250.0)),
             lifecycle: Cell::new(lifecycle(mtm)),
             environment: Cell::new(None),
             host: Cell::default(),
@@ -548,7 +581,7 @@ impl RootView {
     /// What JS sees through `windowSize()`, `safeArea()`, `keyboard()`...
     fn environment(&self) -> Environment {
         let size = self.bounds().size;
-        let (keyboard_height, keyboard_duration) = self.ivars().keyboard.get();
+        let (keyboard, keyboard_duration) = self.ivars().keyboard.get();
         // SAFETY: plain getters.
         let (style, body, scale, horizontal, vertical) = unsafe {
             let traits = self.traitCollection();
@@ -577,7 +610,7 @@ impl RootView {
             reserved_regions: self.reserved_regions(),
             // UIKit draws no title bar an app could hide.
             title_bar: Edges::default(),
-            keyboard_height: Points(keyboard_height),
+            keyboard_height: Points(keyboard.inset()),
             keyboard_duration,
             color_scheme: if style == UIUserInterfaceStyle::Dark {
                 ColorScheme::Dark
@@ -833,6 +866,8 @@ impl RootView {
     /// Tracks the software keyboard: JS sees its height, and the mounter
     /// keeps the focused input clear of it.
     fn observe_keyboard(this: &Retained<Self>) {
+        // Start tracking the docked keyboard before the first frame notification.
+        let _ = this.keyboardLayoutGuide();
         let center = NSNotificationCenter::defaultCenter();
         let weak = Weak::from_retained(this);
         let block = RcBlock::new(move |note: NonNull<NSNotification>| {
@@ -846,6 +881,7 @@ impl RootView {
             [
                 UIKeyboardWillChangeFrameNotification,
                 UIKeyboardWillHideNotification,
+                UIKeyboardDidChangeFrameNotification,
             ]
         };
         let mut observers = this.ivars().observers.borrow_mut();
@@ -888,52 +924,123 @@ impl RootView {
     }
 
     fn keyboard_changed(&self, note: &NSNotification) {
-        // The keyboard starts to move now, in the transaction posting this.
+        let name = note.name();
+        // SAFETY: immutable UIKit constants.
+        let (completed, hiding) = unsafe {
+            (
+                name.isEqualToString(UIKeyboardDidChangeFrameNotification),
+                name.isEqualToString(UIKeyboardWillHideNotification),
+            )
+        };
+        if completed && self.ivars().keyboard.get().0 == Keyboard::Hidden {
+            return;
+        }
+
         let start = objc2_quartz_core::CACurrentMediaTime();
-        let Some(info) = note.userInfo() else { return };
+        let info = note.userInfo();
+        let get = |key| info.as_ref().and_then(|info| info.objectForKey(key));
         // SAFETY: UIKit documents these user info keys and their value types
         // (NSValue of a CGRect in screen coordinates, NSNumber of seconds,
         // NSNumber of a UIViewAnimationCurve).
         let (frame, duration, curve) = unsafe {
-            let frame = info
-                .objectForKey(UIKeyboardFrameEndUserInfoKey)
+            let frame = get(UIKeyboardFrameEndUserInfoKey)
                 .and_then(|v| v.downcast::<NSValue>().ok())
                 .map(|v| v.CGRectValue());
-            let duration = info
-                .objectForKey(UIKeyboardAnimationDurationUserInfoKey)
+            let duration = get(UIKeyboardAnimationDurationUserInfoKey)
                 .and_then(|v| v.downcast::<NSNumber>().ok())
                 .map_or(0.25, |n| n.doubleValue());
-            let curve = info
-                .objectForKey(UIKeyboardAnimationCurveUserInfoKey)
+            let curve = get(UIKeyboardAnimationCurveUserInfoKey)
                 .and_then(|v| v.downcast::<NSNumber>().ok())
                 .map_or(7, |n| n.integerValue());
             (frame, duration, curve)
         };
-        let hiding = note.name().isEqualToString(
-            // SAFETY: an immutable UIKit constant.
-            unsafe { UIKeyboardWillHideNotification },
-        );
-        let height = match (frame, self.window().and_then(|w| w.windowScene())) {
-            (Some(frame), Some(scene)) if !hiding => {
-                let space = scene.screen().coordinateSpace();
+        let target = if hiding {
+            None
+        } else {
+            frame.and_then(|frame| {
+                let window = self.window()?;
+                let space = window.windowScene()?.screen().coordinateSpace();
                 // SAFETY: `convertRect:fromCoordinateSpace:` of UICoordinateSpace.
                 let frame: CGRect =
                     unsafe { msg_send![self, convertRect: frame, fromCoordinateSpace: &*space] };
-                let bounds = self.bounds();
-                let overlaps =
-                    frame.origin.x < bounds.size.width && frame.origin.x + frame.size.width > 0.0;
-                if overlaps {
-                    (bounds.size.height - frame.origin.y).clamp(0.0, bounds.size.height)
-                } else {
-                    0.0
-                }
-            }
-            _ => 0.0,
+                keyboard_inset(
+                    self.convertRect_fromView(window.bounds(), Some(&window)),
+                    self.bounds(),
+                    frame,
+                    duration,
+                    self.keyboardLayoutGuide().layoutFrame(),
+                    self.safeAreaInsets().bottom,
+                )
+            })
         };
+        if completed {
+            if frame.is_none() || target.is_some() {
+                self.layoutIfNeeded();
+                self.reconcile_keyboard(true);
+            } else {
+                self.publish_keyboard(
+                    Keyboard::Hidden,
+                    crate::mount::KeyboardMotion {
+                        curve: 0,
+                        duration: 0.0,
+                        start,
+                    },
+                );
+            }
+            return;
+        }
+
+        let keyboard = match target {
+            None => Keyboard::Hidden,
+            Some(inset) if duration == 0.0 => Keyboard::Shown(inset),
+            Some(inset) => Keyboard::Transitioning {
+                inset,
+                until: start + duration,
+            },
+        };
+        self.publish_keyboard(
+            keyboard,
+            crate::mount::KeyboardMotion {
+                curve,
+                duration,
+                start,
+            },
+        );
+    }
+
+    fn reconcile_keyboard(&self, completed: bool) -> bool {
+        let (keyboard, duration) = self.ivars().keyboard.get();
+        let now = objc2_quartz_core::CACurrentMediaTime();
+        if !completed && matches!(keyboard, Keyboard::Transitioning { until, .. } if now < until) {
+            return false;
+        }
+        let settled = keyboard.settle(|| {
+            docked_guide_inset(
+                self.bounds(),
+                self.keyboardLayoutGuide().layoutFrame(),
+                self.safeAreaInsets().bottom,
+            )
+        });
+        if settled.inset() == keyboard.inset() {
+            self.ivars().keyboard.set((settled, duration));
+            return false;
+        }
+        self.publish_keyboard(
+            settled,
+            crate::mount::KeyboardMotion {
+                curve: 0,
+                duration: 0.0,
+                start: now,
+            },
+        );
+        true
+    }
+
+    fn publish_keyboard(&self, keyboard: Keyboard, motion: crate::mount::KeyboardMotion) {
         // UIKit gives seconds; the environment holds milliseconds.
         self.ivars()
             .keyboard
-            .set((height as f32, (duration * 1000.0) as f32));
+            .set((keyboard, (motion.duration * 1000.0) as f32));
         self.publish_environment();
         let Some(mounter) = self
             .ivars()
@@ -944,14 +1051,9 @@ impl RootView {
         else {
             return;
         };
-        let height = height as f32;
-        let motion = crate::mount::KeyboardMotion {
-            curve,
-            duration,
-            start,
-        };
         // Focusing an input while a batch is applied can post this
         // synchronously: then run it on the next main-queue turn.
+        let height = keyboard.inset();
         let busy = match mounter.get(self.mtm()).try_borrow_mut() {
             Ok(mut m) => {
                 if let Some(m) = m.as_mut() {
@@ -1537,4 +1639,155 @@ pub(crate) fn os_version(mtm: MainThreadMarker) -> (u16, u16) {
         let mut parts = version.split('.').map(|p| p.parse().unwrap_or(0));
         (parts.next().unwrap_or(0), parts.next().unwrap_or(0))
     })
+}
+
+fn keyboard_inset(
+    window: CGRect,
+    bounds: CGRect,
+    frame: CGRect,
+    duration: f64,
+    guide: CGRect,
+    safe_bottom: f64,
+) -> Option<f32> {
+    // Judge visibility in the window, not in a potentially smaller surface.
+    let window_end = window.max();
+    let frame_end = frame.max();
+    if frame.origin.x >= window_end.x
+        || frame_end.x <= window.origin.x
+        || frame.origin.y >= window_end.y
+        || frame_end.y <= window.origin.y
+        || (frame_end.y < window_end.y && guide.size.height <= safe_bottom)
+    {
+        return None;
+    }
+
+    let height = bottom_overlap(bounds, frame);
+    // After a modal dismisses, a zero-duration frame can omit the accessory
+    // still covered by the docked guide. Animated frames describe the target.
+    if height > 0.0 && duration == 0.0 {
+        Some(height.max(docked_guide_inset(bounds, guide, safe_bottom)))
+    } else {
+        Some(height)
+    }
+}
+
+fn docked_guide_inset(bounds: CGRect, guide: CGRect, safe_bottom: f64) -> f32 {
+    if guide.size.height > safe_bottom {
+        bottom_overlap(bounds, guide)
+    } else {
+        0.0
+    }
+}
+
+fn bottom_overlap(bounds: CGRect, frame: CGRect) -> f32 {
+    let bounds_end = bounds.max();
+    if frame.origin.x < bounds_end.x && frame.max().x > bounds.origin.x {
+        // UIKit can keep the old guide height when the surface shrinks.
+        (bounds_end.y - frame.origin.y).clamp(0.0, bounds.size.height) as f32
+    } else {
+        0.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use objc2_core_foundation::CGPoint;
+
+    fn rect(x: f64, y: f64, width: f64, height: f64) -> CGRect {
+        CGRect::new(CGPoint::new(x, y), CGSize::new(width, height))
+    }
+
+    #[test]
+    fn keyboard_away_from_the_bottom_does_not_inset_the_surface() {
+        let ipad = rect(0.0, 0.0, 820.0, 1180.0);
+        let safe_area = rect(0.0, 1160.0, 820.0, 20.0);
+        let floating = rect(242.0, 682.5, 334.0, 334.0);
+        let undocked = rect(0.0, 682.5, 820.0, 334.0);
+        assert_eq!(
+            keyboard_inset(ipad, ipad, floating, 0.0, safe_area, 20.0),
+            None
+        );
+        assert_eq!(
+            keyboard_inset(ipad, ipad, undocked, 0.25, safe_area, 20.0),
+            None
+        );
+        assert_eq!(
+            Keyboard::Shown(497.5)
+                .settle(|| docked_guide_inset(ipad, safe_area, 20.0))
+                .inset(),
+            0.0
+        );
+    }
+
+    #[test]
+    fn docked_keyboard_keeps_the_end_frame_and_restores_the_accessory_on_dismiss() {
+        let iphone = rect(0.0, 0.0, 874.0, 402.0);
+        let keys = rect(0.0, 178.0, 874.0, 224.0);
+        let inset_keys = rect(0.0, 178.0, 874.0, 204.0);
+        let safe_area = rect(0.0, 382.0, 874.0, 20.0);
+        let full = rect(0.0, 130.0, 874.0, 272.0);
+        let target =
+            |frame, duration, guide| keyboard_inset(iphone, iphone, frame, duration, guide, 20.0);
+        assert_eq!(target(keys, 0.25, safe_area), Some(224.0));
+        assert_eq!(target(keys, 0.25, full), Some(224.0));
+        assert_eq!(target(keys, 0.0, full), Some(272.0));
+        assert_eq!(target(inset_keys, 0.0, full), Some(272.0));
+        assert_eq!(target(keys, 0.0, safe_area), Some(224.0));
+        assert_eq!(target(rect(874.0, 178.0, 874.0, 224.0), 0.0, full), None);
+    }
+
+    #[test]
+    fn keyboard_completion_reconciles_with_the_docked_guide() {
+        let iphone = rect(0.0, 0.0, 874.0, 402.0);
+        let full = rect(0.0, 130.0, 874.0, 272.0);
+        let keys = rect(0.0, 178.0, 874.0, 224.0);
+        let settle =
+            |keyboard: Keyboard, guide| keyboard.settle(|| docked_guide_inset(iphone, guide, 20.0));
+        let transition = Keyboard::Transitioning {
+            inset: 224.0,
+            until: 0.25,
+        };
+        assert_eq!(settle(transition, full), Keyboard::Shown(272.0));
+        assert_eq!(settle(transition, keys), Keyboard::Shown(224.0));
+        assert_eq!(settle(Keyboard::Shown(272.0), keys).inset(), 224.0);
+    }
+
+    #[test]
+    fn resizing_the_surface_reconciles_an_open_docked_keyboard() {
+        let iphone = rect(0.0, 0.0, 874.0, 402.0);
+        let guide = rect(0.0, 130.0, 874.0, 272.0);
+        let resize = |keyboard: Keyboard, bounds| {
+            keyboard.settle(|| docked_guide_inset(bounds, guide, 20.0))
+        };
+        let shown =
+            Keyboard::Shown(keyboard_inset(iphone, iphone, guide, 0.0, guide, 20.0).unwrap());
+        let short = rect(0.0, 0.0, 874.0, 115.0);
+        let disjoint = resize(shown, short);
+        assert_eq!(disjoint.inset(), 0.0);
+        assert_eq!(resize(disjoint, iphone).inset(), 272.0);
+        assert_eq!(
+            keyboard_inset(iphone, short, guide, 0.0, guide, 20.0),
+            Some(0.0)
+        );
+
+        assert_eq!(resize(shown, rect(0.0, 0.0, 874.0, 342.0)).inset(), 212.0);
+        assert_eq!(resize(shown, rect(874.0, 0.0, 874.0, 342.0)).inset(), 0.0);
+        assert_eq!(resize(shown, rect(0.0, 160.0, 874.0, 160.0)).inset(), 160.0);
+    }
+
+    #[test]
+    fn hidden_keyboard_stays_hidden_on_resize_and_late_completion() {
+        let iphone = rect(0.0, 0.0, 874.0, 402.0);
+        let stale_guide = rect(0.0, 130.0, 874.0, 272.0);
+        let hidden_frame = rect(0.0, 402.0, 874.0, 224.0);
+        assert_eq!(
+            keyboard_inset(iphone, iphone, hidden_frame, 0.25, stale_guide, 20.0),
+            None
+        );
+        let resize = Keyboard::Hidden.settle(|| docked_guide_inset(iphone, stale_guide, 20.0));
+        let late_completion = resize.settle(|| docked_guide_inset(iphone, stale_guide, 20.0));
+        assert_eq!(resize.inset(), 0.0);
+        assert_eq!(late_completion, Keyboard::Hidden);
+    }
 }

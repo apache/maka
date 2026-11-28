@@ -32,8 +32,8 @@ import {
 import { showToast } from '../../state/hostPool';
 import { QueueSendMenu } from './ComposerPendingDock';
 import { hapticSelection } from '../../state/preferences';
-import { type } from '../../theme/tokens';
-import { ActionButton, Icon } from '../../ui';
+import { spacing, type } from '../../theme/tokens';
+import { glassSurfaceStyle, ActionButton, Icon } from '../../ui';
 
 function isQuotable(row: HistoryRow) {
   return !row.first.sourceCitation && Boolean(trimHostWhitespace(row.text));
@@ -299,10 +299,13 @@ export function DraftQuoteStrip(props: {
 }) {
   const chips = computed(() => [...props.quotes, ...props.links]);
   return (
-    <View style={{ paddingBottom: 8 }}>
+    <View
+      testID="chat-draft-quotes"
+      style={{ ...glassSurfaceStyle(20), marginBottom: 8, paddingHorizontal: 10, paddingBottom: 6 }}
+    >
       <If when={props.quotes.length}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-          <Text style={{ ...type.footnote, color: token('muted-foreground'), flex: 1 }}>
+        <View style={{ minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+          <Text style={{ ...type.footnote, color: token('glass-muted'), flex: 1 }}>
             {props.quotes.length >= quoteLimit
               ? tr('Quote limit reached ({count})', { count: quoteLimit })
               : tr('{count, plural, one {# quote} other {# quotes}}', {
@@ -313,22 +316,32 @@ export function DraftQuoteStrip(props: {
             accessibilityLabel={tr('Clear all quotes')}
             disabled={props.disabled}
             onPress={props.onClearQuotes}
-            class="active:opacity-60 disabled:opacity-45"
-            style={{ minHeight: 44, minWidth: 44, justifyContent: 'center', alignItems: 'center' }}
+            hitSlop={{ top: 5, bottom: 5 }}
+            class="disabled:opacity-45"
+            activeStyle={{ backgroundColor: token('glass-pressed-bg') }}
+            style={{
+              borderRadius: 17,
+              minHeight: 34,
+              minWidth: 44,
+              paddingHorizontal: 8,
+              justifyContent: 'center',
+              alignItems: 'center',
+            }}
           >
-            <Text style={{ ...type.footnote, color: token('primary') }}>
-              {tr('Clear all quotes')}
+            <Text style={{ ...type.footnote, color: token('glass-foreground') }}>
+              {tr('Clear')}
             </Text>
           </Button>
         </View>
       </If>
       <Scroll
+        testID="chat-draft-quote-scroll"
         horizontal
         scrollbar={false}
         keyboardShouldPersistTaps="handled"
-        style={{ height: 44, flexGrow: 0 }}
+        style={{ minHeight: 44, flexGrow: 0 }}
       >
-        <View style={{ flexDirection: 'row', gap: 8 }}>
+        <View style={{ minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: 8 }}>
           <Each of={chips()} key={(entry) => entry.id}>
             {(entry) => {
               const quote = () => {
@@ -343,12 +356,14 @@ export function DraftQuoteStrip(props: {
                 <View
                   style={{
                     width: 168,
-                    height: 44,
+                    minHeight: 40,
                     paddingLeft: 8,
-                    borderRadius: 8,
-                    backgroundColor: token('inline-card'),
-                    borderWidth: 1,
-                    borderColor: token('border'),
+                    paddingRight: 5,
+                    borderRadius: spacing.controlRadius,
+                    borderWidth: spacing.hairline,
+                    borderColor: token('glass-border'),
+                    borderLeftWidth: 2,
+                    borderLeftColor: token('glass-accent'),
                     flexShrink: 0,
                     flexDirection: 'row',
                     alignItems: 'center',
@@ -359,11 +374,11 @@ export function DraftQuoteStrip(props: {
                     when={quote()}
                     else={
                       <View style={{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                        <Icon name="link" color={token('muted-foreground')} size={14} />
+                        <Icon name="link" color={token('glass-muted')} size={14} />
                         <Text
                           style={{
                             ...type.footnote,
-                            color: token('foreground'),
+                            color: token('glass-foreground'),
                             flex: 1,
                             numberOfLines: 1,
                             textOverflow: 'ellipsis',
@@ -375,12 +390,12 @@ export function DraftQuoteStrip(props: {
                     }
                   >
                     {(reference) => (
-                      <View style={{ flex: 1, gap: 2 }}>
+                      <View style={{ flex: 1, minWidth: 0 }}>
                         <Text
                           style={{
                             ...type.caption,
                             fontWeight: '600',
-                            color: token('muted-foreground'),
+                            color: token('glass-muted'),
                             numberOfLines: 1,
                             textOverflow: 'ellipsis',
                           }}
@@ -388,7 +403,12 @@ export function DraftQuoteStrip(props: {
                           {reference().label || tr('Quote')}
                         </Text>
                         <Text
-                          style={{ ...type.footnote, color: token('foreground'), numberOfLines: 1 }}
+                          style={{
+                            ...type.footnote,
+                            color: token('glass-foreground'),
+                            numberOfLines: 1,
+                            textOverflow: 'ellipsis',
+                          }}
                         >
                           {reference().text}
                         </Text>
@@ -407,15 +427,18 @@ export function DraftQuoteStrip(props: {
                       if ('reference' in item) props.onRemoveQuote(item.id);
                       else props.onRemoveLink(item.id);
                     }}
-                    class="active:opacity-60 disabled:opacity-45"
+                    hitSlop={5}
+                    class="disabled:opacity-45"
+                    activeStyle={{ backgroundColor: token('glass-pressed-bg') }}
                     style={{
-                      width: 44,
-                      height: 44,
+                      borderRadius: 17,
+                      width: 34,
+                      height: 34,
                       alignItems: 'center',
                       justifyContent: 'center',
                     }}
                   >
-                    <Icon name="close" size={14} color={token('muted-foreground')} />
+                    <Icon name="close" size={14} color={token('glass-muted')} />
                   </Button>
                 </View>
               );
@@ -432,7 +455,7 @@ export function DraftQuoteStrip(props: {
               trigger={
                 <ActionButton
                   title={tr('Send to Main Chat')}
-                  variant="quiet"
+                  variant="glassQuiet"
                   compact
                   minHeight={44}
                   disabled={!actions().canSend}
@@ -442,7 +465,7 @@ export function DraftQuoteStrip(props: {
             />
             <ActionButton
               title={tr('Ask Side Question')}
-              variant="secondary"
+              variant="glassSecondary"
               compact
               minHeight={44}
               onPress={() => actions().ask()}

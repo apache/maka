@@ -17,17 +17,54 @@
  * under the License.
  */
 
+import { cleanup, createAnimatedValue, effect, reduceMotion, Text, token } from 'nsh';
 import { tr } from '../locale';
 import type { HostConnectionProgress } from '../state/hostPool';
-import { type } from '../theme/tokens';
+import { motion, type } from '../theme/tokens';
 import { ShimmerText } from './ThinkingMark';
 
-export function ConnectionProgress(props: { kind: HostConnectionProgress; surface?: 'canvas' }) {
+export function ConnectionProgress(props: {
+  kind: HostConnectionProgress;
+  surface?: 'canvas' | 'glass';
+}) {
+  const text = () => (props.kind === 'reconnecting' ? tr('Reconnecting…') : tr('Connecting…'));
   return (
-    <ShimmerText
-      text={props.kind === 'reconnecting' ? tr('Reconnecting…') : tr('Connecting…')}
-      style={type.footnote}
-      surface={props.surface}
-    />
+    <If
+      when={props.surface === 'glass'}
+      else={
+        <ShimmerText
+          text={text()}
+          style={type.footnote}
+          surface={props.surface === 'canvas' ? 'canvas' : undefined}
+        />
+      }
+    >
+      <GlassConnectionProgress text={text()} />
+    </If>
+  );
+}
+
+function GlassConnectionProgress(props: { text: string }) {
+  const opacity = createAnimatedValue(1);
+  effect(() => {
+    if (reduceMotion()) return;
+    void opacity.keyframes([1, 0.84, 1], {
+      duration: motion.skeletonPulse,
+      easing: 'easeInOut',
+      iterations: 'infinite',
+    });
+    cleanup(() => opacity.stop());
+  });
+  return (
+    <Text
+      style={{
+        ...type.footnote,
+        numberOfLines: 1,
+        color: token('glass-foreground'),
+        opacity: reduceMotion() ? 1 : opacity,
+      }}
+    >
+      {props.text}
+    </Text>
   );
 }

@@ -2924,6 +2924,37 @@ async fn chat_streaming_collapsible_tools_and_inline_approval() {
     // Simulate JS receiving the first item before the subscribe promise runs.
     open_watch.resolve(watch_handle.clone());
     app.wait_for("text:Streaming live verification...").unwrap();
+
+    // With the keyboard up, the approval at the tail still clears the
+    // measured composer and can be tapped.
+    app.set_environment("software keyboard shown", |env| {
+        env.keyboard_height = px(330.)
+    })
+    .unwrap();
+    app.wheel("id:chat-context", nsh_core::Point::new(px(0.), px(-450.)))
+        .unwrap();
+    let jump = app
+        .screen()
+        .layout("label:Scroll to latest")
+        .unwrap()
+        .unwrap()
+        .bounds;
+    let transcript = app
+        .screen()
+        .layout("id:chat-transcript")
+        .unwrap()
+        .unwrap()
+        .bounds;
+    assert_eq!(jump.size.width, jump.size.height);
+    assert!((jump.center().x - transcript.center().x).0.abs() <= 1.);
+    app.press("label:Scroll to latest").unwrap();
+    let approval = app.screen().layout("label:Deny").unwrap().unwrap();
+    let composer = app.screen().layout("id:chat-composer").unwrap().unwrap();
+    assert!(
+        !approval.clipped
+            && approval.bounds.origin.y + approval.bounds.size.height <= composer.bounds.origin.y
+    );
+    assert!(!app.screen().matches("label:Scroll to latest").unwrap());
     app.press("label:Deny").unwrap();
     let answered = fixture_recv(&mut send_rx).await;
     assert_eq!(answered["method"], "respond");
@@ -3180,6 +3211,22 @@ fn missing_queued(reason: &str) -> Value {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn chat_native_steer_uses_the_current_run_and_waits_across_queue_drain() {
     let mut fx = ComposerDockFixture::start(dock_run(), dock_model(), empty_queue()).await;
+    fx.app.wait_for("id:chat-context").unwrap(); // Non-compact at the fixture's 390pt width.
+    let capsule = "id:chat-composer-input";
+    let input = "label:Message composer";
+    let bounds = |selector| fx.app.screen().layout(selector).unwrap().unwrap().bounds;
+    let (pill, field) = (bounds(capsule), bounds(input));
+    let padding = (field.origin.y - pill.origin.y) / 2.;
+    assert!(padding > px(0.));
+    fx.app
+        .press_at(
+            capsule,
+            nsh_core::Point::new(field.center().x - pill.origin.x, padding),
+        )
+        .unwrap();
+    fx.app.press_key("c").unwrap();
+    assert_eq!(fx.app.screen().input_text(input).unwrap(), Some("c"));
+    fx.app.press_key("Backspace").unwrap();
     fx.app
         .type_text("label:Message composer", "Change course")
         .unwrap();
@@ -3278,38 +3325,58 @@ async fn chat_executor_steer_that_falls_back_to_queue_hands_off_to_its_entry() {
 }
 
 fn assert_dock_touch_target(app: &Headless, selector: &str) {
-    let size = app.screen().layout(selector).unwrap().unwrap().bounds.size;
+    let size = app
+        .screen()
+        .layout(selector)
+        .unwrap()
+        .unwrap_or_else(|| panic!("missing touch target: {selector}"))
+        .bounds
+        .size;
     assert!(
         size.width >= px(44.) && size.height >= px(44.),
         "{selector}: {size:?}"
     );
 }
 
-fn watch_add_to_queue(app: &mut Headless) -> impl FnOnce(&mut Headless) + use<> {
+fn watch_native_menu_items<F>(
+    app: &mut Headless,
+    mut observe: F,
+) -> impl FnMut(&mut Headless, &str) + use<F>
+where
+    F: FnMut(&nsh_core::MountItem) + std::marker::Send + 'static,
+{
     use nsh_core::{EventKind, EventPayload, MountItem};
     let (menu_tx, mut menus) = mpsc::unbounded_channel();
     app.observe(move |_, batch| {
         for item in &batch.items {
+            observe(item);
             if let MountItem::ComponentProps { id, props } = item
-                && let Some(action) = props.iter().find_map(|(name, value)| {
-                    if name.as_ref() != "items" {
-                        return None;
-                    }
-                    value
-                        .as_ref()?
-                        .as_array()?
-                        .iter()
-                        .find(|item| item["label"] == "Add to queue")
+                && let Some(items) = props.iter().find_map(|(name, value)| {
+                    (name.as_ref() == "items")
+                        .then_some(value.as_ref())?
+                        .and_then(Value::as_array)
                 })
             {
-                menu_tx.send((*id, action["id"].clone())).unwrap();
+                for item in items {
+                    if let Some(label) = item["label"].as_str() {
+                        menu_tx
+                            .send((label.to_owned(), (*id, item["id"].clone())))
+                            .unwrap();
+                    }
+                }
             }
         }
     });
-    move |app| {
-        // Headless has no UIKit presentation. Deliver the item that was installed
-        // on the native long-press menu through UIKit's selection event.
-        let (menu, action) = menus.try_recv().unwrap();
+    let mut items = BTreeMap::new();
+    move |app, label| {
+        // Headless has no UIKit presentation. Deliver the installed item
+        // through the same selection event UIKit dispatches.
+        while let Ok((label, action)) = menus.try_recv() {
+            items.insert(label, action);
+        }
+        let (menu, action) = items
+            .remove(label)
+            .unwrap_or_else(|| panic!("missing native menu item: {label}"));
         app.engine().control().dispatch_event(
             menu,
             EventKind::NativeEvent,
@@ -3325,17 +3392,16 @@ fn watch_add_to_queue(app: &mut Headless) -> impl FnOnce(&mut Headless) + use<> 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn chat_explicit_queue_can_promote_review_edit_and_retract() {
     let mut fx = ComposerDockFixture::start(dock_run(), dock_model(), empty_queue()).await;
-    let choose_queue = watch_add_to_queue(&mut fx.app);
+    let mut choose_menu_item = watch_native_menu_items(&mut fx.app, |_| {});
     fx.app
         .type_text("label:Message composer", "Handle it later")
         .unwrap();
-    assert_dock_touch_target(&fx.app, "label:Send message");
     fx.app.long_press("label:Send message").unwrap();
     assert!(
         fx.calls.try_recv().is_err(),
         "long press also sent the message"
     );
-    choose_queue(&mut fx.app);
+    choose_menu_item(&mut fx.app, "Add to queue");
     let (input, reply) = fx.call("send").await;
     assert_eq!(input["delivery"], "queue");
     assert_eq!(input["expectedRunId"], DOCK_RUN_ID);
@@ -3451,6 +3517,394 @@ async fn chat_explicit_queue_can_promote_review_edit_and_retract() {
     fx.app
         .wait_for_gone("text:1 queued", Duration::from_secs(2))
         .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn floating_dock_moves_tail_clearance_and_latest_with_its_measured_height() {
+    use nsh_core::{
+        Filter, GlassEffect, MountItem,
+        canvas::{CanvasOp, Paint},
+        platform::ColorScheme,
+    };
+
+    let mut fx = ComposerDockFixture::start(dock_run(), dock_model(), empty_queue()).await;
+    let styles = Arc::new(std::sync::Mutex::new(BTreeMap::new()));
+    let strokes = Arc::new(std::sync::Mutex::new(BTreeMap::new()));
+    let (mounted_styles, mounted_strokes) = (styles.clone(), strokes.clone());
+    fx.app.observe(move |_, batch| {
+        for item in &batch.items {
+            match item {
+                MountItem::ViewStyle { id, style } => {
+                    let blur = style.effects.as_ref().is_some_and(|effects| {
+                        effects.backdrop_filters.iter().any(
+                            |filter| matches!(filter, Filter::Blur(radius) if *radius > px(0.)),
+                        )
+                    });
+                    mounted_styles
+                        .lock()
+                        .unwrap()
+                        .insert(*id, (style.glass_effect, blur));
+                }
+                MountItem::Canvas { id, drawing } => {
+                    if let Some(color) = drawing.ops.iter().find_map(|op| match op {
+                        CanvasOp::StrokeStyle(Paint::Color(color)) => Some(*color),
+                        _ => None,
+                    }) {
+                        mounted_strokes.lock().unwrap().insert(*id, color);
+                    }
+                }
+                _ => {}
+            }
+        }
+    });
+    fx.history.lock().unwrap().extend((2..=18).map(|n| {
+        let mut row = quote_history_row(n, "user", &format!("Earlier dock message {n}"));
+        row["turnId"] = json!(format!("dock-turn-{n}"));
+        row
+    }));
+    fx.transcript_changed(18, "transcript_changed");
+    let tail = "id:chat-transcript >> text:Earlier dock message 18";
+    fx.app.wait_for(tail).unwrap();
+
+    let bounds = |app: &Headless, selector| app.screen().layout(selector).unwrap().unwrap().bounds;
+    let composer = |app: &Headless| bounds(app, "id:chat-composer");
+    let gap = |app: &Headless| {
+        let row = bounds(app, tail);
+        composer(app).origin.y - row.origin.y - row.size.height
+    };
+    let original_gap = gap(&fx.app);
+    assert!(original_gap >= px(0.));
+    let empty = composer(&fx.app);
+    fx.queue_item(json!({"revision":1,"entries":[
+        {"messageId":"steer","kind":"steering","preview":"Change direction"},
+        {"messageId":"later","kind":"followup","preview":"Work to revisit"}
+    ]}));
+    fx.app
+        .wait_for("text:Steer · Waiting for next step")
+        .unwrap();
+    fx.app.wait_for("label:Queued Messages (1)").unwrap();
+    assert!(composer(&fx.app).origin.y < empty.origin.y);
+    assert_eq!(gap(&fx.app), original_gap);
+
+    let latest = "label:Scroll to latest";
+    let collapsed = composer(&fx.app);
+    fx.app.scroll("id:chat-transcript", px(-350.)).unwrap();
+    let scrolled = composer(&fx.app);
+    let previous_arrow = bounds(&fx.app, latest);
+    fx.app.press("label:Queued Messages (1)").unwrap();
+    let expanded = composer(&fx.app);
+    let arrow = bounds(&fx.app, latest);
+    let dock = bounds(&fx.app, "id:composer-pending-dock");
+    assert!(expanded.size.height > scrolled.size.height);
+    assert_eq!(
+        previous_arrow.origin.y - arrow.origin.y,
+        expanded.size.height - scrolled.size.height
+    );
+    assert!(arrow.origin.y + arrow.size.height <= dock.origin.y);
+    assert!(
+        (arrow.center().x - bounds(&fx.app, "id:chat-transcript").center().x)
+            .0
+            .abs()
+            <= 1.
+    );
+    for label in ["Steer now", "Edit queued message", "Remove queued message"] {
+        assert_dock_touch_target(&fx.app, &format!("label:{label}"));
+    }
+    assert_eq!(arrow.size, Size::new(px(40.), px(40.)));
+    let id = fx.app.screen().id(latest).unwrap();
+    let canvas = fx
+        .app
+        .screen()
+        .layout_nodes()
+        .into_iter()
+        .find(|node| node.parent == id && node.kind == nsh_core::ViewKind::Canvas)
+        .unwrap()
+        .id;
+    let control = fx.app.engine().control();
+    use nsh_core::tailwind::state::PRESSED;
+    for scheme in [ColorScheme::Light, ColorScheme::Dark] {
+        fx.app
+            .set_environment("appearance", |env| env.color_scheme = scheme)
+            .unwrap();
+        let mut fills = [0; 2];
+        for (fill, state) in fills.iter_mut().zip([0, PRESSED]) {
+            control.set_states(id, state);
+            assert!(fx.app.settle());
+            assert_eq!(styles.lock().unwrap()[&id], (GlassEffect::Regular, true));
+            let style = fx.app.screen().view_style(latest).unwrap().unwrap();
+            assert_eq!(style.effective_opacity, 1.);
+            *fill = style.background_color.unwrap();
+            let (r, g, b, a) = nsh_core::Color(*fill).to_f64();
+            if state == 0 {
+                assert!(a > 0. && a < 1., "resting fill must reveal the glass");
+            }
+            let (fr, fg, fb, fa) = strokes.lock().unwrap()[&canvas].to_f64();
+            assert_eq!(fa, 1.);
+            let fg = relative_luminance([fr, fg, fb]);
+            // UIKit paints the tint over the material. Bound its contrast
+            // even when the material underneath is pure black or white.
+            for backdrop in [0., 1.] {
+                let bg = relative_luminance([r, g, b].map(|c| c * a + backdrop * (1. - a)));
+                let ratio = (fg.max(bg) + 0.05) / (fg.min(bg) + 0.05);
+                assert!(
+                    ratio >= 4.5,
+                    "{scheme:?}, state={state}, backdrop={backdrop}: {ratio:.2}:1"
+                );
+            }
+        }
+        assert_ne!(fills[0], fills[1], "no pressed feedback");
+        control.set_states(id, 0);
+        assert!(fx.app.settle());
+    }
+    fx.app.press(latest).unwrap();
+    assert_eq!(gap(&fx.app), original_gap);
+    fx.app.press("label:Queued Messages (1)").unwrap();
+    assert_eq!(composer(&fx.app), collapsed);
+    assert_eq!(gap(&fx.app), original_gap);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn inline_queue_editor_keeps_its_focus_and_saves_above_the_portrait_keyboard() {
+    let queue = json!({"revision":1,"entries":[
+        {"messageId":"later","kind":"followup","preview":"Work to revisit"}
+    ]});
+    let mut fx = ComposerDockFixture::start(dock_run(), dock_model(), queue.clone()).await;
+    fx.app.set_viewport(Size::new(px(390.), px(780.))).unwrap();
+    fx.app.press("label:Queued Messages (1)").unwrap();
+    open_queue_editor(&mut fx).await;
+
+    let editor = "id:queue-message-editor";
+    let id = fx.app.screen().id(editor).unwrap();
+    fx.app.type_text(editor, " first").unwrap();
+    let text = fx
+        .app
+        .screen()
+        .input_text(editor)
+        .unwrap()
+        .unwrap()
+        .to_owned();
+    fx.app
+        .set_environment("portrait keyboard", |env| env.keyboard_height = px(336.))
+        .unwrap();
+    assert_eq!(fx.app.screen().id(editor).unwrap(), id);
+    assert_eq!(
+        fx.app.screen().input_text(editor).unwrap(),
+        Some(text.as_str())
+    );
+    fx.app.press_key("x").unwrap();
+    let changed = fx
+        .app
+        .screen()
+        .input_text(editor)
+        .unwrap()
+        .unwrap()
+        .to_owned();
+    assert_ne!(
+        text, changed,
+        "the same queue editor must still receive keystrokes"
+    );
+    for selector in [editor, "label:Save", "label:Cancel"] {
+        assert_keyboard_target(&fx.app, selector, 0., 390., 444.);
+    }
+    fx.app.press("label:Save").unwrap();
+    confirm_queue_edit(&mut fx, queue, &changed).await;
+}
+
+async fn open_queue_editor(fx: &mut ComposerDockFixture) {
+    fx.app
+        .press_at(
+            "label:Edit queued message",
+            nsh_core::Point::new(px(22.), px(22.)),
+        )
+        .unwrap();
+    let (input, reply) = fx.call("queueMessage").await;
+    assert_eq!(input["messageId"], "later");
+    reply.resolve(
+        json!({"value":{"kind":"ready","revision":1,"message":"Work to revisit",
+        "hasAttachments":false,"quotes":[]}}),
+    );
+    fx.app.wait_for("id:queue-message-editor").unwrap();
+}
+
+async fn confirm_queue_edit(fx: &mut ComposerDockFixture, mut queue: Value, edited: &str) {
+    let (input, reply) = fx.call("editQueue").await;
+    assert_eq!(
+        input,
+        json!({"sessionId":"chat","expectedRevision":1,
+        "edit":{"kind":"update","messageId":"later","message":edited}})
+    );
+    queue["revision"] = json!(2);
+    queue["entries"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|entry| entry["messageId"] == "later")
+        .unwrap()["preview"] = json!(edited);
+    *fx.queue.lock().unwrap() = queue;
+    reply.resolve(json!({"value":QueueMutationResult::Committed { revision: 2 }}));
+    fx.app
+        .wait_for_gone("id:queue-message-editor", Duration::from_secs(2))
+        .unwrap();
+}
+
+fn assert_keyboard_target(
+    app: &Headless,
+    selector: &str,
+    left: f32,
+    right: f32,
+    keyboard_top: f32,
+) {
+    let layout = app.screen().layout(selector).unwrap().unwrap();
+    let b = layout.bounds;
+    assert!(
+        !layout.clipped
+            && b.origin.y >= px(0.)
+            && b.origin.y + b.size.height <= px(keyboard_top)
+            && b.origin.x >= px(left)
+            && b.origin.x + b.size.width <= px(right),
+        "{selector}: {layout:?}, safe x={left}..{right}, keyboard top={keyboard_top}"
+    );
+}
+
+fn reveal_sheet_target(app: &mut Headless, scroll: &str, selector: &str) {
+    let bounds = |app: &Headless, s| app.screen().layout(s).unwrap().unwrap().bounds;
+    let port = bounds(app, scroll);
+    let target = bounds(app, selector);
+    let overflow = target.origin.y + target.size.height - (port.origin.y + port.size.height);
+    if overflow > px(0.) {
+        app.scroll(scroll, overflow + px(1.)).unwrap();
+    } else if target.origin.y < port.origin.y {
+        app.scroll(scroll, target.origin.y - port.origin.y - px(1.))
+            .unwrap();
+    }
+    assert_keyboard_target(app, selector, 47., 797., 150.);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn compact_keyboard_keeps_pending_dock_and_quotes_out_of_the_composer_row() {
+    let queue = json!({"revision":1,"entries":[
+        {"messageId":"steer","kind":"steering","preview":"Change direction"},
+        {"messageId":"later","kind":"followup","preview":"Work to revisit"}
+    ]});
+    let mut fx =
+        ComposerDockFixture::start_with_anchor(dock_run(), dock_model(), queue.clone(), true).await;
+    let input = "label:Message composer";
+    let composer_input = fx.app.screen().id(input).unwrap();
+    let (blur_tx, mut blurs) = mpsc::unbounded_channel();
+    let mut choose_menu_item = watch_native_menu_items(&mut fx.app, move |item| {
+        if let nsh_core::MountItem::Command {
+            id,
+            command: nsh_core::Command::Blur,
+        } = item
+            && *id == composer_input
+        {
+            blur_tx.send(()).unwrap();
+        }
+    });
+    fx.app
+        .type_text("label:Message composer", "A message to recover")
+        .unwrap();
+    fx.app.press("label:Send message").unwrap();
+    let (_, rejected) = fx.call("send").await;
+    rejected
+        .resolve(json!({"value":{"kind":"rejected","sessionId":"chat","reason":"turn_stopped"}}));
+    fx.app.wait_for("label:Retry").unwrap();
+    fx.app.press("role:button[Quote]").unwrap();
+    fx.app.set_viewport(Size::new(px(844.), px(390.))).unwrap();
+    fx.app
+        .set_environment("landscape keyboard and safe area", |env| {
+            env.keyboard_height = px(240.);
+            env.safe_area.left = px(47.);
+            env.safe_area.right = px(47.);
+        })
+        .unwrap();
+    let bounds = |app: &Headless, selector| app.screen().layout(selector).unwrap().unwrap().bounds;
+    let composer = bounds(&fx.app, "id:chat-composer");
+    let header = bounds(&fx.app, "label:Chats");
+    assert_eq!(composer.origin.y + composer.size.height, px(150.));
+    assert!(composer.origin.y - header.origin.y - header.size.height >= px(44.));
+    for selector in [
+        "id:chat-composer-actions",
+        "id:chat-composer-input",
+        "label:Stop Run",
+        "label:Send message",
+    ] {
+        if selector != "label:Send message" {
+            assert_dock_touch_target(&fx.app, selector);
+        }
+        let button = bounds(&fx.app, selector);
+        assert!(button.origin.x >= px(47.) && button.origin.x + button.size.width <= px(797.));
+        assert!(
+            button.origin.y >= composer.origin.y
+                && button.origin.y + button.size.height <= px(150.)
+        );
+    }
+    assert!(!fx.app.screen().matches("id:composer-pending-dock").unwrap());
+    while blurs.try_recv().is_ok() {}
+    fx.app.type_text(input, "Steer").unwrap();
+    choose_menu_item(&mut fx.app, "Queued Messages (1)");
+    assert!(
+        blurs.try_recv().is_err(),
+        "opening Pending blurred the composer"
+    );
+    fx.app
+        .wait_for("text:Steer · Waiting for next step")
+        .unwrap();
+    assert_keyboard_target(&fx.app, "label:Done", 47., 797., 150.);
+    let pending = "id:chat-pending-sheet-scroll";
+    reveal_sheet_target(&mut fx.app, pending, "label:Edit");
+    reveal_sheet_target(&mut fx.app, pending, "label:Edit queued message");
+    open_queue_editor(&mut fx).await;
+    let editor = "id:queue-message-editor";
+    reveal_sheet_target(&mut fx.app, pending, editor);
+    fx.app.type_text(editor, " in landscape").unwrap();
+    let edited = fx
+        .app
+        .screen()
+        .input_text(editor)
+        .unwrap()
+        .unwrap()
+        .to_owned();
+    reveal_sheet_target(&mut fx.app, pending, "label:Save");
+    assert_dock_touch_target(&fx.app, "label:Save");
+    fx.app.press("label:Save").unwrap();
+    confirm_queue_edit(&mut fx, queue, &edited).await;
+    fx.app.press("label:Done").unwrap();
+    fx.app.type_text(input, " with").unwrap();
+    choose_menu_item(&mut fx.app, "Quote");
+    assert!(
+        blurs.try_recv().is_err(),
+        "opening Quote blurred the composer"
+    );
+    fx.app
+        .wait_for("label:Remove quote: An earlier answer")
+        .unwrap();
+    assert_keyboard_target(&fx.app, "label:Done", 47., 797., 150.);
+    reveal_sheet_target(
+        &mut fx.app,
+        "id:chat-quote-sheet-scroll",
+        "label:Remove quote: An earlier answer",
+    );
+    fx.app
+        .press("label:Remove quote: An earlier answer")
+        .unwrap();
+    fx.app
+        .wait_for_gone(
+            "label:Remove quote: An earlier answer",
+            Duration::from_secs(2),
+        )
+        .unwrap();
+    fx.app.press("label:Done").unwrap();
+    fx.app.press("role:button[Quote]").unwrap();
+    assert_eq!(bounds(&fx.app, "id:chat-composer"), composer);
+
+    fx.app.type_text(input, " this quote").unwrap();
+    fx.app.press("label:Send message").unwrap();
+    let (input, reply) = fx.call("send").await;
+    assert_eq!(input["delivery"], "steer");
+    assert_eq!(input["message"], "Steer with this quote");
+    assert_eq!(input["quotes"][0]["text"], "An earlier answer");
+    reply.resolve(queued_result("compact-steer", 3));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -3769,14 +4223,14 @@ async fn reopened_chat_checks_delivery_when_accepted_sends_are_outside_the_histo
 async fn chat_can_queue_from_the_side_question_quote_tray() {
     let mut fx =
         ComposerDockFixture::start_with_anchor(dock_run(), dock_model(), empty_queue(), true).await;
-    let choose_queue = watch_add_to_queue(&mut fx.app);
+    let mut choose_menu_item = watch_native_menu_items(&mut fx.app, |_| {});
     fx.app.press("role:button[Quote] >> nth=0").unwrap();
     fx.app.wait_for("label:Ask Side Question").unwrap();
     fx.app.wait_for("label:Send to Main Chat").unwrap();
     assert!(!fx.app.screen().matches("label:Send message").unwrap());
     fx.app.long_press("label:Send to Main Chat").unwrap();
     assert!(fx.calls.try_recv().is_err());
-    choose_queue(&mut fx.app);
+    choose_menu_item(&mut fx.app, "Add to queue");
     let (input, reply) = fx.call("send").await;
     assert_eq!(input["delivery"], "queue");
     assert_eq!(input["expectedRunId"], DOCK_RUN_ID);
@@ -4028,11 +4482,11 @@ async fn room_hands_off_by_prepared_id_when_mixed_history_beats_the_receipt() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn explicit_queue_does_not_withhold_remote_steering_while_waiting_for_receipt() {
     let mut fx = ComposerDockFixture::start(dock_run(), dock_model(), empty_queue()).await;
-    let choose_queue = watch_add_to_queue(&mut fx.app);
+    let mut choose_menu_item = watch_native_menu_items(&mut fx.app, |_| {});
     fx.app
         .type_text("label:Message composer", "Handle it later")
         .unwrap();
-    choose_queue(&mut fx.app);
+    choose_menu_item(&mut fx.app, "Add to queue");
     let (input, receipt) = fx.call("send").await;
     assert_eq!(input["delivery"], "queue");
     fx.queue_item(json!({"revision":1,"entries":[
@@ -4315,7 +4769,7 @@ fn quote_chat_fixture(
     older_chunks: Vec<Value>,
     hold_first_refresh: Option<mpsc::UnboundedSender<(HostCall, Value)>>,
 ) -> (Headless, mpsc::UnboundedReceiver<(Send, HostCall)>) {
-    quote_chat_fixture_with_work(chunks, older_chunks, hold_first_refresh, None)
+    quote_chat_fixture_with_work(chunks, older_chunks, hold_first_refresh, None, Os::MacOs)
 }
 
 fn quote_chat_fixture_with_work(
@@ -4323,6 +4777,7 @@ fn quote_chat_fixture_with_work(
     older_chunks: Vec<Value>,
     hold_first_refresh: Option<mpsc::UnboundedSender<(HostCall, Value)>>,
     work: Option<(Vec<Value>, Vec<Value>)>,
+    os: Os,
 ) -> (Headless, mpsc::UnboundedReceiver<(Send, HostCall)>) {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -4376,6 +4831,9 @@ fn quote_chat_fixture_with_work(
                 };
                 json!({"kind":"ready","chunks":rows,"through":17,"before":before,"after":null})
             }
+            "models" if os == Os::Ios => json!({"kind":"ready","choices":[
+                {"label":"Example model","selection":{"kind":"model","connectionId":"conn","modelId":"model"}}
+            ]}),
             "models" => json!({"kind":"ready","choices":[]}),
             "queue" => json!({"revision":0,"entries":[]}),
             "pendingInteractions" => json!({"entries":[]}),
@@ -4412,13 +4870,287 @@ fn quote_chat_fixture_with_work(
     let mut config = engine_config(channel, tokio::runtime::Handle::current());
     config.viewport = Size::new(px(390.), px(844.));
     config.environment = Environment {
-        os: Os::MacOs,
+        os,
         reduce_motion: true,
         ..Environment::default()
     };
     let mut app = Headless::start(config).unwrap();
     app.wait_for("label:Conversation: Quotes Chat").unwrap();
     (app, send_rx)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn chat_glass_keeps_the_transcript_full_bleed_and_clear_of_composer_growth() {
+    use nsh_core::Point;
+
+    let mut rows: Vec<_> = (1..=14)
+        .map(|n| {
+            let text = format!("Earlier message {n}: {}", "More context. ".repeat(10));
+            let mut row = quote_history_row(n, "user", &text);
+            row["turnId"] = json!(format!("turn-{n}"));
+            row
+        })
+        .collect();
+    rows.push(quote_history_row(15, "assistant", "Latest response"));
+    let (mut app, _) = quote_chat_fixture(rows, vec![], None);
+    app.set_environment("home indicator", |env| env.safe_area.bottom = px(34.))
+        .unwrap();
+    app.press("label:Conversation: Quotes Chat").unwrap();
+    app.wait_for("text:Latest response").unwrap();
+    let bounds = |app: &Headless, selector| app.screen().layout(selector).unwrap().unwrap().bounds;
+    let bottom = |b: nsh_core::Bounds<nsh_core::Points>| b.origin.y + b.size.height;
+    let list = bounds(&app, "id:chat-transcript");
+    let context = bounds(&app, "id:chat-context");
+    let composer = bounds(&app, "id:chat-composer");
+    assert!((context.center().x - list.center().x).0.abs() <= 1.);
+    assert!(context.size.width < list.size.width);
+    assert!(context.origin.y >= bottom(bounds(&app, "label:Chats")));
+    assert_eq!(bottom(list) - bottom(composer), px(34.));
+    assert!(composer.origin.y < bottom(list));
+
+    let show_keyboard = |app: &mut Headless| {
+        app.set_environment("software keyboard shown", |env| {
+            env.keyboard_height = px(350.);
+            env.keyboard_duration = 250.;
+        })
+        .unwrap();
+    };
+    let hide_keyboard = |app: &mut Headless| {
+        app.set_environment("software keyboard hidden", |env| {
+            env.keyboard_height = px(0.)
+        })
+        .unwrap();
+    };
+
+    let latest = "id:chat-transcript >> text:Latest response";
+    let opening = "id:chat-transcript >> text:/^Earlier message 1:/";
+    let inset = |app: &Headless| bottom(list) - bottom(bounds(app, "id:chat-composer"));
+    let tail_gap =
+        |app: &Headless| bounds(app, "id:chat-composer").origin.y - bottom(bounds(app, latest));
+
+    for reduce_motion in [false, true] {
+        app.set_environment("motion preference", |env| env.reduce_motion = reduce_motion)
+            .unwrap();
+
+        // Wheel over the floating pill. Opening or hiding the keyboard must not
+        // move the row the reader is looking at while away from the tail.
+        app.wheel("id:chat-context", Point::new(px(0.), px(-2400.)))
+            .unwrap();
+        let first = bounds(&app, opening);
+        assert!(first.origin.y >= bottom(context));
+        show_keyboard(&mut app);
+        assert_eq!(inset(&app), px(350.));
+        assert_eq!(bounds(&app, opening), first);
+        hide_keyboard(&mut app);
+        assert_eq!(inset(&app), px(34.));
+        assert_eq!(bounds(&app, opening), first);
+
+        app.wheel("id:chat-context", Point::new(px(0.), px(2400.)))
+            .unwrap();
+        app.wait_for(latest).unwrap();
+        let closed_tail = bounds(&app, latest);
+        let gap = tail_gap(&app);
+        assert!(gap > px(0.));
+        show_keyboard(&mut app);
+        assert_eq!(bounds(&app, "id:chat-transcript"), list);
+        assert_eq!(inset(&app), px(350.));
+        assert_eq!(tail_gap(&app), gap);
+        hide_keyboard(&mut app);
+        assert_eq!(inset(&app), px(34.));
+        assert_eq!(bounds(&app, latest), closed_tail);
+        assert_eq!(tail_gap(&app), gap);
+    }
+
+    show_keyboard(&mut app);
+    let keyboard_composer = bounds(&app, "id:chat-composer");
+    let gap = tail_gap(&app);
+    app.press("role:button[Quote]").unwrap();
+    app.wait_for("label:Remove quote: Latest response").unwrap();
+    let with_quote = bounds(&app, "id:chat-composer");
+    assert_eq!(bottom(with_quote), bottom(keyboard_composer));
+    assert!(with_quote.size.height > keyboard_composer.size.height);
+    assert!(
+        gap > px(0.) && tail_gap(&app) == gap,
+        "the tail must follow the growing composer"
+    );
+
+    app.press("label:Remove quote: Latest response").unwrap();
+    assert_eq!(
+        bounds(&app, "id:chat-composer").size.height,
+        keyboard_composer.size.height
+    );
+    hide_keyboard(&mut app);
+    assert_eq!(bottom(bounds(&app, "id:chat-composer")), bottom(composer));
+    assert_eq!(tail_gap(&app), gap);
+    app.press("label:Chats").unwrap();
+    app.wait_for("label:Conversation: Quotes Chat").unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn landscape_keyboard_leaves_the_composer_and_transcript_usable_with_quotes() {
+    let mut rows: Vec<_> = (1..=12)
+        .map(|n| {
+            let mut row = quote_history_row(n, "user", &format!("Landscape message {n}"));
+            row["turnId"] = json!(format!("turn-{n}"));
+            row
+        })
+        .collect();
+    rows.push(quote_history_row(13, "assistant", "Landscape reply"));
+    let (mut app, _) = quote_chat_fixture(rows, vec![], None);
+    let (tx, mut passthrough) = mpsc::unbounded_channel();
+    app.observe(move |_, batch| {
+        for item in &batch.items {
+            if let nsh_core::MountItem::ViewProps { id, props } = item
+                && props.accessibility.accessible == Some(false)
+            {
+                tx.send(*id).unwrap();
+            }
+        }
+    });
+    app.press("label:Conversation: Quotes Chat").unwrap();
+    app.wait_for("text:Landscape reply").unwrap();
+    app.press("role:button[Quote]").unwrap();
+    app.wait_for("label:Remove quote: Landscape reply").unwrap();
+    app.set_viewport(Size::new(px(844.), px(390.))).unwrap();
+    app.set_environment("landscape safe area", |env| {
+        env.safe_area.left = px(47.);
+        env.safe_area.right = px(47.);
+    })
+    .unwrap();
+    app.set_environment("landscape keyboard shown", |env| {
+        env.keyboard_height = px(240.)
+    })
+    .unwrap();
+
+    let bounds = |app: &Headless, selector| app.screen().layout(selector).unwrap().unwrap().bounds;
+    let bottom = |b: nsh_core::Bounds<nsh_core::Points>| b.origin.y + b.size.height;
+    let right = |b: nsh_core::Bounds<nsh_core::Points>| b.origin.x + b.size.width;
+    let header_bottom = bottom(bounds(&app, "label:Chats"));
+    let keyboard_top = px(390. - 240.);
+    let composer = bounds(&app, "id:chat-composer");
+    let input = bounds(&app, "label:Message composer");
+    let actions = bounds(&app, "label:Composer actions");
+    let send = bounds(&app, "label:Send message");
+
+    assert_eq!(bottom(composer), keyboard_top);
+    assert!(composer.origin.y - header_bottom >= px(44.));
+    assert!(input.origin.y >= composer.origin.y && bottom(input) < keyboard_top);
+    assert!(actions.origin.x >= px(47.) && right(send) <= px(844. - 47.));
+    assert!(!app.screen().matches("id:chat-context").unwrap());
+    assert!(!app.screen().matches("label:Clear all quotes").unwrap());
+
+    // At the tail, the reply action is fully between the header and composer.
+    let copy = bounds(&app, "role:button[Copy reply]");
+    assert!(
+        copy.origin.y >= header_bottom && bottom(copy) <= composer.origin.y,
+        "copy at {copy:?}; readable band {header_bottom:?}..{:?}",
+        composer.origin.y,
+    );
+    assert!(copy.origin.x >= px(47.) && right(copy) <= px(844. - 47.));
+    app.press("role:button[Copy reply]").unwrap();
+    assert_eq!(app.screen().clipboard(), Some("Landscape reply"));
+
+    // Scroll just enough to read the reply itself, with both chrome surfaces in place.
+    app.scroll("id:chat-transcript", px(-45.)).unwrap();
+    let reply = bounds(&app, "id:chat-transcript >> text:Landscape reply");
+    assert!(
+        reply.origin.y >= header_bottom && bottom(reply) <= composer.origin.y,
+        "reply at {reply:?}; readable band {header_bottom:?}..{:?}",
+        composer.origin.y,
+    );
+    assert!(reply.origin.x >= px(47.) && right(reply) <= px(844. - 47.));
+
+    let capsule_id = app.screen().id("id:chat-composer-input").unwrap();
+    assert!(
+        std::iter::from_fn(|| passthrough.try_recv().ok()).any(|id| id == capsule_id),
+        "the pressable wrapper must not become a single VoiceOver element"
+    );
+    let capsule_a11y = app
+        .screen()
+        .accessibility(Some("id:chat-composer-input"))
+        .unwrap()
+        .unwrap();
+    for label in ["Message composer", "Send message"] {
+        assert!(
+            capsule_a11y
+                .children
+                .iter()
+                .any(|child| child.label.as_deref() == Some(label))
+        );
+    }
+
+    let capsule = bounds(&app, "id:chat-composer-input");
+    assert!(capsule.size.height >= px(44.) && capsule.size.width >= px(44.));
+    let at = nsh_core::Point::new(px(6.), px(4.));
+    assert!(capsule.origin.x + at.x < input.origin.x);
+    assert!(capsule.origin.y + at.y < input.origin.y);
+    app.press_at("id:chat-composer-input", at).unwrap();
+    app.press_key("a").unwrap();
+    assert_eq!(
+        app.screen().input_text("label:Message composer").unwrap(),
+        Some("a")
+    );
+    app.press("label:Composer actions").unwrap();
+    app.choose_menu_item("Quote").unwrap();
+    app.wait_for("label:Clear all quotes").unwrap();
+    app.press("label:Clear all quotes").unwrap();
+    assert!(
+        !app.screen()
+            .matches("label:Remove quote: Landscape reply")
+            .unwrap()
+    );
+    app.press("label:Done").unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn compact_chats_can_clear_local_quotes_after_the_host_goes_offline() {
+    let mut answer = quote_history_row(2, "assistant", "Saved reply");
+    answer["finalOutput"] = json!(true);
+    let (mut app, _) = quote_chat_fixture(
+        vec![quote_history_row(1, "user", "What happened?"), answer],
+        vec![],
+        None,
+    );
+    app.press("label:Conversation: Quotes Chat").unwrap();
+    app.wait_for("text:Saved reply").unwrap();
+    app.press("role:button[Quote]").unwrap();
+    app.wait_for("label:Remove quote: Saved reply").unwrap();
+    app.wait_for("label:Ask Side Question").unwrap();
+    app.set_viewport(Size::new(px(812.), px(375.))).unwrap();
+    app.set_environment("landscape safe area", |env| {
+        env.safe_area.left = px(47.);
+        env.safe_area.right = px(47.);
+        env.safe_area.bottom = px(21.);
+    })
+    .unwrap();
+    app.wait_for("label:Composer actions").unwrap();
+    app.send_host_event(
+        "ios.hostState",
+        json!({
+            "revision":2,"hosts":[{"rootId":"root","hostName":"Host","endpoints":["agent"]}],
+            "connections":{"root":{"status":"offline","autoReconnect":false}}
+        }),
+    )
+    .unwrap();
+    app.wait_for("text:Host is offline").unwrap();
+    let bounds = |selector| app.screen().layout(selector).unwrap().unwrap().bounds;
+    let back = bounds("label:Chats");
+    let files = bounds("label:Files & Changes");
+    let reconnect = bounds("label:Reconnect");
+    assert!(back.origin.x >= px(47.));
+    assert!(files.origin.x + files.size.width <= px(812. - 47.));
+    assert!(reconnect.size.height >= px(44.) && reconnect.size.width >= px(44.));
+
+    app.press("label:Composer actions").unwrap();
+    app.choose_menu_item("Quote").unwrap();
+    app.wait_for("label:Remove quote: Saved reply").unwrap();
+    assert!(!app.screen().matches("label:Ask Side Question").unwrap());
+    assert!(!app.screen().matches("label:Send to Main Chat").unwrap());
+    app.press("label:Clear all quotes").unwrap();
+    app.wait_for_gone("label:Remove quote: Saved reply", Duration::from_secs(2))
+        .unwrap();
+    app.press("label:Done").unwrap();
+    assert!(!app.screen().matches("label:Composer actions").unwrap());
 }
 
 // Headless does not present UIKit's text edit menu. Read the action the
@@ -5326,6 +6058,18 @@ fn side_chat_fixture_with_history(
     let (observe_tx, side_observations) = mpsc::unbounded_channel();
     let main_revision = AtomicU64::new(40);
     let (_, late) = side_history_rows();
+    let mut saved_history: Vec<_> = (20..=45)
+        .map(|n| {
+            let mut row = quote_history_row(n, "user", &format!("Saved side question message {n}"));
+            row["turnId"] = json!(format!("saved-{n}"));
+            row
+        })
+        .collect();
+    saved_history.push(quote_history_row(
+        46,
+        "assistant",
+        "Saved side question tail",
+    ));
     channel.handle("ios.hostQuery", move |mut call| {
         let data = call.take_data();
         assert_eq!(data["rootId"], "root");
@@ -5387,8 +6131,11 @@ fn side_chat_fixture_with_history(
                 }],"through":1,"before":null,"after":null}
             }),
             "history" => {
-                let chunks = if input["sessionId"] == "main" { main_history.clone() }
-                    else { vec![late.clone()] };
+                let chunks = match input["sessionId"].as_str().unwrap() {
+                    "main" => main_history.as_slice(),
+                    "saved" => saved_history.as_slice(),
+                    _ => std::slice::from_ref(&late),
+                };
                 json!({"kind":"ready","chunks":chunks,"through":99,"before":null,"after":null})
             }
             "models" if os == Os::Ios => json!({"kind":"ready","choices":[
@@ -5592,6 +6339,364 @@ async fn side_chat_cancel_and_unicode_whitespace_do_not_mutate() {
     assert!(fx.mutations.try_recv().is_err());
 }
 
+fn relative_luminance(rgb: [f64; 3]) -> f64 {
+    rgb.into_iter()
+        .zip([0.2126, 0.7152, 0.0722])
+        .map(|(c, w)| {
+            w * if c <= 0.04045 {
+                c / 12.92
+            } else {
+                ((c + 0.055) / 1.055).powf(2.4)
+            }
+        })
+        .sum()
+}
+
+fn color_over(color: nsh_core::Color, backdrop: [f64; 3]) -> [f64; 3] {
+    let (r, g, b, a) = color.to_f64();
+    std::array::from_fn(|index| [r, g, b][index] * a + backdrop[index] * (1. - a))
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn composer_and_keyboard_toolbar_keep_glass_and_touch_targets() {
+    use nsh_core::{
+        Color, Filter, GlassEffect, MountItem, NodeId, ViewKind,
+        canvas::{CanvasOp, Paint},
+        platform::ColorScheme,
+        tailwind::state::PRESSED,
+    };
+
+    let (mut app, _) = quote_chat_fixture_with_work(
+        vec![quote_history_row(1, "assistant", "Previous answer")],
+        vec![],
+        None,
+        None,
+        Os::Ios,
+    );
+    let (tx, mut changes) = mpsc::unbounded_channel();
+    app.observe(move |_, batch| {
+        for item in &batch.items {
+            match item {
+                MountItem::ViewProps { id, props } => {
+                    tx.send((*id, Some(props.hit_slop), None, None)).unwrap();
+                }
+                MountItem::ViewStyle { id, style } => {
+                    tx.send((*id, None, Some(style.clone()), None)).unwrap();
+                }
+                MountItem::Canvas { id, drawing } => {
+                    if let Some(ink) = drawing.ops.iter().find_map(|op| match op {
+                        CanvasOp::StrokeStyle(Paint::Color(color)) => Some(*color),
+                        _ => None,
+                    }) {
+                        tx.send((*id, None, None, Some(ink))).unwrap();
+                    }
+                }
+                _ => {}
+            }
+        }
+    });
+    app.press("label:Conversation: Quotes Chat").unwrap();
+    app.wait_for("id:chat-keyboard-model-glass").unwrap();
+    let capsule = "id:chat-composer-input";
+    let input = "label:Message composer";
+    let send = "label:Send message";
+    let bounds = |app: &Headless, selector| app.screen().layout(selector).unwrap().unwrap().bounds;
+    let bottom = |b: nsh_core::Bounds<nsh_core::Points>| b.origin.y + b.size.height;
+    let right = |b: nsh_core::Bounds<nsh_core::Points>| b.origin.x + b.size.width;
+    let send_inset = |app: &Headless| {
+        let (capsule, input, send) = (bounds(app, capsule), bounds(app, input), bounds(app, send));
+        assert!(right(input) <= send.origin.x && right(send) < right(capsule));
+        assert!(send.origin.y > capsule.origin.y && bottom(send) < bottom(capsule));
+        (right(capsule) - right(send), bottom(capsule) - bottom(send))
+    };
+    assert!(!app.screen().enabled(send).unwrap());
+    let empty = bounds(&app, capsule);
+    app.type_text(input, "One line").unwrap();
+    let single = bounds(&app, capsule);
+    assert_eq!(empty.size.height, single.size.height);
+    let inset = send_inset(&app);
+    assert!(
+        (bounds(&app, input).center().y - bounds(&app, send).center().y)
+            .0
+            .abs()
+            <= 1.
+    );
+    app.type_text(input, "\nSecond line\nThird line").unwrap();
+    assert!(bounds(&app, capsule).size.height > single.size.height);
+    assert_eq!(send_inset(&app), inset);
+    assert!(
+        (bottom(bounds(&app, input)) - bottom(bounds(&app, send)))
+            .0
+            .abs()
+            <= 1.
+    );
+
+    let controls = [
+        ("id:chat-keyboard-model-glass", false),
+        ("label:Quote diff", true),
+        ("label:Dismiss keyboard", true),
+    ];
+    let node_id = |app: &Headless, selector| app.screen().id(selector).unwrap();
+    let nodes = app.screen().layout_nodes();
+    let parent = |id| nodes.iter().find(|node| node.id == id).unwrap().parent;
+    assert_eq!(parent(node_id(&app, send)), node_id(&app, capsule));
+    assert_dock_touch_target(&app, "id:chat-keyboard-model");
+    for (selector, _) in controls {
+        let mut id = node_id(&app, selector);
+        while let Some(node) = nodes.iter().find(|node| node.id == id) {
+            if node.kind == ViewKind::InputAccessory {
+                break;
+            }
+            id = node.parent;
+        }
+        assert!(
+            nodes
+                .iter()
+                .any(|n| n.id == id && n.kind == ViewKind::InputAccessory)
+        );
+    }
+
+    let mut slop = BTreeMap::new();
+    let mut styles = BTreeMap::new();
+    let mut ink = BTreeMap::new();
+    let mut sync =
+        |slop: &mut BTreeMap<_, _>, styles: &mut BTreeMap<_, _>, ink: &mut BTreeMap<_, _>| {
+            while let Ok((id, hit_slop, style, color)) = changes.try_recv() {
+                if let Some(hit_slop) = hit_slop {
+                    slop.insert(id, hit_slop);
+                }
+                if let Some(style) = style {
+                    styles.insert(id, style);
+                }
+                if let Some(color) = color {
+                    ink.insert(id, color);
+                }
+            }
+        };
+    let assert_hit_target = |selector, app: &Headless, slop: &BTreeMap<_, nsh_core::EdgeInsets>| {
+        let b = bounds(&app, selector);
+        let pad = slop[&node_id(&app, selector)];
+        assert!(
+            b.size.width + pad.left + pad.right >= px(44.)
+                && b.size.height + pad.top + pad.bottom >= px(44.),
+            "{selector}: {b:?} + {pad:?}"
+        );
+    };
+    sync(&mut slop, &mut styles, &mut ink);
+    for selector in [send, "label:Quote diff", "label:Dismiss keyboard"] {
+        assert_hit_target(selector, &app, &slop);
+    }
+
+    let assert_glass = |style: &nsh_core::ViewStyle| {
+        assert_eq!(style.glass_effect, GlassEffect::Regular);
+        assert!(
+            style
+                .effects
+                .as_ref()
+                .is_some_and(|fx| { matches!(fx.backdrop_filters.as_slice(), [Filter::Blur(_)]) })
+        );
+    };
+    let control = app.engine().control();
+    for scheme in [ColorScheme::Light, ColorScheme::Dark] {
+        app.set_environment("appearance", |env| env.color_scheme = scheme)
+            .unwrap();
+        for (selector, changes_fill) in controls {
+            let id: NodeId = node_id(&app, selector);
+            let mut fills = [Color::default(); 2];
+            for (fill, state) in fills.iter_mut().zip([0, PRESSED]) {
+                control.set_states(id, state);
+                assert!(app.settle());
+                sync(&mut slop, &mut styles, &mut ink);
+                assert_glass(&styles[&node_id(&app, capsule)]);
+                let style = &styles[&id];
+                assert_glass(style);
+                *fill = style.background_color;
+                let (_, _, _, a) = fill.to_f64();
+                assert!(a > 0. && a < 1., "{selector} has an opaque fill");
+                for child in nodes.iter().filter(|node| node.parent == id) {
+                    let fg = match child.kind {
+                        ViewKind::Canvas => ink[&child.id],
+                        ViewKind::Text => button_text_color(&app, id),
+                        _ => continue,
+                    };
+                    let (fr, fg, fb, fa) = fg.to_f64();
+                    assert_eq!(fa, 1.);
+                    let fg = relative_luminance([fr, fg, fb]);
+                    for backdrop in [0., 1.] {
+                        let bg = relative_luminance(color_over(*fill, [backdrop; 3]));
+                        let contrast = (fg.max(bg) + 0.05) / (fg.min(bg) + 0.05);
+                        assert!(contrast >= 4.5, "{selector} {scheme:?}: {contrast:.2}:1");
+                    }
+                }
+            }
+            if changes_fill {
+                assert_ne!(fills[0], fills[1], "{selector} has no pressed feedback");
+            }
+            control.set_states(id, 0);
+            assert!(app.settle());
+        }
+    }
+
+    app.press("role:button[Quote]").unwrap();
+    app.wait_for("label:Remove quote: Previous answer").unwrap();
+    sync(&mut slop, &mut styles, &mut ink);
+    assert_hit_target("label:Remove quote: Previous answer", &app, &slop);
+    assert_hit_target("label:Clear all quotes", &app, &slop);
+}
+
+fn assert_chat_button_contrast(
+    app: &mut Headless,
+    selector: &str,
+    glass_parent: Option<&str>,
+    foreground: impl Fn(&Headless, nsh_core::NodeId) -> nsh_core::Color,
+) {
+    let id = app.screen().id(selector).unwrap();
+    let control = app.engine().control();
+    let luminance = |color: nsh_core::Color| {
+        let (r, g, b, a) = color.to_f64();
+        assert_eq!(a, 1.0, "{selector}: transparent color {color:?}");
+        relative_luminance([r, g, b])
+    };
+    let mut fills = [None; 2];
+    for (fill, state) in fills
+        .iter_mut()
+        .zip([0, nsh_core::tailwind::state::PRESSED])
+    {
+        control.set_states(id, state);
+        assert!(app.settle());
+        let style = app.screen().view_style(selector).unwrap().unwrap();
+        assert_eq!(style.effective_opacity, 1.0, "{selector}, state={state}");
+        *fill = style.background_color;
+        let button = nsh_core::Color(fill.unwrap_or(0));
+        let fg = luminance(foreground(app, id));
+        let tray = glass_parent.map(|parent| {
+            nsh_core::Color(
+                app.screen()
+                    .view_style(parent)
+                    .unwrap()
+                    .unwrap()
+                    .background_color
+                    .unwrap(),
+            )
+        });
+        for backdrop in [0., 1.] {
+            let bg = match tray {
+                Some(tray) => {
+                    relative_luminance(color_over(button, color_over(tray, [backdrop; 3])))
+                }
+                None => luminance(button),
+            };
+            let contrast = (bg.max(fg) + 0.05) / (bg.min(fg) + 0.05);
+            assert!(
+                contrast >= 4.5,
+                "{selector}, state={state}: {contrast:.2}:1"
+            );
+        }
+    }
+    if glass_parent.is_some() {
+        assert_eq!(fills[0], None, "{selector} paints a box at rest");
+    }
+    assert_ne!(fills[0], fills[1], "{selector} has no pressed feedback");
+    control.set_states(id, 0);
+    assert!(app.settle());
+}
+
+fn button_text_color(app: &Headless, id: nsh_core::NodeId) -> nsh_core::Color {
+    app.screen()
+        .layout_nodes()
+        .iter()
+        .find_map(|node| {
+            (node.parent == id)
+                .then_some(node.text.as_ref())?
+                .map(|text| text.text.spans[0].style.color)
+        })
+        .expect("button text")
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn quote_actions_and_sheet_done_keep_contrast_when_pressed() {
+    use nsh_core::platform::ColorScheme;
+
+    let mut fx = side_chat_fixture(false, false);
+    let mut quote = watch_quote_menus(&mut fx.app);
+    fx.open_main();
+    assert!(quote(
+        &mut fx.app,
+        "text:Later durable answer",
+        Some("Later durable answer")
+    ));
+
+    for scheme in [ColorScheme::Light, ColorScheme::Dark] {
+        fx.app
+            .set_environment("appearance", |env| env.color_scheme = scheme)
+            .unwrap();
+        for selector in ["label:Ask Side Question", "label:Send to Main Chat"] {
+            assert_chat_button_contrast(&mut fx.app, selector, None, button_text_color);
+        }
+        assert_chat_button_contrast(
+            &mut fx.app,
+            "label:Clear all quotes",
+            Some("id:chat-draft-quotes"),
+            button_text_color,
+        );
+    }
+
+    fx.app.set_viewport(Size::new(px(844.), px(390.))).unwrap();
+    fx.app
+        .set_environment("landscape keyboard", |env| env.keyboard_height = px(240.))
+        .unwrap();
+    fx.app.press("label:Composer actions").unwrap();
+    fx.app.choose_menu_item("Quote").unwrap();
+    for scheme in [ColorScheme::Light, ColorScheme::Dark] {
+        fx.app
+            .set_environment("appearance", |env| env.color_scheme = scheme)
+            .unwrap();
+        assert_chat_button_contrast(&mut fx.app, "label:Done", None, button_text_color);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn normal_send_has_readable_icon_in_both_press_states() {
+    use nsh_core::{
+        MountItem,
+        canvas::{CanvasOp, Paint},
+        platform::ColorScheme,
+    };
+
+    let mut fx = ComposerDockFixture::start(dock_run(), dock_model(), empty_queue()).await;
+    let strokes = Arc::new(std::sync::Mutex::new(BTreeMap::new()));
+    let mounted = strokes.clone();
+    fx.app.observe(move |_, batch| {
+        for item in &batch.items {
+            if let MountItem::Canvas { id, drawing } = item
+                && let Some(color) = drawing.ops.iter().find_map(|op| match op {
+                    CanvasOp::StrokeStyle(Paint::Color(color)) => Some(*color),
+                    _ => None,
+                })
+            {
+                mounted.lock().unwrap().insert(*id, color);
+            }
+        }
+    });
+    fx.app
+        .type_text("label:Message composer", "Ready to send")
+        .unwrap();
+    for scheme in [ColorScheme::Light, ColorScheme::Dark] {
+        fx.app
+            .set_environment("appearance", |env| env.color_scheme = scheme)
+            .unwrap();
+        assert_chat_button_contrast(&mut fx.app, "label:Send message", None, |app, id| {
+            let canvas = app
+                .screen()
+                .layout_nodes()
+                .into_iter()
+                .find(|node| node.parent == id && node.kind == nsh_core::ViewKind::Canvas)
+                .unwrap();
+            strokes.lock().unwrap()[&canvas.id]
+        });
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn side_chat_fork_conflict_then_failed_first_send_retries_in_the_new_chat() {
     let mut fx = side_chat_fixture(true, false);
@@ -5767,6 +6872,14 @@ async fn side_chat_rediscovers_anchors_pages_and_brings_a_link_back() {
         .press("label:Side questions (1) · Waiting for your response")
         .unwrap();
     fx.app.wait_for("text:Side Question · Main Chat").unwrap();
+    fx.app.wait_for("text:Saved side question tail").unwrap();
+    assert!(
+        fx.app
+            .screen()
+            .layout("text:Saved side question message 20")
+            .unwrap()
+            .is_none_or(|view| view.clipped)
+    );
     fx.app.press("label:Bring to Main Draft").unwrap();
     assert_eq!(
         fx.app
@@ -6494,7 +7607,10 @@ async fn chat_quote_draft_sends_ordered_excerpts_without_text_and_renders_histor
     };
     let first = chip("label:Remove quote: Swift ready");
     let second = chip("label:Remove quote: Keep café intact.");
-    assert_eq!(first.size.height, px(44.));
+    assert!(
+        first.size.height < px(44.),
+        "the visual chip has a slimmer outline"
+    );
     assert_eq!(second.size.height, first.size.height);
     assert_eq!(second.origin.y, first.origin.y);
     assert!(second.origin.x.0 >= (first.origin.x + first.size.width).0);
@@ -6542,6 +7658,40 @@ async fn chat_quote_draft_sends_ordered_excerpts_without_text_and_renders_histor
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn draft_quote_chips_and_scroll_grow_with_dynamic_type() {
+    let excerpt = "A draft quote";
+    let (mut app, _) = quote_chat_fixture(
+        vec![quote_history_row(1, "assistant", excerpt)],
+        vec![],
+        None,
+    );
+    app.press("label:Conversation: Quotes Chat").unwrap();
+    app.press("role:button[Quote]").unwrap();
+    let scroll = "id:chat-draft-quote-scroll";
+    let remove = "label:Remove quote: A draft quote";
+    app.wait_for(remove).unwrap();
+    let layout = |app: &Headless, selector| app.screen().layout(selector).unwrap().unwrap();
+    let normal = layout(&app, scroll).bounds.size.height;
+    app.set_environment("Dynamic Type at 200%", |env| env.font_scale = 2.0)
+        .unwrap();
+
+    let nodes = app.screen().layout_nodes();
+    let button = app.screen().id(remove).unwrap();
+    let chip = nodes.iter().find(|node| node.id == button).unwrap().parent;
+    let chip = nodes.iter().find(|node| node.id == chip).unwrap().bounds;
+    let viewport = layout(&app, scroll).bounds;
+    let author = layout(&app, "id:chat-draft-quote-scroll >> text:Maka");
+    let excerpt = layout(&app, "id:chat-draft-quote-scroll >> text:A draft quote");
+    let bottom = |b: nsh_core::Bounds<nsh_core::Points>| b.origin.y + b.size.height;
+    assert!(viewport.size.height > normal && !author.clipped && !excerpt.clipped);
+    assert!(viewport.origin.y <= chip.origin.y && bottom(chip) <= bottom(viewport));
+    assert!(chip.origin.y <= author.bounds.origin.y && bottom(excerpt.bounds) <= bottom(chip));
+    assert!(bottom(author.bounds) <= excerpt.bounds.origin.y);
+    app.press(remove).unwrap();
+    app.wait_for_gone(scroll, Duration::from_secs(2)).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn folded_turn_copies_and_quotes_all_prose_even_before_expansion() {
     let prompt = quote_history_row(1, "user", "Summarize the work");
     let first = quote_history_row(2, "assistant", "**First** answer");
@@ -6563,6 +7713,7 @@ async fn folded_turn_copies_and_quotes_all_prose_even_before_expansion() {
         vec![],
         None,
         Some((vec![prompt, first, group, last], vec![tool])),
+        Os::MacOs,
     );
     app.press("label:Conversation: Quotes Chat").unwrap();
     app.wait_for("text:Second answer").unwrap();

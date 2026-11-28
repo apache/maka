@@ -43089,6 +43089,132 @@ fn env_with_keyboard(height: f32, duration: f32) -> crate::element::Environment 
 }
 
 #[test]
+fn list_motion_keeps_the_last_row_above_the_composer_through_keyboard_motion() {
+    const COMPOSER: NodeId = 1000;
+    const VIEWPORT: f32 = 480.0;
+    const COMPOSER_HEIGHT: f32 = 44.0;
+    const GAP: f32 = 8.0;
+
+    let (mut c, last) = list_following_its_end(false);
+    let frame = |c: &Core<FakeEngine>, id| c.nodes[c.key(id).unwrap() as usize].frame;
+    let cover = |c: &mut Core<FakeEngine>, keyboard: f32, duration| {
+        let inset = if keyboard > 0.0 { keyboard } else { 34.0 };
+        c.begin_mount_turn();
+        let mut environment = env_with_keyboard(keyboard, duration);
+        environment.reduce_motion = duration == 0.0;
+        c.set_environment(environment);
+        apply(
+            c,
+            vec![
+                Op::SetProp {
+                    id: 2,
+                    prop: Prop::ListContent(crate::ListContentStyle {
+                        padding: EdgeInsets {
+                            bottom: px(inset + COMPOSER_HEIGHT + GAP),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    }),
+                },
+                style_op(
+                    COMPOSER,
+                    &[
+                        ("position", StyleValue::Str("absolute")),
+                        ("bottom", StyleValue::Number(0.0)),
+                        ("height", StyleValue::Number(COMPOSER_HEIGHT)),
+                        (
+                            "marginBottom",
+                            if keyboard > 0.0 {
+                                StyleValue::Str("env(keyboard-inset-height)")
+                            } else {
+                                StyleValue::Number(inset)
+                            },
+                        ),
+                    ],
+                ),
+            ],
+        );
+        c.commit().unwrap()
+    };
+    apply(
+        &mut c,
+        vec![
+            Op::Create {
+                id: COMPOSER,
+                tag: Tag::View,
+            },
+            style_op(2, &[("height", StyleValue::Number(VIEWPORT))]),
+            Op::Insert {
+                parent: ROOT_ID,
+                child: COMPOSER,
+                before: None,
+            },
+        ],
+    );
+    let mut platform = ScrollingPlatform::default();
+    platform.apply(&cover(&mut c, 0.0, 0.0), 2, VIEWPORT);
+    platform.y = platform.content - VIEWPORT;
+    c.set_scroll_offset(2, point(px(0.0), px(platform.y)), u32::MAX);
+    c.commit();
+
+    for (keyboard, duration) in [(350.0, 250.0), (0.0, 250.0), (350.0, 0.0), (0.0, 0.0)] {
+        // Replay the platform's move: scroll offsets and the size clamp
+        // apply immediately; only the keyboard-animated frames interpolate.
+        let row_bottom = frame(&c, last).origin.y.0 + frame(&c, last).size.height.0;
+        let composer_top = frame(&c, COMPOSER).origin.y.0;
+        let (mut row_from, mut row_to) = (row_bottom, row_bottom);
+        let (mut composer_from, mut composer_to) = (composer_top, composer_top);
+        let batch = cover(&mut c, keyboard, duration);
+        let mut animated = false;
+        for item in batch.items {
+            match item {
+                MountItem::LayoutAnimation(a) => {
+                    animated = a
+                        .update
+                        .is_some_and(|t| t.curve == crate::LayoutCurve::Keyboard)
+                }
+                MountItem::Frame { id, frame } if id == last => {
+                    row_to = frame.origin.y.0 + frame.size.height.0;
+                    if !animated {
+                        row_from = row_to;
+                    }
+                }
+                MountItem::Frame {
+                    id: COMPOSER,
+                    frame,
+                } => {
+                    composer_to = frame.origin.y.0;
+                    if !animated {
+                        composer_from = composer_to;
+                    }
+                }
+                MountItem::ScrollBy { id: 2, dx, dy } => {
+                    assert_eq!(dx, Points::ZERO);
+                    platform.y += dy.0;
+                }
+                MountItem::ScrollContent { id: 2, size } => platform.content = size.height.0,
+                _ => {}
+            }
+            platform.y = platform
+                .y
+                .clamp(0.0, (platform.content - VIEWPORT).max(0.0));
+        }
+        assert_eq!(composer_from != composer_to, duration > 0.0);
+        for progress in [0.0, 0.24, 0.5, 1.0] {
+            let row = row_from + (row_to - row_from) * progress - platform.y;
+            let composer = composer_from + (composer_to - composer_from) * progress;
+            assert!(
+                (composer - row - GAP).abs() < 0.01,
+                "keyboard {keyboard}, animation {duration} ms, progress {progress}: gap = {}",
+                composer - row,
+            );
+        }
+        c.set_scroll_offset(2, point(px(0.0), px(platform.y)), u32::MAX);
+        c.commit();
+    }
+}
+
+#[test]
 fn keyboard_inset_height_pads_and_animates_with_the_keyboard() {
     let mut c = core();
     c.set_environment(env_with_keyboard(0.0, 250.0));

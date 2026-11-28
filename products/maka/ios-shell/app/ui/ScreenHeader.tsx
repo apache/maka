@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { Text, View, token, type JSX } from 'nsh';
+import { safeAreaInsets, Text, View, token, type JSX } from 'nsh';
 import { tr } from '../locale';
 import { spacing, type } from '../theme/tokens';
 import { Icon } from './Icon';
@@ -33,14 +33,17 @@ export function ScreenHeader(props: {
   onBack?: () => void;
   trailing?: JSX.Element;
   large?: boolean;
+  compact?: boolean;
 }) {
+  const insets = safeAreaInsets();
   return (
     <View
       style={{
         backgroundColor: token('grouped-bg'),
-        paddingHorizontal: spacing.pageX,
-        paddingTop: 10,
-        paddingBottom: props.large ? 8 : 10,
+        paddingLeft: Math.max(spacing.pageX, insets().left),
+        paddingRight: Math.max(spacing.pageX, insets().right),
+        paddingTop: props.compact ? 0 : 10,
+        paddingBottom: props.compact ? 0 : props.large ? 8 : 10,
       }}
     >
       <View
@@ -65,7 +68,6 @@ export function ScreenHeader(props: {
                 flexDirection: 'row',
                 alignItems: 'center',
                 gap: 2,
-                marginLeft: -8,
                 paddingHorizontal: 6,
               }}
             >
