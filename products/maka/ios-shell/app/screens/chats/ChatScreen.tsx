@@ -20,9 +20,11 @@
 import {
   computed,
   effect,
+  fontScale,
   keyboardFrame,
   List,
   openUrl,
+  platform,
   reduceMotion,
   safeAreaInsets,
   Scroll,
@@ -36,7 +38,16 @@ import {
   type InputRef,
   type ListRef,
 } from 'nsh';
-import { Button, Input, MenuButton, NavPage, Sheet, TextView, type MenuButtonItem } from 'nsh/base';
+import {
+  Button,
+  ContextMenu,
+  Input,
+  MenuButton,
+  NavPage,
+  Sheet,
+  TextView,
+  type MenuButtonItem,
+} from 'nsh/base';
 import { InputAccessoryView } from 'nsh/mobile';
 import {
   approvalControls,
@@ -58,17 +69,17 @@ import { ConnectionProgress } from '../../ui/ConnectionProgress';
 import { TranscriptSkeleton } from '../../ui/Skeleton';
 import { ThinkingMark, ShimmerText } from '../../ui/ThinkingMark';
 import { QuestionForm } from '../../ui/QuestionForm';
-import { currentLocale, formatCount, tr } from '../../locale';
+import { currentLocale, formatCount, isThinkingLevel, thinkingLevelLabel, tr } from '../../locale';
 import {
   appendDraftQuote,
   appendSideLink,
   assembleHistoryRows,
   backendKey,
+  displayModelKey,
   clearDraftQuotes,
   conversationKey,
   draftQuote,
   createConversationController,
-  displayModelKey,
   getDraft,
   historyAddressKey,
   historyQuote,
@@ -112,14 +123,11 @@ import {
   StatusDot,
 } from '../../ui';
 
+import { ChatDetails } from './ChatDetails';
+import { ThinkingSlider } from './ThinkingSlider';
 import { DraftQuoteStrip, HistoryQuotes, MessageBody, ReplyActions } from './ChatQuotes';
 import { SideQuestionList } from './ChatSideQuestions';
-import {
-  ComposerPendingDock,
-  QueueSendMenu,
-  pendingDockLimits,
-  type QueueEdit,
-} from './ComposerPendingDock';
+import { ComposerPendingDock, pendingDockLimits, type QueueEdit } from './ComposerPendingDock';
 
 interface ToolSummaryItem {
   id: string;
@@ -632,8 +640,7 @@ export function ChatScreen(
       ? ctrl.roomMessages().map((message) => ({ kind: 'room' as const, key: message.id, message }))
       : turns(),
   );
-  const isRunning = () => ctrl.observation()?.run != null;
-  const canQueue = () => !sideDraft && isRunning() && ctrl.hasDraftContent();
+  const isRunning = () => ctrl.runTarget() !== null;
   const hostOnline = () => isHostConnected(rootId);
   const connectionProgress = () => hostConnectionProgress(rootId);
   const draft = () => getDraft(rootId, sessionId);
@@ -643,41 +650,48 @@ export function ChatScreen(
   const editComposer = (text: string) =>
     sideDraft ? sideDraft.text.set(text) : setDraft(rootId, sessionId, text);
   const quoteLimitReached = () => quotes().length >= quoteLimit;
-  const canSend = () =>
-    sideDraft ? sideDraft.canSend() : ctrl.hasDraftContent() && !ctrl.sending();
-  const send = (delivery: SendDelivery = 'steer') => {
+  const composing = signal(false);
+  const hasContent = () => ctrl.hasDraftEdits() || composing();
+  const send = (
+    delivery: SendDelivery,
+    target?: NonNullable<ReturnType<typeof ctrl.runTarget>>,
+  ) => {
+    if (!props.active() || composing()) return;
     if (sideDraft) void sideDraft.submit();
     else
-      void ctrl.sendMessage(delivery).then((sent) => {
+      void ctrl.sendMessage(delivery, target).then((sent) => {
         if (sent && props.active()) scrollToBottom(false);
       });
   };
 
-  const sendButton = () => (
-    <View
-      role="button"
-      accessibilityLabel={tr('Send message')}
-      hitSlop={4}
-      disabled={!canSend()}
-      onPress={() => send()}
-      activeStyle={{ backgroundColor: token('glass-primary-pressed-bg') }}
-      style={{
-        width: 36,
-        height: 36,
-        borderRadius: 18,
-        backgroundColor: canSend() ? token('glass-accent') : token('surface-muted'),
-        alignItems: 'center',
-        justifyContent: 'center',
-      }}
-    >
-      <Icon
-        name="send"
-        color={canSend() ? token('surface') : token('tertiary-foreground')}
-        size={18}
-        strokeWidth={2.3}
-      />
-    </View>
-  );
+  const runActions = () => {
+    const target = ctrl.runTarget();
+    if (sideDraft || !target || ctrl.runControlBusy()) return null;
+    // Native menus can outlive the binding that opened them. Fence the item ID
+    // itself, so selecting A's item can never resolve to B's handler.
+    const id = JSON.stringify(target);
+    return {
+      target,
+      queue: {
+        id: 'queue:' + id,
+        label: tr('Add to queue'),
+        icon: 'text.append',
+        disabled: !ctrl.hasDraftContent() || ctrl.sending() || composing(),
+      },
+      stop: {
+        id: 'stop:' + id,
+        label: tr('Stop current reply'),
+        icon: 'stop.fill',
+        destructive: true,
+      },
+    };
+  };
+  const selectRunAction = (id: string) => {
+    const actions = runActions();
+    if (!actions) return;
+    if (id === actions.stop.id) void ctrl.stopRun(actions.target);
+    if (id === actions.queue.id && !actions.queue.disabled) send('queue', actions.target);
+  };
 
   const generation = computed(() => activeHostInfo(rootId)?.generation);
   const canAskSide = computed(
@@ -831,34 +845,169 @@ export function ChatScreen(
     return isRunning() || Boolean(p.body.trim() || p.thinking.trim() || p.tools.length > 0);
   };
 
+  const availableHeight = signal(windowSize().height);
+  const hasReferences = () => !ctrl.isRoom() && !!(quotes().length || links().length);
+  const queueEditor = signal<QueueEdit | null>(null);
+  const hasQueueDock = () => !!(ctrl.queuedMessages().length || queueEditor() || ctrl.queueError());
+  const hasDeliveryDock = () => !!(ctrl.pendingSends().length || ctrl.steeringMessages().length);
+  // Leave room for the input at full height, context and at least two lines of transcript.
+  // On short pages the secondary controls move into a menu, not on top of the reader.
+  const compact = computed(
+    () =>
+      availableHeight() <
+      228 +
+        (hasReferences() ? (canAskFromTray() ? 148 : 104) : 0) +
+        // Reserve the expanded dock too, so opening it cannot change the mode.
+        (hasQueueDock() && !sideDraft ? pendingDockLimits.queue : 0) +
+        (hasDeliveryDock() && !sideDraft ? pendingDockLimits.delivery : 0) +
+        (hasLivePreview() ? 44 : 0),
+  );
+
+  const backend = ctrl.selectedBackend;
+  const selectedModelKey = () => {
+    const selected = backend();
+    return selected && displayModelKey(selected);
+  };
+  const selectedModel = computed(() => {
+    const key = selectedModelKey();
+    return ctrl
+      .models()
+      .find(
+        ({ selection, aliases }) =>
+          displayModelKey(selection) === key ||
+          aliases?.some((alias) => displayModelKey(alias) === key),
+      );
+  });
+  const modelLocked = () =>
+    !hostOnline() || !!ctrl.selectingModel() || ctrl.sending() || ctrl.continueRequestBusy();
   const currentModelLabel = () => {
-    const chosen = ctrl.selectedBackend();
-    if (!chosen) return tr('Default');
-    const key = displayModelKey(chosen);
+    const selected = backend();
     return (
-      ctrl.models().find((model) => displayModelKey(model.selection) === key)?.label ??
-      (chosen.kind === 'model' ? chosen.modelId : chosen.selection.executor)
+      selectedModel()?.label ??
+      (selected?.kind === 'model'
+        ? selected.modelId
+        : (selected?.selection.settings.model ?? selected?.selection.executor ?? tr('Default')))
     );
   };
-
-  const modelMenuItems = (): MenuButtonItem[] => {
-    const chosen = ctrl.selectedBackend();
-    const selectedKey = chosen ? displayModelKey(chosen) : null;
-    return ctrl.models().map((model) => {
-      const id = backendKey(model.selection);
-      return {
-        id,
-        label: model.label,
-        checked: displayModelKey(model.selection) === selectedKey,
-        singleSelection: true,
-      };
-    });
-  };
-
-  const handleSelectModel = (id: string) => {
+  const modelMenuItems = (): MenuButtonItem[] =>
+    ctrl.models().map((model) => ({
+      id: backendKey(model.selection),
+      label: model.label,
+      checked: model === selectedModel(),
+      singleSelection: true,
+    }));
+  const handleSelectModel = async (id: string) => {
+    if (!props.active() || ctrl.isRoom() || modelLocked()) return;
     const match = ctrl.models().find((model) => backendKey(model.selection) === id);
-    if (match) void ctrl.selectModel(match.selection);
+    if (match && match !== selectedModel()) {
+      closeThinking();
+      if (await ctrl.selectModel(match.selection)) hapticSelection();
+    }
   };
+
+  const levels = computed(() => {
+    if (sideDraft || ctrl.isRoom() || !backend()) return [];
+    const supported = selectedModel()?.thinkingLevels ?? [];
+    return backend()?.kind === 'model' ? supported.filter(isThinkingLevel) : supported;
+  });
+  const confirmedThinking = () => {
+    const selected = backend();
+    const choice = selectedModel();
+    if (!selected || !choice) return null;
+    const alias = choice.aliases?.find(
+      (candidate) => displayModelKey(candidate) === selectedModelKey(),
+    );
+    return (
+      (selected.kind === 'model'
+        ? selected.thinkingLevel
+        : (selected.selection.settings.thinkingLevel ??
+          (alias?.kind === 'executor' ? alias.selection.settings.thinkingLevel : null))) ?? null
+    );
+  };
+  const thinkingOpen = signal(false);
+  const thinkingStops = computed(() => [null, ...levels()]);
+  // A retained slider must not carry a drag across a different target or stop list.
+  const thinkingContext = computed(() => {
+    const selected = backend();
+    const connection = generation();
+    return selected && connection != null
+      ? JSON.stringify([backendKey(selected), connection, thinkingStops()])
+      : null;
+  });
+  type ThinkingPreview = { level: string | null; context: string; saving: boolean };
+  const preview = signal<ThinkingPreview | null>(null);
+  const thinkingLevel = () => {
+    const value = preview();
+    return value && value.context === thinkingContext() ? value.level : confirmedThinking();
+  };
+  const canPickThinking = () => thinkingStops().length > 1;
+  const thinkingAvailable = () => canPickThinking() && !compact();
+  const closeThinking = () => {
+    thinkingOpen.set(false);
+    if (!preview()?.saving) preview.set(null);
+  };
+  const openThinking = () => {
+    if (props.active() && thinkingAvailable() && !modelLocked()) thinkingOpen.set(true);
+  };
+  effect(() => {
+    if (!props.active() || !thinkingAvailable() || !hostOnline()) closeThinking();
+    const value = preview();
+    if (value && !value.saving && value.context !== thinkingContext()) preview.set(null);
+  });
+  const canEditThinking = (context: string) =>
+    props.active() &&
+    thinkingOpen() &&
+    thinkingAvailable() &&
+    !modelLocked() &&
+    context === thinkingContext();
+  const previewThinking = (context: string, level: string | null) => {
+    if (!canEditThinking(context) || level === thinkingLevel()) return;
+    preview.set({ level, context, saving: false });
+    hapticSelection();
+  };
+  const commitThinking = async (context: string, level: string | null) => {
+    if (!canEditThinking(context)) return;
+    if (level === confirmedThinking()) {
+      preview.set(null);
+      return;
+    }
+    const selected = backend()!;
+    const canonical = selectedModel()!.selection;
+    previewThinking(context, level);
+    const pending: ThinkingPreview = { level, context, saving: true };
+    preview.set(pending);
+    try {
+      if (selected.kind === 'model' && (level === null || isThinkingLevel(level))) {
+        const { thinkingLevel: _, ...model } = selected;
+        await ctrl.selectModel(level === null ? model : { ...model, thinkingLevel: level });
+      } else if (canonical.kind === 'executor') {
+        const {
+          executor,
+          settings: { thinkingLevel: _, ...settings },
+        } = canonical.selection;
+        await ctrl.selectModel({
+          kind: 'executor',
+          selection: {
+            executor,
+            settings: { ...settings, ...(level !== null && { thinkingLevel: level }) },
+          },
+        });
+      }
+    } finally {
+      if (preview() === pending) preview.set(null);
+    }
+  };
+
+  const detailsOpen = signal(false);
+  const openDetails = () => {
+    if (!props.active() || ctrl.isRoom()) return;
+    closeThinking();
+    detailsOpen.set(true);
+    void ctrl.refreshDetails();
+  };
+  effect(() => {
+    if (!props.active()) detailsOpen.set(false);
+  });
 
   const scrollToBottom = (animated = true) => {
     followLatest.set(true);
@@ -1167,6 +1316,135 @@ export function ChatScreen(
   const canBringBack = () => !!props.mainChat && side();
   const bringBackLabel = () => tr('Bring to Main Draft');
 
+  // NSH assigns new UIKit action IDs when this binding is replaced.
+  const navigationMenu = computed(
+    (): MenuButtonItem[] => {
+      const count = ctrl.queuedMessages().length;
+      const actions = runActions();
+      return [
+        { id: 'files', label: tr('Files & Changes'), icon: 'folder' },
+        ...(canAskSide()
+          ? [{ id: 'sides', label: tr('All Side Questions'), icon: 'bubble.left.and.bubble.right' }]
+          : []),
+        ...(count
+          ? [{ id: 'pending', label: tr('Queued Messages ({count})', { count }), icon: 'tray' }]
+          : []),
+        ...(actions && !actions.queue.disabled ? [actions.queue] : []),
+        ...(thinkingAvailable() && keyboardFrame().height === 0
+          ? [
+              {
+                id: 'thinking',
+                label: tr('Thinking level'),
+                icon: 'slider.horizontal.3',
+                disabled: modelLocked(),
+              },
+            ]
+          : []),
+        ...(!ctrl.isRoom()
+          ? [{ id: 'usage', label: tr('Usage & Details'), icon: 'chart.bar' }]
+          : []),
+        { id: 'refresh', label: tr('Refresh'), icon: 'arrow.clockwise' },
+        ...(actions ? [actions.stop] : []),
+      ];
+    },
+    { equals: (left, right) => JSON.stringify(left) === JSON.stringify(right) },
+  );
+  const selectNavigationAction = (id: string) => {
+    if (!props.active()) return;
+    switch (id) {
+      case 'files':
+        return openFiles();
+      case 'sides':
+        return showAllSides();
+      case 'pending':
+        return openQueue();
+      case 'thinking':
+        return openThinking();
+      case 'usage':
+        return openDetails();
+      case 'refresh':
+        return void ctrl.refreshAll();
+      default:
+        selectRunAction(id);
+    }
+  };
+  // NavPage reapplies platform props by object identity, even when only the title was read again.
+  const nativeHeader = computed(() => ({
+    headerRightItems: sideDraft
+      ? []
+      : [
+          { key: 'files', symbol: 'folder', label: tr('Files & Changes'), onPress: openFiles },
+          ...(canBringBack()
+            ? [
+                {
+                  key: 'bring-main',
+                  symbol: 'link',
+                  label: bringBackLabel(),
+                  onPress: () => void bringBack(),
+                },
+              ]
+            : []),
+          {
+            key: 'more',
+            symbol: 'ellipsis.circle',
+            label: tr('More'),
+            menu: navigationMenu().map(({ id, label, icon, disabled, destructive }) => ({
+              label,
+              symbol: icon ?? undefined,
+              disabled: Boolean(disabled),
+              destructive,
+              onSelect: () => selectNavigationAction(id),
+            })),
+          },
+        ],
+  }));
+  const headerActions = () => (
+    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+      <Button
+        accessibilityLabel={tr('Files & Changes')}
+        style={{
+          minWidth: spacing.rowMinHeight,
+          minHeight: spacing.rowMinHeight,
+          alignItems: 'center',
+          justifyContent: 'center',
+        }}
+        onPress={openFiles}
+      >
+        <Icon name="folder" color={token('glass-accent')} size={20} />
+      </Button>
+      <If when={canBringBack()}>
+        <Button
+          accessibilityLabel={bringBackLabel()}
+          style={{
+            minWidth: spacing.rowMinHeight,
+            minHeight: spacing.rowMinHeight,
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+          onPress={() => void bringBack()}
+        >
+          <Icon name="link" color={token('glass-accent')} size={20} />
+        </Button>
+      </If>
+      <MenuButton
+        accessibilityLabel={tr('More')}
+        items={navigationMenu()}
+        onSelect={({ id }) => selectNavigationAction(id)}
+      >
+        <View
+          style={{
+            minWidth: spacing.rowMinHeight,
+            minHeight: spacing.rowMinHeight,
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+        >
+          <Icon name="more" color={token('glass-accent')} size={22} />
+        </View>
+      </MenuButton>
+    </View>
+  );
+
   return (
     <NavPage
       style={{ flex: 1 }}
@@ -1177,117 +1455,14 @@ export function ChatScreen(
       headerTransparent
       headerBackgroundOnScroll
       headerShadowVisible={false}
-      ios={{
-        headerRightItems: sideDraft
-          ? []
-          : [
-              {
-                key: 'files',
-                symbol: 'folder',
-                label: tr('Files & Changes'),
-                onPress: openFiles,
-              },
-              ...(canBringBack()
-                ? [
-                    {
-                      key: 'bring-main',
-                      symbol: 'link',
-                      label: bringBackLabel(),
-                      onPress: () => void bringBack(),
-                    },
-                  ]
-                : []),
-              {
-                key: 'more',
-                symbol: 'ellipsis.circle',
-                label: tr('More'),
-                menu: [
-                  { label: tr('Files & Changes'), onSelect: openFiles },
-                  ...(canAskSide()
-                    ? [{ label: tr('All Side Questions'), onSelect: showAllSides }]
-                    : []),
-                  ...(ctrl.queuedMessages().length > 0
-                    ? [
-                        {
-                          label: tr('Queued Messages ({count})', {
-                            count: ctrl.queuedMessages().length,
-                          }),
-                          onSelect: openQueue,
-                        },
-                      ]
-                    : []),
-                  ...(isRunning()
-                    ? [{ label: tr('Stop Run'), onSelect: () => void ctrl.stopRun() }]
-                    : []),
-                  { label: tr('Refresh'), onSelect: () => void ctrl.refreshAll() },
-                ],
-              },
-            ],
-      }}
+      ios={nativeHeader()}
       header={
         <ScreenHeader
           compact
           title={sessionTitle()}
           backLabel={sideDraft ? tr('Cancel') : props.mainChat ? tr('Back') : tr('Chats')}
           onBack={sideDraft?.busy() ? undefined : props.onBack}
-          trailing={
-            sideDraft ? undefined : (
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                <View
-                  role="button"
-                  accessibilityLabel={tr('Files & Changes')}
-                  onPress={openFiles}
-                  style={{
-                    minHeight: 44,
-                    minWidth: 44,
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                  }}
-                >
-                  <Icon name="folder" color={token('primary')} size={20} />
-                </View>
-                <If when={canBringBack()}>
-                  <Button
-                    accessibilityLabel={bringBackLabel()}
-                    onPress={() => void bringBack()}
-                    class="active:opacity-60"
-                    style={{
-                      width: 44,
-                      height: 44,
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                    }}
-                  >
-                    <Icon name="link" color={token('primary')} size={20} />
-                  </Button>
-                </If>
-                <If when={canAskSide()}>
-                  <MenuButton
-                    accessibilityLabel={tr('More')}
-                    items={[
-                      {
-                        id: 'side-questions',
-                        label: tr('All Side Questions'),
-                        icon: 'bubble.left.and.bubble.right',
-                      },
-                    ]}
-                    onSelect={showAllSides}
-                  >
-                    <View
-                      style={{
-                        minHeight: 44,
-                        minWidth: 44,
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                      }}
-                    >
-                      <Icon name="more" size={20} color={token('primary')} />
-                    </View>
-                  </MenuButton>
-                </If>
-              </View>
-            )
-          }
+          trailing={sideDraft ? undefined : headerActions()}
         />
       }
     >
@@ -1307,13 +1482,10 @@ export function ChatScreen(
     const bottomInset = () => keyboardHeight() || insets().bottom;
 
     const pageHeight = signal(windowSize().height);
+    effect(() => availableHeight.set(pageHeight() - insets().top - bottomInset()));
     const left = () => Math.max(spacing.pageX, insets().left);
     const right = () => Math.max(spacing.pageX, insets().right);
-    const hasReferences = () => !ctrl.isRoom() && !!(quotes().length || links().length);
-    const queueEditor = signal<QueueEdit | null>(null);
     const queueCount = () => ctrl.queuedMessages().length;
-    const hasQueueDock = () => !!(queueCount() || queueEditor() || ctrl.queueError());
-    const hasDeliveryDock = () => !!(ctrl.pendingSends().length || ctrl.steeringMessages().length);
     const hasPendingDock = () => !sideDraft && (hasQueueDock() || hasDeliveryDock());
     const pendingDockLabel = () =>
       queueCount() ? tr('Queued Messages ({count})', { count: queueCount() }) : tr('Pending');
@@ -1321,18 +1493,7 @@ export function ChatScreen(
     const jumpToLatest = () => scrollToBottom(!reduceMotion());
     const quoteSheetOpen = signal(false);
 
-    // Leave room for the input at full height, context and at least two lines of transcript.
-    // On short pages the secondary controls move into a menu, not on top of the reader.
-    const compact = computed(
-      () =>
-        pageHeight() - insets().top - bottomInset() <
-        228 +
-          (hasReferences() ? (canAskFromTray() ? 152 : 104) : 0) +
-          // Reserve the expanded dock too, so opening it cannot change the mode.
-          (hasQueueDock() && !sideDraft ? pendingDockLimits.queue : 0) +
-          (hasDeliveryDock() && !sideDraft ? pendingDockLimits.delivery : 0) +
-          (hasLivePreview() ? 44 : 0),
-    );
+    const iconOnlyAccessory = () => fontScale() >= 2 || windowSize().width - left() - right() < 320;
     const inlineDock = () => !pendingSheetOpen() && (!compact() || !!queueEditor());
     effect(() => {
       // A keyboard-only resize must not reparent the focused editor.
@@ -1372,28 +1533,165 @@ export function ChatScreen(
             : removeDraftQuote(rootId, sessionId, id)
         }
         onRemoveLink={(id) => removeDraftLink(rootId, sessionId, id)}
-        mainActions={
+        onAskSide={
           hostOnline() && canAskFromTray()
-            ? {
-                ask: () => {
-                  quoteSheetOpen.set(false);
-                  askSide(traySource);
-                },
-                send: () => {
-                  quoteSheetOpen.set(false);
-                  send();
-                },
-                canSend: canSend(),
-                queue: canQueue()
-                  ? () => {
-                      quoteSheetOpen.set(false);
-                      send('queue');
-                    }
-                  : undefined,
+            ? () => {
+                quoteSheetOpen.set(false);
+                askSide(traySource);
               }
             : undefined
         }
       />
+    );
+
+    const primaryAction = () => {
+      const run = ctrl.runTarget();
+      const stopping = ctrl.stoppingTarget();
+      if (stopping) return { kind: 'stopping', run } as const;
+      if (ctrl.continueRequestBusy()) return { kind: 'continuing' } as const;
+      if (sideDraft) return { kind: 'send', enabled: sideDraft.canSend() && !composing() } as const;
+      if (!ctrl.sending() && !hasContent()) {
+        if (run) return { kind: 'stop', run } as const;
+        const resume = ctrl.continuationReady();
+        if (resume) return { kind: 'resume', resume } as const;
+      }
+      return {
+        kind: 'send',
+        run,
+        enabled: ctrl.hasDraftContent() && !ctrl.sending() && !composing(),
+      } as const;
+    };
+    const actionKey = computed(() => {
+      const action = primaryAction();
+      const identity =
+        action.kind === 'resume'
+          ? [action.resume.key, action.resume.highWater]
+          : 'run' in action
+            ? action.run?.runId
+            : null;
+      return JSON.stringify([
+        generation(),
+        props.active(),
+        action.kind,
+        identity,
+        action.kind === 'send' && action.enabled,
+      ]);
+    });
+    let revision = 0;
+    let pressedAt: number | undefined;
+    effect(() => {
+      actionKey();
+      revision++;
+    });
+    const pressPrimary = () => {
+      const pressed = pressedAt;
+      pressedAt = undefined;
+      if ((pressed !== undefined && pressed !== revision) || !props.active() || !hostOnline())
+        return;
+      const action = primaryAction();
+      switch (action.kind) {
+        case 'send':
+          if (action.enabled) send('steer', action.run ?? undefined);
+          break;
+        case 'stop':
+          void ctrl.stopRun(action.run);
+          break;
+        case 'resume':
+          void ctrl.continueRun(action.resume, () => !composing());
+          break;
+      }
+    };
+    const glyph = () => {
+      switch (primaryAction().kind) {
+        case 'stop':
+        case 'stopping':
+          return 'stop';
+        case 'resume':
+          return 'play';
+        case 'continuing':
+          return hasContent() ? 'send' : 'play';
+        default:
+          return 'send';
+      }
+    };
+    const actionLabel = () => {
+      switch (primaryAction().kind) {
+        case 'stop':
+          return tr('Stop current reply');
+        case 'stopping':
+          return ctrl.stoppingTarget()?.phase === 'unknown'
+            ? tr('Stop not confirmed. Refresh to check the reply.')
+            : tr('Stopping reply…');
+        case 'resume':
+          return tr('Continue reply');
+        case 'continuing':
+          return tr('Continuing reply…');
+        default:
+          return tr('Send message');
+      }
+    };
+    const disabled = () => {
+      const action = primaryAction();
+      return (
+        action.kind === 'stopping' ||
+        action.kind === 'continuing' ||
+        (action.kind === 'send' && !action.enabled)
+      );
+    };
+    const canAskInMenu = () => !sideDraft && canAskFromTray() && primaryAction().kind === 'send';
+    const composerMenu = (): MenuButtonItem[] => {
+      if (primaryAction().kind !== 'send' || disabled()) return [];
+      const actions = runActions();
+      return [
+        ...(actions && !actions.queue.disabled ? [actions.queue] : []),
+        ...(canAskInMenu()
+          ? [{ id: 'ask-side', label: tr('Ask Side Question'), icon: 'arrow.turn.down.right' }]
+          : []),
+        ...(actions
+          ? [{ id: 'stop-section', label: '', inline: true, items: [actions.stop] }]
+          : []),
+      ];
+    };
+    const primaryButton = () => (
+      <View
+        role="button"
+        testID="chat-primary-action"
+        hitSlop={4}
+        accessibilityLabel={actionLabel()}
+        disabled={disabled()}
+        accessibilityState={{
+          busy: primaryAction().kind === 'stopping' || primaryAction().kind === 'continuing',
+        }}
+        onPressDown={() => {
+          pressedAt = revision;
+        }}
+        onPress={pressPrimary}
+        activeStyle={{
+          backgroundColor: token(
+            glyph() === 'stop' ? 'glass-action-bg' : 'glass-primary-pressed-bg',
+          ),
+        }}
+        style={{
+          width: 36,
+          height: 36,
+          borderRadius: 18,
+          alignItems: 'center',
+          justifyContent: 'center',
+          flexShrink: 0,
+          backgroundColor: token(
+            disabled() ? 'surface-muted' : glyph() === 'stop' ? 'surface-elevated' : 'glass-accent',
+          ),
+        }}
+      >
+        <Icon
+          name={glyph()}
+          color={token(
+            disabled() ? 'glass-muted' : glyph() === 'stop' ? 'glass-destructive' : 'surface',
+          )}
+          size={18}
+          strokeWidth={2.3}
+        />
+      </View>
     );
 
     const pendingDock = (inSheet: boolean) => (
@@ -1417,12 +1715,14 @@ export function ChatScreen(
       scrollId: string;
       onClose: () => void;
       editing?: boolean;
+      details?: boolean;
       children: JSX.Element;
     }) {
       return (
         <Sheet
           open
           accessibilityLabel={props.title}
+          detents={props.details ? ['large'] : undefined}
           closeOnSwipe={!props.editing}
           closeOnBackdropPress={!props.editing}
           closeOnEscape={!props.editing}
@@ -1432,22 +1732,50 @@ export function ChatScreen(
           popupStyle={{
             backgroundColor: token('grouped-bg'),
             paddingTop: 8,
-            paddingBottom: 8,
+            paddingBottom: 8 + (props.details && !keyboardHeight() ? insets().bottom : 0),
             paddingLeft: left(),
             paddingRight: right(),
             // Sheet clears the keyboard inset for its children. Bound the
             // scrolling viewport using the owning page's keyboard frame.
             bottom: keyboardHeight() || undefined,
-            maxHeight: Math.max(0, windowSize().height - insets().top - bottomInset()),
+            maxHeight: Math.max(
+              0,
+              windowSize().height -
+                insets().top -
+                (props.details ? keyboardHeight() : bottomInset()),
+            ),
           }}
         >
-          <If when={!props.editing}>
-            <View style={{ alignItems: 'flex-end', flexShrink: 0 }}>
+          <If when={props.details || !props.editing}>
+            <View
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                justifyContent: 'flex-end',
+                gap: 8,
+                flexShrink: 0,
+              }}
+            >
+              <If when={props.details}>
+                <Text
+                  style={{
+                    ...type.headline,
+                    flex: 1,
+                    minWidth: 0,
+                    numberOfLines: 2,
+                    marginLeft: spacing.pageX,
+                    color: token('foreground'),
+                  }}
+                >
+                  {props.title}
+                </Text>
+              </If>
               <ActionButton
                 title={tr('Done')}
                 variant="glassQuiet"
                 compact
                 minHeight={spacing.rowMinHeight}
+                disabled={props.editing}
                 onPress={props.onClose}
               />
             </View>
@@ -1863,7 +2191,9 @@ export function ChatScreen(
                     }
                     disabled={sideDraft?.busy()}
                     ios={sideDraft ? undefined : { inputAccessoryViewID: accessoryId }}
+                    onBlur={closeThinking}
                     onChange={({ value }) => editComposer(value)}
+                    onCompositionChange={({ composing: active }) => composing.set(active)}
                     style={{
                       ...type.body,
                       color: token('glass-foreground'),
@@ -1875,33 +2205,18 @@ export function ChatScreen(
                       maxHeight: compact() ? 30 : 116,
                     }}
                   />
-                  <If when={compact() || !canAskFromTray()}>
-                    <QueueSendMenu
-                      trigger={sendButton()}
-                      onQueue={canQueue() ? () => send('queue') : undefined}
-                      disabled={!canSend()}
+                  <If when={composerMenu().length > 0} else={primaryButton()}>
+                    <ContextMenu
+                      trigger={primaryButton()}
+                      items={composerMenu()}
+                      onSelect={({ id }) => {
+                        if (id === 'ask-side' && props.active() && canAskInMenu())
+                          askSide(traySource);
+                        else selectRunAction(id);
+                      }}
                     />
                   </If>
                 </View>
-
-                <If when={isRunning()}>
-                  <View
-                    role="button"
-                    accessibilityLabel={tr('Stop Run')}
-                    onPress={() => void ctrl.stopRun()}
-                    activeStyle={{ backgroundColor: token('glass-action-bg') }}
-                    style={{
-                      width: 44,
-                      height: 44,
-                      borderRadius: 22,
-                      backgroundColor: token('surface-elevated'),
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                    }}
-                  >
-                    <Icon name="stop" color={token('glass-destructive')} size={16} />
-                  </View>
-                </If>
               </View>
             </If>
           </View>
@@ -1927,12 +2242,12 @@ export function ChatScreen(
                 <MenuButton
                   testID="chat-keyboard-model"
                   accessibilityLabel={tr('Select model')}
-                  disabled={!!ctrl.selectingModel() || ctrl.sending()}
+                  disabled={modelLocked()}
                   title={tr('Model')}
                   items={modelMenuItems()}
                   onSelect={({ id }) => handleSelectModel(id)}
                   // The native menu button covers its host, not the inset glass.
-                  style={{ flexShrink: 1, paddingVertical: 4 }}
+                  style={{ minWidth: 72, flexShrink: 1, paddingVertical: 4 }}
                 >
                   <View
                     testID="chat-keyboard-model-glass"
@@ -1965,6 +2280,47 @@ export function ChatScreen(
                 </MenuButton>
               </If>
 
+              <If when={canPickThinking()}>
+                <View
+                  role="button"
+                  testID="chat-thinking-accessory"
+                  accessibilityLabel={tr('Thinking level')}
+                  accessibilityState={{ expanded: thinkingOpen() }}
+                  disabled={!thinkingAvailable() || (modelLocked() && !thinkingOpen())}
+                  onPress={() => (thinkingOpen() ? closeThinking() : openThinking())}
+                  hitSlop={{ top: 4, bottom: 4 }}
+                  activeStyle={{ backgroundColor: token('glass-pressed-bg') }}
+                  style={{
+                    ...glassSurfaceStyle(18),
+                    minWidth: 44,
+                    maxWidth: 120,
+                    minHeight: 36,
+                    paddingHorizontal: 10,
+                    flexShrink: 0,
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: 5,
+                  }}
+                >
+                  <Icon name="sliders" color={token('glass-foreground')} size={14} />
+                  <If when={!iconOnlyAccessory()}>
+                    <Text
+                      style={{
+                        ...type.caption,
+                        color: token('glass-foreground'),
+                        fontWeight: '600',
+                        flexShrink: 1,
+                        numberOfLines: 1,
+                        textOverflow: 'ellipsis',
+                      }}
+                    >
+                      {thinkingLevel() ? thinkingLevelLabel(thinkingLevel()!) : tr('Default')}
+                    </Text>
+                  </If>
+                </View>
+              </If>
+
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                 <View
                   role="button"
@@ -1982,22 +2338,32 @@ export function ChatScreen(
                     paddingHorizontal: 10,
                     flexDirection: 'row',
                     alignItems: 'center',
+                    justifyContent: 'center',
                     gap: 5,
                   }}
                 >
                   <Icon name="diff" color={token('glass-foreground')} size={14} />
-                  <Text
-                    style={{ ...type.caption, fontWeight: '600', color: token('glass-foreground') }}
-                  >
-                    {tr('Changes')}
-                  </Text>
+                  <If when={!iconOnlyAccessory()}>
+                    <Text
+                      style={{
+                        ...type.caption,
+                        fontWeight: '600',
+                        color: token('glass-foreground'),
+                      }}
+                    >
+                      {tr('Changes')}
+                    </Text>
+                  </If>
                 </View>
 
                 <View
                   role="button"
                   accessibilityLabel={tr('Dismiss keyboard')}
                   hitSlop={4}
-                  onPress={() => inputRef?.blur()}
+                  onPress={() => {
+                    closeThinking();
+                    inputRef?.blur();
+                  }}
                   activeStyle={{ backgroundColor: token('glass-pressed-bg') }}
                   style={{
                     ...glassSurfaceStyle(18),
@@ -2027,6 +2393,69 @@ export function ChatScreen(
             onClose={() => sideList.set(null)}
             onOpen={sideDraft ? undefined : openSide}
           />
+        </If>
+
+        <If when={thinkingOpen() && thinkingAvailable() && props.active()}>
+          <View
+            style={{
+              position: 'absolute',
+              top: 0,
+              right: 0,
+              bottom: 0,
+              left: 0,
+              pointerEvents: 'box-none',
+            }}
+          >
+            <View
+              testID="chat-thinking-backdrop"
+              accessible={false}
+              onPress={closeThinking}
+              style={{ position: 'absolute', top: 0, right: 0, bottom: 0, left: 0 }}
+            />
+            <View
+              style={{
+                position: 'absolute',
+                left: left(),
+                right: right(),
+                bottom: composerHeight() + 6,
+                marginBottom: keyboardHeight() > 0 ? 'env(keyboard-inset-height)' : insets().bottom,
+                alignItems: 'center',
+                pointerEvents: 'box-none',
+              }}
+            >
+              <Each
+                of={thinkingContext() === null ? [] : [thinkingContext()!]}
+                key={(context) => context}
+              >
+                {(context) => (
+                  <ThinkingSlider
+                    stops={thinkingStops()}
+                    value={thinkingLevel()}
+                    disabled={modelLocked()}
+                    maxHeight={Math.max(0, availableHeight() - composerHeight() - 12)}
+                    horizontal={windowSize().width - left() - right() >= 560}
+                    onChange={(level) => previewThinking(context(), level)}
+                    onCommit={(level) => commitThinking(context(), level)}
+                    onClose={closeThinking}
+                  />
+                )}
+              </Each>
+            </View>
+          </View>
+        </If>
+
+        <If when={detailsOpen() && props.active() && !ctrl.isRoom()}>
+          <ComposerSheet
+            details
+            title={tr('Usage & Details')}
+            scrollId="chat-details-scroll"
+            onClose={() => detailsOpen.set(false)}
+          >
+            <ChatDetails
+              metrics={ctrl.lastObservation()?.metrics ?? null}
+              cached={!ctrl.observation() && !!ctrl.lastObservation()}
+            />
+          </ComposerSheet>
         </If>
 
         <If when={quoteSheetOpen()}>

@@ -113,9 +113,9 @@ Inspect UI changes in the native desktop renderer across both light and dark the
 | Chats, transcript and Pending connection status | Inline text shimmer during dials and online backoff, solid under Reduce Motion; static offline state while waiting for a network. No transition or placeholder over cached chats. |
 | Conversation and Bot work | Desktop five-stroke mark (4 s) and native text shimmer; static mark and solid text under Reduce Motion |
 | Approval actions | Approval press at 0.96 scale with a short opacity transition; no scale under Reduce Motion |
-| Chat glass chrome | UIKit owns bar, menu and keyboard motion. The context pill does not intercept scroll gestures. Composer, quote and sheet controls change fill without dimming their foregrounds. Jump to Latest scrolls, or jumps under Reduce Motion. |
+| Chat glass chrome | UIKit owns bar, menu and keyboard motion. The context pill does not intercept scroll gestures. The trailing bar items and More menu are native UIKit items. Composer, quote and sheet controls change fill without dimming their foregrounds. Jump to Latest scrolls, or jumps under Reduce Motion. |
 | Composer and transcript | Composer height, quotes, queue and live content reflow without a second animation. The composer and retained transcript rows follow NSH's keyboard transition when pinned to the tail. Keep the reading position otherwise. |
-| Short chat viewport | Context hides; quotes, pending sends, queue and Latest stay reachable in the composer menu. Both sheets scroll above the keyboard and stay within the horizontal safe area. The quote sheet works offline. |
+| Short chat viewport | Context hides; quotes, pending sends, queue and Latest stay reachable in the composer menu. Sheets scroll above the keyboard and stay within the horizontal safe area. The quote sheet works offline. |
 
 Approvals stay in a fixed one-row layout, with short press feedback and the outcome replacing the card’s action row. Pending uses the system segmented control (pill fallback off iOS); settings disclosures use the existing grouped rows and native confirmation dialogs.
 
@@ -145,6 +145,15 @@ keyboard toolbar use the same material without pulling focus from the draft.
 | Steer status arrives or lands | Fast opacity enter/exit; no delayed removal from the transcript handoff | Immediate |
 | Queue disclosure, inline edit and review | Disclosure uses normal layout animation; editing and review reveal in place | Immediate |
 | Failure card / optimistic user bubble | Immediate feedback; no scripted scroll for queue actions | Same |
-| Send and Send to Main Chat context menus | Native presentation/dismissal | System setting |
+| Composer context menu and More | Native presentation/dismissal | System setting |
 | Selection or drag release | None added | — |
 | In-flight RPC and waiting for next step | Pulsing mark for RPC; static mark while waiting | Static mark |
+
+### iOS chat: reply controls and usage
+
+| Change | Motion | Reduced motion |
+| --- | --- | --- |
+| Send, Stop and Continue | Opaque press tint and an in-place glyph swap in the 36pt control inside the input pill (44pt touch target). A held press never changes its command. | Same |
+| Model and More | UIKit presents the menu. Telemetry refreshes do not replace menu actions. The model checkmark stays on the confirmed selection until save completes. | System setting |
+| Thinking capsule | Opens above the measured composer, without moving the draft or transcript. The thumb and tick follow each step immediately, including Default; failure restores the confirmed step. Changing model or connection ends the drag. Compact layout dismisses the capsule. | Same |
+| Usage & Details | Opens only from More, at one visible sheet height. Usage and speed update in place. | System setting |

@@ -40,6 +40,8 @@ import {
   type AgentQueueMutationResult,
   type AgentRun,
   type AgentObservation,
+  type AgentExecution,
+  type ServiceMethods,
   type AgentQueue,
   type AgentRoomMessage,
   type AgentSession,
@@ -63,7 +65,33 @@ import {
   readDefaultModel,
 } from './settings/models';
 import { settingsRpc } from './settings/rpc';
-import { tr } from '../locale';
+import { tr, type MessageKey } from '../locale';
+
+type AgentOutput<M extends keyof ServiceMethods['agent']> = ServiceMethods['agent'][M]['output'];
+type RunTarget = {
+  rootId: string;
+  generation: number;
+  sessionId: string;
+  runId: AgentRun['runId'];
+};
+
+const continuationRejected: Record<
+  Extract<AgentOutput<'continueRun'>, { kind: 'rejected' }>['reason'],
+  MessageKey
+> = {
+  closed: 'Maka is shutting down. Try again after it restarts.',
+  archived: 'Restore this conversation to continue it.',
+  busy: 'Wait for the current reply and queue to finish.',
+  source_missing: 'There is no stopped reply to continue.',
+  source_changed: 'The conversation changed. Send a new message instead.',
+  source_not_terminal: 'Wait for this reply to finish before continuing.',
+  already_continued: 'This reply has already been continued.',
+  workspace_changed: 'The workspace changed. Send a new message instead.',
+  safety_check_failed: 'This reply can’t be continued safely. Send a new message instead.',
+};
+
+const isStoppedExecution = ({ state }: AgentExecution) =>
+  state.kind === 'failed' || state.kind === 'cancelled';
 
 export const backendKey = (backend: AgentBackendPreference) =>
   JSON.stringify(
@@ -80,13 +108,19 @@ export const backendKey = (backend: AgentBackendPreference) =>
           backend.selection.executor,
           backend.selection.settings?.runtime ?? null,
           backend.selection.settings?.model ?? null,
+          backend.selection.settings?.thinkingLevel ?? null,
         ],
   );
 
 export const displayModelKey = (backend: AgentBackendPreference) =>
   backend.kind === 'model'
     ? JSON.stringify(['model', backend.connectionId, backend.modelId])
-    : backendKey(backend);
+    : JSON.stringify([
+        'executor',
+        backend.selection.executor,
+        backend.selection.settings.runtime ?? null,
+        backend.selection.settings.model ?? null,
+      ]);
 
 export function compareHistoryRows(
   a: Pick<AgentHistoryChunk, 'order'>,
@@ -785,6 +819,7 @@ export function createConversationController(
     const current = observation();
     return current?.session.backend ?? current?.rememberedBackend ?? null;
   };
+  const lastObservation = () => observed()?.value ?? null;
   const chunks = signal<AgentHistoryChunk[] | null>(null);
   const roomMessages = signal<AgentRoomMessage[] | null>(null);
   const isRoom = signal(initialSession.kind === 'room');
@@ -961,6 +996,13 @@ export function createConversationController(
 
   let disposed = false;
   let lastThrough: number | null = null;
+  const knownTip = signal<{ generation: number; through: number }>();
+  const advanceTip = (generation: number, through: number) => {
+    const tip = untracked(knownTip);
+    if (tip?.generation !== generation || through > tip.through) {
+      knownTip.set({ generation, through });
+    }
+  };
   const historyFence = signal<HistoryFence>();
   let pageEpoch = 0;
   effect(() => {
@@ -1238,45 +1280,98 @@ export function createConversationController(
     }
   };
 
-  let observeFlight: { generation: number; dirty: boolean; promise: Promise<void> } | undefined;
+  let observeFlight:
+    | { generation: number; dirty: boolean; promise: Promise<AgentObservation | null> }
+    | undefined;
   const loadObserve = (fresh = true) => {
     const generation = activeHostInfo(rootId)?.generation;
-    if (generation === undefined || disposed) return Promise.resolve();
+    if (generation === undefined || disposed) return Promise.resolve(null);
     if (observeFlight?.generation === generation) {
       if (fresh) observeFlight.dirty = true;
       return observeFlight.promise;
     }
-    const flight = { generation, dirty: true, promise: Promise.resolve() };
+    const flight = {
+      generation,
+      dirty: true,
+      promise: Promise.resolve<AgentObservation | null>(null),
+    };
     flight.promise = (async () => {
       try {
-        while (flight.dirty && !disposed && activeHostInfo(rootId)?.generation === generation) {
+        while (flight.dirty && isCurrent(generation)) {
           flight.dirty = false;
-          const obs = await hostQuery<AgentObservation>(
-            'agent',
-            'observe',
-            { sessionId },
-            undefined,
-            rootId,
-          );
-          if (disposed || activeHostInfo(rootId)?.generation !== generation) return;
-          const current = observation();
-          if (current && obs.session.revision < current.session.revision) continue;
-          observed.set({ generation, value: obs });
-          if (obs.session?.kind === 'room') isRoom.set(true);
-          if (typeof obs.through === 'number') {
-            lastThrough = Math.max(lastThrough ?? 0, obs.through);
+          let obs: AgentObservation;
+          try {
+            obs = await hostQuery<AgentObservation>(
+              'agent',
+              'observe',
+              { sessionId },
+              undefined,
+              rootId,
+            );
+            if (obs.session.id !== sessionId)
+              throw new Error('Host observed a different conversation');
+          } catch (cause) {
+            if (!isCurrent(generation)) return null;
+            error.set(cause instanceof Error ? cause.message : String(cause));
+            // Only an already queued read can follow this failure.
+            if (flight.dirty) continue;
+            return null;
           }
+          if (!isCurrent(generation)) return null;
+          const current = observation();
+          if (
+            current &&
+            (obs.session.revision < current.session.revision || obs.through < current.through)
+          ) {
+            // A committed backend may have advanced the summary while this read
+            // was in flight. Watch events queued behind it still need a read.
+            if (flight.dirty) continue;
+            return null;
+          }
+          batch(() => {
+            observed.set({ generation, value: obs });
+            const request = pendingContinuation();
+            const observedRunId = obs.run?.runId ?? obs.latestRunId;
+            if (
+              request?.ownsComposer &&
+              observedRunId != null &&
+              observedRunId !== request.source.runId
+            ) {
+              continuationRequest.set({ ...request, ownsComposer: false });
+            }
+            if (obs.session.kind === 'room') isRoom.set(true);
+            if (typeof obs.through === 'number') {
+              lastThrough = Math.max(lastThrough ?? 0, obs.through);
+              advanceTip(generation, obs.through);
+            }
+          });
         }
-      } catch (cause) {
-        if (!disposed && activeHostInfo(rootId)?.generation === generation) {
-          error.set(cause instanceof Error ? cause.message : String(cause));
-        }
+        return isCurrent(generation) ? observation() : null;
       } finally {
         if (observeFlight === flight) observeFlight = undefined;
       }
     })();
     observeFlight = flight;
     return flight.promise;
+  };
+
+  const syncIdleTail = (snapshot: AgentObservation) => {
+    const fence = historyFence();
+    if (
+      snapshot === observation() &&
+      !snapshot.run &&
+      !isRoom() &&
+      fence?.generation === activeHostInfo(rootId)?.generation &&
+      fence?.through != null &&
+      fence.through < snapshot.through
+    ) {
+      void loadHistory();
+    }
+  };
+
+  const refreshDetails = async () => {
+    const snapshot = await loadObserve(false);
+    if (snapshot && !disposed) syncIdleTail(snapshot);
   };
 
   const startWatch = (gen: number) => {
@@ -1297,7 +1392,8 @@ export function createConversationController(
     !disposed && activeHostInfo(rootId)?.generation === generation;
 
   const applyQueue = (value: AgentQueue, generation: number) => {
-    if (!isCurrent(generation) || !(value.revision >= (queue()?.revision ?? -1))) return;
+    if (isRoom() || !isCurrent(generation) || !(value.revision >= (queue()?.revision ?? -1)))
+      return;
     batch(() => {
       queueSnapshot.set({ generation, value });
       observedSteering.update((previous) => {
@@ -1468,14 +1564,17 @@ export function createConversationController(
   const refreshAll = async () => {
     error.set(null);
     loading.set(true);
+    const stop = stoppingTarget();
     try {
-      await Promise.all([
+      const [snapshot] = await Promise.all([
         loadObserve(),
         loadHistory(),
         loadInteractions(),
         loadModels(),
         refreshQueue(),
       ]);
+      if (snapshot && stop?.phase === 'unknown' && stopRequest() === stop) stopRequest.set(null);
+      return snapshot;
     } finally {
       if (!disposed) loading.set(false);
     }
@@ -1550,13 +1649,12 @@ export function createConversationController(
 
   const draft = () => getDraft(rootId, sessionId);
   const sending = () => draft().sending;
-  const hasDraftContent = () =>
-    Boolean(
-      trimHostWhitespace(draft().input.text) ||
-        (!isRoom() && (draft().quotes.length || draft().links.length)),
-    );
+  const hasDraftReferences = () => !isRoom() && !!(draft().quotes.length || draft().links.length);
+  const hasDraftEdits = () => draft().input.text.length > 0 || hasDraftReferences();
+  const hasDraftContent = () => !!trimHostWhitespace(draft().input.text) || hasDraftReferences();
 
   const submit = async (snapshot: DraftContent, delivery: SendDelivery, retryId?: number) => {
+    if (runControlBusy()) return false;
     const room = isRoom();
     const content = room ? { input: snapshot.input, quotes: [], links: [] } : snapshot;
     if (sending() || (!sendText(content) && !content.quotes.length)) return false;
@@ -1699,7 +1797,10 @@ export function createConversationController(
     }
   };
 
-  const sendMessage = (delivery: SendDelivery = 'steer') => submit(draft(), delivery);
+  const sendMessage = (delivery: SendDelivery = 'steer', target?: RunTarget) => {
+    if (!active() || (target && !sameRun(target))) return Promise.resolve(false);
+    return submit(draft(), delivery);
+  };
   const failedSend = (id: number) =>
     composerSends().find(
       (send) => send.id === id && (send.state === 'failed' || send.state === 'unknown'),
@@ -1750,24 +1851,247 @@ export function createConversationController(
     if (send?.state === 'failed') return submit(send.draft, send.delivery, id);
   };
 
-  const stopRun = async () => {
+  const runTarget = computed<RunTarget | null>(() => {
+    const generation = activeHostInfo(rootId)?.generation;
     const run = observation()?.run;
-    if (!run) return;
+    return !isRoom() && run && generation !== undefined
+      ? { rootId, generation, sessionId, runId: run.runId }
+      : null;
+  });
+  const sameRun = (target: RunTarget) =>
+    target.rootId === rootId &&
+    target.sessionId === sessionId &&
+    isCurrent(target.generation) &&
+    runTarget()?.runId === target.runId;
+  const stopRequest = signal<{ target: RunTarget; phase: 'pending' | 'unknown' } | null>(null);
+  const stoppingTarget = () => {
+    const request = stopRequest();
+    return request && sameRun(request.target) ? request : null;
+  };
+  const stopRun = async (target: RunTarget) => {
+    if (!active() || !sameRun(target) || runControlBusy()) return;
+    const request = { target, phase: 'pending' } as const;
+    stopRequest.set(request);
     try {
-      await hostMutate('agent', 'stop', { sessionId, runId: run.runId }, { rootId });
-      hapticNotification('warning');
+      const result = await hostMutate<AgentOutput<'stop'>>(
+        'agent',
+        'stop',
+        { sessionId, runId: target.runId },
+        { rootId, generation: target.generation },
+      );
+      if (!isCurrent(target.generation)) return;
+      if (result.requested && active() && sameRun(target)) hapticNotification('warning');
+      await loadObserve();
+      if (!result.requested && stopRequest() === request) stopRequest.set(null);
+    } catch (cause) {
+      if (stopRequest() !== request || !sameRun(target)) return;
+      if (cause instanceof MutationNotSubmitted) {
+        stopRequest.set(null);
+        if (active()) showToast(tr('Could not stop the reply. Try again.'));
+      } else {
+        stopRequest.set({ target, phase: 'unknown' });
+        if (active()) showToast(tr('Stop not confirmed. Refresh to check the reply.'));
+        void loadObserve();
+      }
+    }
+  };
+
+  const watchObserveTip = signal<{ generation: number; through: number }>();
+  const continuationCandidate = () => {
+    const generation = activeHostInfo(rootId)?.generation;
+    const obs = observation();
+    const fence = historyFence();
+    const tip = knownTip();
+    const requiredObservation = watchObserveTip();
+    const backend = selectedBackend();
+    const rawQueue = queue();
+    if (
+      !enabled ||
+      !active() ||
+      isRoom() ||
+      generation === undefined ||
+      !obs ||
+      obs.session.archived ||
+      obs.run ||
+      (requiredObservation?.generation === generation &&
+        obs.through < requiredObservation.through) ||
+      fence?.generation !== generation ||
+      fence.through === null ||
+      (tip?.generation === generation && fence.through < tip.through) ||
+      !rawQueue ||
+      rawQueue.entries.some(({ kind }) => kind !== 'held') ||
+      selectingModel() ||
+      sending() ||
+      backend?.kind !== 'model'
+    )
+      return null;
+    const runId =
+      obs.latestRunId ??
+      chunks()?.findLast((row) => row.position.kind === 'live' && row.runId != null)?.runId;
+    if (!runId) return null;
+    return {
+      generation,
+      runId,
+      backend,
+      key: JSON.stringify([
+        generation,
+        runId,
+        fence.through,
+        obs.through,
+        obs.session.workspace,
+        backendKey(backend),
+      ]),
+    };
+  };
+  const continuationKey = computed(() => continuationCandidate()?.key ?? null);
+  type ResumeSource = NonNullable<ReturnType<typeof continuationCandidate>> & { highWater: number };
+  const verifiedContinuation = signal<ResumeSource | null>(null);
+  const continuationRequest = signal<{ source: ResumeSource; ownsComposer: boolean } | null>(null);
+  // An ambiguous receipt must not turn into a retry of the same durable source.
+  const settledContinuation = signal<Pick<ResumeSource, 'runId' | 'highWater'> | null>(null);
+  const pendingContinuation = () => {
+    const request = continuationRequest();
+    return request && isCurrent(request.source.generation) ? request : null;
+  };
+  // Receipt deduplication lasts until settlement; composer ownership does not
+  // come back after a successor has been observed.
+  const continueRequestBusy = () => pendingContinuation()?.ownsComposer === true;
+  const runControlBusy = () => !!stoppingTarget() || continueRequestBusy();
+  const availableContinuation = () => {
+    const source = verifiedContinuation();
+    const settled = settledContinuation();
+    return source &&
+      source.key === continuationKey() &&
+      !(settled?.runId === source.runId && settled.highWater === source.highWater)
+      ? source
+      : null;
+  };
+  const continuationReady = () => (pendingContinuation() ? null : availableContinuation());
+  const readExecution = (runId: ResumeSource['runId']) =>
+    hostQuery<AgentOutput<'execution'>>(
+      'agent',
+      'execution',
+      { sessionId, runId },
+      undefined,
+      rootId,
+    );
+  const matchesSource = (execution: AgentExecution, runId: ResumeSource['runId']) =>
+    execution.sessionId === sessionId && execution.runId === runId && isStoppedExecution(execution);
+  const modelSupportsContinuation = async (backend: ResumeSource['backend']) => {
+    const model = await hostQuery<AgentOutput<'model'>>(
+      'agent',
+      'model',
+      { backend },
+      undefined,
+      rootId,
+    );
+    return (
+      model.kind === 'ready' &&
+      (backend.serviceTier == null ||
+        model.choice.serviceTiers?.some(({ id }) => id === backend.serviceTier)) &&
+      (backend.thinkingLevel == null || model.choice.thinkingLevels.includes(backend.thinkingLevel))
+    );
+  };
+  const continueRun = async (source: ResumeSource, composerEmpty: () => boolean) => {
+    const eligible = () =>
+      isCurrent(source.generation) &&
+      availableContinuation() === source &&
+      !hasDraftEdits() &&
+      !sending() &&
+      composerEmpty();
+    if (!eligible() || pendingContinuation() || stoppingTarget()) return;
+    continuationRequest.set({ source, ownsComposer: true });
+    const current = () => continueRequestBusy() && eligible();
+    let submitted = false;
+    try {
+      const fresh = await loadObserve();
+      if (!fresh) return;
+      if (!current()) {
+        if (isCurrent(source.generation)) syncIdleTail(fresh);
+        return;
+      }
+      const supported = await modelSupportsContinuation(source.backend);
+      if (!current()) return;
+      if (!supported) {
+        verifiedContinuation.set(null);
+        showToast(tr('The selected model is unavailable. Try again or choose another model.'));
+        return;
+      }
+      const result = await readExecution(source.runId);
+      if (!current()) return;
+      if (
+        result.kind !== 'found' ||
+        !matchesSource(result.execution, source.runId) ||
+        result.execution.highWater !== source.highWater
+      ) {
+        verifiedContinuation.set(null);
+        showToast(tr('The conversation changed. Send a new message instead.'));
+        return;
+      }
+      const { connectionId, modelId, serviceTier, thinkingLevel } = source.backend;
+      submitted = true;
+      const receipt = await hostMutate<AgentOutput<'continueRun'>>(
+        'agent',
+        'continueRun',
+        {
+          sessionId,
+          sourceRunId: source.runId,
+          sourceHighWater: source.highWater,
+          model: { connectionId, modelId, ...(serviceTier != null && { serviceTier }) },
+          thinkingLevel: thinkingLevel ?? null,
+        },
+        { rootId, generation: source.generation },
+      );
+      if (receipt.kind === 'started') {
+        if (receipt.execution.sessionId !== sessionId || receipt.execution.runId === source.runId)
+          throw new Error('Host returned an unexpected continuation');
+        if (!disposed) settledContinuation.set(source);
+      }
+      if (!isCurrent(source.generation)) return;
+      if (receipt.kind === 'rejected') {
+        if (verifiedContinuation()?.runId === source.runId) verifiedContinuation.set(null);
+        showToast(tr(continuationRejected[receipt.reason]));
+        hapticNotification('error');
+      } else hapticSelection();
+      void loadHistory();
+      void refreshQueue(source.generation);
       await loadObserve();
     } catch (cause) {
-      showToast(cause instanceof Error ? cause.message : String(cause));
+      const unknown = submitted && !(cause instanceof MutationNotSubmitted);
+      if (unknown && !disposed) settledContinuation.set(source);
+      if (isCurrent(source.generation)) {
+        console.warn('Could not confirm continuation', cause);
+        showToast(
+          unknown
+            ? tr('Continue not confirmed. Refresh to check the reply.')
+            : tr('Could not continue the reply. Try again.'),
+        );
+        if (unknown) {
+          hapticNotification('warning');
+          void loadHistory();
+          void refreshQueue(source.generation);
+          await loadObserve();
+        } else hapticNotification('error');
+      }
+    } finally {
+      if (continuationRequest()?.source === source) continuationRequest.set(null);
     }
   };
 
   const selectModel = (backend: AgentBackendPreference) => {
     const generation = activeHostInfo(rootId)?.generation;
-    if (disposed || isRoom() || generation === undefined || selectingModel() || sending()) return;
+    if (
+      disposed ||
+      isRoom() ||
+      generation === undefined ||
+      selectingModel() ||
+      sending() ||
+      continueRequestBusy()
+    )
+      return;
     const alreadySelected = () => {
       const chosen = selectedBackend();
-      return chosen !== null && displayModelKey(chosen) === displayModelKey(backend);
+      return chosen !== null && backendKey(chosen) === backendKey(backend);
     };
     if (alreadySelected()) return;
     const done = (async () => {
@@ -1787,9 +2111,12 @@ export function createConversationController(
           throw new Error(tr('Could not change the model.'), { cause: result.kind });
         const current = observation()!;
         if (result.session.revision >= current.session.revision) {
-          observed.set({ generation, value: { ...current, session: result.session } });
+          observed.set({
+            generation,
+            value: { ...current, session: result.session, metrics: null },
+          });
+          void loadObserve();
         }
-        hapticSelection();
         return true;
       } catch (cause) {
         if (!disposed && activeHostInfo(rootId)?.generation === generation) {
@@ -1968,11 +2295,16 @@ export function createConversationController(
       return;
     }
     if (page.kind === 'events') {
-      if (typeof page.through === 'number') lastThrough = Math.max(lastThrough ?? 0, page.through);
+      if (typeof page.through === 'number') {
+        lastThrough = Math.max(lastThrough ?? 0, page.through);
+        advanceTip(generation, page.through);
+      }
       let needsHistory = false;
       let needsObserve = false;
+      let needsCatalog = false;
       for (const ev of page.events ?? []) {
         const fact = ev.fact;
+        if (fact.kind === 'step_ended') needsObserve = true;
         if (fact.kind === 'delta') {
           livePreview.set(accumulator.applyDelta(ev.runId, fact.text));
         } else if (
@@ -1990,15 +2322,20 @@ export function createConversationController(
           needsHistory = true;
         } else if (['opened', 'executor_started'].includes(fact.kind)) {
           needsObserve = true;
+          needsCatalog = true;
         } else if (fact.kind === 'ended') {
           needsHistory = true;
           needsObserve = true;
+          needsCatalog = true;
           livePreview.set(accumulator.beginHandoff());
         }
       }
       if (needsHistory) void loadHistory();
-      if (needsObserve) {
+      if (needsObserve || (!observation()?.run && needsHistory)) {
+        watchObserveTip.set({ generation, through: page.through });
         void loadObserve();
+      }
+      if (needsCatalog) {
         const hostName = hostById(rootId)?.hostName ?? rootId;
         void refreshHostSessions(rootId, hostName);
       }
@@ -2024,6 +2361,51 @@ export function createConversationController(
     });
   });
 
+  effect(() => {
+    const key = continuationKey();
+    const refreshing = loading();
+    untracked(() => {
+      verifiedContinuation.set(null);
+      const candidate = continuationCandidate();
+      if (!key || refreshing || !candidate) return;
+      let live = true;
+      cleanup(() => {
+        live = false;
+      });
+      const current = () => live && isCurrent(candidate.generation) && continuationKey() === key;
+      void (async () => {
+        try {
+          const result = await readExecution(candidate.runId);
+          if (
+            !current() ||
+            result.kind !== 'found' ||
+            !matchesSource(result.execution, candidate.runId)
+          )
+            return;
+          const availability = await hostQuery<AgentOutput<'continuationAvailability'>>(
+            'agent',
+            'continuationAvailability',
+            { sessionId, runId: candidate.runId },
+            undefined,
+            rootId,
+          );
+          if (
+            !current() ||
+            availability.kind !== 'ready' ||
+            !matchesSource(availability.source, candidate.runId) ||
+            availability.source.highWater !== result.execution.highWater
+          )
+            return;
+          const supported = await modelSupportsContinuation(candidate.backend);
+          if (current() && supported)
+            verifiedContinuation.set({ ...candidate, highWater: result.execution.highWater });
+        } catch (cause) {
+          if (current()) console.warn('Could not check whether the reply can continue', cause);
+        }
+      })();
+    });
+  });
+
   cleanup(() => {
     disposed = true;
     stopWatch();
@@ -2031,6 +2413,8 @@ export function createConversationController(
 
   return {
     observation,
+    lastObservation,
+    refreshDetails,
     selectedBackend,
     selectingModel,
     chunks: visibleChunks,
@@ -2043,6 +2427,7 @@ export function createConversationController(
     earlierFailed,
     sending,
     hasDraftContent,
+    hasDraftEdits,
     error,
     queue,
     queuedMessages,
@@ -2064,7 +2449,13 @@ export function createConversationController(
     historyFence,
     readHistoryDetail,
     sendMessage,
+    runTarget,
+    stoppingTarget,
     stopRun,
+    continuationReady,
+    continueRequestBusy,
+    runControlBusy,
+    continueRun,
     selectModel,
     readQueuedMessage,
     promoteQueuedMessage: (messageId: string) => changeQueue({ kind: 'promote', messageId }),

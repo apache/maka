@@ -31,7 +31,7 @@ import {
   type JSX,
   type ViewStyle,
 } from 'nsh';
-import { Button, ContextMenu, Input } from 'nsh/base';
+import { Button, Input } from 'nsh/base';
 import { tr } from '../../locale';
 import {
   sendPreview,
@@ -95,26 +95,6 @@ function DockAction(props: {
         {props.label}
       </Text>
     </Button>
-  );
-}
-
-export function QueueSendMenu(props: {
-  trigger: JSX.Element;
-  onQueue?: () => void;
-  disabled: boolean;
-}) {
-  return (
-    <If when={props.onQueue !== undefined} else={props.trigger}>
-      <ContextMenu
-        trigger={props.trigger}
-        items={[
-          { id: 'queue', label: tr('Add to queue'), icon: 'text.append', disabled: props.disabled },
-        ]}
-        onSelect={() => {
-          if (!props.disabled) props.onQueue?.();
-        }}
-      />
-    </If>
   );
 }
 

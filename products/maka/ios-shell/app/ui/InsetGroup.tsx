@@ -21,7 +21,7 @@ import { Text, View, token, type JSX } from 'nsh';
 import { spacing, type } from '../theme/tokens';
 import { Icon } from './Icon';
 
-export function GroupHeader(props: { title: string; trailing?: JSX.Element }) {
+export function GroupHeader(props: { title: string; trailing?: JSX.Element; variant?: 'glass' }) {
   return (
     <View
       style={{
@@ -36,7 +36,7 @@ export function GroupHeader(props: { title: string; trailing?: JSX.Element }) {
         style={{
           ...type.footnote,
           fontWeight: '500',
-          color: token('muted-foreground'),
+          color: token(props.variant === 'glass' ? 'glass-muted' : 'muted-foreground'),
         }}
       >
         {props.title}
@@ -46,7 +46,7 @@ export function GroupHeader(props: { title: string; trailing?: JSX.Element }) {
   );
 }
 
-export function GroupFooter(props: { text: string }) {
+export function GroupFooter(props: { text: string; variant?: 'glass' }) {
   return (
     <View
       style={{
@@ -57,7 +57,7 @@ export function GroupFooter(props: { text: string }) {
       <Text
         style={{
           ...type.footnote,
-          color: token('muted-foreground'),
+          color: token(props.variant === 'glass' ? 'glass-muted' : 'muted-foreground'),
         }}
       >
         {props.text}
@@ -87,12 +87,17 @@ export function InsetGroup(props: {
   headerTrailing?: JSX.Element;
   footer?: string;
   elevated?: boolean;
+  variant?: 'glass';
   children?: JSX.Element;
 }) {
   return (
     <View style={{ marginBottom: spacing.sectionGap }}>
       <If when={props.header}>
-        <GroupHeader title={props.header!} trailing={props.headerTrailing} />
+        <GroupHeader
+          title={props.header!}
+          trailing={props.headerTrailing}
+          variant={props.variant}
+        />
       </If>
       <View
         style={{
@@ -106,7 +111,7 @@ export function InsetGroup(props: {
         {props.children}
       </View>
       <If when={props.footer}>
-        <GroupFooter text={props.footer!} />
+        <GroupFooter text={props.footer!} variant={props.variant} />
       </If>
     </View>
   );
@@ -119,6 +124,8 @@ export function GroupRow(props: {
   value?: string;
   trailing?: JSX.Element;
   chevron?: boolean;
+  selected?: boolean;
+  variant?: 'glass';
   tone?: 'default' | 'primary' | 'destructive';
   disabled?: boolean;
   divider?: boolean;
@@ -134,6 +141,12 @@ export function GroupRow(props: {
     return token('foreground');
   };
 
+  const accessoryColor = () =>
+    token(props.variant === 'glass' ? 'glass-muted' : 'muted-foreground');
+  const value = () => {
+    const text = [props.value, props.subtitle].filter(Boolean).join(' · ');
+    return text ? { text } : undefined;
+  };
   const hasLeading = () => props.leading !== undefined;
   const inset = () => props.dividerInset ?? (hasLeading() ? 56 : 16);
 
@@ -170,7 +183,7 @@ export function GroupRow(props: {
           <Text
             style={{
               ...type.footnote,
-              color: token('muted-foreground'),
+              color: accessoryColor(),
               numberOfLines: 2,
               textOverflow: 'ellipsis',
             }}
@@ -183,7 +196,7 @@ export function GroupRow(props: {
         <Text
           style={{
             ...type.body,
-            color: token('muted-foreground'),
+            color: accessoryColor(),
             maxWidth: 150,
             textAlign: 'right',
             numberOfLines: 1,
@@ -197,7 +210,7 @@ export function GroupRow(props: {
       <If when={props.chevron}>
         <Icon
           name="chevronRight"
-          color={token('tertiary-foreground')}
+          color={props.variant === 'glass' ? accessoryColor() : token('tertiary-foreground')}
           size={16}
           strokeWidth={2.1}
         />
@@ -213,6 +226,8 @@ export function GroupRow(props: {
           <View
             testID={props.testID}
             accessible={props.accessible}
+            accessibilityState={{ selected: props.selected, disabled: props.disabled }}
+            accessibilityValue={props.accessible === false ? undefined : value()}
             accessibilityLabel={
               props.accessible === false ? undefined : (props.accessibilityLabel ?? props.title)
             }
@@ -225,8 +240,13 @@ export function GroupRow(props: {
           role="button"
           testID={props.testID}
           accessibilityLabel={props.accessibilityLabel ?? props.title}
+          accessibilityState={{ selected: props.selected }}
+          accessibilityValue={value()}
           onPress={props.onPress}
           class="active:bg-row-pressed transition-colors duration-150"
+          activeStyle={
+            props.variant === 'glass' ? { backgroundColor: token('glass-action-bg') } : undefined
+          }
         >
           {rowContent}
         </View>
