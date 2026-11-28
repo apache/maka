@@ -36,7 +36,7 @@ use objc2_foundation::{
     NSURLSessionResponseDisposition, NSURLSessionTask, NSURLSessionTaskDelegate,
 };
 use objc2_image_io::{
-    CGImageSource, kCGImageSourceCreateThumbnailFromImageAlways,
+    CGImageSource, kCGImagePropertyDepth, kCGImageSourceCreateThumbnailFromImageAlways,
     kCGImageSourceCreateThumbnailWithTransform, kCGImageSourceShouldCacheImmediately,
     kCGImageSourceThumbnailMaxPixelSize,
 };
@@ -45,6 +45,8 @@ use rustc_hash::FxHashMap;
 
 /// Decoded images kept in memory (bytes), before `NSCache` evicts.
 const CACHE_BYTES: usize = 96 << 20;
+const DECODED_BYTES: usize = 64 << 20;
+const MAX_THUMBNAIL_SIDE: u32 = 8192;
 
 /// A decoded image handed from a background queue to the main thread,
 /// with the pixel size of its source (before downsampling: `onLoad`
@@ -55,6 +57,7 @@ pub(crate) struct DecodedImage {
     pub(crate) image: Retained<UIImage>,
     pub(crate) width: u32,
     pub(crate) height: u32,
+    cost: usize,
 }
 
 define_class!(
@@ -559,27 +562,13 @@ impl ImageLoader {
             return Vec::new();
         };
         if let Ok(decoded) = result {
-            let image = &decoded.image;
-            // SAFETY: plain getters on a valid image.
-            let (size, scale) = unsafe { (image.size(), image.scale()) };
-            // Animated images repeat frames for long delays: count distinct
-            // ones.
-            // SAFETY: a plain getter.
-            let frames = unsafe { image.images() }.map_or(1, |frames| {
-                let mut seen: Vec<*const UIImage> =
-                    frames.iter().map(|f| Retained::as_ptr(&f)).collect();
-                seen.sort_unstable();
-                seen.dedup();
-                seen.len()
-            });
-            let cost = (size.width * scale * size.height * scale * 4.0) as usize * frames;
             if !nsh_core::image::is_live_frame(&inflight.uri) {
                 // SAFETY: NSString key and CachedImage value, as declared.
                 unsafe {
                     self.cache.setObject_forKey_cost(
                         &CachedImage::new(decoded.clone()),
                         &NSString::from_str(key),
-                        cost,
+                        decoded.cost,
                     )
                 };
             }
@@ -958,6 +947,7 @@ fn decode_svg(bytes: &[u8], d: Decoding) -> Option<DecodedImage> {
     let scale = (raster.width as f64 / raster.size.width.0 as f64).max(d.scale);
     let (width, height) = svg_size(raster.size);
     Some(DecodedImage {
+        cost: frame_cost(&image),
         image: UIImage::imageWithCGImage_scale_orientation(
             &image,
             scale as CGFloat,
@@ -1004,6 +994,49 @@ fn rgba_image(raster: &nsh_core::svg::Raster) -> Option<CFRetained<CGImage>> {
     }
 }
 
+/// Requests the unzoomed view's pixel size at the effective screen scale.
+pub(crate) fn display_pixels(side: f64, display_scale: f64, zoom: f64) -> u32 {
+    ((side * display_scale * zoom.max(1.0)).ceil() as u32).min(MAX_THUMBNAIL_SIDE)
+}
+
+/// Bounds the long edge by decoded area. Only view-sized requests have an
+/// additional side limit: Canvas uses natural pixels as crop coordinates.
+fn thumbnail_limit(requested: u32, (width, height): (u32, u32), bytes_per_pixel: usize) -> u32 {
+    let (long, short) = (u64::from(width.max(height)), u64::from(width.min(height)));
+    let limit = if requested == 0 {
+        u32::MAX
+    } else {
+        requested.min(MAX_THUMBNAIL_SIDE)
+    };
+    if short == 0 {
+        return limit.min(2048);
+    }
+    let budget = (DECODED_BYTES / bytes_per_pixel) as u64;
+    let mut high = long.min(u64::from(limit)).min(budget);
+    let fits = |side: u64| side * (side * short).div_ceil(long) <= budget;
+    if fits(high) {
+        return high as u32;
+    }
+
+    // The shorter edge rounds to whole pixels, even for an extremely thin image.
+    let mut low = 1;
+    while low < high {
+        let mid = low + (high - low).div_ceil(2);
+        if fits(mid) {
+            low = mid;
+        } else {
+            high = mid - 1;
+        }
+    }
+    low as u32
+}
+
+fn frame_cost(image: &CGImage) -> usize {
+    CGImage::bytes_per_row(Some(image))
+        .max(CGImage::width(Some(image)).saturating_mul(4))
+        .saturating_mul(CGImage::height(Some(image)))
+}
+
 /// Decodes (and downsamples, blurs) with ImageIO. Animated GIF / PNG /
 /// WebP / HEIF images become an animated `UIImage` whose frames repeat for
 /// their delays; a multi-size icon or multi-page file shows one image, the
@@ -1023,50 +1056,95 @@ fn decode(data: &CFData, d: Decoding) -> Option<DecodedImage> {
     // SAFETY: valid data and option dictionaries of the documented types.
     unsafe {
         let source = CGImageSource::with_data(data, None)?;
+        let (width, height) = source_size(&source);
+        let shown = image_source::shown(&source, max_pixels, MAX_FRAMES + 1);
         let yes: &CFType = kCFBooleanTrue?;
-        let max = CFNumber::new_cgfloat(max_pixels as CGFloat);
-        let mut keys: Vec<&CFString> = vec![
+        let keys = [
             kCGImageSourceCreateThumbnailFromImageAlways,
             kCGImageSourceCreateThumbnailWithTransform,
             kCGImageSourceShouldCacheImmediately,
+            kCGImageSourceThumbnailMaxPixelSize,
         ];
-        let mut values: Vec<&CFType> = vec![yes, yes, yes];
-        if max_pixels > 0 {
-            keys.push(kCGImageSourceThumbnailMaxPixelSize);
-            values.push(&max);
-        }
-        let options = CFDictionary::from_slices(&keys, &values);
-        let options: &CFDictionary = options.as_opaque();
-        let frame = |i: usize| -> Option<Retained<UIImage>> {
-            let image = source.thumbnail_at_index(i, Some(options))?;
+        let frame = |i: usize| -> Option<(Retained<UIImage>, usize)> {
+            // A known 8-bit natural raster can use the whole RGBA8 budget.
+            // Keep headroom for wide-color or unknown depth.
+            let rgba8 = max_pixels == 0
+                && source
+                    .properties_at_index(i, None)
+                    .and_then(|properties| {
+                        properties
+                            .cast_unchecked::<CFString, CFType>()
+                            .get(kCGImagePropertyDepth)?
+                            .downcast_ref::<CFNumber>()?
+                            .as_i64()
+                    })
+                    .is_some_and(|depth| (1..=8).contains(&depth));
+            let max = CFNumber::new_cgfloat(thumbnail_limit(
+                max_pixels,
+                image_source::image_size(&source, i),
+                if rgba8 { 4 } else { 8 },
+            ) as CGFloat);
+            let values: [&CFType; 4] = [yes, yes, yes, &max];
+            let options = CFDictionary::from_slices(&keys, &values);
+            let image = source.thumbnail_at_index(i, Some(options.as_opaque()))?;
             let image = match blur > 0.0 || matrix.is_some() {
                 true => crate::blur::filtered(&image, blur, matrix).unwrap_or(image),
                 false => image,
             };
-            Some(UIImage::imageWithCGImage_scale_orientation(
-                &image,
-                scale as CGFloat,
-                UIImageOrientation::Up,
+            let cost = frame_cost(&image);
+            if cost > DECODED_BYTES {
+                return None;
+            }
+            Some((
+                UIImage::imageWithCGImage_scale_orientation(
+                    &image,
+                    scale as CGFloat,
+                    UIImageOrientation::Up,
+                ),
+                cost,
             ))
         };
-        let (width, height) = source_size(&source);
-        let decoded = |image| DecodedImage {
+        let decoded = |image, cost| DecodedImage {
             image,
             width,
             height,
+            cost,
         };
-        // An animation's frames, or the one image of a still file (an
-        // icon's that fits the size shown, any other's primary image).
-        let shown = image_source::shown(&source, max_pixels, MAX_FRAMES);
-        if shown.len() <= 1 {
-            return frame(shown.start).map(decoded);
+        let (first, first_cost) = frame(shown.start)?;
+        if shown.len() == 1 {
+            return Some(decoded(first, first_cost));
         }
+        // Preflight the whole animation before asking ImageIO to composite
+        // later frames. Even a thumbnail may need the original canvas.
+        let mut budget = DECODED_BYTES;
+        let fits = shown.len() <= MAX_FRAMES
+            && shown.clone().all(|i| {
+                let (w, h) = image_source::image_size(&source, i);
+                let bytes = (w.max(width) as usize)
+                    .saturating_mul(h.max(height) as usize)
+                    .saturating_mul(4);
+                if bytes == 0 || bytes > budget {
+                    return false;
+                }
+                budget -= bytes;
+                true
+            });
+        if !fits {
+            return Some(decoded(first, first_cost));
+        }
+        let mut cost = first_cost;
         let mut frames = Vec::with_capacity(shown.len());
-        for i in shown {
-            let Some(image) = frame(i) else { break };
+        frames.push((first, image_source::frame_delay(&source, shown.start)));
+        for i in shown.skip(1) {
+            let Some((image, bytes)) = frame(i).filter(|(_, bytes)| *bytes <= DECODED_BYTES - cost)
+            else {
+                let (first, _) = frames.swap_remove(0);
+                return Some(decoded(first, first_cost));
+            };
+            cost += bytes;
             frames.push((image, image_source::frame_delay(&source, i)));
         }
-        animated(frames).map(decoded)
+        animated(frames).map(|image| decoded(image, cost))
     }
 }
 
@@ -1078,12 +1156,12 @@ fn animated(frames: Vec<(Retained<UIImage>, u32)>) -> Option<Retained<UIImage>> 
         if b == 0 { a } else { gcd(b, a % b) }
     }
     let unit = frames.iter().fold(0, |g, &(_, d)| gcd(g, d)).max(1);
-    let total: u32 = frames.iter().map(|&(_, d)| d).sum();
+    let total: u64 = frames.iter().map(|&(_, d)| u64::from(d)).sum();
     // Very uneven delays: a coarser unit keeps the frame list short.
-    let unit = unit.max(total / 2000);
+    let unit = u64::from(unit).max(total / 2000);
     let mut sequence = Vec::new();
     for (image, delay) in &frames {
-        for _ in 0..(delay / unit).max(1) {
+        for _ in 0..(u64::from(*delay) / unit).max(1) {
             sequence.push(image.clone());
         }
     }
@@ -1096,6 +1174,7 @@ mod tests {
     use super::*;
 
     const ICON: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8" fill="#000"/></svg>"##;
+    #[cfg(feature = "svg")]
     const LOGO: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" width="48" height="24"><rect width="24" height="24" fill="#f00"/><rect x="24" width="24" height="24" fill="#00f"/></svg>"##;
 
     fn decoding(max_pixels: u32, scale: f64) -> Decoding {
@@ -1144,6 +1223,7 @@ mod tests {
         pixels[i..i + 4].try_into().unwrap()
     }
 
+    #[cfg(feature = "svg")]
     #[test]
     fn svg_decodes_at_the_requested_size() {
         let icon = decode(&CFData::from_bytes(ICON), decoding(54, 3.0)).unwrap();
@@ -1179,6 +1259,115 @@ mod tests {
         let size = unsafe { natural.image.size() };
         assert_eq!((size.width, size.height), (48.0, 24.0));
         assert!(decode(&CFData::from_bytes(b"<svg><rect"), decoding(24, 1.0)).is_none());
+    }
+
+    fn solid_frame(width: usize, height: usize, red: f64) -> CFRetained<CGImage> {
+        use nsh_platform_apple::canvas_image::bitmap_context;
+        use objc2_core_foundation::{CGPoint, CGRect, CGSize};
+        use objc2_core_graphics::{CGBitmapContextCreateImage, CGContext};
+
+        let context = bitmap_context(width, height).unwrap();
+        CGContext::set_rgb_fill_color(Some(&context), red, 0.0, 1.0 - red, 1.0);
+        CGContext::fill_rect(
+            Some(&context),
+            CGRect::new(CGPoint::ZERO, CGSize::new(width as f64, height as f64)),
+        );
+        CGBitmapContextCreateImage(Some(&context)).unwrap()
+    }
+
+    fn gif(side: usize, frames: usize) -> Vec<u8> {
+        use objc2_core_foundation::{CFMutableData, CFString};
+        use objc2_image_io::CGImageDestination;
+
+        let out = CFMutableData::new(None, 0).unwrap();
+        let red = solid_frame(side, side, 1.0);
+        let blue = solid_frame(side, side, 0.0);
+        // SAFETY: valid mutable GIF data, exactly the declared number of frames.
+        unsafe {
+            let writer = CGImageDestination::with_data(
+                &out,
+                &CFString::from_str("com.compuserve.gif"),
+                frames,
+                None,
+            )
+            .unwrap();
+            for i in 0..frames {
+                writer.add_image(if i % 2 == 0 { &red } else { &blue }, None);
+            }
+            assert!(writer.finalize());
+        }
+        out.to_vec()
+    }
+
+    #[test]
+    fn decoded_animation_budget_keeps_small_animations_and_shows_only_the_first_large_frame() {
+        let small = decode(&CFData::from_bytes(&gif(16, 2)), decoding(0, 1.0)).unwrap();
+        // SAFETY: plain getters on immutable images.
+        assert_eq!(unsafe { small.image.images() }.unwrap().count(), 2);
+        let large = decode(&CFData::from_bytes(&gif(1024, 17)), decoding(0, 1.0)).unwrap();
+        // 17 × 4 MiB of decoded frames exceeds 64 MiB despite the small GIF file.
+        // SAFETY: a plain getter on an immutable image.
+        assert!(unsafe { large.image.images() }.is_none());
+        assert_eq!(pixel(&cg(&large), 0, 0), [255, 0, 0, 255]);
+        assert_eq!(large.cost, 4 << 20);
+    }
+
+    #[test]
+    fn zoom_decodes_tall_rasters_at_the_larger_scale_with_a_pixel_ceiling() {
+        use nsh_core::canvas::render::ImageFormat;
+        use nsh_platform_apple::canvas_image::encode;
+
+        let png = encode(&solid_frame(512, 4200, 1.0), ImageFormat::Png).unwrap();
+        let data = CFData::from_bytes(&png);
+        let decode_at_zoom = |zoom| {
+            let limit = display_pixels(660.0, 3.0, zoom);
+            decode(&data, decoding(limit, 3.0)).unwrap()
+        };
+        let fit = decode_at_zoom(1.0);
+        assert_eq!(CGImage::height(Some(&cg(&fit))), 1980);
+        let zoomed = decode_at_zoom(4.0);
+        assert_eq!(CGImage::height(Some(&cg(&zoomed))), 4200);
+        assert_eq!(CGImage::width(Some(&cg(&zoomed))), 512);
+        assert_eq!((zoomed.width, zoomed.height), (512, 4200));
+        assert_eq!(display_pixels(4000.0, 3.0, 4.0), MAX_THUMBNAIL_SIDE);
+        let square = thumbnail_limit(MAX_THUMBNAIL_SIDE, (6000, 6000), 8) as usize;
+        assert!(square * square * 8 <= DECODED_BYTES);
+    }
+
+    #[test]
+    fn natural_rasters_keep_canvas_crop_coordinates_until_they_exceed_the_budget() {
+        use nsh_core::canvas::render::ImageFormat;
+        use nsh_platform_apple::canvas_image::encode;
+        use objc2_core_foundation::{CGPoint, CGRect, CGSize};
+
+        let wide_png = encode(&solid_frame(9000, 16, 1.0), ImageFormat::Png).unwrap();
+        let wide = decode(&CFData::from_bytes(&wide_png), decoding(0, 2.0)).unwrap();
+        let image = cg(&wide);
+        assert_eq!(
+            (CGImage::width(Some(&image)), CGImage::height(Some(&image))),
+            (9000, 16)
+        );
+        let crop = CGImage::with_image_in_rect(
+            Some(&image),
+            CGRect::new(CGPoint::new(8700.0, 0.0), CGSize::new(32.0, 16.0)),
+        )
+        .unwrap();
+        assert_eq!(CGImage::width(Some(&crop)), 32);
+        assert_eq!(pixel(&crop, 0, 0), [255, 0, 0, 255]);
+
+        assert_eq!(thumbnail_limit(0, (3500, 3500), 4), 3500);
+        let large_png = encode(&solid_frame(4200, 4200, 1.0), ImageFormat::Png).unwrap();
+        let large = decode(&CFData::from_bytes(&large_png), decoding(0, 2.0)).unwrap();
+        assert_eq!(CGImage::width(Some(&cg(&large))), 4096);
+        assert!(large.cost <= DECODED_BYTES);
+    }
+
+    #[cfg(not(feature = "svg"))]
+    #[test]
+    fn svg_fails_cleanly_without_the_renderer() {
+        let data = CFData::from_bytes(ICON);
+        assert!(info_size(&data).is_none());
+        assert!(decode(&data, decoding(48, 2.0)).is_none());
     }
 
     /// An ICO of PNGs `sides` pixels square, in that order, as favicons
@@ -1224,6 +1413,7 @@ mod tests {
         assert_eq!(info_size(&icon), Some((48, 48)));
     }
 
+    #[cfg(feature = "svg")]
     #[test]
     fn svg_info_reports_points() {
         assert_eq!(info_size(&CFData::from_bytes(ICON)), Some((24, 24)));
@@ -1236,6 +1426,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "svg")]
     #[test]
     fn svg_tints_through_alpha() {
         // `tintColor` shows a color through the image's alpha.

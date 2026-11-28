@@ -622,6 +622,8 @@ struct Slot {
     image: Option<ImageSource>,
     /// The load in flight for this view.
     image_key: Option<String>,
+    /// Long edge in pixels of the latest requested image decode (0: natural).
+    image_pixels: u32,
     /// Placeholder, blur and fade of the image.
     image_options: nsh_core::ImageOptions,
     /// The placeholder's load in flight.
@@ -691,6 +693,7 @@ impl Slot {
             horizontal: false,
             image: None,
             image_key: None,
+            image_pixels: 0,
             image_options: nsh_core::ImageOptions::default(),
             placeholder_key: None,
             poster_key: None,
@@ -3683,6 +3686,45 @@ impl Mounter {
         self.start_image_loads();
     }
 
+    /// Sharpen inline images from their existing encoded bytes. Don't refetch
+    /// a remote URI on pinch, or replace a larger image when zooming back out.
+    fn queue_sharper_image(&mut self, id: NodeId) -> bool {
+        let Some(s) = self.slot(id) else { return false };
+        if !s.image_shown || s.image_key.is_some() || s.image_pixels == 0 {
+            return false;
+        }
+        let Some(zoom) = s
+            .image
+            .as_ref()
+            .and_then(|source| source.data.as_ref())
+            .and_then(|_| crate::zoom::image_zoom(s.native.view()))
+        else {
+            return false;
+        };
+        if zoom <= 1.0 {
+            return false;
+        }
+        let bounds = s.native.view().bounds().size;
+        let wanted =
+            crate::image::display_pixels(bounds.width.max(bounds.height), self.image_scale, zoom);
+        if wanted <= s.image_pixels || self.pending_images.contains(&id) {
+            return false;
+        }
+        self.pending_images.push(id);
+        true
+    }
+
+    pub(crate) fn zoom_ended(&mut self, id: NodeId, scale: CGFloat) {
+        if let Some(zoom) = self.slot(id).and_then(Slot::zoom_view) {
+            crate::zoom::sharpen(&zoom, scale, |child| {
+                if child.tag() > 0 {
+                    self.queue_sharper_image(child.tag() as NodeId);
+                }
+            });
+            self.start_image_loads();
+        }
+    }
+
     /// Starts loads queued during the batch, now that frames are known so
     /// images can be decoded at their display size.
     fn start_image_loads(&mut self) {
@@ -3698,8 +3740,14 @@ impl Mounter {
             let max_pixels = if s.decor.resize_mode() == ResizeMode::Center {
                 0
             } else {
-                (size.width.max(size.height) * scale).ceil() as u32
+                let zoom = if s.image.as_ref().is_some_and(|source| source.data.is_some()) {
+                    crate::zoom::image_zoom(view).unwrap_or(1.0)
+                } else {
+                    1.0
+                };
+                crate::image::display_pixels(size.width.max(size.height), scale, zoom)
             };
+            let first_load = !s.image_shown;
             let filters = s
                 .style
                 .effects
@@ -3718,6 +3766,9 @@ impl Mounter {
                     .map(|s| (s.uri.clone(), s.data.clone())),
             );
             if let Some((uri, data)) = source {
+                if let Some(s) = self.slot_mut(id) {
+                    s.image_pixels = max_pixels;
+                }
                 match self
                     .images
                     .request(id, &uri, data.as_ref(), max_pixels, scale, look)
@@ -3727,12 +3778,14 @@ impl Mounter {
                             s.decor.set_image(Some(&decoded.image), 0.0);
                             s.image_shown = true;
                         }
-                        self.image_event(id, Ok(&decoded));
+                        if first_load {
+                            self.image_event(id, Ok(&decoded));
+                        }
                     }
                     Request::Pending => {
                         if let Some(s) = self.slot_mut(id) {
                             s.image_key = Some(ImageLoader::key(&uri, max_pixels, look));
-                            if s.events.contains(EventKind::LoadStart) {
+                            if first_load && s.events.contains(EventKind::LoadStart) {
                                 self.control.dispatch_event(
                                     id,
                                     EventKind::LoadStart,
@@ -3907,18 +3960,31 @@ impl Mounter {
                 continue;
             }
             s.image_key = None;
+            let first_load = !s.image_shown;
             match &result {
                 Ok(decoded) => {
-                    // React Native fades images in on Android only.
-                    let fade = s.image_options.fade_ms.unwrap_or(0.0) as f64 / 1000.0;
+                    // A refinement keeps the displayed image until its sharper
+                    // replacement is ready, without another JS load cycle.
+                    let fade = if first_load {
+                        s.image_options.fade_ms.unwrap_or(0.0) as f64 / 1000.0
+                    } else {
+                        0.0
+                    };
                     s.decor.set_image(Some(&decoded.image), fade);
                     s.image_shown = true;
-                    self.image_event(id, Ok(decoded));
+                    if first_load {
+                        self.image_event(id, Ok(decoded));
+                    }
+                    if self.queue_sharper_image(id) {
+                        self.start_image_loads();
+                    }
                 }
                 Err(message) => {
                     log::warn!("image failed: {message}");
-                    // The placeholder (if any) stays.
-                    self.image_event(id, Err(message));
+                    // The placeholder or already displayed image stays.
+                    if first_load {
+                        self.image_event(id, Err(message));
+                    }
                 }
             }
         }

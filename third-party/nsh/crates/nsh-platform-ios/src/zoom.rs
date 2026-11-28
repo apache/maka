@@ -112,12 +112,33 @@ pub(crate) fn zoom_to(
     scroll.zoomToRect_animated(rect, animated);
 }
 
+/// The effective zoom of an image in the native view hierarchy. Avoid
+/// launching expensive refinements while UIKit is still scaling its pixels.
+pub(crate) fn image_zoom(view: &UIView) -> Option<CGFloat> {
+    let mut zoom = 1.0;
+    let mut parent = view.superview();
+    while let Some(view) = parent {
+        parent = view.superview();
+        if view.isKindOfClass(ZoomView::class())
+            && let Some(scroll) = parent
+                .as_deref()
+                .and_then(|v| v.downcast_ref::<UIScrollView>())
+        {
+            if scroll.isZooming() || scroll.isZoomBouncing() {
+                return None;
+            }
+            zoom *= scroll.zoomScale();
+        }
+    }
+    Some(zoom)
+}
+
 /// Redraws the drawn views inside `zoom` (texts, canvases) at the zoomed
 /// resolution once a zoom ends, so they stay sharp instead of scaling their
 /// bitmaps. Each view's backing store is capped at 4096 pixels a side.
-pub(crate) fn sharpen(zoom: &UIView, scale: CGFloat) {
+pub(crate) fn sharpen(zoom: &UIView, scale: CGFloat, mut visit: impl FnMut(&UIView)) {
     let screen = zoom.window().map_or(2.0, |w| w.screen().scale());
-    fn walk(view: &UIView, scale: CGFloat, screen: CGFloat) {
+    fn walk(view: &UIView, scale: CGFloat, screen: CGFloat, visit: &mut impl FnMut(&UIView)) {
         for child in view.subviews().iter() {
             let drawn = child.isKindOfClass(crate::text_view::TextView::class())
                 || child.isKindOfClass(crate::canvas::CanvasView::class());
@@ -130,8 +151,9 @@ pub(crate) fn sharpen(zoom: &UIView, scale: CGFloat) {
                     child.setNeedsDisplay();
                 }
             }
-            walk(&child, scale, screen);
+            visit(&child);
+            walk(&child, scale, screen, visit);
         }
     }
-    walk(zoom, scale, screen);
+    walk(zoom, scale, screen, &mut visit);
 }

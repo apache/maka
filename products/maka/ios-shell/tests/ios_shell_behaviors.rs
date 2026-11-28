@@ -146,7 +146,7 @@ async fn test_host(with_agent: bool) -> (tempfile::TempDir, Arc<Host>, Arc<RootS
         imports["agent"] = json!({"contract":contract,"cardinality":{"kind":"one"}});
         endpoints["agent"] = json!({"consumer":[consumer],"import":"agent","grant":{
             "methods":["create","list","catalog","projects","models","observe","history","watch","send",
-                "uploadAttachment","markRead","pendingInteractions","queue","fork"],
+                "attachmentImage","uploadAttachment","markRead","pendingInteractions","queue","fork"],
             "recovery":true,
         }});
         bindings["agent"] =
@@ -3160,7 +3160,7 @@ impl ComposerDockFixture {
                 "botOutbox" => json!({"isBot":false}),
                 "connections" => json!({"kind":"ready","revision":1,"connections":[],"next":null,
                     "defaultTarget":{"connectionId":"test","modelId":"model"}}),
-                "queueMessage" | "resolveModel" => {
+                "queueMessage" | "resolveModel" | "attachmentImage" => {
                     query_tx.send((data, call)).unwrap();
                     return;
                 }
