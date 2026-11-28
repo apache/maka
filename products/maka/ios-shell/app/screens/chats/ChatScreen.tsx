@@ -574,6 +574,9 @@ export function ChatScreen(
   const followLatest = signal(true);
   let transcriptRef: ListRef | undefined;
   let pagingDrag: number | undefined;
+  let lastTranscriptScroll:
+    | { generation: number | undefined; height: number; viewport: number; y: number }
+    | undefined;
   let transcriptCanScroll = false;
   let inputRef: InputRef | undefined;
   let openedTranscript = false;
@@ -1072,14 +1075,14 @@ export function ChatScreen(
               </View>
             )}
           </Each>
-          <If
-            when={
-              props.turn.bodies.length && (!hasMoreBefore() || props.turn.key !== turns()[0]?.key)
-            }
-          >
+          <If when={props.turn.bodies.length}>
             <ReplyActions
               bodies={props.turn.bodies}
-              loadBodies={props.turn.folded ? () => fullReply(props.turn.folded!) : undefined}
+              needsFullReply={Boolean(props.turn.folded)}
+              startsAtPageBoundary={hasMoreBefore() && props.turn.key === turns()[0]?.key}
+              loadBodies={
+                props.turn.folded && liveFence() ? () => fullReply(props.turn.folded!) : undefined
+              }
               limitReached={quoteLimitReached()}
               onQuote={quoteMessage}
               onAskSide={
@@ -1262,24 +1265,48 @@ export function ChatScreen(
           style={{ flex: 1 }}
           keyboardShouldPersistTaps="handled"
           maintainVisibleContentPosition={followLatest() ? { autoscrollToBottomThreshold: 64 } : {}}
-          onLoadMoreAtStart={loadEarlierFromDrag}
+          onLoadMoreAtStart={() => {
+            if (transcriptCanScroll) loadEarlierFromDrag();
+          }}
           loadMoreAtStartThreshold={0.2}
-          onScrollDragStart={({ offset }) => {
+          onScrollDragStart={() => {
             pagingDrag =
               ctrl.loading() || ctrl.loadingEarlier() || ctrl.earlierFailed()
                 ? undefined
                 : generation();
-            // UIKit reports a drag even when a short transcript only bounces.
-            if (offset.y <= 1 && !transcriptCanScroll) loadEarlierFromDrag();
           }}
           onScroll={({ offset, delta, size, contentSize }) => {
+            const gen = generation();
+            const previous = lastTranscriptScroll;
+            lastTranscriptScroll = {
+              generation: gen,
+              height: contentSize.height,
+              viewport: size.height,
+              y: offset.y,
+            };
             transcriptCanScroll = contentSize.height - size.height > 1;
             const nearEnd = contentSize.height - offset.y - size.height <= 64;
             atBottom.set(nearEnd);
             if (!transcriptCanScroll && !ctrl.loadingEarlier()) followLatest.set(true);
             if (delta.y < 0 && !nearEnd) followLatest.set(false);
             if (delta.y > 0 && nearEnd) followLatest.set(true);
-            if (delta.y < 0 && offset.y <= size.height * 0.2) loadEarlierFromDrag();
+            if (delta.y >= 0) return;
+            if (!transcriptCanScroll) {
+              if (offset.y < -1) loadEarlierFromDrag();
+              return;
+            }
+            const edge = size.height * 0.2;
+            if (offset.y <= edge) {
+              if (pagingDrag !== undefined) {
+                loadEarlierFromDrag();
+              } else if (previous && previous.generation === gen && offset.y < previous.y) {
+                const sameLayout =
+                  previous.height === contentSize.height && previous.viewport === size.height;
+                const crossedEdge = sameLayout && previous.y > edge;
+                const reachedTop = offset.y <= 1 && previous.y > 1;
+                if (crossedEdge || reachedTop) startEarlier();
+              }
+            }
           }}
           onScrollEnd={() => {
             pagingDrag = undefined;
@@ -1317,24 +1344,21 @@ export function ChatScreen(
                   />
                 )}
               </If>
-              <If when={ctrl.loadingEarlier()}>
-                <Text
-                  style={{
-                    ...type.footnote,
-                    color: token('muted-foreground'),
-                    textAlign: 'center',
-                  }}
-                >
-                  {tr('Loading…')}
-                </Text>
-              </If>
-              <If when={ctrl.earlierFailed() && hasMoreBefore()}>
+              <If when={hasMoreBefore() && !ctrl.loading()}>
                 <View style={{ alignItems: 'center' }}>
                   <ActionButton
-                    title={tr('Retry')}
+                    title={
+                      ctrl.loadingEarlier()
+                        ? tr('Loading…')
+                        : ctrl.earlierFailed()
+                          ? tr('Retry')
+                          : tr('Load earlier')
+                    }
                     variant="quiet"
                     compact
-                    onPress={() => startEarlier(true)}
+                    minHeight={44}
+                    disabled={ctrl.loadingEarlier() || generation() == null}
+                    onPress={() => startEarlier(ctrl.earlierFailed())}
                   />
                 </View>
               </If>

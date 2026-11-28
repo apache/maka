@@ -159,6 +159,8 @@ const replyActionStyle = {
 export function ReplyActions(props: {
   bodies: readonly HistoryRow[];
   loadBodies?: () => Promise<HistoryRow[] | undefined>;
+  needsFullReply?: boolean;
+  startsAtPageBoundary: boolean;
   limitReached: boolean;
   onQuote: (row: HistoryRow, text: string, combined?: readonly HistoryRow[]) => boolean;
   onAskSide?: () => void;
@@ -167,33 +169,42 @@ export function ReplyActions(props: {
   const canQuote = () =>
     sources().length > 0 &&
     !props.limitReached &&
-    (props.loadBodies !== undefined || sources().every(isCompleteHistoryRow));
-  const withReply = async (action: (bodies: readonly HistoryRow[]) => void | Promise<void>) => {
-    try {
-      const bodies = props.loadBodies ? await props.loadBodies() : props.bodies;
-      if (bodies?.length && bodies.every(isCompleteHistoryRow)) await action(bodies);
-    } catch (cause) {
-      showToast(cause instanceof Error ? cause.message : String(cause));
-    }
+    !props.startsAtPageBoundary &&
+    (props.needsFullReply ? props.loadBodies !== undefined : sources().every(isCompleteHistoryRow));
+  const copyReply = () => {
+    const visibleText = props.bodies.map((row) => row.text).join('\n\n');
+    void (async () => {
+      try {
+        const loaded = await props.loadBodies?.().catch(() => undefined);
+        const fullText = loaded?.every(isCompleteHistoryRow)
+          ? loaded.map((row) => row.text).join('\n\n')
+          : '';
+        hapticSelection();
+        await Clipboard.writeText(trimHostWhitespace(fullText) ? fullText : visibleText);
+        showToast(tr('Copied'));
+      } catch (cause) {
+        showToast(cause instanceof Error ? cause.message : String(cause));
+      }
+    })();
   };
-  const copyReply = () =>
-    void withReply(async (bodies) => {
-      hapticSelection();
-      await Clipboard.writeText(bodies.map((row) => row.text).join('\n\n'));
-      showToast(tr('Copied'));
-    });
   const quoteReply = () => {
     if (!canQuote()) return;
     const onQuote = props.onQuote;
-    void withReply((bodies) => {
-      const rows = bodies.filter(isQuotable);
-      if (rows.length)
-        onQuote(
-          rows[0],
-          rows.map((row) => row.text).join('\n\n'),
-          rows.length > 1 ? rows : undefined,
-        );
-    });
+    void (async () => {
+      try {
+        const bodies = props.loadBodies ? await props.loadBodies() : props.bodies;
+        if (!bodies?.length || !bodies.every(isCompleteHistoryRow)) return;
+        const rows = bodies.filter(isQuotable);
+        if (rows.length)
+          onQuote(
+            rows[0],
+            rows.map((row) => row.text).join('\n\n'),
+            rows.length > 1 ? rows : undefined,
+          );
+      } catch (cause) {
+        showToast(cause instanceof Error ? cause.message : String(cause));
+      }
+    })();
   };
   const actions = (
     <View style={{ flexDirection: 'row' }}>

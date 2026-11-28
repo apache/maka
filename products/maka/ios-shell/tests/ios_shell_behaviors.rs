@@ -1749,7 +1749,7 @@ async fn catalog_retry_survives_peer_reconnect_and_a_cached_empty_catalog() {
             "list" if input["input"]["filter"] == "all" => {
                 list_tx.send((input["rootId"].clone(), call)).unwrap();
             }
-            "list" => call.resolve(json!({"value":{"revision":"p1","sessions":[],"after":null}})),
+            "list" => call.reject("Pending unavailable"),
             _ => call.resolve(json!({"value":{}})),
         }
     });
@@ -1784,6 +1784,17 @@ async fn catalog_retry_survives_peer_reconnect_and_a_cached_empty_catalog() {
     app.wait_for("text:Could not sync chats").unwrap();
     app.wait_for("label:Retry").unwrap();
     assert!(!app.screen().matches("text:No conversations yet").unwrap());
+
+    app.press("label:Pending").unwrap();
+    app.wait_for("text:Pending unavailable").unwrap();
+    app.fast_forward(Duration::from_millis(200)).unwrap();
+    assert!(app.screen().matches("text:Reconnecting…").unwrap());
+    assert!(
+        !app.screen().matches("role:progressbar[Loading…]").unwrap(),
+        "inbox error banner should not render a skeleton underneath"
+    );
+    app.press("label:Chats").unwrap();
+    app.wait_for("text:Could not sync chats").unwrap();
 
     app.press("label:Backup Mac").unwrap();
     let mut stale = initial.clone();
@@ -3306,28 +3317,22 @@ fn watch_selection_menus(
     }
 }
 
-// Headless scrolling clamps the offset. Deliver the native drag events for
-// short transcripts that UIKit lets the reader pull at the top.
-fn pull_at_transcript_start(app: &mut Headless) {
-    use nsh_core::{EventKind, EventPayload, Point};
+// Headless scrolling clamps offsets, so report UIKit's bounce to the engine.
+fn drag_short_transcript(app: &mut Headless, offsets: &[f32]) {
+    use nsh_core::{EventKind, EventPayload, Point, geometry::point};
 
-    let list = app
-        .screen()
-        .layout_nodes()
-        .into_iter()
-        .find(|node| node.test_id.as_deref() == Some("chat-transcript"))
-        .expect("transcript scroll view");
-    for event in [
-        EventKind::ScrollDragStart,
-        EventKind::ScrollDragEnd,
-        EventKind::ScrollEnd,
-    ] {
-        app.engine().control().dispatch_event(
-            list.id,
-            event,
-            EventPayload::Scroll(Point::default()),
-        );
+    let list = app.screen().id("id:chat-transcript").unwrap();
+    let control = app.engine().control();
+    let at_rest = EventPayload::Scroll(Point::default());
+    control.dispatch_event(list, EventKind::ScrollDragStart, at_rest.clone());
+    assert!(app.settle());
+    for &offset in offsets {
+        // The settled Headless view has applied all issued scroll adjustments.
+        control.scroll(list, point(px(0.), px(offset)), u32::MAX);
+        assert!(app.settle());
     }
+    control.dispatch_event(list, EventKind::ScrollDragEnd, at_rest.clone());
+    control.dispatch_event(list, EventKind::ScrollEnd, at_rest);
     assert!(app.settle());
 }
 
@@ -3431,6 +3436,31 @@ impl ProjectionFixture {
     }
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn online_copy_uses_visible_text_when_turn_history_cannot_supply_the_reply() {
+    let mut visible = quote_history_row(3, "assistant", "Visible answer");
+    mark_final(&mut visible);
+    let mut incomplete = quote_history_row(2, "assistant", "Partial detail");
+    incomplete["offset"] = json!(7);
+    incomplete["totalBytes"] = json!(7 + "Partial detail".len());
+
+    for detail in [None, Some(vec![]), Some(vec![incomplete])] {
+        let mut fx =
+            ProjectionFixture::start(history_page(11, vec![visible.clone()], Value::Null)).await;
+        fx.app.wait_for("text:Visible answer").unwrap();
+        fx.app.press("role:button[Copy reply]").unwrap();
+        let (input, call) = fixture_recv(&mut fx.queries).await;
+        assert_eq!(input["view"], "turn");
+        assert_eq!(input["position"]["position"], visible["position"]);
+        match detail {
+            None => call.reject("Turn history unavailable"),
+            Some(rows) => call.resolve(history_page(11, rows, Value::Null)),
+        }
+        fx.app.wait_for("text:Copied").unwrap();
+        assert_eq!(fx.app.screen().clipboard(), Some("Visible answer"));
+    }
+}
+
 fn mark_final(row: &mut Value) {
     row["finalOutput"] = json!(true);
     row["foldedWork"] = json!({"thoughts":0,"tools":1,"messages":0,"imageCount":0,"images":[]});
@@ -3450,7 +3480,12 @@ async fn completed_tail_supersedes_a_late_before_from_the_live_projection() {
         ProjectionFixture::start(history_page(11, vec![suffix.clone()], cursor.clone())).await;
     let mut ask = watch_selection_menu(&mut fx.app, "Ask Side Question");
     fx.app.wait_for("text:done").unwrap();
-    pull_at_transcript_start(&mut fx.app);
+    drag_short_transcript(&mut fx.app, &[12., 0.]);
+    assert!(
+        fx.queries.try_recv().is_err(),
+        "bottom bounce paged history"
+    );
+    drag_short_transcript(&mut fx.app, &[-12., 0.]);
     let (input, stale) = fixture_recv(&mut fx.queries).await;
     assert_eq!(input["through"], 11);
     assert_eq!(input["position"]["cursor"], cursor);
@@ -3531,7 +3566,11 @@ async fn folded_tail_keeps_both_final_parts_when_only_the_second_fits() {
         ProjectionFixture::start(history_page(11, vec![suffix.clone()], cursor.clone())).await;
     let mut ask = watch_selection_menu(&mut fx.app, "Ask Side Question");
     fx.app.wait_for("text:Final B end").unwrap();
-    pull_at_transcript_start(&mut fx.app);
+    fx.app.press("role:button[Copy reply]").unwrap();
+    fx.app.wait_for("text:Copied").unwrap();
+    assert_eq!(fx.app.screen().clipboard(), Some(end.as_str()));
+    assert!(fx.app.press("role:button[Quote]").is_err());
+    drag_short_transcript(&mut fx.app, &[-12., 0.]);
     let (input, before) = fixture_recv(&mut fx.queries).await;
     assert_eq!(input["through"], 11);
     before.resolve(history_page(
@@ -3951,7 +3990,11 @@ async fn chat_scroll_completes_previous_turn_and_keeps_the_visible_text_anchored
         history_rx.try_recv().is_err(),
         "paging continued beyond a complete prior Turn"
     );
-    app.scroll("id:chat-transcript", px(-1100.)).unwrap();
+    app.wheel(
+        "id:chat-transcript",
+        nsh_core::geometry::point(px(0.), px(-1100.)),
+    )
+    .unwrap();
     let (next, start) = fixture_recv(&mut history_rx).await;
     assert_eq!(next["position"]["cursor"], oldest_cursor);
     start.resolve(json!({"value":page(vec![], Value::Null)}));
@@ -5386,10 +5429,23 @@ async fn folded_turn_copies_and_quotes_all_prose_even_before_expansion() {
     receipt.resolve(json!({"value":SendResult::Queued {
         session_id:"chat".into(), message_id:"combined".into(), revision:2, completion:None,
     }}));
+
+    let offline_host = json!({"rootId":"root","hostName":"Host","endpoints":[]});
+    app.send_host_event(
+        "ios.hostState",
+        json!({"revision":2,"hosts":[offline_host],"active":null,
+            "connections":{"root":{"status":"offline","autoReconnect":false}}}),
+    )
+    .unwrap();
+    app.wait_for("text:Host is offline").unwrap();
+    assert!(app.press("role:button[Quote]").is_err());
+    app.press("role:button[Copy reply]").unwrap();
+    assert!(app.settle());
+    assert_eq!(app.screen().clipboard(), Some("Second answer"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn chat_boundary_reply_gains_whole_turn_actions_only_after_earlier_history_loads() {
+async fn chat_boundary_reply_can_copy_visible_text_before_loading_the_whole_turn() {
     let mut tool = quote_history_row(2, "assistant", "");
     tool["tool"] = json!({"toolUseId":"work","call":{"name":"Shell"}});
     let (mut app, mut sends) = quote_chat_fixture(
@@ -5400,12 +5456,13 @@ async fn chat_boundary_reply_gains_whole_turn_actions_only_after_earlier_history
     let mut choose_quote = watch_quote_menus(&mut app);
     app.press("label:Conversation: Quotes Chat").unwrap();
     app.wait_for("text:Second answer").unwrap();
-    assert!(!app.shows("role:button[Copy reply]"));
-    assert!(!app.shows("role:button[Quote]"));
+    app.press("role:button[Copy reply]").unwrap();
+    assert_eq!(app.screen().clipboard(), Some("Second answer"));
+    assert!(app.press("role:button[Quote]").is_err());
     assert!(choose_quote(&mut app, "text:Second answer", Some("Second")));
     app.wait_for("label:Remove quote: Second").unwrap();
 
-    pull_at_transcript_start(&mut app);
+    app.press("label:Load earlier").unwrap();
     app.wait_for("text:First answer").unwrap();
     app.press("role:button[Copy reply]").unwrap();
     assert_eq!(
@@ -6809,7 +6866,7 @@ async fn room_watch_keeps_the_boundary_and_ignores_pagination_from_an_old_connec
     app.wait_for("label:Conversation: Release Room").unwrap();
     app.press("label:Conversation: Release Room").unwrap();
     app.wait_for("text:Initial room message").unwrap();
-    pull_at_transcript_start(&mut app);
+    drag_short_transcript(&mut app, &[-12., 0.]);
     let (input, earlier, value) = earlier_rx.try_recv().unwrap();
     assert_eq!(input["input"]["position"]["messageId"], "m2");
     assert_eq!(input["input"]["through"], 0);
@@ -6835,7 +6892,7 @@ async fn room_watch_keeps_the_boundary_and_ignores_pagination_from_an_old_connec
     assert_eq!(input["message"], "Hi Room");
     assert!(input.get("quotes").is_none());
     app.wait_for("text:Initial room message").unwrap();
-    pull_at_transcript_start(&mut app);
+    drag_short_transcript(&mut app, &[-12., 0.]);
     let (data, stale, page) = earlier_rx.try_recv().unwrap();
     assert_eq!(data["input"]["position"]["messageId"], "m1");
     phase.store(2, std::sync::atomic::Ordering::SeqCst);
@@ -6959,7 +7016,7 @@ async fn agent_history_merges_overlapping_byte_ranges_and_coalesces_tail_refresh
     app.wait_for("label:Conversation: Agent History").unwrap();
     app.press("label:Conversation: Agent History").unwrap();
     app.wait_for(&format!("text:/^{original}$/")).unwrap();
-    pull_at_transcript_start(&mut app);
+    drag_short_transcript(&mut app, &[-12., 0.]);
     app.wait_for("text:Earlier user message").unwrap();
     app.wait_for("text:/^Imported user prefix and continuation$/")
         .unwrap();
@@ -7018,10 +7075,7 @@ async fn agent_history_merges_overlapping_byte_ranges_and_coalesces_tail_refresh
         "tail with a byte gap kept the old window"
     );
     assert!(!app.shows(&final_text));
-    assert!(
-        !app.shows("role:button[Copy reply]"),
-        "a disconnected fragment was offered as a complete reply"
-    );
+    assert!(app.press("role:button[Quote]").is_err());
     assert!(unexpected.try_recv().is_err());
 }
 
