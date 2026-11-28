@@ -41,7 +41,7 @@ impl Fixture {
                     path: directory.path().into(),
                 }],
                 home: None,
-                helper: std::env::current_exe().unwrap(),
+                helper: helper().unwrap(),
                 locale: "auto".into(),
             },
             deployment,

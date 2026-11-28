@@ -356,7 +356,7 @@ async fn begin(
                 .unwrap_or(store.owned_root()?.canonical_path().into()),
             roots,
             home: crate::serve::home_directory()?,
-            helper: std::env::current_exe()?,
+            helper: super::baseline::helper()?,
             locale: "auto".into(),
         },
         Uuid::new_v4(),

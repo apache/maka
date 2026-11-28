@@ -260,8 +260,7 @@ pub(crate) async fn live_update_available(
             return Ok(false);
         }
         let desired = live_baseline(client, &metadata.source.reference, &base.package).await?;
-        let helper = std::env::current_exe()?;
-        if desired.release != version || desired.environment.helper != helper {
+        if desired.release != version {
             return Ok(true);
         }
         if metadata.source.reference != *client.source()
@@ -272,7 +271,7 @@ pub(crate) async fn live_update_available(
                 && original.package.id == baseline::ID
             {
                 let saved = live_baseline(client, client.source(), &original.package).await?;
-                return Ok(saved.release != version || saved.environment.helper != helper);
+                return Ok(saved.release != version);
             }
         }
         return Ok(false);
