@@ -351,17 +351,39 @@ impl WorkspaceScope {
 }
 
 impl scheduler::Scheduler {
+    pub(super) async fn visit_workspace_records(
+        &self,
+        prefix: &str,
+        mut visit: impl FnMut(String, Value) -> Result<(), String>,
+    ) -> Result<(), String> {
+        let mut after = None;
+        loop {
+            let page = self
+                .storage
+                .scan(maka_plugin_core::storage::Scan {
+                    prefix: prefix.to_owned(),
+                    after,
+                })
+                .await
+                .map_err(reason)?;
+            for entry in page.entries {
+                if let Data::Present(value) = entry.record.data {
+                    visit(entry.key, value)?;
+                }
+            }
+            let Some(next) = page.next_after else {
+                return Ok(());
+            };
+            after = Some(next);
+        }
+    }
+
     pub(super) async fn watch_scope(
         &self,
         root: &Path,
     ) -> Result<(Option<u64>, WatchScope), String> {
-        let record = self.storage.read(scope_key(root)).await.map_err(reason)?;
-        let revision = record.as_ref().map(|r| r.revision);
-        let scope = match record.map(|r| r.data) {
-            Some(Data::Present(data)) => serde_json::from_value(data).map_err(reason)?,
-            _ => WatchScope::default(),
-        };
-        Ok((revision, scope))
+        let (revision, scope) = self.discovery_record(scope_key(root)).await?;
+        Ok((revision, scope.unwrap_or_default()))
     }
 }
 
@@ -371,29 +393,13 @@ impl WatchScopes {
         scheduler: &scheduler::Scheduler,
     ) -> Result<(), String> {
         let mut saved = SavedScopes::default();
-        let mut after = None;
-        loop {
-            let page = scheduler
-                .storage
-                .scan(maka_plugin_core::storage::Scan {
-                    prefix: PREFIX.into(),
-                    after,
-                })
-                .await
-                .map_err(reason)?;
-            for entry in page.entries {
-                if let Data::Present(data) = entry.record.data {
-                    saved.by_key.insert(
-                        entry.key,
-                        Arc::new(serde_json::from_value(data).map_err(reason)?),
-                    );
-                }
-            }
-            after = page.next_after;
-            if after.is_none() {
-                break;
-            }
-        }
+        scheduler
+            .visit_workspace_records(PREFIX, |key, value| {
+                let scope = serde_json::from_value(value).map_err(reason)?;
+                saved.by_key.insert(key, Arc::new(scope));
+                Ok(())
+            })
+            .await?;
         saved.mapped_watch_roots = scheduler.all_mapped_watch_roots().await?;
         saved.index_roots();
         self.changed.send_replace(saved);
@@ -730,6 +736,33 @@ mod tests {
             }
             assert_eq!(actual, wanted);
         }
+    }
+
+    #[tokio::test]
+    async fn discovery_scope_preserves_deleted_revisions_and_rejects_invalid_records() {
+        let (temp, root, _) = test_store().await;
+        let scheduler = scheduler::Scheduler::new(root, "test/".into());
+        let workspace = temp.path();
+        let key = scope_key(workspace);
+        let (revision, _) = scheduler.watch_scope(workspace).await.unwrap();
+        assert_eq!(revision, None);
+        let created = mutation(key.clone(), revision, &WatchScope::default()).unwrap();
+        let created = scheduler.storage.batch(vec![created]).await.unwrap();
+        let deleted = scheduler
+            .storage
+            .batch(vec![Mutation {
+                key: key.clone(),
+                expected_revision: Some(created[0].revision),
+                data: Data::Deleted,
+            }])
+            .await
+            .unwrap();
+        let (revision, scope) = scheduler.watch_scope(workspace).await.unwrap();
+        assert_eq!(revision, Some(deleted[0].revision));
+        assert!(scope.include_roots.is_empty());
+        let malformed = mutation(key, revision, &"malformed scope").unwrap();
+        scheduler.storage.batch(vec![malformed]).await.unwrap();
+        assert!(scheduler.watch_scope(workspace).await.is_err());
     }
 
     #[tokio::test]

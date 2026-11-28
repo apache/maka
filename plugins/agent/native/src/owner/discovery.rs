@@ -476,14 +476,23 @@ impl scheduler::Scheduler {
                 })
             }))
     }
+    // A deleted key still has a revision for the next compare-and-swap write.
+    async fn discovery_record<T: serde::de::DeserializeOwned>(
+        &self,
+        key: String,
+    ) -> Result<(Option<u64>, Option<T>), String> {
+        let Some(record) = self.storage.read(key).await.map_err(reason)? else {
+            return Ok((None, None));
+        };
+        let value = match record.data {
+            Data::Present(value) => Some(serde_json::from_value(value).map_err(reason)?),
+            Data::Deleted => None,
+        };
+        Ok((Some(record.revision), value))
+    }
+
     async fn investigation(&self) -> Result<(Option<u64>, Option<Job>), String> {
-        let record = self.storage.read(ACTIVE.into()).await.map_err(reason)?;
-        let revision = record.as_ref().map(|r| r.revision);
-        let job: Option<Job> = record
-            .and_then(|r| r.data.value().cloned())
-            .map(serde_json::from_value)
-            .transpose()
-            .map_err(reason)?;
+        let (revision, job) = self.discovery_record::<Job>(ACTIVE.into()).await?;
         *self.investigation.write().unwrap() =
             job.as_ref().map(|job| scheduler::ActiveInvestigation {
                 worker: job.worker.clone(),
@@ -1017,17 +1026,12 @@ impl Owner {
         plan: &scheduler::Plan,
         at: UnixMillis,
     ) -> Result<Dispatch, String> {
-        if let Some(record) = self
+        if let (_, Some(receipt)) = self
             .scheduler
-            .storage
-            .read(completed_key(&fire.id))
-            .await
-            .map_err(reason)?
-            && let Some(value) = record.data.value()
+            .discovery_record::<Completed>(completed_key(&fire.id))
+            .await?
         {
-            return Ok(Dispatch::Worker(Some(
-                serde_json::from_value::<Completed>(value.clone()).map_err(reason)?,
-            )));
+            return Ok(Dispatch::Worker(Some(receipt)));
         }
         let (mut revision, current) = self.scheduler.investigation().await?;
         if current.as_ref().is_some_and(|j| j.fire_id != fire.id) {

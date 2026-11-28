@@ -1255,50 +1255,30 @@ async fn open_compat_settings(root: &Path) -> ConfigurationStore {
     ConfigurationStore::for_root(Arc::new(owner)).await.unwrap()
 }
 
+async fn agent_call(client: &Client, method: &str, input: Value) -> Value {
+    call(client, "agent", method, input, Attachments::new()).await
+}
+
 async fn create_discovery_capsule(client: &Client, nonce: &str) -> (DiscoveryCapsule, Value) {
     let entity_key = format!("compat:{nonce}").to_lowercase();
-    let lead = call(
-        client,
-        "agent",
-        "dropDiscoveryLead",
-        json!({"text":format!("compat discovery {nonce}"), "paths":["annex.md"], "entityKey":entity_key}),
-        Attachments::new(),
-    )
+    let lead = agent_call(client, "dropDiscoveryLead", json!({"text":format!("compat discovery {nonce}"), "paths":["annex.md"], "entityKey":entity_key}))
     .await;
     let topic_id = lead["topicId"].as_str().unwrap().to_owned();
-    let thread = call(
-        client,
-        "agent",
-        "openDossierThread",
-        lead,
-        Attachments::new(),
-    )
-    .await;
+    let thread = agent_call(client, "openDossierThread", lead).await;
     let thread_session_id = thread["sessionId"].as_str().unwrap().to_owned();
-    call(
+    agent_call(
         client,
-        "agent",
         "setDiscoveryNotifications",
         json!({"enabled":false}),
-        Attachments::new(),
     )
     .await;
-    call(
+    agent_call(
         client,
-        "agent",
         "setDossierMuted",
         json!({"topicId":topic_id,"muted":true}),
-        Attachments::new(),
     )
     .await;
-    let observed = call(
-        client,
-        "agent",
-        "observe",
-        json!({"sessionId":thread_session_id}),
-        Attachments::new(),
-    )
-    .await;
+    let observed = agent_call(client, "observe", json!({"sessionId":thread_session_id})).await;
     let session = &observed["session"];
     let target = json!({"sessionId":thread_session_id,"workspace":session["workspace"],"permissions":session["permissions"],"boundaryRevision":session["boundaryRevision"],"binding":session["binding"]});
     (
@@ -1404,18 +1384,11 @@ async fn verify_dossiers(
     staged: bool,
     guards: bool,
 ) {
-    let page = call(client, "agent", "dossiers", json!({}), Attachments::new()).await;
+    let page = agent_call(client, "dossiers", json!({})).await;
     if let Some(saved) = saved {
         assert_eq!(page["notificationsEnabled"], false);
         let topic = json!({"topicId":saved.topic_id});
-        let detail = call(
-            client,
-            "agent",
-            "dossier",
-            topic.clone(),
-            Attachments::new(),
-        )
-        .await;
+        let detail = agent_call(client, "dossier", topic.clone()).await;
         if saved.metered {
             assert_eq!(detail["revisions"][0]["factState"], "Annex pending");
         }
@@ -1430,12 +1403,10 @@ async fn verify_dossiers(
         assert_eq!(detail["muted"], true);
         if staged {
             assert_eq!(detail["artifacts"][0]["path"], "annex.md");
-            let preview = call(
+            let preview = agent_call(
                 client,
-                "agent",
                 "readDossierArtifact",
                 json!({"topicId":saved.topic_id,"path":"annex.md"}),
-                Attachments::new(),
             )
             .await;
             assert_eq!(preview, COMPAT_DRAFT);
@@ -1444,14 +1415,7 @@ async fn verify_dossiers(
         if guards {
             tokio::time::timeout(Duration::from_secs(10), async {
                 loop {
-                    let current = call(
-                        client,
-                        "agent",
-                        "dossier",
-                        topic.clone(),
-                        Attachments::new(),
-                    )
-                    .await;
+                    let current = agent_call(client, "dossier", topic.clone()).await;
                     if current["watches"][0]["lastStateHash"] == "fired" {
                         assert!(current["watches"][0]["expiresAt"].is_number());
                         assert_eq!(current["lastNotifiedRevision"], 0);
@@ -1462,31 +1426,20 @@ async fn verify_dossiers(
             })
             .await
             .expect("persisted deadline did not fire");
-            let interrupted = call(
+            let interrupted = agent_call(
                 client,
-                "agent",
                 "confirmPendingAction",
                 json!({"actionId":"interrupted"}),
-                Attachments::new(),
             )
             .await;
             assert_eq!(interrupted["outcome"], "unknown_pending_receipt");
-            call(
+            agent_call(
                 client,
-                "agent",
                 "dismissPendingAction",
                 json!({"actionId":"expired"}),
-                Attachments::new(),
             )
             .await;
-            let current = call(
-                client,
-                "agent",
-                "dossier",
-                topic.clone(),
-                Attachments::new(),
-            )
-            .await;
+            let current = agent_call(client, "dossier", topic.clone()).await;
             assert!(
                 current["pendingActions"]
                     .as_array()
@@ -1502,51 +1455,34 @@ async fn verify_dossiers(
             detail["pendingActions"][0]["status"],
             "unknown_pending_receipt"
         );
-        let thread = call(
-            client,
-            "agent",
-            "openDossierThread",
-            topic,
-            Attachments::new(),
-        )
-        .await;
+        let thread = agent_call(client, "openDossierThread", topic).await;
         assert_eq!(thread["sessionId"], saved.thread_session_id);
-        call(
+        agent_call(
             client,
-            "agent",
             "setDossierMuted",
             json!({"topicId":saved.topic_id, "muted":false}),
-            Attachments::new(),
         )
         .await;
     } else {
         assert_eq!(page["notificationsEnabled"], true);
         assert!(page["dossiers"].as_array().unwrap().is_empty());
     }
-    let lead = call(
-        client,
-        "agent",
-        "dropDiscoveryLead",
-        json!({"text":format!("post-upgrade discovery {post_nonce}"), "entityKey":format!("COMPAT:{post_nonce}")}),
-        Attachments::new(),
-    )
+    let lead = agent_call(client, "dropDiscoveryLead", json!({"text":format!("post-upgrade discovery {post_nonce}"), "entityKey":format!("COMPAT:{post_nonce}")}))
     .await;
-    let detail = call(client, "agent", "dossier", lead.clone(), Attachments::new()).await;
+    let detail = agent_call(client, "dossier", lead.clone()).await;
     assert_eq!(detail["revision"], 1);
     assert_eq!(
         detail["entityKey"],
         format!("compat:{post_nonce}").to_lowercase()
     );
     assert!(detail["revisions"][0]["factState"].is_null());
-    call(
+    agent_call(
         client,
-        "agent",
         "setDossierResolved",
         json!({"topicId":lead["topicId"],"resolved":true}),
-        Attachments::new(),
     )
     .await;
-    let closed = call(client, "agent", "dossier", lead, Attachments::new()).await;
+    let closed = agent_call(client, "dossier", lead).await;
     assert_eq!(closed["revision"], 2);
     assert_eq!(closed["signal"], "done");
 }

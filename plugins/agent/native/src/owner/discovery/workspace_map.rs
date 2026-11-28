@@ -476,46 +476,20 @@ impl scheduler::Scheduler {
         &self,
         workspace: &Path,
     ) -> Result<(Option<u64>, WorkspaceMap), String> {
-        let Some(record) = self
-            .storage
-            .read(map_key(workspace))
-            .await
-            .map_err(reason)?
-        else {
-            return Ok((None, WorkspaceMap::default()));
-        };
-        let Data::Present(value) = record.data else {
-            return Ok((Some(record.revision), WorkspaceMap::default()));
-        };
-        let map = serde_json::from_value(value).map_err(reason)?;
-        Ok((Some(record.revision), map))
+        let (revision, map) = self.discovery_record(map_key(workspace)).await?;
+        Ok((revision, map.unwrap_or_default()))
     }
 
     pub(super) async fn all_mapped_watch_roots(
         &self,
     ) -> Result<BTreeMap<String, MapWatches>, String> {
-        let mut after = None;
         let mut by_key = BTreeMap::new();
-        loop {
-            let page = self
-                .storage
-                .scan(maka_plugin_core::storage::Scan {
-                    prefix: PREFIX.into(),
-                    after,
-                })
-                .await
-                .map_err(reason)?;
-            for entry in page.entries {
-                if let Data::Present(data) = entry.record.data {
-                    let map: WorkspaceMap = serde_json::from_value(data).map_err(reason)?;
-                    by_key.insert(entry.key, map.watch_roots());
-                }
-            }
-            after = page.next_after;
-            if after.is_none() {
-                break;
-            }
-        }
+        self.visit_workspace_records(PREFIX, |key, value| {
+            let map: WorkspaceMap = serde_json::from_value(value).map_err(reason)?;
+            by_key.insert(key, map.watch_roots());
+            Ok(())
+        })
+        .await?;
         Ok(by_key)
     }
 }
