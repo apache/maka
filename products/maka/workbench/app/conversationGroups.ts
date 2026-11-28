@@ -242,30 +242,15 @@ export function browserOrder(
   });
 }
 
-/** Pinned conversations, then unpinned conversations bucketed by recency while preserving Host page order. */
+/** Pinned conversations, then a single Recent group of unpinned conversations in Host page order. */
 export function groupConversationsByTime<Project>(
   sessions: readonly Groupable[],
-  now = Date.now(),
 ): ConversationGroup<Project>[] {
   const pinned: string[] = [];
-  const unpinned: Groupable[] = [];
+  const recent: string[] = [];
   for (const session of sessions) {
     if (session.pinned) pinned.push(session.id);
-    else unpinned.push(session);
-  }
-
-  const ref = new Date(now);
-  const todayMs = new Date(ref.getFullYear(), ref.getMonth(), ref.getDate()).getTime();
-  const yesterdayMs = new Date(ref.getFullYear(), ref.getMonth(), ref.getDate() - 1).getTime();
-
-  const today: string[] = [];
-  const yesterday: string[] = [];
-  const earlier: string[] = [];
-  for (const session of unpinned) {
-    const ts = session.updatedAt ?? 0;
-    if (ts >= todayMs) today.push(session.id);
-    else if (ts >= yesterdayMs) yesterday.push(session.id);
-    else earlier.push(session.id);
+    else recent.push(session.id);
   }
 
   const empty = new Set<string>();
@@ -279,31 +264,13 @@ export function groupConversationsByTime<Project>(
       sessions: pinned,
       nested: empty,
     });
-  if (today.length)
+  if (recent.length)
     groups.push({
-      key: 'time:today',
+      key: 'time:recent',
       pinned: false,
       project: null,
       path: null,
-      sessions: today,
-      nested: empty,
-    });
-  if (yesterday.length)
-    groups.push({
-      key: 'time:yesterday',
-      pinned: false,
-      project: null,
-      path: null,
-      sessions: yesterday,
-      nested: empty,
-    });
-  if (earlier.length)
-    groups.push({
-      key: 'time:earlier',
-      pinned: false,
-      project: null,
-      path: null,
-      sessions: earlier,
+      sessions: recent,
       nested: empty,
     });
   return groups;

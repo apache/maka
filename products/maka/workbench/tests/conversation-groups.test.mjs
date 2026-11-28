@@ -24,7 +24,6 @@ import {
   browserOrder,
   desktopSidebarGroups,
   groupConversations,
-  groupConversationsByTime,
   groupWorkspace,
   selectBubbledChildren,
 } from '../app/conversationGroups.ts';
@@ -238,11 +237,10 @@ test('mixed pinned groups have no creation workspace; missing projects reuse an 
   assert.deepEqual(groupWorkspace(groups[1]), { kind: 'session', sessionId: 'missing' });
 });
 
-test('chronological view keeps pinned first, preserves Host order, and buckets by local calendar day', () => {
-  const now = new Date(2026, 10, 21, 14, 0, 0).getTime();
+test('chronological view keeps pinned first, lists unpinned under unified Recent, and bubbles waiting children', () => {
   const at = (dayOffset, hour, min = 0) =>
     new Date(2026, 10, 21 + dayOffset, hour, min, 0).getTime();
-  const groups = groupConversationsByTime(
+  const groups = desktopSidebarGroups(
     [
       { ...session('pin', '/b', { pinned: true }), updatedAt: at(-5, 9) },
       { ...session('today-first', '/a'), updatedAt: at(0, 8) },
@@ -250,21 +248,26 @@ test('chronological view keeps pinned first, preserves Host order, and buckets b
       { ...session('yest-early', '/a'), updatedAt: at(-1, 0, 30) },
       { ...session('older', '/a'), updatedAt: at(-3, 9) },
     ],
-    now,
+    [],
+    [session('wait-child', '/a', { parent: 'today-first', activity: 'waiting' })],
+    { byTime: true, withEmpty: false, attachBubbles: true },
   );
   assert.deepEqual(
-    groups.map((group) => [group.key, group.sessions]),
+    groups.map((group) => [group.key, group.sessions, [...group.nested]]),
     [
-      ['pinned', ['pin']],
-      ['time:today', ['today-first', 'today-second']],
-      ['time:yesterday', ['yest-early']],
-      ['time:earlier', ['older']],
+      ['pinned', ['pin'], []],
+      [
+        'time:recent',
+        ['today-first', 'wait-child', 'today-second', 'yest-early', 'older'],
+        ['wait-child'],
+      ],
     ],
   );
   assert.equal(groupWorkspace(groups[1]), null);
   assert.deepEqual(browserOrder(groups, new Set(), null, new Set()), [
     'pin',
     'today-first',
+    'wait-child',
     'today-second',
     'yest-early',
     'older',

@@ -73,6 +73,8 @@ import type { ComposerIntake } from '../../../../packages/plugin-sdk/src/compose
 import type {
   AgentCompletionTarget,
   AgentInteractionResult,
+  AgentProject,
+  AgentProjectLocation,
   AgentSession,
   AgentWorkspaceAccess,
   SettingsAssistantPreferences,
@@ -143,6 +145,8 @@ import type {
 } from '../../../../products/maka/workbench/app/composerCommands';
 import { matchComposerCommand } from '../../../../products/maka/workbench/app/composerCommands';
 import { WorkspacePicker } from '../../../../products/maka/workbench/app/WorkspacePicker';
+import { ProjectRestoreDialog } from '../../../../products/maka/workbench/app/ProjectRestoreDialog';
+import { createProjectRegistrationController } from '../../../../products/maka/workbench/app/projectRegistration';
 import {
   RecentWorkspaces,
   type RecentWorkspace,
@@ -200,8 +204,10 @@ import { watchNotifications } from '../../../../products/maka/workbench/app/noti
 type OverlayTarget = {
   sessionId: string | null;
 } & (
-  | { kind: 'commands' | 'workspaces' | 'sessions' }
+  | { kind: 'commands' | 'sessions' }
+  | { kind: 'workspaces'; purpose?: 'workspace' | 'project' }
   | { kind: 'change-workspace'; sessionId: string; revision: number }
+  | { kind: 'restore_project'; project: AgentProject; location: AgentProjectLocation }
   // `within`: the search starts in the open conversation only.
   | { kind: 'search'; within?: boolean }
   | { kind: 'models'; focusOnClose?: 'composer' }
@@ -777,6 +783,7 @@ export function createConversationUi(
     markRead: 'Mark conversation as read',
     metadata: 'Update conversation',
     openBot: 'Open Maka Bot',
+    project: 'Update project',
     respond: 'Submit response',
     selectBackend: 'Change model',
     setCompactionPrompt: 'Save compaction instructions',
@@ -2111,6 +2118,19 @@ export function createConversationUi(
               continue;
             }
           }
+          if (
+            original.method === 'project' &&
+            reply?.receipt?.kind === 'recorded' &&
+            reply.receipt.outcome?.kind === 'unknown'
+          ) {
+            await host.dismissControl(original.id);
+            toast.show({
+              id: 'workbench.add-project-error',
+              tone: 'danger',
+              message: tr('The original result is unconfirmed. Check its receipt.'),
+            });
+            continue;
+          }
           if (reply?.receipt?.kind === 'recorded' && reply.receipt.outcome?.kind === 'unresolved')
             continue;
           if (
@@ -2377,6 +2397,26 @@ export function createConversationUi(
     return true;
   };
   const connectionLost = () => shell()?.connectionLost() ?? false;
+  const expandProjectGroup = (projectId: string) => {
+    const groupKey = `project:${projectId}`;
+    if (!collapsedGroups().has(groupKey)) return;
+    const next = new Set(collapsedGroups());
+    next.delete(groupKey);
+    collapsedGroups.set(next);
+  };
+  const projectRegistration = createProjectRegistrationController({
+    host,
+    useNativeFolderPicker: () => ownTitleBar,
+    alive: () => alive,
+    blocked: connectionLost,
+    refresh: () => browsing.refresh(),
+    expandProject: expandProjectGroup,
+    openPicker: () => open({ kind: 'workspaces', sessionId: selected(), purpose: 'project' }),
+    openRestore: ({ project, location }) =>
+      open({ kind: 'restore_project', sessionId: selected(), project, location }),
+    notifyError: (message) =>
+      toast.show({ id: 'workbench.add-project-error', tone: 'danger', message }),
+  });
   const browserProps: WorkspaceBrowserProps = {
     connectionLost,
     docked: navigationDocked,
@@ -2398,6 +2438,8 @@ export function createConversationUi(
     },
     create,
     newConversation: (sessionId) => invokeCommand({ id: 'new', sessionId }),
+    addProject: projectRegistration.addProject,
+    addingProject: projectRegistration.adding,
     openBot: (sessionId) => invokeCommand({ id: 'bot', sessionId }),
     botSession,
     botWorkers: botWorkers.sessions,
@@ -3543,9 +3585,22 @@ export function createConversationUi(
                       </View>
                     </WindowDialog>
                   );
+                if (current.kind === 'restore_project')
+                  return (
+                    <ProjectRestoreDialog
+                      project={current.project}
+                      location={current.location}
+                      close={() => closeOverlay(current.instance)}
+                      restored={async (project) => {
+                        await browsing.refresh();
+                        if (alive) expandProjectGroup(project.reference.id);
+                      }}
+                    />
+                  );
                 if (current.kind === 'workspaces' || current.kind === 'change-workspace')
                   return (
                     <WorkspacePicker
+                      purpose={current.kind === 'workspaces' ? current.purpose : undefined}
                       instance={current.instance}
                       current={() =>
                         overlay()?.instance === current.instance && selected() === current.sessionId
@@ -3564,6 +3619,11 @@ export function createConversationUi(
                         if (alive) void browsing.refresh().catch(report);
                       }}
                       create={(workspace, label) => {
+                        if (current.kind === 'workspaces' && current.purpose === 'project') {
+                          if (workspace.kind === 'directory')
+                            void projectRegistration.registerPath(workspace.path);
+                          return;
+                        }
                         if (current.kind !== 'change-workspace')
                           return create(workspace, current.sessionId, label);
                         if (workspace.kind !== 'directory')

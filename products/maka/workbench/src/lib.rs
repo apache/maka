@@ -2614,18 +2614,17 @@ mod tests {
         app.wait_for("label:Collapse Alpha").unwrap();
         assert!(app.screen().selected("role:tab[Project]").unwrap());
         assert!(!app.screen().selected("role:tab[Time]").unwrap());
-        assert!(!app.screen().matches("text:Today").unwrap());
+        assert!(!app.screen().matches("text:Recent").unwrap());
 
         app.press("role:tab[Time]").unwrap();
-        app.wait_for("text:Today").unwrap();
-        app.wait_for("text:Earlier").unwrap();
+        app.wait_for("text:Recent").unwrap();
         assert!(app.screen().selected("role:tab[Time]").unwrap());
         assert!(!app.screen().selected("role:tab[Project]").unwrap());
         assert!(!app.screen().matches("label:Collapse Alpha").unwrap());
 
         // Re-selecting the active segment leaves chronological grouping intact.
         app.press("role:tab[Time]").unwrap();
-        app.wait_for("text:Today").unwrap();
+        app.wait_for("text:Recent").unwrap();
         assert!(app.screen().selected("role:tab[Time]").unwrap());
         assert!(!app.screen().matches("label:Collapse Alpha").unwrap());
 
@@ -2633,7 +2632,209 @@ mod tests {
         app.wait_for("label:Collapse Alpha").unwrap();
         assert!(app.screen().selected("role:tab[Project]").unwrap());
         assert!(!app.screen().selected("role:tab[Time]").unwrap());
-        assert!(!app.screen().matches("text:Today").unwrap());
+        assert!(!app.screen().matches("text:Recent").unwrap());
+    }
+
+    #[test]
+    fn sidebar_add_project_empty_state_alignment_and_restore_flow() {
+        let mut app = headless_fixture(
+            "tests/fixtures/sidebar-add-project.tsx",
+            Size::new(px(800.0), px(560.0)),
+            true,
+        );
+        let approx = |a: f32, b: f32, msg: &str| {
+            assert!((a - b).abs() <= 0.5, "{msg}: left={a}, right={b}");
+        };
+        let status = |app: &mut nsh_testing::Headless, regs: usize, rests: usize, width: usize| {
+            app.wait_for(&format!(
+                "text:selected:s-active creates:0 selects:0 closes:0 registers:{regs} restores:{rests} width:{width}"
+            ))
+            .unwrap();
+        };
+        let press = |app: &mut nsh_testing::Headless, sel: &str| {
+            app.wait_for(sel).unwrap();
+            app.press(sel).unwrap();
+        };
+        let pick_folder = |app: &mut nsh_testing::Headless, folder: &str| {
+            press(app, "role:button[Add project]");
+            press(app, "label:Browse folder work");
+            press(app, &format!("label:Browse folder {folder}"));
+            press(app, "label:Add this project folder");
+        };
+
+        // 1. Empty-state invariant: 0 sessions & 0 projects still show Projects + Add project.
+        app.wait_for("text:Projects").unwrap();
+        app.wait_for("role:button[Add project]").unwrap();
+        app.wait_for("text:No projects yet.").unwrap();
+        status(&mut app, 0, 0, 280);
+
+        // 2. Hidden in Time mode and Archived filter mode.
+        press(&mut app, "role:tab[Time]");
+        app.wait_for("text:No conversations yet.").unwrap();
+        assert!(!app.screen().matches("role:button[Add project]").unwrap());
+        press(&mut app, "role:tab[Project]");
+        app.wait_for("role:button[Add project]").unwrap();
+        press(&mut app, "label:Show archived conversations");
+        app.wait_for("text:No archived conversations.").unwrap();
+        assert!(!app.screen().matches("role:button[Add project]").unwrap());
+        press(&mut app, "label:Show active conversations >> nth=0");
+        app.wait_for("role:button[Add project]").unwrap();
+
+        // 3. Escape dismisses WorkspacePicker without closing WorkspaceBrowser.
+        press(&mut app, "role:button[Add project]");
+        app.wait_for("label:Browse folder work").unwrap();
+        app.press_key("escape").unwrap();
+        app.wait_for("role:button[Add project]").unwrap();
+        assert!(!app.screen().matches("label:Browse folder work").unwrap());
+        status(&mut app, 0, 0, 280);
+
+        // 4. Register a new project via generalized WorkspacePicker (remote fallback).
+        pick_folder(&mut app, "alpha");
+        app.wait_for("label:Collapse alpha").unwrap();
+        app.wait_for("label:New conversation in alpha").unwrap();
+        status(&mut app, 1, 0, 280);
+
+        // 5. Seed sessions and verify relational alignment, flush pills, and hairline divider.
+        press(&mut app, "label:Seed sessions");
+        app.wait_for("text:Pinned task").unwrap();
+        app.wait_for("text:Pin sub").unwrap();
+        app.wait_for("text:Fix parser").unwrap();
+        app.wait_for("text:Sub").unwrap();
+        let assert_layout = |app: &nsh_testing::Headless, sidebar_width: f32| {
+            let screen = app.screen();
+            let nodes = screen.layout_nodes();
+            let node = |sel: &str| {
+                let id = screen.id(sel).unwrap();
+                nodes.iter().find(|n| n.id == id).unwrap()
+            };
+            let nx = |sel: &str| node(sel).bounds.origin.x.0;
+            let (conv_text, proj_x, alpha_btn) = (
+                node("text:Conversations"),
+                nx("text:Projects"),
+                node("label:Collapse alpha"),
+            );
+            let alpha_x = nodes
+                .iter()
+                .find(|n| n.parent == alpha_btn.id && n.kind == nsh_core::ViewKind::Text)
+                .unwrap()
+                .bounds
+                .origin
+                .x
+                .0;
+            let (pin_child_x, alpha_conv_x, child_conv_x) = (
+                nx("label:Open conversation Pin sub"),
+                nx("text:Fix parser"),
+                nx("label:Open conversation Sub"),
+            );
+            assert!(
+                alpha_x > proj_x
+                    && pin_child_x > alpha_btn.bounds.origin.x.0
+                    && child_conv_x > alpha_conv_x
+                    && child_conv_x > pin_child_x
+            );
+
+            let conv_row = nodes.iter().find(|n| n.id == conv_text.parent).unwrap();
+            let conv_bottom = conv_row.bounds.origin.y.0 + conv_row.bounds.size.height.0;
+            let list_top = node("label:Conversations").bounds.origin.y.0;
+            let div = nodes
+                .iter()
+                .find(|n| {
+                    n.parent == conv_row.parent
+                        && (n.bounds.size.height.0 - 1.0).abs() <= 0.1
+                        && n.bounds.origin.y.0 >= conv_bottom
+                        && n.bounds.origin.y.0 <= list_top
+                })
+                .expect("expected 1px hairline divider");
+            let top_gap = div.bounds.origin.y.0 - conv_bottom;
+            let bot_gap = list_top - (div.bounds.origin.y.0 + div.bounds.size.height.0);
+            assert!(top_gap > 0.0, "Divider must sit below Conversations row");
+            for (a, b, msg) in [
+                (nx("text:Pinned"), proj_x, "Pinned x"),
+                (nx("text:Pinned task"), proj_x, "Pinned task x"),
+                (alpha_conv_x, alpha_x, "Child conv title x"),
+                (
+                    nx("label:Open conversation Fix parser"),
+                    alpha_btn.bounds.origin.x.0,
+                    "Flush x",
+                ),
+                (
+                    nx("role:button[Add project]"),
+                    nx("label:New conversation in alpha"),
+                    "Trailing",
+                ),
+                (div.bounds.origin.x.0, 0.0, "Divider x=0"),
+                (div.bounds.size.width.0, sidebar_width, "Divider width"),
+                (top_gap, bot_gap, "Divider symmetric clearance"),
+            ] {
+                approx(a, b, msg);
+            }
+        };
+        assert_layout(&app, 280.0);
+        press(&mut app, "label:Narrow sidebar");
+        status(&mut app, 1, 0, 192);
+        assert_layout(&app, 192.0);
+        press(&mut app, "label:Narrow sidebar");
+        status(&mut app, 1, 0, 280);
+
+        // 5b. Projects vs Recent section switching across en / zh-CN / zh-TW.
+        press(&mut app, "role:tab[Time]");
+        app.wait_for("text:Recent").unwrap();
+        for s in [
+            "text:Today",
+            "text:Yesterday",
+            "text:Earlier",
+            "role:button[Add project]",
+        ] {
+            assert!(!app.screen().matches(s).unwrap());
+        }
+        let s = app.screen();
+        let x_of = |sel| {
+            s.layout_nodes()
+                .into_iter()
+                .find(|n| n.id == s.id(sel).unwrap())
+                .unwrap()
+                .bounds
+                .origin
+                .x
+                .0
+        };
+        approx(x_of("text:Fix parser"), x_of("text:Recent"), "Recent x");
+        for (locale, shown, tab, after) in [
+            ("zh-CN", "text:最近", "role:tab[项目]", "text:项目"),
+            ("zh-TW", "text:專案", "role:tab[時間]", "text:最近"),
+            ("en", "text:Recent", "role:tab[Project]", "text:Projects"),
+        ] {
+            press(&mut app, "label:Cycle locale");
+            app.wait_for(&format!("text:locale:{locale}")).unwrap();
+            app.wait_for(shown).unwrap();
+            press(&mut app, tab);
+            app.wait_for(after).unwrap();
+        }
+
+        // 6. Already-active project is idempotent and uncollapses a collapsed group.
+        press(&mut app, "label:Collapse alpha");
+        app.wait_for("label:Expand alpha").unwrap();
+        pick_folder(&mut app, "alpha");
+        app.wait_for("label:Collapse alpha").unwrap();
+        status(&mut app, 1, 0, 280);
+
+        // 7. Archived project prompts Restore ModalDialog; Escape & Cancel skip, Restore restores.
+        for dismiss in [None, Some("role:button[Cancel]")] {
+            pick_folder(&mut app, "legacy");
+            app.wait_for("text:Restore “Legacy”?").unwrap();
+            match dismiss {
+                Some(sel) => press(&mut app, sel),
+                None => app.press_key("escape").unwrap(),
+            }
+            app.wait_for("role:button[Add project]").unwrap();
+            assert!(!app.screen().matches("text:Restore “Legacy”?").unwrap());
+            status(&mut app, 1, 0, 280);
+        }
+        pick_folder(&mut app, "legacy");
+        app.wait_for("text:Restore “Legacy”?").unwrap();
+        press(&mut app, "role:button[Restore]");
+        app.wait_for("label:Collapse Legacy").unwrap();
+        status(&mut app, 1, 1, 280);
     }
 }
 

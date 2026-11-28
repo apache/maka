@@ -389,5 +389,20 @@
   "Other font…": "其他字體…",
   "Font": "字體",
   "Can you check this function?": "幫我睇下這個函數？",
-  "Font name": "字體名稱"
+  "Font name": "字體名稱",
+  "Add project": "新增項目",
+  "Add project…": "新增項目…",
+  "Add this project folder": "新增此項目檔案夾",
+  "Adding project…": "正在新增項目…",
+  "Could not add the project.": "無法新增項目。",
+  "Could not restore the project.": "無法還原項目。",
+  "No projects yet.": "尚無項目。",
+  "Open a location, then choose a project folder.": "開啟一個位置，然後選擇項目檔案夾。",
+  "Projects": "項目",
+  "Projects are busy. Try again in a moment.": "項目忙碌中，請稍後重試。",
+  "Projects changed. Refresh and review before trying again.": "項目已變更。請重新整理並確認後再試。",
+  "Restoring project…": "正在還原項目…",
+  "This folder belongs to an archived project. Restore it to show it in the sidebar again.": "此檔案夾屬於已封存的項目。還原後它將重新顯示在側邊欄中。",
+  "This folder cannot be added as a project.": "此檔案夾無法新增為項目。",
+  "Update project": "更新項目"
 }
