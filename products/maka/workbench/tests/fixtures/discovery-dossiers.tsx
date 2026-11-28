@@ -308,6 +308,9 @@ mount(() => {
     },
   } as unknown as Host;
   const browsing = createBrowsing(host);
+  keymap.bind('mod+shift+r', () => route.set({ topicId: null, runId: 'probe' }), {
+    when: 'always',
+  });
   keymap.bind('mod+d', () => route.set({ topicId: 'two' }), { when: 'always' });
   keymap.bind(
     'mod+r',

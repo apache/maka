@@ -16,7 +16,7 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-import { computed, effect, Scroll, signal, type Signal, Text, View } from 'nsh';
+import { computed, effect, Scroll, signal, type Signal, Text, untracked, View } from 'nsh';
 import { Button } from 'nsh/base';
 import type { Cursor, HistoryPosition } from '../../../../packages/plugin-sdk/src/index.js';
 import type { WorkerSession } from './discoveryDossiersCore';
@@ -84,11 +84,10 @@ export function DiscoveryRuns(props: {
 
   let lastRouteKey: string | null = null;
   let loadedId: string | null = null;
-  let loadedPageKey = '';
 
   effect(() => {
     const initial = props.initialRunId ?? null;
-    if (initial && initial !== selected()) {
+    if (initial && initial !== untracked(selected)) {
       position.set({ kind: 'tail' });
       selected.set(initial);
     }
@@ -124,15 +123,12 @@ export function DiscoveryRuns(props: {
       instructionStates.clear();
     }
     if (!isQuietReload) {
-      loadedPageKey = pageKey;
       rows.set(null);
       if (id == null || pageAt.kind === 'tail') {
         earlier.set(null);
         later.set(null);
         fence.set(null);
       }
-    } else if (loadedPageKey !== pageKey) {
-      loadedPageKey = pageKey;
     }
     error.set('');
     if (!id) return;

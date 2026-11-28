@@ -151,6 +151,11 @@ mod tests {
         app.wait_for("text:Read-only probe evidence").unwrap();
         assert!(!app.screen().matches("role:button[Continue]").unwrap());
         app.press("role:button[Close Runs]").unwrap();
+        app.press_key("mod+shift+r").unwrap();
+        app.wait_for("text:Read-only probe evidence").unwrap();
+        app.press("role:button[Back]").unwrap();
+        app.wait_for("role:button[Probe fixture]").unwrap();
+        app.press("role:button[Close Runs]").unwrap();
         let conversation = "role:button[Open conversation Planning]";
         assert!(app.screen().selected(discovery).unwrap());
         assert!(!app.screen().selected(conversation).unwrap());
