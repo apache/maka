@@ -29,6 +29,7 @@ import { currentLocale } from '../../app/locale';
 import { installWorkbenchLocaleCatalog } from '../../app/localeCatalog';
 
 function Fixture() {
+  installWorkbenchLocaleCatalog();
   currentLocale.set('en');
   const provider = {
     entryId: 'maka.openai',
@@ -47,9 +48,11 @@ function Fixture() {
       authentication: [{ id: 'api-key', interactive: false, label: 'API key' }],
     },
   };
-  const revision = 1;
-  const catalogRevision = 1;
-  const modelIds = ['gpt-4.1', 'gpt-4.1-mini'];
+  let revision = 1;
+  let catalogRevision = 1;
+  const discoveredModelIds = ['gpt-4.1', 'gpt-4.1-mini'];
+  let enabledModelIds = [...discoveredModelIds];
+  let modelOverrides: Record<string, Record<string, unknown>> = {};
   const basis = () => ({ connectionId: 'openai', revision });
   let sourceRevision = 1;
   const sourceRef = () => ({
@@ -79,7 +82,32 @@ function Fixture() {
   const application = {
     pendingSettings: async () => [],
     refresh: async () => {},
-    settingsMutation: async (endpoint: string, method: string) => {
+    settingsMutation: async (endpoint: string, method: string, input: any) => {
+      if (endpoint === 'settings' && method === 'update') {
+        revision += 1;
+        catalogRevision += 1;
+        if (Array.isArray(input?.changes?.enabledModelIds)) {
+          enabledModelIds = [...input.changes.enabledModelIds];
+        }
+        if (input?.changes?.modelOverrides && typeof input.changes.modelOverrides === 'object') {
+          modelOverrides = { ...input.changes.modelOverrides };
+        }
+        return {
+          operationId: `op-update-${revision}`,
+          reply: {
+            receipt: {
+              kind: 'recorded',
+              outcome: {
+                kind: 'returned',
+                result: {
+                  kind: 'success',
+                  value: { kind: 'committed', connection: basis() },
+                },
+              },
+            },
+          },
+        };
+      }
       if (endpoint === 'management' && method === 'configureBatch' && conflictBatch) {
         return {
           operationId: 'op-conflict',
@@ -133,7 +161,7 @@ function Fixture() {
               slug: 'openai',
               provider,
               enabled: true,
-              enabledModelCount: modelIds.length,
+              enabledModelCount: enabledModelIds.length,
               editable: true,
             },
           ],
@@ -152,7 +180,7 @@ function Fixture() {
           kind: 'ready',
           revision: catalogRevision,
           next: null,
-          choices: modelIds.map(choice),
+          choices: enabledModelIds.map(choice),
         };
       }
       if (method === 'providers') {
@@ -172,9 +200,9 @@ function Fixture() {
             configuration: definition.descriptor.configurationDefaults,
           },
           editing: {
-            discoveredModelIds: modelIds,
-            enabledModelIds: modelIds,
-            modelOverrides: {},
+            discoveredModelIds,
+            enabledModelIds,
+            modelOverrides,
             requestBodyOverlay: null,
           },
         };
@@ -189,28 +217,51 @@ function Fixture() {
             updatedAt: null,
           },
         };
-      if (method === 'resolveModel')
+      if (method === 'resolveModel') {
+        const known = discoveredModelIds.includes(input.modelId);
+        const contextWindow = input.overrides?.contextWindow ?? (known ? 128000 : null);
+        const inputLimit = input.overrides?.inputLimit ?? contextWindow;
+        const effectiveInput =
+          contextWindow != null && inputLimit != null
+            ? Math.min(contextWindow, inputLimit)
+            : (contextWindow ?? inputLimit);
+        const compactionThreshold =
+          effectiveInput != null ? Math.max(1, Math.floor(effectiveInput * 0.85)) : null;
         return {
           kind: 'ready',
-          defaults: {
-            label: 'GPT-4.1',
-            contextWindow: 128000,
-            inputLimit: 128000,
-            maxOutputTokens: 16384,
-            compactionThreshold: null,
-            thinkingLevels: ['off', 'medium', 'high'],
-            defaultThinkingLevel: 'medium',
-            codeMode: true,
-            applyPatch: true,
-            catalogMatched: true,
-          },
+          defaults: known
+            ? {
+                label: 'GPT-4.1',
+                contextWindow: 128000,
+                inputLimit: contextWindow ?? 128000,
+                maxOutputTokens: 16384,
+                compactionThreshold,
+                thinkingLevels: ['off', 'medium', 'high'],
+                defaultThinkingLevel: 'medium',
+                codeMode: true,
+                applyPatch: true,
+                catalogMatched: true,
+              }
+            : {
+                label: input.modelId,
+                contextWindow: null,
+                inputLimit: contextWindow,
+                maxOutputTokens: 8000,
+                compactionThreshold,
+                thinkingLevels: [],
+                defaultThinkingLevel: null,
+                codeMode: true,
+                applyPatch: false,
+                catalogMatched: false,
+              },
           choice: {
             selection: { ...basis(), modelId: input.modelId },
-            thinkingLevels: ['off', 'medium', 'high'],
-            defaultThinkingLevel: 'medium',
-            limits: { contextWindow: 128000, maxOutputTokens: 16384 },
+            thinkingLevels: known ? ['off', 'medium', 'high'] : [],
+            defaultThinkingLevel: known ? 'medium' : null,
+            limits: known ? { contextWindow: 128000, maxOutputTokens: 16384 } : null,
           },
         };
+      }
       if (method === 'catalogModels') return { models: [], after: null };
       throw new Error(`Unexpected query ${endpoint}.${method}`);
     },

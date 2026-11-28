@@ -2327,6 +2327,88 @@ mod tests {
     }
 
     #[test]
+    fn add_model_form_validates_duplicates_shorthand_limits_and_compaction_suggestion() {
+        let mut app = fixture("models-settings.tsx");
+        app.set_viewport(Size::new(px(1040.0), px(900.0))).unwrap();
+        app.press_key("f7").unwrap();
+        app.wait_for("label:Edit connection OpenAI").unwrap();
+        app.press("label:Edit connection OpenAI").unwrap();
+        app.wait_for("label:Add model manually").unwrap();
+        app.press("label:Add model manually").unwrap();
+        app.wait_for("label:Model ID").unwrap();
+
+        // Duplicate model ID surfaces inline and disables Save immediately.
+        app.type_text("label:Model ID", "gpt-4.1").unwrap();
+        app.wait_for("text:This model already exists on this connection.")
+            .unwrap();
+        assert!(!app.screen().enabled("label:Save model").unwrap());
+
+        // Switching to a fresh model ID clears the duplicate error.
+        app.clear("label:Model ID").unwrap();
+        app.type_text("label:Model ID", "custom-v1").unwrap();
+        app.settle();
+        assert!(
+            !app.screen()
+                .matches("text:This model already exists on this connection.")
+                .unwrap()
+        );
+        assert!(app.screen().enabled("label:Save model").unwrap());
+
+        // Shorthand 200k shows resolved token count and offers 90% compaction suggestion.
+        app.type_text("label:Context window (tokens)", "200k")
+            .unwrap();
+        app.wait_for("text:200,000 tokens").unwrap();
+        app.wait_for("text:Use 90% (180,000)").unwrap();
+
+        // Input limit exceeding context window surfaces inline and disables Save.
+        app.type_text("label:Input limit (tokens)", "250k").unwrap();
+        app.wait_for("text:Input limit cannot exceed context window.")
+            .unwrap();
+        assert!(!app.screen().enabled("label:Save model").unwrap());
+
+        // Fixing input limit clears the conflict and updates the 90% suggestion.
+        app.clear("label:Input limit (tokens)").unwrap();
+        app.type_text("label:Input limit (tokens)", "180k").unwrap();
+        app.wait_for("text:180,000 tokens").unwrap();
+        app.wait_for("text:Use 90% (162,000)").unwrap();
+        assert!(app.screen().enabled("label:Save model").unwrap());
+
+        // Compaction threshold exceeding capacity surfaces inline and disables Save.
+        app.type_text("label:Compaction threshold (tokens)", "190k")
+            .unwrap();
+        app.wait_for("text:Compaction threshold cannot exceed input capacity.")
+            .unwrap();
+        assert!(!app.screen().enabled("label:Save model").unwrap());
+
+        // Clearing compaction threshold and clicking the 90% suggestion populates 162000,
+        // restores focus to the compaction threshold input, and saves.
+        app.clear("label:Compaction threshold (tokens)").unwrap();
+        app.wait_for("text:Use 90% (162,000)").unwrap();
+        let compaction_id = app
+            .screen()
+            .id("label:Compaction threshold (tokens)")
+            .unwrap();
+        let command_count = app.screen().commands().len();
+        app.press("label:Use 90% compaction threshold (162,000 tokens)")
+            .unwrap();
+        assert!(
+            app.screen().commands()[command_count..]
+                .iter()
+                .any(|(id, command)| *id == compaction_id
+                    && matches!(command, nsh_core::Command::Focus))
+        );
+        assert_eq!(
+            app.screen()
+                .input_text("label:Compaction threshold (tokens)")
+                .unwrap(),
+            Some("162000")
+        );
+        assert!(app.screen().enabled("label:Save model").unwrap());
+        app.press("label:Save model").unwrap();
+        app.wait_for("label:Edit model custom-v1").unwrap();
+    }
+
+    #[test]
     fn settings_switches_confine_press_targets_to_the_switch_control() {
         let mut app = fixture("models-settings.tsx");
         app.set_viewport(Size::new(px(1040.0), px(900.0))).unwrap();

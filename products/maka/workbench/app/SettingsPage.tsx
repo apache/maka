@@ -681,13 +681,25 @@ export function SettingsInput(props: {
   disabled?: boolean;
   autoFocus?: boolean;
   error?: string;
+  note?: string;
+  action?: {
+    label: string;
+    accessibilityLabel?: string;
+    disabled?: boolean;
+    onPress(): void;
+  };
 }) {
+  let input: InputRef | undefined;
   return (
     <View
       style={{
         ...rowStyle,
         flexDirection: props.stacked ? 'column' : 'row',
-        alignItems: props.stacked ? 'stretch' : props.error ? 'flex-start' : 'center',
+        alignItems: props.stacked
+          ? 'stretch'
+          : props.error || props.note || props.action
+            ? 'flex-start'
+            : 'center',
       }}
     >
       <RowLine />
@@ -704,6 +716,9 @@ export function SettingsInput(props: {
       </View>
       <View style={{ flex: props.stacked ? undefined : 1, minWidth: 0, gap: 4 }}>
         <Input
+          ref={(node) => {
+            input = node;
+          }}
           accessibilityLabel={props.label}
           autoFocus={props.autoFocus}
           value={props.value}
@@ -720,6 +735,22 @@ export function SettingsInput(props: {
         />
         <If when={props.error}>
           <Text style={{ ...captionTextStyle, color: C.danger }}>{props.error}</Text>
+        </If>
+        <If when={!props.error && props.note}>
+          <Text style={{ ...captionTextStyle, color: C.muted }}>{props.note}</Text>
+        </If>
+        <If when={!props.error && props.action}>
+          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+            <SettingsButton
+              label={props.action!.label}
+              accessibilityLabel={props.action!.accessibilityLabel}
+              disabled={props.action!.disabled}
+              onPress={() => {
+                props.action!.onPress();
+                input?.focus();
+              }}
+            />
+          </View>
         </If>
       </View>
     </View>
