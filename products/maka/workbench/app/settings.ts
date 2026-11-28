@@ -52,6 +52,11 @@ import {
   type SettingsOperations,
 } from './settingsOperations';
 import { createConnectionLogin, type LoginAction } from './connectionLoginState.ts';
+import {
+  findModelLimitConflicts,
+  parseModelLimitStates,
+  type ModelLimitKey,
+} from './modelLimitInput';
 
 type Detail = Extract<SettingsConnectionDetail, { kind: 'ready' }>;
 export type ConnectionEditor = {
@@ -276,18 +281,20 @@ export function createModelSettings(
   );
   const editing = computed(() => editor()?.baseline?.editing);
   const enabledModels = computed(() => new Set(editing()?.enabledModelIds));
+  const knownModelIds = computed(() => {
+    const facts = editing();
+    return new Set([
+      ...(facts?.discoveredModelIds ?? []),
+      ...enabledModels(),
+      ...Object.keys(facts?.modelOverrides ?? {}),
+    ]);
+  });
   const modelProvider = computed(() =>
     [editor()?.provider.descriptor.label ?? '', editor()?.provider.identity.name ?? ''].join('\n'),
   );
   const modelIndex = computed(() => {
     const facts = editing();
-    return [
-      ...new Set([
-        ...(facts?.discoveredModelIds ?? []),
-        ...enabledModels(),
-        ...Object.keys(facts?.modelOverrides ?? {}),
-      ]),
-    ].map((id) => ({
+    return [...knownModelIds()].map((id) => ({
       id,
       text: [id, facts?.modelOverrides?.[id]?.displayName ?? '', modelProvider()]
         .join('\n')
@@ -1042,30 +1049,49 @@ export function createModelSettings(
     else value.codeModeLanguage = current.codeModeLanguage;
     if (current.applyPatch === null) delete value.applyPatch;
     else value.applyPatch = current.applyPatch;
+    const states = parseModelLimitStates(current.limits);
     for (const { key, label } of modelLimitFields) {
-      const text = current.limits[key].trim();
-      if (!text) delete value[key];
-      else {
-        const tokens = Number(text);
-        if (!/^\d+$/.test(text) || !Number.isSafeInteger(tokens) || tokens <= 0)
-          return { kind: 'invalid', field: label };
-        value[key] = tokens;
-      }
+      const state = states[key];
+      if (state.kind === 'empty') delete value[key];
+      else if (state.kind === 'invalid') return { kind: 'invalid', field: label };
+      else value[key] = state.value;
     }
     return { kind: 'valid', value };
   };
-  const modelProblem = () => {
+  const modelProblems = (): Partial<Record<'id' | ModelLimitKey, ReturnType<typeof message>>> => {
     const value = model();
-    if (!value) return null;
-    const parsed = modelOverride(value);
-    return parsed.kind === 'invalid'
-      ? {
-          field: parsed.field,
-          text: message('{field} must be a positive whole number of tokens.', {
-            field: message(parsed.field),
-          }),
-        }
-      : null;
+    if (!value) return {};
+    const problems: Partial<Record<'id' | ModelLimitKey, ReturnType<typeof message>>> = {};
+    const trimmedId = value.id.trim();
+    if (value.originalId === null && trimmedId && knownModelIds().has(trimmedId)) {
+      problems.id = message('This model already exists on this connection.');
+    }
+    const states = parseModelLimitStates(value.limits);
+    for (const { key, label } of modelLimitFields) {
+      if (states[key].kind === 'invalid') {
+        problems[key] = message(
+          '{field} must be a positive token count (for example, 128000, 128K, or 1.5M).',
+          { field: message(label) },
+        );
+      }
+    }
+    const conflicts = findModelLimitConflicts(states, value.defaults);
+    if (conflicts.inputLimit === 'exceeds_context_window' && !problems.inputLimit) {
+      problems.inputLimit = message('Input limit cannot exceed context window.');
+    }
+    if (conflicts.compactionThreshold === 'exceeds_capacity' && !problems.compactionThreshold) {
+      problems.compactionThreshold = message('Compaction threshold cannot exceed input capacity.');
+    }
+    return problems;
+  };
+  const modelProblem = () => {
+    const problems = modelProblems();
+    if (problems.id) return { field: 'Model ID' as const, text: problems.id };
+    for (const { key, label } of modelLimitFields) {
+      const text = problems[key];
+      if (text) return { field: label, text };
+    }
+    return null;
   };
   const modelDirty = () => {
     const value = model();
@@ -1084,7 +1110,13 @@ export function createModelSettings(
     const current = model()!;
     const parsed = modelOverride(current);
     modelLoading.set(false);
-    if (!request.modelId.trim() || parsed.kind === 'invalid') return;
+    const trimmedId = request.modelId.trim();
+    if (
+      !trimmedId ||
+      parsed.kind === 'invalid' ||
+      (current.originalId === null && knownModelIds().has(trimmedId))
+    )
+      return;
     modelLoading.set(true);
     try {
       const result = await host.query('settings', 'resolveModel', {
@@ -1117,16 +1149,17 @@ export function createModelSettings(
   const changeModel = (change: Partial<ModelEditor>) => {
     const current = model();
     if (current && !busy()) {
+      const identityChanged =
+        (change.id !== undefined && change.id !== current.id) || change.catalogModel !== undefined;
       const refresh =
-        change.id !== undefined ||
-        change.catalogModel !== undefined ||
+        identityChanged ||
         change.thinkingLevels !== undefined ||
         change.defaultThinkingLevel !== undefined ||
         change.limits !== undefined;
       model.set({
         ...current,
         ...change,
-        defaults: refresh ? null : current.defaults,
+        defaults: identityChanged ? null : current.defaults,
         effective: change.id !== undefined && change.id !== current.id ? null : current.effective,
       });
       if (refresh) void loadModelMetadata(modelAction());
@@ -1185,14 +1218,19 @@ export function createModelSettings(
       const id = current.id.trim();
       if (!id) throw new UiError('Enter the exact model ID accepted by the provider.');
       const facts = form.baseline.editing;
-      if (current.originalId === null && facts.enabledModelIds.includes(id))
-        throw new UiError('That model is already enabled.');
+      if (current.originalId === null && knownModelIds().has(id))
+        throw new UiError('This model already exists on this connection.');
+      const problem = modelProblem();
+      if (problem) throw new UiError(problem.text.key, problem.text.values);
       const overrides = { ...(facts.modelOverrides ?? {}) };
       const parsed = modelOverride(current);
       if (parsed.kind === 'invalid')
-        throw new UiError('{field} must be a positive whole number of tokens.', {
-          field: message(parsed.field),
-        });
+        throw new UiError(
+          '{field} must be a positive token count (for example, 128000, 128K, or 1.5M).',
+          {
+            field: message(parsed.field),
+          },
+        );
       overrides[id] = parsed.value;
       const result = await mutate('settings', 'update', {
         expected: basis(form.baseline),
@@ -1524,6 +1562,7 @@ export function createModelSettings(
     modelAction,
     modelDirty,
     modelProblem,
+    modelProblems,
     removalAction,
     loadConnections,
     loadProviders,

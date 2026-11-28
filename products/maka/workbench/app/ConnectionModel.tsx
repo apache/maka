@@ -24,6 +24,12 @@ import type {
   ThinkingLevel,
 } from '../../../../packages/plugin-sdk/src/generated/runtime';
 import { modelLimitFields, thinkingLevels, type ModelSettingsOwner } from './settings';
+import {
+  isShorthandTokenInput,
+  parseModelLimitStates,
+  suggestedCompactionThreshold,
+  type ModelLimitKey,
+} from './modelLimitInput';
 import { CatalogModelAssociation } from './CatalogModelAssociation';
 import { ChoiceIndicator } from './ChoiceIndicator';
 import { tr } from './locale';
@@ -57,9 +63,49 @@ export function ConnectionModel(props: { settings: ModelSettingsOwner }) {
   const supported = () => model().thinkingLevels ?? model().effective?.thinkingLevels ?? [];
   /** The value used when this model sets none; unknown until its ID resolves. */
   const inherited = (value: string | number | boolean | null | undefined, empty?: string) => {
-    if (!model().id.trim() || owner.modelLoading() || !model().defaults) return undefined;
+    if (!model().id.trim() || !model().defaults) return undefined;
     if (value == null) return empty ?? tr('Provider controlled');
     return typeof value === 'boolean' ? tr(value ? 'Enabled' : 'Disabled') : String(value);
+  };
+  const limitStates = () => parseModelLimitStates(model().limits);
+  const limitNote = (key: ModelLimitKey) => {
+    const raw = model().limits[key];
+    const state = limitStates()[key];
+    return state.kind === 'valid' && isShorthandTokenInput(raw)
+      ? tr('{count} tokens', { count: state.value })
+      : undefined;
+  };
+  const limitPlaceholder = (key: ModelLimitKey) => {
+    const value = model().id.trim() ? model().defaults?.[key] : undefined;
+    if (value != null) return String(value);
+    if (key === 'compactionThreshold') return tr('No automatic threshold');
+    if (key === 'maxOutputTokens') return '8192 / 8K';
+    return '128000 / 128K / 1M';
+  };
+  const suggestedCompaction = () => {
+    const current = model();
+    if (current.limits.compactionThreshold.trim() !== '') return null;
+    if (current.originalId !== null && current.defaults?.compactionThreshold != null) return null;
+    const problems = owner.modelProblems();
+    if (problems.contextWindow || problems.inputLimit) return null;
+    const suggested = suggestedCompactionThreshold(limitStates(), current.defaults);
+    if (suggested === null || suggested === current.defaults?.compactionThreshold) return null;
+    return suggested;
+  };
+  const compactionAction = () => {
+    const suggested = suggestedCompaction();
+    if (suggested === null) return undefined;
+    return {
+      label: tr('Use 90% ({count})', { count: suggested }),
+      accessibilityLabel: tr('Use 90% compaction threshold ({count} tokens)', {
+        count: suggested,
+      }),
+      disabled: disabled(),
+      onPress: () =>
+        owner.changeModel({
+          limits: { ...model().limits, compactionThreshold: String(suggested) },
+        }),
+    };
   };
   const fallback = (title: 'Provider default' | 'Model default', value: string | undefined) =>
     value === undefined
@@ -89,11 +135,17 @@ export function ConnectionModel(props: { settings: ModelSettingsOwner }) {
       <SettingsSection>
         <SettingsInput
           label={tr('Model ID')}
+          description={
+            model().originalId === null
+              ? tr('Enter the exact model ID accepted by the provider.')
+              : undefined
+          }
           autoFocus={model().originalId === null}
           value={model().id}
           readonly={model().originalId !== null}
           disabled={disabled()}
           change={(id) => owner.changeModel({ id })}
+          error={owner.modelProblems().id ? renderText(owner.modelProblems().id!) : undefined}
         />
         <SettingsInput
           label={tr('Model display name')}
@@ -125,19 +177,18 @@ export function ConnectionModel(props: { settings: ModelSettingsOwner }) {
               label={tr(field().label)}
               description={hint(field())}
               value={model().limits[field().key]}
-              placeholder={inherited(
-                model().defaults?.[field().key],
-                field().key === 'compactionThreshold' ? tr('No automatic threshold') : undefined,
-              )}
+              placeholder={limitPlaceholder(field().key)}
               disabled={disabled()}
               change={(value) =>
                 owner.changeModel({ limits: { ...model().limits, [field().key]: value } })
               }
               error={
-                owner.modelProblem()?.field === field().label
-                  ? renderText(owner.modelProblem()!.text)
+                owner.modelProblems()[field().key]
+                  ? renderText(owner.modelProblems()[field().key]!)
                   : undefined
               }
+              note={limitNote(field().key)}
+              action={field().key === 'compactionThreshold' ? compactionAction() : undefined}
             />
           )}
         </Each>
