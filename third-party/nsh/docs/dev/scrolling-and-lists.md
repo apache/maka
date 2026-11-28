@@ -21,8 +21,9 @@
   `contentInset`), since the bridge cannot tell it from an unset one. Snapping is decided
   by `ScrollBehavior::snap_target` (core) on iOS and its Java port on Android, from the release offset, the projected glide and
   the velocity. Lists scrolled past their start keep the visible rows in place when items are inserted above them
-  (`splice`), as a browser's scroll anchoring does, anchored on the first row that starts in the viewport (a row the
-  viewport's start cuts through counts as above it, `ListState::reading_anchor`); at their start the rows that arrive
+  (`splice`) or rows above them are measured (`measured`), as a browser's scroll anchoring does, anchored on the first row
+  that starts in the viewport (a row the viewport's start cuts through counts as above it, `ListState::reading_anchor`; for measurements only while it was never
+  measured, since a row on screen is measured when it first shows); at their start the rows that arrive
   show, unless the list loads pages at its start (`onLoadMoreAtStart`: the page it prepends keeps the rows in place there too). Keyed changes
   (`keyExtractor`, or item identity; Rust's `.keys`) are matched row by row (`nsh_core::list_diff`, the core's
   `ListState::reorder`): a row that stays keeps its cell, its content and its measured size wherever it moves, and so
@@ -84,7 +85,11 @@
 - **List** props: `each`, `estimatedItemSize`, `numColumns` (both may change while the list shows: the first visible item keeps its place, `ListState::visible_anchor`; a change of columns remembers it in `columns_anchor`, so resizing back and forth does not drift), `inverted` (chat: item 0 at the bottom, starts at the end and keeps its
   distance from the end as content changes; with `onLoadMoreAtStart`, only while at it, the visible rows when scrolled away), `maintainVisibleContentPosition` (`autoscrollToBottomThreshold`: a list
   that is not inverted follows its end while within that distance of it, `ListState::anchor_end`; scrolled up, growth
-  below the viewport moves nothing; Rust components: `ListLayout::follow_end`, on their own lists and the lists they place), `alignment` (`bottom`, GPUI's `ListAlignment::Bottom`: rows in reading order, opens at the end with no scroll command to pin, follows it within `follow_end` or a point's rounding, `ListState::anchor_end`; it waits for an appended last row's measurement the window will reach, so one scroll lands on its real size; short content lies at the bottom, `ListState::leading`), `stickyHeaderIndices` (one column, not inverted) + `stickyHeaderOffset` (where they stick: the core subtracts a number from the sticky ranges, so platforms pin as they do without one; an animated node rides along in `StickyCell::offset`, `ListState::sticky_node`, and the platforms add its value as they pin), `header` /
+  below the viewport moves nothing; Rust components: `ListLayout::follow_end`, on their own lists and the lists they place; with
+  `animated` (`ListLayout::follow_end_animated`), a step of the end of a quarter viewport or more at once is left to an
+  animated scroll to the end, pinned like `scrollToEnd({ animated: true })` so `follow_pin` retargets it as the content
+  goes on growing and the user's drag ends it; smaller steps, and every step while that scroll is in flight, are not
+  `anchor_end`'s, `ListState::take_animated_end`), `alignment` (`bottom`, GPUI's `ListAlignment::Bottom`: rows in reading order, opens at the end with no scroll command to pin, follows it within `follow_end` or a point's rounding, `ListState::anchor_end`; it waits for an appended last row's measurement the window will reach, so one scroll lands on its real size; short content lies at the bottom, `ListState::leading`), `stickyHeaderIndices` (one column, not inverted) + `stickyHeaderOffset` (where they stick: the core subtracts a number from the sticky ranges, so platforms pin as they do without one; an animated node rides along in `StickyCell::offset`, `ListState::sticky_node`, and the platforms add its value as they pin), `header` /
   `footer` / `empty` / `separator` (a component, called once and untracked, or an element; a signal or memo, as `<If>` and `<Each>` are, is the slot's insert's to track: `slot` in `nsh-js` `list.rs`, `web/browser/list.js`), `contentStyle`
   (padding and gaps, numbers; `alignItems`: `stretch` (default), `flex-start`, `center` or `flex-end` on the cross axis) /
   `contentClass` (`p-*`, `gap-*`, `items-start` / `items-center` / `items-end` / `items-stretch`), `initialScrollAtEnd` (opens at the end before the first frame, keeps it while rows measure, and takes precedence over `initialScrollIndex`; short content stays at the top), `initialScrollIndex`, `onLoadMore` + `loadMoreThreshold`,

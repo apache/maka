@@ -5,11 +5,13 @@
 // the text fits, at most to `minimumFontScale` (text that fits keeps its
 // size). Its script
 // checks each.
-import { Text, View } from "nsh";
+import { Scroll, Text, View, signal } from "nsh";
+import { TextView } from "nsh/base";
 
 const LONG = "One two three four five six seven eight nine ten eleven twelve";
 
 function App() {
+  const earlier = signal(false);
   return (
     <View style={{ flex: 1, paddingTop: 64, alignItems: "flex-start" }}>
       <Text testID="two" style={{ numberOfLines: 2, width: 100, fontSize: 10, lineHeight: 12 }}>
@@ -44,6 +46,16 @@ function App() {
       <Text testID="fixed-height" style={{ numberOfLines: 1, height: 20, lineHeight: 20 }}>
         Hello
       </Text>
+      <View testID="extend-excerpt" onPress={() => earlier.set(true)}>
+        <Text>Read earlier text</Text>
+      </View>
+      <Scroll style={{ height: 96, width: 250 }}>
+        <TextView
+          markdown={earlier() ? "Earlier café\n\nExcerpt" : "Excerpt"}
+          sourceId="example"
+          sourceOffset={earlier() ? 32 : 47}
+        />
+      </Scroll>
     </View>
   );
 }

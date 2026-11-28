@@ -282,7 +282,7 @@ export function TurnUsage(props: {
             </Text>
             <Button
               accessibilityLabel={tr('Retry original turn usage')}
-              style={controlStyle}
+              style={controlStyle()}
               hoverStyle={controlHoverStyle()}
               focusStyle={controlFocusStyle()}
               onPress={inputAction(read, {

@@ -38,9 +38,15 @@ import {
 } from './sendReceipt';
 import { createHistoryPrefetch, HISTORY_LOOKAHEAD_VIEWPORTS } from './historyPrefetch';
 import { quietWaits, retrying, waitActivity } from './runWaits';
-import { LoadingState } from '../../../../products/maka/workbench/app/Loading';
+import { ConversationSkeleton } from '../../../../products/maka/workbench/app/Loading';
 import type { RecallAnchor } from '../../../../products/maka/workbench/app/RecallSearch';
 import { SessionInspector } from '../../../../products/maka/workbench/app/SessionInspector';
+import {
+  SessionFamilyBreadcrumb,
+  SessionFamilyTrigger,
+  type FamilyParent,
+} from '../../../../products/maka/workbench/app/SessionFamily';
+import { siblingTarget } from '../../../../products/maka/workbench/app/sessionFamilyState';
 import type {
   WorkspacePullRequestTarget,
   WorkspaceSourceItem,
@@ -177,6 +183,7 @@ import type {
   ComposerPrediction,
   ComposerQueue,
   ComposerSendAction as SendAction,
+  ComposerSendBlock,
   ComposerSendStatus,
 } from '../../../../packages/plugin-sdk/src/composer-view.js';
 import { hasComposerContent } from '../../../../packages/plugin-sdk/src/composer-view.js';
@@ -197,7 +204,7 @@ import {
   botTurnEnding,
   reportedWorker,
   activeWorkers,
-  type ActiveWorker,
+  botChatHidesRow,
   createBotTranscript,
 } from '../../../../products/maka/workbench/app/botTranscript';
 import { createBotWorkers } from '../../../../products/maka/workbench/app/botWorkers';
@@ -301,6 +308,7 @@ import type {
   HistoryPosition,
   HistoryRowAddress,
   HistoryOrder,
+  HistoryTool,
   OperationReply,
   AgentPendingInteractions,
   AgentQueue,
@@ -355,6 +363,7 @@ export type ConversationHandle = Omit<
   reveal(anchor: RecallAnchor, current: () => boolean): Promise<void>;
   focusHistory(): void;
   focusActivity(turnId: string | null): void;
+  stepSibling?(step: -1 | 1): void;
   /** The title its header shows, or null until the session metadata has loaded. */
   title(): string | null;
   /** Latest user/assistant messages for the fullscreen floating mini-preview. */
@@ -420,7 +429,6 @@ type ConversationProps = {
   activeWorktree?(): string | null;
   selectWorktree?(worktreePath: string | null): void;
   sources?(): readonly WorkspaceSourceItem[];
-  childSessions?(): readonly AgentSession[];
   openChangesWithWorktree?(worktreePath?: string | null): void;
   openLaunchpad?(): void;
   openPullRequest?(target: Omit<WorkspacePullRequestTarget, 'sessionId'>): void;
@@ -524,6 +532,9 @@ export function Conversation(props: ConversationProps) {
   // Held messages wait for the user's next message; they do not keep the Session busy.
   const runnableQueued = () => queued()?.entries.some((entry) => entry.kind !== 'held') ?? false;
   const title = signal<string | null>(null);
+  const parentSessionId = signal<string | null>(
+    props.knownSession?.(sessionId)?.parentSessionId ?? null,
+  );
   const archived = signal(false);
   const run = signal<ConversationStatus>('loading');
   const runId = signal<RunId | null>(null);
@@ -1247,6 +1258,84 @@ export function Conversation(props: ConversationProps) {
     }
     (props.openSessionBeside ?? props.openSessionHere)?.(id);
   };
+  const openFamilySession = (id: string) =>
+    (props.openSessionHere ?? props.openSessionBeside)?.(id);
+  const stepSibling = (step: -1 | 1) => {
+    if (props.compact || !parentSessionId()) return;
+    const target = siblingTarget(familySiblings(), sessionId, step);
+    if (target) openFamilySession(target.id);
+  };
+  const familyChildren = createScopedCatalog(host, () =>
+    props.compact ? null : { kind: 'children', sessionId },
+  );
+  const familySiblings = createScopedCatalog(host, () =>
+    !props.compact && parentSessionId()
+      ? { kind: 'children', sessionId: parentSessionId()! }
+      : null,
+  );
+  const familyParent = signal<FamilyParent | null>(null);
+  const setFamilyParent = (next: FamilyParent | null) => {
+    const prev = untracked(familyParent);
+    if (
+      prev === next ||
+      (prev &&
+        next &&
+        prev.id === next.id &&
+        prev.title === next.title &&
+        prev.workspacePath === next.workspacePath &&
+        prev.hasGrandparent === next.hasGrandparent &&
+        prev.rootId === next.rootId)
+    ) {
+      return;
+    }
+    familyParent.set(next);
+  };
+  const hasFamilyParent = computed(() => platform.idiom !== 'terminal' && familyParent() !== null);
+  const isBotHeader = computed(
+    () =>
+      bot.identity() === 'bot' && Boolean(props.restartBot) && props.botSession?.() === sessionId,
+  );
+  effect(() => {
+    const pid = parentSessionId();
+    if (props.compact || !pid) {
+      setFamilyParent(null);
+      return;
+    }
+    let cancelled = false;
+    // Read cached sidebar metadata without subscribing to the entire catalog stream,
+    // otherwise every active session update re-runs this effect and re-queries observe.
+    const known = untracked(() => props.knownSession?.(pid));
+    if (known) {
+      setFamilyParent({
+        id: known.id,
+        title: known.title,
+        workspacePath: known.workspace.path,
+        hasGrandparent: known.parentSessionId !== null,
+        rootId: known.parentSessionId === null ? known.id : null,
+      });
+    }
+    void (async () => {
+      try {
+        const obs = await host.query('agent', 'observe', { sessionId: pid });
+        if (!alive || cancelled) return;
+        const ancestors = obs.session.ancestorIds ?? [];
+        const rootId =
+          ancestors.at(-1) ?? (obs.session.parentSessionId === null ? obs.session.id : null);
+        setFamilyParent({
+          id: obs.session.id,
+          title: obs.session.title,
+          workspacePath: obs.session.workspace.path,
+          hasGrandparent: obs.session.parentSessionId !== null,
+          rootId,
+        });
+      } catch {
+        // Parent may be archived or unavailable; keep any cached label.
+      }
+    })();
+    cleanup(() => {
+      cancelled = true;
+    });
+  });
   const openLink: ConversationProps['openLink'] = async (target, restoreFocus) => {
     const id = sessionIdFromLink(target);
     if (id !== undefined) openWorker(id);
@@ -1325,7 +1414,7 @@ export function Conversation(props: ConversationProps) {
   type DisplayEntry =
     | TrajectoryEntry
     | { kind: 'summary'; key: string; turnKey: string }
-    | { kind: 'sources'; key: string; sources: AnswerSource[] }
+    | { kind: 'sources'; key: string; sources: AnswerSource[]; citationRowIds?: string[] }
     | { kind: 'process'; key: string; group: ProcessGroup }
     | {
         kind: 'row';
@@ -1335,11 +1424,12 @@ export function Conversation(props: ConversationProps) {
         repeats?: number;
         citations?: InlineCitation[];
         sources?: AnswerSource[];
+        citationRowIds?: string[];
       }
     | { kind: 'bot'; key: string; turnId: string; worker?: string }
     | { kind: 'botNote'; key: string; turnId: string }
     | { kind: 'botWorking'; key: string }
-    | { kind: 'botWaiting'; key: string; workers: readonly ActiveWorker[] };
+    | { kind: 'botWaiting'; key: string };
   const chatSections = new WeakMap<
     ProcessProjection,
     {
@@ -1518,6 +1608,7 @@ export function Conversation(props: ConversationProps) {
       openTurn = undefined;
     };
     let sources: Map<string, AnswerSource> | undefined;
+    let citationRowIds: string[] | undefined;
     let anchors: Map<string, InlineCitation[]> | undefined;
     let citationTurn: string | undefined;
     let turnStart = 0;
@@ -1536,15 +1627,20 @@ export function Conversation(props: ConversationProps) {
           if (anchors && row.modelPart)
             item.citations = anchors.get(partKey(row, row.modelPart.ordinal));
         }
-        if (answer && platform.idiom !== 'terminal') answer.sources = list;
-        else
+        if (answer && platform.idiom !== 'terminal') {
+          answer.sources = list;
+          answer.citationRowIds = citationRowIds;
+        } else {
           result.push({
             kind: 'sources',
             key: 'sources/' + (citationTurn ?? result[turnStart]?.key ?? list[0]!.key),
             sources: list,
+            citationRowIds,
           });
+        }
       }
       sources = undefined;
+      citationRowIds = undefined;
       anchors = undefined;
       turnStart = result.length;
     };
@@ -1589,13 +1685,9 @@ export function Conversation(props: ConversationProps) {
         if (!showWork || !turn || !turnExpanded(turn)) continue;
         result.push({ kind: 'process', key: entry.key, group: entry });
       } else if (row) {
-        // Only SendUser publishes for the Bot. The model's own text, including a
-        // deliberately silent Turn's conclusion, stays internal in Trajectory; a real
-        // failure is a failure row, which this does not hide.
-        if (botChat && row.role === 'assistant') continue;
-        // A message the Host wrote on the user's behalf (a worker finishing, a task
-        // result) is not something the user said. It stays in Trajectory.
-        if (botChat && row.role === 'user' && row.origin && row.origin.kind !== 'session') continue;
+        // Only SendUser publishes for the Bot. Model output and host-authored
+        // user messages stay internal in Trajectory; failures remain visible.
+        if (botChat && botChatHidesRow(row)) continue;
         if (
           entry.processTurnKey &&
           turn &&
@@ -1609,6 +1701,8 @@ export function Conversation(props: ConversationProps) {
         if (row.sourceCitation) {
           const source = answerSource(row, entry.rowId);
           if (source) {
+            citationRowIds ??= [];
+            citationRowIds.push(entry.rowId);
             sources ??= new Map();
             if (!sources.has(source.key)) sources.set(source.key, source);
             if (row.modelPart && row.citationAnchor && row.citation) {
@@ -1638,13 +1732,8 @@ export function Conversation(props: ConversationProps) {
       // A worker that is running, or waiting for the user's approval or answer, has not
       // ended its run, so the Bot has nothing to say about it yet; Chat is where the user
       // would look for it.
-      const active = activeWorkers(botWorkers.sessions(), sessionId);
-      if (active.length > 0)
-        result.push({
-          kind: 'botWaiting',
-          key: 'bot/waiting',
-          workers: active,
-        });
+      if (activeWorkers(botWorkers.sessions(), sessionId).length > 0)
+        result.push({ kind: 'botWaiting', key: 'bot/waiting' });
     }
     return result;
   }
@@ -2249,6 +2338,37 @@ export function Conversation(props: ConversationProps) {
       field: 'body',
     });
   };
+  // Every image-bearing tool of a Turn, read page by page when a viewer asks for them.
+  const turnImageTools = async (key: string): Promise<HistoryTool[]> => {
+    const rows = historyRows().byTurn.get(key) ?? [];
+    const anchor =
+      rows.find((row) => row.foldedWork && row.position) ??
+      rows.find((row) => row.position?.kind === 'live' && row.role !== 'user');
+    if (!anchor?.position || latestKnown === 0) return [];
+    const through = latestKnown;
+    const tools: HistoryTool[] = [];
+    try {
+      let after: number | null = null;
+      do {
+        const page: { tools: HistoryTool[]; next?: number | null } = await host.query(
+          'agent',
+          'historyImages',
+          {
+            sessionId,
+            through,
+            position: anchor.position,
+            ...(after === null ? {} : { after }),
+          },
+        );
+        tools.push(...page.tools);
+        after = page.next ?? null;
+      } while (after !== null && alive);
+    } catch (reason) {
+      report(reason);
+      return [];
+    }
+    return tools;
+  };
   const currentProcessGroup = (key: string): ProcessGroup | undefined => {
     const entry = displayEntry(key);
     return entry?.kind === 'process' ? entry.group : undefined;
@@ -2446,6 +2566,7 @@ export function Conversation(props: ConversationProps) {
       batch(() => {
         sessionRevision.set(observed.session.revision);
         title.set(observed.session.title);
+        parentSessionId.set(observed.session.parentSessionId);
         archived.set(observed.session.archived);
         workspace.set(observed.session.workspace.path);
         permissions.observe(observed.session);
@@ -2758,19 +2879,25 @@ export function Conversation(props: ConversationProps) {
     let failure: { reason: unknown } | null = null;
     try {
       // Recall may have opened its exact window before initial history arrived.
-      while (windowTask !== null) await windowTask;
+      while (windowTask !== null) await windowTask.catch(() => {});
       if (!alive) return;
+      const preserveNavigationError = historyDestination.failed;
       if (ready()) {
         if (latestKnown > (historyWindow()?.through ?? -1) || refreshFrom !== null) await follow();
-      } else if (
-        !historyDestination.explicit &&
-        (await resetHistory(historyDestination.position, observed.through))
-      ) {
-        list?.scrollToEnd({ animated: false });
+      } else {
+        if (historyDestination.failed) {
+          historyDestination = { position: { kind: 'tail' }, explicit: false, failed: false };
+        }
+        if (
+          !historyDestination.explicit &&
+          (await resetHistory(historyDestination.position, observed.through))
+        ) {
+          list?.scrollToEnd({ animated: false });
+        }
       }
       if (!alive) return;
       immediateTranscriptRetry = true;
-      if (!historyDestination.failed) error.set('');
+      if (!preserveNavigationError && !historyDestination.failed) error.set('');
       transcriptStatus.set('live');
       // Replay from the older of the observed fence and the first visible page.
       for (;;) {
@@ -2954,18 +3081,32 @@ export function Conversation(props: ConversationProps) {
     }
   };
   const revealRow = (row: Row) => {
+    const id = stableRowId(row);
+    if (botView() !== 'ordinary' && botChatHidesRow(row)) {
+      const previous = reading();
+      innerReader.set(null);
+      reading.set('trajectory');
+      const key = trajectoryRecordKey(id);
+      if (!trajectoryByKey().has(key)) {
+        reading.set(previous);
+        throw new UiError('The original message is not available in this conversation.');
+      }
+      jumpTrajectoryEntry(key);
+      return;
+    }
     reading.set('chat');
     const rowTurn = historyTurnKey(row);
     if (rowTurn !== undefined) {
       const turn = projectedTurn(rowTurn);
       if (turn) unfoldTurn(turn);
     }
-    const id = stableRowId(row);
     const entry = display().find((item) =>
       item.kind === 'row'
-        ? item.rowId === id
-        : item.kind === 'process' &&
-          item.group.members.some((member) => member.kind === 'row' && member.rowId === id),
+        ? item.rowId === id || item.citationRowIds?.includes(id) === true
+        : item.kind === 'sources'
+          ? item.citationRowIds?.includes(id) === true
+          : item.kind === 'process' &&
+            item.group.members.some((member) => member.kind === 'row' && member.rowId === id),
     );
     if (!entry) throw new UiError('The original message is not available in this conversation.');
     if (entry.kind === 'process') {
@@ -3015,32 +3156,42 @@ export function Conversation(props: ConversationProps) {
     historyDestination = destination;
     navigation.set(target);
     try {
-      const opened = await resetHistory(
-        { kind: 'row', position: anchor.position, field: 'body' },
-        anchor.through,
-        (page) => {
-          if (
-            !page.chunks.some(
-              (chunk) =>
-                chunk.messageId === anchor.messageId &&
-                chunk.field === 'body' &&
-                chunk.offset === 0 &&
-                sameHistoryRow(chunk.position, anchor.position),
-            )
-          )
-            throw new UiError('The original message could not be verified.');
-        },
-        () => navigation() === target && current(),
-        'conversation',
-      );
+      let resolvedAnchor: HistoryRowAddress | undefined;
+      const [opened] = await Promise.all([
+        resetHistory(
+          { kind: 'row', position: anchor.position, field: 'body' },
+          anchor.through,
+          (page) => {
+            resolvedAnchor = page.resolvedAnchor ?? undefined;
+            const matches = resolvedAnchor
+              ? (chunk: ConversationHistoryPage['chunks'][number]) =>
+                  chunk.field === 'body' &&
+                  chunk.offset === 0 &&
+                  sameHistoryRow(chunk.position, resolvedAnchor!)
+              : (chunk: ConversationHistoryPage['chunks'][number]) =>
+                  chunk.messageId === anchor.messageId &&
+                  chunk.field === 'body' &&
+                  chunk.offset === 0 &&
+                  sameHistoryRow(chunk.position, anchor.position);
+            if (!page.chunks.some(matches))
+              throw new UiError('The original message could not be verified.');
+          },
+          () => navigation() === target && current(),
+          'conversation',
+        ),
+        bot.whenIdentified,
+      ]);
       if (!opened || !alive || navigation() !== target || !current())
         throw new UiError('History navigation was cancelled.');
-      const row = rows().find(
-        (candidate) =>
-          candidate.messageId === anchor.messageId &&
-          candidate.field === 'body' &&
-          candidate.position &&
-          sameHistoryRow(candidate.position, anchor.position),
+      const row = rows().find((candidate) =>
+        resolvedAnchor
+          ? candidate.field === 'body' &&
+            candidate.position &&
+            sameHistoryRow(candidate.position, resolvedAnchor)
+          : candidate.messageId === anchor.messageId &&
+            candidate.field === 'body' &&
+            candidate.position &&
+            sameHistoryRow(candidate.position, anchor.position),
       );
       if (!row) throw new UiError('The original message is no longer available.');
       if (!current()) throw new UiError('History navigation was cancelled.');
@@ -3123,7 +3274,6 @@ export function Conversation(props: ConversationProps) {
       { within: node, when: 'notEditing' },
     );
   });
-
   // A slow disk retains one in-flight snapshot and one replaceable latest
   // edit, rather than one complete draft and Promise closure per keystroke.
   const startSave = () => {
@@ -3173,6 +3323,18 @@ export function Conversation(props: ConversationProps) {
     if (!alive || !draftReady()) return;
     draft.set(text);
     queueDraft({ text, quotes: quotes(), ...attachments.snapshot() });
+  };
+  const quoteDraft = (quote: QuoteRef) => {
+    if (!draftReady() || savingFailed() || !quote.text.trim()) return false;
+    const next = appendDraftQuote(quotes(), quote, restoringQuotes);
+    if (!next) {
+      notice.set(tr('Too many quotes'));
+      return false;
+    }
+    quotes.set(next);
+    changeDraft(draft());
+    props.focusComposer();
+    return true;
   };
   // Save edits held while a send was being reserved.
   const releaseHeld = () => {
@@ -3446,7 +3608,7 @@ export function Conversation(props: ConversationProps) {
       draft().trim() ||
       attachments.files().length ||
       quotes().length ||
-      sendBlockedReason() ||
+      sendBlock() !== null ||
       observed === null ||
       observed.source.sessionId !== source.sessionId ||
       observed.source.runId !== source.runId ||
@@ -3572,38 +3734,52 @@ export function Conversation(props: ConversationProps) {
     };
   };
 
-  const sendBlockedReasonFor = (includeAutoSend: boolean) => {
-    if (transcriptStatus() === 'closing')
-      return tr('Closing disconnected updates… Your draft is kept.');
-    if (transcriptStatus() === 'failed')
-      return ready()
-        ? tr('Updates disconnected. Reconnecting automatically; your draft is kept.')
-        : tr('History unavailable. Retrying automatically; your draft is kept.');
-    if (ready() && transcriptStatus() !== 'live')
-      return tr('Reconnecting updates… Your draft is kept.');
+  const sendBlockFor = (includeAutoSend: boolean): ComposerSendBlock | null => {
+    if (
+      transcriptStatus() === 'closing' ||
+      transcriptStatus() === 'failed' ||
+      (ready() && transcriptStatus() !== 'live')
+    )
+      return { kind: 'transcript', message: tr('Reconnecting updates… Your draft is kept.') };
     if (!ready() || (runId() !== null && runBackend() === null))
-      return tr('Loading session history… Your draft is kept.');
+      return { kind: 'draft', message: tr('Loading session history… Your draft is kept.') };
     if (archived() && formerBot())
-      return tr(
-        'This is a Bot that was replaced. It is read-only; restore it in Sessions to use it as a conversation.',
-      );
+      return {
+        kind: 'draft',
+        message: tr(
+          'This is a Bot that was replaced. It is read-only; restore it in Sessions to use it as a conversation.',
+        ),
+      };
     if (archived())
-      return tr(
-        'This conversation is archived. Restore it in Sessions to send; your draft is kept.',
-      );
-    if (workspaceUnavailable()) return tr('The workspace for this task is unavailable.');
-    if (!draftReady() || restoringSends().size > 0) return tr('Loading the saved draft…');
-    if (savingFailed()) return tr('The draft could not be saved. Sending is unavailable.');
-    if (attachments.blocked()) return attachments.blocked();
-    if (confirmingContinuation()) return tr('Confirming continuation…');
+      return {
+        kind: 'draft',
+        message: tr(
+          'This conversation is archived. Restore it in Sessions to send; your draft is kept.',
+        ),
+      };
+    if (workspaceUnavailable())
+      return { kind: 'workspace', message: tr('The workspace for this task is unavailable.') };
+    if (!draftReady() || restoringSends().size > 0)
+      return { kind: 'draft', message: tr('Loading the saved draft…') };
+    if (savingFailed())
+      return {
+        kind: 'draft',
+        message: tr('The draft could not be saved. Sending is unavailable.'),
+      };
+    const attachmentBlock = attachments.blocked();
+    if (attachmentBlock) return attachmentBlock;
+    if (confirmingContinuation()) return { kind: 'draft', message: tr('Confirming continuation…') };
     if (sending() || (includeAutoSend && autoSending()))
-      return tr('Saving message… New typing is kept.');
+      return { kind: 'draft', message: tr('Saving message… New typing is kept.') };
     if (freezeState().kind === 'failed')
-      return tr('Retry or remove the unsaved message before sending another.');
-    if (!receiptsKnown()) return tr('Checking send status…');
-    return '';
+      return {
+        kind: 'draft',
+        message: tr('Retry or remove the unsaved message before sending another.'),
+      };
+    if (!receiptsKnown()) return { kind: 'draft', message: tr('Checking send status…') };
+    return null;
   };
-  const sendBlockedReason = () => sendBlockedReasonFor(true);
+  const sendBlock = () => sendBlockFor(true);
 
   const refreshSends = async () => {
     const operations = await pendingSends(client);
@@ -3649,7 +3825,7 @@ export function Conversation(props: ConversationProps) {
         });
     } catch (reason) {
       if (alive && errorMessage(reason) === 'agent_workspace_unavailable') {
-        sendError(id, new UiError('The workspace for this task is unavailable.'));
+        sendError(id, new UiError('Not sent. Choose a workspace, then retry.'));
         void refreshWorkspace().catch(report);
       } else {
         sendError(id, reason);
@@ -3721,7 +3897,7 @@ export function Conversation(props: ConversationProps) {
     if (!hasComposerContent(text.trim(), attachments.files(), quotes())) {
       return;
     }
-    if (sendBlockedReason()) {
+    if (sendBlock()) {
       notice.set(
         uiMessage(
           'This message was not sent. Your draft is kept; check the status below before trying again.',
@@ -3742,7 +3918,7 @@ export function Conversation(props: ConversationProps) {
           if (alive) checkingModel.set(false);
         }
         if (!alive) return;
-        if (sendBlockedReason()) {
+        if (sendBlock()) {
           notice.set(
             uiMessage(
               'This message was not sent. Your draft is kept; check the status below before trying again.',
@@ -4238,7 +4414,7 @@ export function Conversation(props: ConversationProps) {
   };
   const sendExternalPrompt = (text: string): boolean => {
     if (!alive || !text.trim()) return false;
-    if (sendBlockedReason()) {
+    if (sendBlock()) {
       notice.set(
         uiMessage(
           'This message was not sent. Your draft is kept; check the status below before trying again.',
@@ -4314,7 +4490,8 @@ export function Conversation(props: ConversationProps) {
     const composer =
       !draftReady() || attachments.restoring()
         ? 'restoring'
-        : hasComposerContent(draft(), attachments.files(), quotes()) || attachments.blocked() !== ''
+        : hasComposerContent(draft(), attachments.files(), quotes()) ||
+            attachments.blocked() !== null
           ? 'occupied'
           : 'empty';
     untracked(() => messagePrediction.eligible(eligible, composer));
@@ -4415,7 +4592,7 @@ export function Conversation(props: ConversationProps) {
     previewImage: props.previewImage,
     editable: () => draftReady() && !savingFailed(),
     loading: () => !ready() || !draftReady(),
-    blockedReason: sendBlockedReason,
+    sendBlock,
     backend,
     modelDetails,
     refreshModel,
@@ -4502,6 +4679,7 @@ export function Conversation(props: ConversationProps) {
       cancelNavigation();
       list?.focus();
     },
+    stepSibling,
     focusActivity(turnId) {
       cancelNavigation();
       if (reading() === 'trajectory') {
@@ -4774,7 +4952,7 @@ export function Conversation(props: ConversationProps) {
   });
   effect(() => {
     const pending = autoSend();
-    if (pending === null || sendBlockedReasonFor(false) || modelLoading()) return;
+    if (pending === null || sendBlockFor(false) || modelLoading()) return;
     untracked(() => {
       batch(() => {
         autoSend.set(null);
@@ -5127,7 +5305,7 @@ export function Conversation(props: ConversationProps) {
                     (work().length
                       ? work().reduce((total, work) => total + work.imageCount, 0)
                       : undefined),
-                  preview: props.previewImage,
+                  all: () => turnImageTools(initial.turnKey),
                 }}
                 toggle={(open) => {
                   if (open) {
@@ -5238,16 +5416,13 @@ export function Conversation(props: ConversationProps) {
                 }}
               />
             );
-          if (initial.kind === 'botWaiting')
-            return (
-              <BotWaiting
-                workers={() => {
-                  const latest = entry();
-                  return latest.kind === 'botWaiting' ? latest.workers : initial.workers;
-                }}
-                open={canOpenWorker() ? openWorker : undefined}
-              />
+          if (initial.kind === 'botWaiting') {
+            // Progress changes only invalidate the status rows, even in a long Bot transcript.
+            const workers = computed(() =>
+              activeWorkers(botWorkers.sessions(), sessionId, botWorkers.progress()),
             );
+            return <BotWaiting workers={workers} open={canOpenWorker() ? openWorker : undefined} />;
+          }
           if (initial.kind === 'botNote')
             return <BotNote text={() => tr('The Bot did not reply this time')} />;
           if (initial.kind === 'bot') {
@@ -5275,9 +5450,7 @@ export function Conversation(props: ConversationProps) {
                     : undefined
                 }
                 quote={(message, text) => {
-                  if (!draftReady() || savingFailed() || !text.trim()) return;
-                  const next = appendDraftQuote(
-                    quotes(),
+                  quoteDraft(
                     quoteBotMessage(
                       message,
                       sessionId,
@@ -5287,15 +5460,7 @@ export function Conversation(props: ConversationProps) {
                       text,
                       Date.now(),
                     ),
-                    restoringQuotes,
                   );
-                  if (!next) {
-                    notice.set(tr('Too many quotes'));
-                    return;
-                  }
-                  quotes.set(next);
-                  changeDraft(draft());
-                  props.focusComposer();
                 }}
                 openInvestigation={props.openDiscoveryRun ?? openWorker}
                 worker={
@@ -5389,6 +5554,7 @@ export function Conversation(props: ConversationProps) {
                   : undefined
               }
               openSide={sideActions?.open}
+              quoteMessage={quoteDraft}
               replyNotes={
                 sideActions
                   ? (row, marked) => (
@@ -5414,7 +5580,7 @@ export function Conversation(props: ConversationProps) {
                     )
                   : undefined
               }
-              finalActions={(row, ownerKey, menu) => (
+              finalActions={(row, ownerKey, menu, selection) => (
                 <FinalActions
                   compact={props.compact}
                   row={row}
@@ -5423,6 +5589,8 @@ export function Conversation(props: ConversationProps) {
                   through={() => latestKnown}
                   fork={props.side ? undefined : props.fork}
                   menu={menu}
+                  selection={selection}
+                  quote={quoteDraft}
                   side={sideActions}
                   extra={
                     platform.idiom !== 'terminal' && props.edit ? (
@@ -5453,7 +5621,7 @@ export function Conversation(props: ConversationProps) {
                           blocked={() =>
                             hasComposerContent(draft().trim(), attachments.files(), quotes())
                               ? tr('Send or clear the draft first.')
-                              : sendBlockedReason()
+                              : (sendBlock()?.message ?? '')
                           }
                           send={send}
                         />
@@ -5570,6 +5738,19 @@ export function Conversation(props: ConversationProps) {
     >
       <Header
         title={title() === null ? tr('New conversation') : title() || tr('Untitled conversation')}
+        titleSlot={
+          hasFamilyParent() ? (
+            <SessionFamilyBreadcrumb
+              sessionId={sessionId}
+              title={() =>
+                title() === null ? tr('New conversation') : title() || tr('Untitled conversation')
+              }
+              parent={() => familyParent()!}
+              siblings={familySiblings}
+              openSession={openFamilySession}
+            />
+          ) : undefined
+        }
         workspace={workspace()}
         commands={props.commands}
         browser={props.browser()}
@@ -5600,11 +5781,17 @@ export function Conversation(props: ConversationProps) {
         }
         stage={platform.idiom === 'terminal' || ownHandle.empty() ? undefined : props.stage?.()}
         actions={
-          bot.identity() === 'bot' && props.restartBot && props.botSession?.() === sessionId ? (
+          isBotHeader() && props.restartBot ? (
             <View style={{ flexDirection: 'row', gap: 4, alignItems: 'center' }}>
               <DiscoveryPanel open={props.openDiscovery} />
               <BotRestart restart={props.restartBot} />
             </View>
+          ) : platform.idiom !== 'terminal' ? (
+            <SessionFamilyTrigger
+              children={familyChildren}
+              workspacePath={() => workspace()}
+              openSession={openFamilySession}
+            />
           ) : undefined
         }
         views={
@@ -5641,7 +5828,7 @@ export function Conversation(props: ConversationProps) {
           role="tab"
           accessibilityLabel={tr('Chat')}
           selected={reading() === 'chat'}
-          style={toolbarControlStyle}
+          style={toolbarControlStyle()}
           onPress={inputAction(chooseReading, {
             owner: sessionId,
             mode: 'chat',
@@ -5663,7 +5850,7 @@ export function Conversation(props: ConversationProps) {
           role="tab"
           accessibilityLabel={tr('Trajectory')}
           selected={reading() === 'trajectory'}
-          style={toolbarControlStyle}
+          style={toolbarControlStyle()}
           onPress={inputAction(chooseReading, {
             owner: sessionId,
             mode: 'trajectory',
@@ -5884,7 +6071,7 @@ export function Conversation(props: ConversationProps) {
                     </If>
                   }
                 >
-                  <LoadingState label={tr('Loading session history…')} />
+                  <ConversationSkeleton delay={0} label={tr('Loading session history…')} />
                 </If>
               }
             >
@@ -6050,7 +6237,6 @@ export function Conversation(props: ConversationProps) {
                 sources={props.sources}
                 answerSources={inspectorSources}
                 openLink={openLink}
-                childSessions={() => props.childSessions?.() ?? []}
                 openChanges={
                   props.openChangesWithWorktree ??
                   (props.changes ? () => props.changes!() : undefined)
@@ -6058,11 +6244,6 @@ export function Conversation(props: ConversationProps) {
                 openFiles={props.files}
                 openLaunchpad={props.openLaunchpad}
                 openPullRequest={props.openPullRequest}
-                openChildSession={(childId) =>
-                  props.openSessionBeside
-                    ? props.openSessionBeside(childId)
-                    : props.openSessionHere?.(childId)
-                }
               />
             </View>
           </View>

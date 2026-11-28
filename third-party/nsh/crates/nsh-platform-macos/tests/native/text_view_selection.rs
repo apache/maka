@@ -2,8 +2,8 @@
 //! - dragging past the bottom/end of a multi-block list item (paragraph +
 //!   blockquote) selects only the blockquote and never highlights or copies
 //!   the top-left `•` marker;
-//! - dragging across list items omits bullets and keeps `selectedText` in
-//!   Markdown structured;
+//! - dragging across list items puts a whole item's bullet before it, as
+//!   Linux does (#3284), and keeps `selectedText` in Markdown structured;
 //! - dragging past the bottom of a code block with floating text actions
 //!   never selects the floating action label.
 
@@ -249,7 +249,7 @@ pub(super) fn run() {
         q.origin.x + q.size.width * 0.25,
         q.origin.y + q.size.height * 0.5,
     );
-    let end = NSPoint::new(q.origin.x + q.size.width + 20.0, q.origin.y - 10.0);
+    let end = NSPoint::new(q.origin.x + q.size.width + 20.0, q.origin.y - 2.0);
     drag_window_points(&window, &app, start, end);
 
     let sel = SELECTED.lock().unwrap().clone();
@@ -300,8 +300,9 @@ pub(super) fn run() {
     }
     assert_eq!(copied, sel, "Cmd+C must match clean selection without •");
 
-    // 2. Drag from the blockquote down into the second list item: omits `•`
-    //    and preserves Markdown list structure in `selectedText`.
+    // 2. Drag from the blockquote down into the second list item: the item,
+    //    taken from its start, copies with its `•` (#3284), never as a tab,
+    //    and `selectedText` keeps the Markdown list structure.
     let s = window_frame(&window, &second_view);
     let end_second = NSPoint::new(
         s.origin.x + s.size.width * 0.8,
@@ -311,9 +312,29 @@ pub(super) fn run() {
     let across = SELECTED.lock().unwrap().clone();
     let across_md = MARKDOWN.lock().unwrap().clone();
     assert!(
-        across.contains("第二") && !across.contains('•') && !across.contains('\t'),
-        "drag across list items leaked marker or tab: {across:?}"
+        across.contains("\n• 第二") && !across.contains('\t'),
+        "drag across list items lost the marker or leaked a tab: {across:?}"
     );
+    assert!(
+        across
+            .lines()
+            .filter(|l| l.contains('•'))
+            .all(|l| l.starts_with("• ")),
+        "marker leaked mid-line: {across:?}"
+    );
+    // Cmd+C writes the same text, marker included.
+    let saved = pasteboard.stringForType(string_type);
+    pasteboard.clearContents();
+    send_cmd_c(&window, &app);
+    let copied = pasteboard
+        .stringForType(string_type)
+        .map(|s| s.to_string())
+        .unwrap_or_default();
+    pasteboard.clearContents();
+    if let Some(saved) = saved {
+        pasteboard.setString_forType(&saved, string_type);
+    }
+    assert_eq!(copied, across, "Cmd+C must match the selection");
     assert!(
         across_md.contains("\n- 第二"),
         "selectedText(markdown) across items should keep list syntax: {across_md:?}"

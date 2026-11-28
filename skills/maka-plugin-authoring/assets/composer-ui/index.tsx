@@ -44,7 +44,7 @@ function Composer(props: UiEmbeddedViewProps<ComposerViewInput<JSX.Element>, JSX
   const sendDisabled = () =>
     blocked() ||
     composing() ||
-    !!input.session()?.blockedReason() ||
+    !!input.session()?.sendBlock() ||
     (!input.session()?.draft().trim() &&
       !input.session()?.attachments.files().length &&
       !input.session()?.quotes().length);
@@ -96,6 +96,10 @@ function Composer(props: UiEmbeddedViewProps<ComposerViewInput<JSX.Element>, JSX
         {(readSession) => {
           const session = readSession();
           const Picker = session.attachments.renderPicker;
+          const draftWarning = () => {
+            const block = session.sendBlock();
+            return block?.kind === 'draft' ? block.message : '';
+          };
           return (
             <View style={{ gap: 8 }}>
               <Text>{session.workspace()}</Text>
@@ -260,8 +264,8 @@ function Composer(props: UiEmbeddedViewProps<ComposerViewInput<JSX.Element>, JSX
                   </Button>
                 </If>
               </View>
-              <If when={session.blockedReason()}>
-                <Text>{session.blockedReason()}</Text>
+              <If when={draftWarning()}>
+                <Text>{draftWarning()}</Text>
               </If>
               <If when={session.attachments.error() || session.attachments.notice()}>
                 <Text>{session.attachments.error() || session.attachments.notice()}</Text>

@@ -41,8 +41,7 @@ updater = ["nsh-platform-linux/updater"]
 # SVG images and (Linux, Windows) HTTP for `fetch` and remote images.
 svg = ["nsh-platform-linux/svg"]
 net = ["nsh-platform-linux/net"]
-# Sounds, with GStreamer (`libgstreamer1.0-dev
-# libgstreamer-plugins-base1.0-dev` to build).
+# Sounds, with GStreamer loaded at run time (nothing of it to build).
 sound = ["nsh-platform-linux/sound"]
 
 [dependencies]

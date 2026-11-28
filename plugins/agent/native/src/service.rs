@@ -28,12 +28,13 @@ use serde_json::Value;
 use std::sync::Arc;
 
 mod catalog;
+mod worker_progress;
 use catalog::{
     CATALOG_REFRESH_MIN_INTERVAL, catalog_page, catalog_revision, wait_for_catalog_refresh,
 };
 pub(crate) use catalog::{summary, summary_for};
 
-mod delivery;
+pub(crate) mod delivery;
 mod diagnostics;
 pub(crate) mod history;
 mod preview;
@@ -401,6 +402,9 @@ impl Handler for Agent {
             "historyRequests" => json_rpc(&mut args, |owner, input, context| async move {
                 encode(history::requests(&owner, context.scope(), decode(input)?).await?)
             }),
+            "historyImages" => json_rpc(&mut args, |owner, input, context| async move {
+                encode(history::images(&owner, context.scope(), decode(input)?).await?)
+            }),
             "search" => json_rpc(&mut args, |owner, input, context| async move {
                 encode(history::search(&owner, context.scope(), decode(input)?).await?)
             }),
@@ -590,14 +594,14 @@ impl Handler for Agent {
                 let input: maka_agent_api::external::ExternalAgentsRead = decode(input)?;
                 encode(
                     owner
-                        .external_agents(input.inspect, context.scope())
+                        .external_agents(input.inspect, input.refresh, context.scope())
                         .await?,
                 )
             }),
             "externalUsageLimits" => json_rpc(&mut args, |owner, input, context| async move {
                 let input: maka_agent_api::external::ExternalUsageLimitsRead = decode(input)?;
                 owner
-                    .external_usage_limits(input.runtime, context.scope())
+                    .external_usage_limits(input.runtime, input.refresh, context.scope())
                     .await
             }),
             "executors" => json_rpc(&mut args, |owner, input, _context| async move {
@@ -667,6 +671,13 @@ impl Handler for Agent {
             // automation
             "memorySource" => json_rpc(&mut args, |owner, input, context| async move {
                 encode(owner.memory_source(decode(input)?, context.scope()).await?)
+            }),
+            "loadedMemories" => json_rpc(&mut args, |owner, input, context| async move {
+                encode(
+                    owner
+                        .loaded_memories(decode(input)?, context.scope())
+                        .await?,
+                )
             }),
             "memoryEvidence" => json_rpc(&mut args, |owner, input, context| async move {
                 encode(
@@ -749,6 +760,9 @@ impl Handler for Agent {
             }),
             "checklist" => json_rpc(&mut args, |owner, input, _context| async move {
                 encode(owner.checklist(&decode(input)?).await?)
+            }),
+            "watchWorkerProgress" => json_rpc(&mut args, |owner, input, context| async move {
+                worker_progress::watch(owner, decode(input)?, context).await
             }),
             "watchChecklist" => json_rpc(&mut args, |owner, input, context| async move {
                 let input: ChecklistRead = decode(input)?;

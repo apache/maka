@@ -113,11 +113,80 @@ fn read(
     consumer: &InstanceId,
     operation: Uuid,
 ) -> Result<Option<CallerIntent>, StoreError> {
-    let row = connection.query_row(
-        "SELECT cursor, source_revision, reference_json, recovery_json FROM application_intents WHERE deployment=? AND consumer=? AND operation=?",
-        params![deployment.to_string(), serde_json::to_string(consumer)?, operation.to_string()],
-        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?)),
-    ).optional()?;
+    read_inner(connection, domain, deployment, consumer, operation, true)
+}
+
+fn read_compat(
+    connection: &Connection,
+    domain: &str,
+    deployment: Uuid,
+    consumer: &InstanceId,
+    operation: Uuid,
+) -> Result<Option<CallerIntent>, StoreError> {
+    let has_encoding: bool = connection
+        .prepare_cached(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('application_intents') WHERE name = 'reference_encoding')",
+        )?
+        .query_row([], |row| row.get(0))?;
+    read_inner(
+        connection,
+        domain,
+        deployment,
+        consumer,
+        operation,
+        has_encoding,
+    )
+}
+
+fn read_inner(
+    connection: &Connection,
+    domain: &str,
+    deployment: Uuid,
+    consumer: &InstanceId,
+    operation: Uuid,
+    has_encoding: bool,
+) -> Result<Option<CallerIntent>, StoreError> {
+    let sql = if has_encoding {
+        "SELECT cursor, source_revision, reference_json, reference_encoding, recovery_json, recovery_encoding FROM application_intents WHERE deployment=? AND consumer=? AND operation=?"
+    } else {
+        "SELECT cursor, source_revision, reference_json, 0, recovery_json, 0 FROM application_intents WHERE deployment=? AND consumer=? AND operation=?"
+    };
+    let row = connection
+        .prepare_cached(sql)?
+        .query_row(
+            params![
+                deployment.to_string(),
+                serde_json::to_string(consumer)?,
+                operation.to_string()
+            ],
+            |row| {
+                let ref_enc: i64 = row.get(3)?;
+                let rec_enc: i64 = row.get(5)?;
+                let reference_json = crate::content::decode_inline_text(row.get_ref(2)?, ref_enc)
+                    .map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        2,
+                        rusqlite::types::Type::Blob,
+                        Box::new(e),
+                    )
+                })?;
+                let recovery_json = crate::content::decode_inline_text(row.get_ref(4)?, rec_enc)
+                    .map_err(|e| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            4,
+                            rusqlite::types::Type::Blob,
+                            Box::new(e),
+                        )
+                    })?;
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    reference_json,
+                    recovery_json,
+                ))
+            },
+        )
+        .optional()?;
     row.map(|(cursor, source_revision, reference_json, recovery_json)| {
         let reference: RecoveryRef = serde_json::from_str(&reference_json)?;
         let recovery = serde_json::from_str(&recovery_json)?;
@@ -156,7 +225,9 @@ impl EventLog {
             return Err(invalid("invalid caller intent identity"));
         }
         self.connection
-            .read(move |connection| read(connection, &domain, deployment, &consumer, operation))
+            .read(move |connection| {
+                read_compat(connection, &domain, deployment, &consumer, operation)
+            })
             .await
     }
 
@@ -276,7 +347,7 @@ impl EventLog {
                 let operation = operation.ok_or_else(|| invalid("invalid caller operation"))?;
                 let consumer: InstanceId = serde_json::from_str(&consumer.ok_or_else(|| invalid("invalid caller consumer"))?)?;
                 consumer_valid(&consumer)?;
-                let intent = read(&tx,&domain,deployment,&consumer,Uuid::parse_str(&operation).map_err(|_| invalid("invalid caller operation"))?)?.ok_or_else(|| invalid("caller intent disappeared"))?;
+                let intent = read_compat(&tx,&domain,deployment,&consumer,Uuid::parse_str(&operation).map_err(|_| invalid("invalid caller operation"))?)?.ok_or_else(|| invalid("caller intent disappeared"))?;
                 let encoded = serde_json::to_string(&intent)?;
                 let size = encoded.len() + usize::from(!intents.is_empty());
                 if size > MAX_PAGE.saturating_sub(bytes) { break; }
@@ -336,7 +407,9 @@ impl crate::writeback::Statement for WriteIntent {
             old
         } else {
             super::operations::require_source(connection, &caller)?;
-            connection.execute("INSERT INTO application_intents (deployment,consumer,operation,source_revision,reference_json,recovery_json) VALUES (?,?,?,?,?,?)", params![caller.deployment.to_string(), serde_json::to_string(&consumer)?, reference.operation.to_string(), caller.revision as i64, encoded, encoded_recovery])?;
+            let enc_ref = crate::content::encode(encoded.as_bytes())?;
+            let enc_rec = crate::content::encode(encoded_recovery.as_bytes())?;
+            connection.execute("INSERT INTO application_intents (deployment,consumer,operation,source_revision,reference_json,reference_encoding,recovery_json,recovery_encoding) VALUES (?,?,?,?,?,?,?,?)", params![caller.deployment.to_string(), serde_json::to_string(&consumer)?, reference.operation.to_string(), caller.revision as i64, enc_ref.payload.as_ref(), enc_ref.encoding, enc_rec.payload.as_ref(), enc_rec.encoding])?;
             let intent = CallerIntent {
                 cursor: connection.last_insert_rowid() as u64,
                 caller,

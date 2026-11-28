@@ -6,7 +6,20 @@ order: 12.2
 
 # nsh/mobile
 
-`nsh/mobile` 收录 iOS 和 Android 的专属能力：两者都有的系统标签栏 `TabBar`、系统日期时间选择器 [`DateTimePicker`](#datetimepicker)、系统开关 [`Switch`](#switch)、设备的触感反馈 [`Haptics`](#haptics) 和系统设置中本应用的页面 [`AppSettings`](#appsettings)；iOS 的系统分段控件 [`SegmentedControl`](#segmentedcontrol) 和 [`InputAccessoryView`](#inputaccessoryview)，键盘上方的工具栏；Android 的 [`BackHandler`](#backhandler)，返回键。Rust 代码使用 `nsh_core::mobile` 和 `nsh_core::prelude`；TSX 导入 `nsh/mobile`。这个模块在所有平台上都可以导入，所以同一个 bundle 能在各处运行：在其他平台上，它的组件不占空间、调用立即返回，`isAvailable` 告诉你当前是否在 iOS 或 Android 上（`nsh` 的 `platform.os` 区分具体平台）。桌面的能力在 [nsh/desktop](./nsh-desktop.md) 中。
+`nsh/mobile` 提供只有 iOS 和 Android 才有的组件和 API。TSX 导入 `nsh/mobile`，Rust 代码使用 `nsh_core::mobile` 和 `nsh_core::prelude`。
+
+| API | 用途 | 平台 |
+|---|---|---|
+| `TabBar` | 系统标签栏 | iOS、Android |
+| [`DateTimePicker`](#datetimepicker) | 系统日期时间选择器 | iOS、Android |
+| [`Switch`](#switch) | 系统开关 | iOS、Android |
+| [`Haptics`](#haptics) | 设备触感反馈 | iOS、Android |
+| [`AppSettings`](#appsettings) | 系统设置里本应用的页面 | iOS、Android |
+| [`SegmentedControl`](#segmentedcontrol) | 系统分段控件 | iOS |
+| [`InputAccessoryView`](#inputaccessoryview) | 键盘上方的工具栏 | iOS |
+| [`BackHandler`](#backhandler) | 返回键 | Android |
+
+这个模块在所有平台都能导入，所以一个 bundle 可以到处运行。在其他平台上，它的组件不占空间，调用立即返回。`isAvailable` 告诉你是否在 iOS 或 Android 上，`nsh` 的 `platform.os` 告诉你具体是哪个。桌面能力见 [nsh/desktop](./nsh-desktop.md)。
 
 ```tsx tabs
 import {

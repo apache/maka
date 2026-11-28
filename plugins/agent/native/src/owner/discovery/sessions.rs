@@ -45,6 +45,7 @@ pub(super) struct SessionDelta {
 #[serde(rename_all = "camelCase")]
 struct TopicMetadata {
     title: String,
+    parent_session_id: Option<serde::de::IgnoredAny>,
     dossier_seed: Option<serde::de::IgnoredAny>,
     #[serde(default)]
     incognito: bool,
@@ -77,7 +78,8 @@ pub(super) async fn recent_conversations(
     let mut conversations = Vec::new();
     for record in page.sessions {
         let config = TopicMetadata::deserialize(&record.metadata.configuration).map_err(reason)?;
-        if !config.incognito
+        if config.parent_session_id.is_none()
+            && !config.incognito
             && !config.discovery_worker
             && !record.legacy_discovery_worker
             && config.dossier_seed.is_none()

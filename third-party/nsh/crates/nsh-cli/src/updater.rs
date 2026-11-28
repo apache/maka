@@ -43,6 +43,12 @@ pub(crate) struct PackagesConfig {
     /// The roots (`nsh keygen`'s `root.pub`, base64) whose certified
     /// release keys sign the app's packages.
     pub(crate) roots: Vec<String>,
+    /// `"runtime"`: the app's code names the feed at each check
+    /// (`checkForPackage({ url })`).
+    pub(crate) source: Option<nsh_updater::PackageSource>,
+    /// Runtime feeds may be plain HTTP, on one origin each.
+    #[serde(default)]
+    pub(crate) allow_http: bool,
 }
 
 /// The app's version, as packages have it.
@@ -67,6 +73,8 @@ fn runtime_config(config: &AppConfig, id: &str) -> anyhow::Result<Option<Config>
     runtime.packages = updater.packages.as_ref().map(|packages| {
         let mut runtime = Packages::default();
         runtime.roots = packages.roots.iter().map(|r| r.trim().to_owned()).collect();
+        runtime.source = packages.source;
+        runtime.allow_http = packages.allow_http;
         runtime
     });
     runtime.validate().context("nsh.json")?;
@@ -690,6 +698,29 @@ mod tests {
             .unwrap();
         assert_eq!(result, tar);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_package_keeps_a_runtime_package_source() {
+        let key = "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=";
+        let config = |packages: &str| -> serde_json::Result<AppConfig> {
+            serde_json::from_str(&format!(
+                r#"{{ "version": "1.2.0", "updater": {{ "publicKey": "{key}",
+                    "packages": {{ "roots": ["{key}"], {packages} }} }} }}"#
+            ))
+        };
+        let runtime = runtime_config(
+            &config(r#""source": "runtime", "allowHttp": true"#).unwrap(),
+            "dev.app",
+        )
+        .unwrap()
+        .unwrap();
+        assert!(runtime.runtime_packages() && !runtime.has_source());
+        assert!(runtime.package_feed("http://10.0.0.2/latest.json").is_ok());
+        // HTTP without a runtime source, and sources it does not know.
+        let fixed = config(r#""allowHttp": true"#).unwrap();
+        assert!(runtime_config(&fixed, "dev.app").is_err());
+        assert!(config(r#""source": "anywhere""#).is_err());
     }
 
     #[test]

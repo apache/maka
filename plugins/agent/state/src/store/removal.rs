@@ -44,11 +44,18 @@ const RUN_HISTORY_RELEASES: &[Step] = &[
     ),
     Step::RunOwnerSession(
         "DELETE FROM agent_recall_terms WHERE rowid IN(SELECT id FROM agent_recall_messages
-         WHERE owner=?2 AND session=?3 AND sequence IN(SELECT sequence FROM agent_facts WHERE run=?1))",
+         WHERE namespace_id=(SELECT id FROM agent_namespaces WHERE owner=?2 AND session=?3)
+           AND sequence IN(SELECT sequence FROM agent_facts WHERE run=?1))",
     ),
     Step::RunOwnerSession(
-        "DELETE FROM agent_recall_messages WHERE owner=?2 AND session=?3
-         AND sequence IN(SELECT sequence FROM agent_facts WHERE run=?1)",
+        "DELETE FROM agent_recall_messages
+         WHERE namespace_id=(SELECT id FROM agent_namespaces WHERE owner=?2 AND session=?3)
+           AND sequence IN(SELECT sequence FROM agent_facts WHERE run=?1)",
+    ),
+    Step::RunOwnerSession(
+        "DELETE FROM agent_recall_external_segments
+         WHERE namespace_id=(SELECT id FROM agent_namespaces WHERE owner=?2 AND session=?3)
+           AND run=?1",
     ),
     Step::Run(
         "DELETE FROM agent_session_history WHERE sequence IN(SELECT sequence FROM agent_facts WHERE run=?1)",
@@ -124,6 +131,7 @@ const RUN_FULL_TAIL: &[Step] = &[
 // created them, and computer::rebuild / interactions::rebuild replay their
 // canonical backing facts, outcomes, subjects, pins, and run metadata.
 const RUN_PROFILE_COMPUTER_TAIL: &[Step] = &[
+    Step::Run("UPDATE agent_run_specs SET original_user_run=NULL WHERE run=?1"),
     Step::Run(
         "DELETE FROM agent_computer_grants WHERE scope<>'profile'
          AND request IN(SELECT request FROM agent_interaction_requests WHERE run=?1)",
@@ -171,10 +179,21 @@ const SESSION_RELEASES: &[Step] = &[
     ),
     Step::OwnerSession("DELETE FROM agent_recall_heads WHERE owner=?1 AND session=?2"),
     Step::OwnerSession("DELETE FROM agent_recall_gaps WHERE owner=?1 AND session=?2"),
+    Step::OwnerSession(
+        "DELETE FROM agent_recall_external_segments
+         WHERE namespace_id=(SELECT id FROM agent_namespaces WHERE owner=?1 AND session=?2)",
+    ),
     Step::OwnerSession("DELETE FROM agent_catalog_sessions WHERE owner=?1 AND session=?2"),
     Step::OwnerSession("DELETE FROM agent_catalog_controls WHERE owner=?1 AND session=?2"),
     Step::OwnerSession(
         "DELETE FROM discovery_source_cursors WHERE owner=?1 AND source_uri=('maka://session/' || ?2)",
+    ),
+    Step::OwnerSession(
+        "DELETE FROM agent_namespaces WHERE owner=?1 AND session=?2
+         AND NOT EXISTS(SELECT 1 FROM agent_session_history h WHERE h.namespace_id=agent_namespaces.id)
+         AND NOT EXISTS(SELECT 1 FROM agent_recall_messages m WHERE m.namespace_id=agent_namespaces.id)
+         AND NOT EXISTS(SELECT 1 FROM agent_recall_external_segments s WHERE s.namespace_id=agent_namespaces.id)
+         AND NOT EXISTS(SELECT 1 FROM agent_usage_calls u WHERE u.namespace_id=agent_namespaces.id AND u.namespace_id IS NOT NULL)",
     ),
 ];
 
@@ -485,8 +504,9 @@ mod tests {
         );
         for table in [
             owned,
-            "SELECT count(*) FROM agent_session_history WHERE session=?1",
-            "SELECT count(*) FROM agent_recall_messages WHERE session=?1",
+            "SELECT count(*) FROM agent_namespaces WHERE session=?1",
+            "SELECT count(*) FROM agent_session_history h JOIN agent_namespaces ns ON ns.id=h.namespace_id WHERE ns.session=?1",
+            "SELECT count(*) FROM agent_recall_messages d JOIN agent_namespaces ns ON ns.id=d.namespace_id WHERE ns.session=?1",
             "SELECT count(*) FROM agent_queue_events WHERE session=?1",
         ] {
             assert_eq!(rows(&store, table, "removed").await, vec![0], "{table}");
@@ -801,6 +821,7 @@ mod tests {
         //    keep the grant and never resurrect a pending request.
         let (mut profile_spec, profile_contents) = spec();
         profile_spec.session_id = "profile-removed".into();
+        profile_spec.memory_admission = maka_agent_facts::memory::MemoryAdmission::Disabled;
         store
             .data
             .write(SeedSession(
@@ -811,6 +832,15 @@ mod tests {
             .unwrap();
         let profile = Admission::new(profile_spec.clone(), UnixMillis(20), profile_contents);
         store.admit(profile.clone()).await.unwrap();
+        use crate::memory::reads::OriginalUserRun;
+        assert_eq!(
+            store
+                .data
+                .query(OriginalUserRun(profile.run()))
+                .await
+                .unwrap(),
+            Some(true)
+        );
         let profile_view = store.frontier(profile.run()).await.unwrap();
         let profile_claim = store.claim(profile.run()).await.unwrap();
         let profile_execution = ExecutionIdentity {
@@ -1014,6 +1044,15 @@ mod tests {
             vec![0]
         );
 
+        assert_eq!(
+            store
+                .data
+                .query(OriginalUserRun(profile.run()))
+                .await
+                .unwrap(),
+            None
+        );
+
         drop(store);
         root.close().await.unwrap();
     }
@@ -1040,6 +1079,7 @@ mod tests {
                     "DELETE FROM agent_cells WHERE run=?1",
                     "DELETE FROM agent_catalog_sessions WHERE owner=?1 AND session=?2",
                     "DELETE FROM agent_catalog_controls WHERE owner=?1 AND session=?2",
+                    "DELETE FROM agent_namespaces WHERE owner=?1 AND session=?2 AND NOT EXISTS(SELECT 1 FROM agent_session_history h WHERE h.namespace_id=agent_namespaces.id) AND NOT EXISTS(SELECT 1 FROM agent_recall_messages m WHERE m.namespace_id=agent_namespaces.id) AND NOT EXISTS(SELECT 1 FROM agent_recall_external_segments s WHERE s.namespace_id=agent_namespaces.id) AND NOT EXISTS(SELECT 1 FROM agent_usage_calls u WHERE u.namespace_id=agent_namespaces.id AND u.namespace_id IS NOT NULL)",
                     "DELETE FROM agent_continuation_successors WHERE run=?1 OR source_run=?1",
                 ] {
                     let mut stmt = c.prepare(&format!("EXPLAIN QUERY PLAN {sql}"))?;
@@ -1121,12 +1161,16 @@ mod tests {
             "agent_memory_run_restrictions",
             "agent_memory_shared_fields",
             "agent_message_submissions",
+            "agent_memory_tool_inputs",
+            "agent_memory_legacy_recap_history",
             "agent_model_items",
+            "agent_namespaces",
             "agent_operation_pins",
             "agent_queue_content_pins",
             "agent_queue_events",
             "agent_queue_heads",
             "agent_queue_items",
+            "agent_recall_external_segments",
             "agent_recall_gaps",
             "agent_recall_heads",
             "agent_recall_messages",
@@ -1165,9 +1209,12 @@ mod tests {
             "agent_history_snapshot_positions",
             "agent_history_snapshot_run_refs",
             "agent_history_snapshots",
+            "agent_memory_indexed_snapshots",
+            "agent_memory_snapshot_outputs",
             "agent_memories",
             "agent_memory_evidence",
             "agent_memory_history_boundary",
+            "agent_recall_legacy_evidenced",
             // Imported bindings follow their snapshot; frozen aliases follow the retained run spec.
             "agent_memory_imported_tools",
             "agent_memory_read_aliases",
@@ -1193,6 +1240,7 @@ mod tests {
             "agent_usage_aux_events",
             "agent_usage_aux_specs",
             "agent_usage_calls",
+            "agent_usage_json_blobs",
             "agent_usage_results",
         ]
         .into_iter()

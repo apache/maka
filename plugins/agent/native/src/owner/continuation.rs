@@ -214,6 +214,7 @@ impl Owner {
                 &session_id,
                 Some(preference),
                 operation.fingerprint.clone(),
+                crate::owner::send::PinCapture::NewRun,
                 parent,
             )
             .await?;
@@ -253,6 +254,7 @@ impl Owner {
             let (preview, _) = tokio::sync::watch::channel(None);
             original_model = Some(driver_model::DriverModel {
                 discovery: None,
+                memory: basis.memory.clone(),
                 history: state.session_history(self.run_owner(), session_id.clone()),
                 state,
                 log: Arc::new(log),
@@ -270,7 +272,7 @@ impl Owner {
             original_model
                 .as_ref()
                 .expect("original preparation model")
-                .prepare_continuation(actual.run, basis.behavior.clone())
+                .prepare_continuation(actual.run, basis.memory.as_deref(), basis.behavior.clone())
                 .await
         }
         .await;

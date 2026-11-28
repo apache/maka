@@ -20,7 +20,7 @@ use super::{
     layout::{self, AutoScroll},
     search,
     select::{ExpandStack, SelectionHistory},
-    state::{Font, State},
+    state::{Composing, Font, State},
     types::{Selection, Selections},
 };
 use crate::sink_text::{sink_edit, utf16_to_byte};
@@ -95,6 +95,10 @@ pub(crate) struct Ed {
     pub(crate) sel_rev: Signal<u64>,
     /// Diagnostics, decorations or search matches changed.
     pub(crate) marks_rev: Signal<u64>,
+    /// What an input method composes changed.
+    pub(crate) composition_rev: Signal<u64>,
+    /// What an input method is composing and where it shows (`follow_composition`).
+    pub(crate) composing: Signal<Option<Composing>>,
     /// The vertical scroll view's offset.
     pub(crate) scroll_y: Signal<Points>,
     /// The horizontal scroll view's offset.
@@ -103,6 +107,9 @@ pub(crate) struct Ed {
     pub(crate) viewport: Signal<Size<Points>>,
     /// The width the text area shows (wrapping and horizontal scrolling).
     pub(crate) text_width: Signal<Points>,
+    /// The width of the horizontal scroll view's content, as last laid
+    /// out (stale while lines wrap).
+    pub(crate) text_content_width: Signal<Points>,
     /// Where the rows' box is in the vertical scroll view's content.
     pub(crate) rows_top: Signal<Points>,
     /// The editor has the keyboard focus.
@@ -169,6 +176,8 @@ impl Ed {
             untracked(|| super::languages::resolve(name.as_deref().unwrap_or("")));
         let options = options_of(&props, language);
         let mut state = State::new(&text, language, options, font, measure);
+        state.font_scale = untracked(text_scale);
+        state.set_measure_font(Rc::new(|font: &Font| measurer(font)));
         state.set_language(language, syntax);
         state.reported = Some((state.buffer.version(), text));
         let sel_history = SelectionHistory::new(&state.selections);
@@ -180,10 +189,13 @@ impl Ed {
             hl_rev: signal(0),
             sel_rev: signal(0),
             marks_rev: signal(0),
+            composition_rev: signal(0),
+            composing: signal(None),
             scroll_y: signal(px(0.0)),
             scroll_x: signal(px(0.0)),
             viewport: signal(Size::default()),
             text_width: signal(px(0.0)),
+            text_content_width: signal(px(0.0)),
             rows_top: signal(px(0.0)),
             focused: signal(false),
             blink: signal(true),
@@ -209,9 +221,11 @@ impl Ed {
             definition: super::definition::Definition::new(),
         };
         ed.follow_props();
+        ed.follow_composition();
         ed.follow_hooks();
         ed.follow_completion();
         ed.follow_definition();
+        ed.report_scroll();
         ed.bind_keys();
         ed.load_syntaxes();
         ed
@@ -322,11 +336,13 @@ impl Ed {
                 ed.props.font_size.get(),
                 ed.props.line_height.get(),
             );
+            let scale = text_scale();
             let mut st = ed.st.borrow_mut();
             st.display.set_cells(crate::terminal::is_terminal());
             if st.font != font {
                 st.display.set_measure(measurer(&font));
                 st.font = font;
+                st.font_scale = scale;
                 st.relayout();
                 drop(st);
                 ed.bump_text();
@@ -378,6 +394,26 @@ impl Ed {
         });
     }
 
+    /// Keeps `composing` up to date. Without a composition only its start
+    /// is followed: carets and edits then cost nothing here. The rows and
+    /// marks read `composing`, so a keystroke of an input method redraws
+    /// the composing row alone (and the marks over the rows).
+    fn follow_composition(&self) {
+        let ed = self.clone();
+        effect(move || {
+            ed.composition_rev.get();
+            if ed.st.borrow().composition.is_some() {
+                // The caret, the text or its layout move it.
+                ed.sel_rev.get();
+                ed.text_rev.get();
+            }
+            let composing = ed.st.borrow().composing();
+            if ed.composing.with_untracked(|c| *c != composing) {
+                ed.composing.set(composing);
+            }
+        });
+    }
+
     /// The app's `value`: taken as an edit unless it is the text already
     /// (the app passing back what `onChange` reported).
     fn take_value(&self, value: &str) {
@@ -410,8 +446,25 @@ impl Ed {
         self.text_rev.update(|r| *r += 1);
     }
 
+    /// The selections changed: a label they now touch or no longer touch
+    /// shows its range's text or its label again, which lays its line out
+    /// again.
     pub(crate) fn bump_selection(&self) {
+        let relaid = self.st.borrow_mut().sync_labels();
+        if relaid {
+            self.bump_text();
+        }
         self.sel_rev.update(|r| *r += 1);
+    }
+
+    /// The label box of replacing decoration `item` (of look and font
+    /// `key`) was laid out `width` wide: the caret and presses after it go
+    /// by that width.
+    pub(crate) fn set_label_width(&self, item: usize, key: super::state::LabelKey, width: Points) {
+        let relaid = self.st.borrow_mut().set_label_width(item, key, width.0);
+        if relaid {
+            self.bump_text();
+        }
     }
 
     // Keys.
@@ -722,11 +775,14 @@ impl Ed {
         if text.is_empty() {
             return;
         }
-        let outcome = {
+        let (outcome, composed) = {
             let mut st = self.st.borrow_mut();
-            st.composition = None;
-            st.editing(1, |e| e.insert(text))
+            let composed = st.composition.take().is_some();
+            (st.editing(1, |e| e.insert(text)), composed)
         };
+        if composed {
+            self.composition_rev.update(|r| *r += 1);
+        }
         let edited = matches!(outcome, Outcome::Edited(_));
         self.after_typing(outcome);
         if edited {
@@ -935,8 +991,9 @@ impl Ed {
     }
 
     /// An input method's composition started, changed or ended: its text
-    /// shows at the caret and the text waits for the commit, which asks for
-    /// no completions (the input method offers its own candidates).
+    /// shows at the caret, in the caret's row (`State::row_content`), and
+    /// the text waits for the commit, which asks for no completions (the
+    /// input method offers its own candidates).
     pub(crate) fn composition(&self, composing: bool, text: &str) {
         let (started, held) = {
             let mut sink = self.sink.borrow_mut();
@@ -951,9 +1008,15 @@ impl Ed {
         if let Some(held) = held {
             self.without_completions(|| self.sink_edited(&held));
         }
-        {
+        let changed = {
             let mut st = self.st.borrow_mut();
-            st.composition = (composing && !text.is_empty()).then(|| text.to_owned());
+            let composition = (composing && !text.is_empty()).then(|| text.to_owned());
+            let changed = st.composition != composition;
+            st.composition = composition;
+            changed
+        };
+        if changed {
+            self.composition_rev.update(|r| *r += 1);
         }
         self.bump_selection();
     }
@@ -1199,6 +1262,11 @@ impl Ed {
             return;
         }
         self.focused.set(focused);
+        // Labels the selections touch show their text only while focused.
+        let relaid = self.st.borrow_mut().set_focused(focused);
+        if relaid {
+            self.bump_text();
+        }
         self.cx.emit(if focused {
             EditorEvent::Focus
         } else {
@@ -1412,6 +1480,40 @@ impl Ed {
 
     // Reports.
 
+    /// Reports the offset, the content's size and the viewport's
+    /// (`onScroll`) once the editor is laid out, and again whenever one of
+    /// them changes. An event no handler waits for is dropped before it
+    /// reaches JS, so the per-frame report of a scroll costs an app that
+    /// does not listen nothing there.
+    fn report_scroll(&self) {
+        let ed = self.clone();
+        let reported = Cell::<Option<(Point<Points>, Size<Points>, Size<Points>)>>::new(None);
+        effect(move || {
+            let viewport = ed.viewport.get();
+            let height = ed.content_height.get();
+            if viewport == Size::default() || height <= px(0.0) {
+                return;
+            }
+            // Wrapped lines do not scroll sideways (the horizontal scroll
+            // view is gone, what it last reported with it).
+            let (x, beyond) = match ed.props.soft_wrap.get() {
+                true => (px(0.0), px(0.0)),
+                false => (
+                    ed.scroll_x.get(),
+                    (ed.text_content_width.get() - ed.text_width.get()).max(px(0.0)),
+                ),
+            };
+            let now = (
+                Point::new(x, ed.scroll_y.get()),
+                Size::new(viewport.width + beyond, height),
+                viewport,
+            );
+            if reported.replace(Some(now)) != Some(now) {
+                ed.cx.emit(EditorEvent::Scroll(now.0, now.1, now.2));
+            }
+        });
+    }
+
     fn report_text(&self) {
         let text = {
             let mut st = self.st.borrow_mut();
@@ -1462,20 +1564,22 @@ impl Ed {
 
     /// Scrolls the primary caret into view.
     pub(crate) fn show_caret(&self) {
-        let (point, lh) = {
+        let (point, height) = {
             let st = self.st.borrow();
-            (st.caret_point(st.primary_head()), st.line_height())
+            st.caret_box(st.primary_head())
         };
-        self.scroll_into_view(point, lh);
+        self.scroll_into_view(point, height);
     }
 
-    /// Scrolls so that a caret at `point` of the rows' box (a line `lh`
-    /// tall) shows, with a row of margin.
-    pub(crate) fn scroll_into_view(&self, point: Point<Points>, lh: Points) {
+    /// Scrolls so that a caret at `point` of the rows' box (`height` tall,
+    /// its row's height) shows, with rows of margin.
+    pub(crate) fn scroll_into_view(&self, point: Point<Points>, height: Points) {
         let viewport = self.viewport.get_untracked();
         if viewport.height.0 <= 0.0 {
             return;
         }
+        // The margin is in rows of the editor's font.
+        let lh = self.st.borrow().line_height();
         let top = self.rows_top.get_untracked() + point.y;
         let y = self.scroll_y.get_untracked();
         let margin = layout::surrounding_margin(
@@ -1485,8 +1589,8 @@ impl Ed {
         );
         let target_y = if top - margin < y {
             Some((top - margin).max(px(0.0)))
-        } else if top + lh + margin > y + viewport.height {
-            Some(top + lh + margin - viewport.height)
+        } else if top + height + margin > y + viewport.height {
+            Some(top + height + margin - viewport.height)
         } else {
             None
         }
@@ -1520,25 +1624,43 @@ impl Ed {
     }
 
     pub(crate) fn scroll_to_line(&self, line: usize) {
-        let (point, lh) = {
+        let (point, height) = {
             let mut st = self.st.borrow_mut();
             let offset = st.buffer.line_start(line);
             st.reveal(offset);
-            (st.caret_point(offset), st.line_height())
+            st.caret_box(offset)
         };
         self.bump_text();
         self.report_folds();
-        self.scroll_into_view(point, lh);
+        self.scroll_into_view(point, height);
     }
 
     /// The display rows to make: those in view and a few around them.
     pub(crate) fn visible_rows(&self) -> std::ops::Range<usize> {
-        let lh = self.st.borrow().line_height().0.max(1.0);
-        let count = self.st.borrow().display.row_count();
+        let st = self.st.borrow();
+        let lh = st.line_height().0.max(1.0);
+        let count = st.display.row_count();
         let y = (self.scroll_y.get() - self.rows_top.get()).0.max(0.0);
         let height = self.viewport.get().height.0.max(lh * 40.0);
-        let last = (((y + height) / lh).ceil() as usize).min(count);
-        let first = ((y / lh).floor() as usize).min(last);
+        let (first, last) = if st.display.rows_height().0 <= 0.0 {
+            (0, 0)
+        } else {
+            // The row the bottom edge is in shows, unless it starts there;
+            // a bottom past the last row's ends with it.
+            let bottom = Points(y + height);
+            let last = if bottom >= st.display.rows_height() {
+                count
+            } else {
+                let row = st.display.row_at_y(bottom);
+                row + usize::from(st.display.row_top(row) < bottom)
+            };
+            let first = match Points(y) >= st.display.rows_height() {
+                true => last,
+                false => st.display.row_at_y(Points(y)).min(last),
+            };
+            (first, last)
+        };
+        drop(st);
         self.rows_window.rows(first..last, count)
     }
 
@@ -1790,14 +1912,20 @@ pub(crate) fn font_family(family: Option<SharedString>) -> SharedString {
 /// text's (`fontScale`; a terminal's Cells stay as they are). Columns, rows
 /// and widths are measured in it, so a line fits where it is drawn.
 pub(crate) fn drawn_font(family: SharedString, size: Points, line_height: Points) -> Font {
-    let scale = match crate::terminal::is_terminal() {
-        true => 1.0,
-        false => nsh_core::element::font_scale(),
-    };
+    let scale = text_scale();
     Font {
         family,
         size: size * scale,
         line_height: crate::terminal::row_height(line_height * scale),
+    }
+}
+
+/// How much the core grows a code view's font sizes: the user's text size
+/// (`fontScale`), 1 in a terminal (its Cells stay as they are).
+fn text_scale() -> f32 {
+    match crate::terminal::is_terminal() {
+        true => 1.0,
+        false => nsh_core::element::font_scale(),
     }
 }
 

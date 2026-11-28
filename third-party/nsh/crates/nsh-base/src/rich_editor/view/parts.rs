@@ -350,11 +350,6 @@ pub(crate) fn join(classes: Vec<String>) -> Option<SharedString> {
     (!classes.is_empty()).then(|| SharedString::from(classes.join(" ")))
 }
 
-/// `styles` merged in order (later ones win).
-pub(crate) fn merge(styles: &[Style]) -> Style {
-    Style::from_decls(styles.iter().flat_map(|s| s.decls().iter().cloned()))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

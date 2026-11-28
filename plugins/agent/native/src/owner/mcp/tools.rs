@@ -415,18 +415,18 @@ async fn mcp_mutation_policy(
     Ok((policy, live))
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "Approval must bind this invocation's access, policy, tool, method, exact input and cancellation"
-)]
+struct WriteApprovalRequest<'a> {
+    tool_name: &'a str,
+    method: &'a str,
+    binding: &'a str,
+    confirmation_input: &'a Value,
+}
+
 async fn request_write_approval(
     access: &Arc<RunAccess>,
     policy: &McpMutationPolicy,
     context: &ToolCallContext,
-    tool_name: &str,
-    method: &str,
-    binding: &str,
-    confirmation_input: &Value,
+    request: WriteApprovalRequest<'_>,
     cancellation: &CancellationToken,
 ) -> Result<Option<ApprovalId>, ToolRejection> {
     match policy {
@@ -453,11 +453,11 @@ async fn request_write_approval(
         access
             .establish_service(
                 context,
-                tool_name,
-                method,
-                binding,
+                request.tool_name,
+                request.method,
+                request.binding,
                 "mcp",
-                confirmation_input,
+                request.confirmation_input,
                 cancellation,
             )
             .await
@@ -466,11 +466,11 @@ async fn request_write_approval(
         access
             .confirm_service(
                 context,
-                tool_name,
-                method,
-                binding,
+                request.tool_name,
+                request.method,
+                request.binding,
                 "mcp",
-                confirmation_input,
+                request.confirmation_input,
                 cancellation,
             )
             .await
@@ -1345,10 +1345,12 @@ async fn prepare_install(
         &access,
         &policy,
         &context,
-        INSTALL,
-        &method,
-        &binding,
-        &confirmation_input,
+        WriteApprovalRequest {
+            tool_name: INSTALL,
+            method: &method,
+            binding: &binding,
+            confirmation_input: &confirmation_input,
+        },
         &cancellation,
     )
     .await?;
@@ -1521,10 +1523,12 @@ async fn prepare_update(
         &access,
         &policy,
         &context,
-        UPDATE,
-        &method,
-        &binding,
-        &confirmation_input,
+        WriteApprovalRequest {
+            tool_name: UPDATE,
+            method: &method,
+            binding: &binding,
+            confirmation_input: &confirmation_input,
+        },
         &cancellation,
     )
     .await?;
@@ -1678,10 +1682,12 @@ async fn prepare_uninstall(
         &access,
         &policy,
         &context,
-        UNINSTALL,
-        &method,
-        &binding,
-        &confirmation_input,
+        WriteApprovalRequest {
+            tool_name: UNINSTALL,
+            method: &method,
+            binding: &binding,
+            confirmation_input: &confirmation_input,
+        },
         &cancellation,
     )
     .await?;

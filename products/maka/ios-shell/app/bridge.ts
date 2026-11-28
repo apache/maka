@@ -23,20 +23,23 @@ import type {
   HistoryRowAddress,
 } from '../../../../packages/plugin-sdk/src/index.js';
 import { host } from 'nsh';
-import { currentLocale, tr } from './locale';
+import { tr } from './locale';
 
 export type HostViewFilter =
   | { kind: 'all_computers' }
   | { kind: 'single_computer'; root_id: string };
 
+export type HostPlatform = 'macOS' | 'Windows' | 'Linux';
+
 export interface SavedHostItem {
   rootId: string;
   hostName: string;
+  platform?: HostPlatform | null;
   peerId: string;
   endpoints: string[];
   ephemeral?: boolean;
   status?: HostConnectionState['status'];
-  relayUrls?: string[];
+  relays?: { url: string; quicPort: number | null }[];
 }
 
 export interface ActiveHostInfo {
@@ -62,14 +65,15 @@ export function pathLabel(
   if (transport === 'websocket') return tr('WebSocket');
   if (!path) return tr('QUIC');
   return tr(path.kind === 'direct' ? 'Direct QUIC · {latency} ms' : 'Relay · {latency} ms', {
-    latency: new Intl.NumberFormat(currentLocale()).format(path.rttMs),
+    latency: path.rttMs,
   });
 }
 
 export type HostConnectionState =
-  | { status: 'offline' | 'connecting' }
+  | { status: 'offline'; autoReconnect?: boolean }
+  | { status: 'connecting' }
   | { status: 'connected'; connection: ActiveHostInfo }
-  | { status: 'error'; error: string };
+  | { status: 'error'; error: string; autoReconnect?: boolean };
 
 export interface HostStateSnapshot {
   revision: number;
@@ -83,32 +87,41 @@ export interface HostStateSnapshot {
   disconnectedRootId?: string;
 }
 
+export interface InvalidName {
+  kind: 'invalidName';
+  field: 'hostName' | 'deviceLabel';
+  reason: 'empty' | 'tooLong' | 'controlCharacter';
+}
+
+type NameEditOutcome = { kind: 'saved'; snapshot: HostStateSnapshot } | InvalidName;
+
 export interface BootstrapSnapshot extends HostStateSnapshot {}
 
 export interface ParsedTicketInfo {
   pairingId: number;
   rootId: string;
   hostName: string;
+  platform?: HostPlatform | null;
   peerId: string;
   sasCode: string;
   devicePeerId: string;
   pathSummary: PathSummary | null;
 }
 
-export interface SubscriptionHandle {
+interface SubscriptionHandle {
   rootId: string;
   subscriptionId: string;
   generation: number;
 }
 
-export interface SubscriptionItemPayload {
+interface SubscriptionItemPayload {
   rootId?: string;
   subscriptionId: string;
   generation: number;
   item: unknown;
 }
 
-export interface SubscriptionEndedPayload {
+interface SubscriptionEndedPayload {
   rootId?: string;
   subscriptionId: string;
   generation: number;
@@ -123,6 +136,17 @@ export type { AgentModelChoice, AgentBackendPreference };
 
 export type {
   AgentProject,
+  AgentFork,
+  AgentForkResult,
+  AgentInteractionResult,
+  AgentMetadataResult,
+  AgentQueueMutationResult,
+  AgentSendResult,
+  HistoryOrder,
+  HistoryPosition,
+  HistoryRowAddress,
+  HistoryView,
+  QuoteRef,
   AgentWorkspaceSelection,
   AgentSession,
   AgentSessionPage,
@@ -138,7 +162,10 @@ export type {
   InteractionRequest as AgentInteractionRequest,
   InteractionRecord as AgentInteractionRecord,
 } from '../../../../packages/plugin-sdk/src/generated/runtime';
-export type { AgentGitWorkspaceDiffOutput_GitWorkspaceDiff as AgentGitWorkspaceDiff } from '../../../../packages/plugin-sdk/src/generated/methods';
+export type {
+  AgentGitWorkspaceDiffOutput_GitWorkspaceDiff as AgentGitWorkspaceDiff,
+  ServiceMethods,
+} from '../../../../packages/plugin-sdk/src/generated/methods';
 
 /* ---- Low-level nsh/host transport ---- */
 
@@ -158,12 +185,14 @@ export function confirmPairing(
   pairingId: number,
   sas: string,
   deviceLabel: string,
-): Promise<HostStateSnapshot> {
+  hostName?: string,
+): Promise<NameEditOutcome> {
   return host.call('ios.confirmPairing', {
     pairingId,
     sas,
     deviceLabel,
-  }) as Promise<HostStateSnapshot>;
+    hostName,
+  }) as Promise<NameEditOutcome>;
 }
 
 export function cancelPairing(rootId?: string): Promise<unknown> {
@@ -188,8 +217,10 @@ export function connectHost(
   rootId: string,
   relayUrl?: string,
   relayToken?: string,
+  automatic?: boolean,
 ): Promise<HostStateSnapshot> {
   return host.call('ios.connectHost', {
+    automatic,
     rootId,
     relayUrl,
     relayToken,
@@ -202,6 +233,14 @@ export function disconnectHost(rootId?: string): Promise<HostStateSnapshot> {
 
 export function removeHost(rootId: string): Promise<HostStateSnapshot> {
   return host.call('ios.removeHost', { rootId }) as Promise<HostStateSnapshot>;
+}
+
+export function networkChange(): Promise<unknown> {
+  return host.call('ios.networkChange', {});
+}
+
+export function renameHost(rootId: string, hostName: string): Promise<NameEditOutcome> {
+  return host.call('ios.renameHost', { rootId, hostName }) as Promise<NameEditOutcome>;
 }
 
 export function setFilter(filter: HostViewFilter): Promise<HostStateSnapshot> {
@@ -297,7 +336,7 @@ export async function hostMutate<T = unknown>(
     throw new Error(tr('Computer is offline'));
   let key: string | undefined;
   if (onProgress) {
-    if (!target) throw new Error('remote Host is not connected');
+    if (!target) throw new Error(tr('Computer is offline'));
     progressId ??= 'mutation:' + String(++nextProgressId);
     key = progressKey(target.rootId, target.generation, progressId);
     if (progressListeners.has(key)) throw new Error('mutation progress ID is already in use');
@@ -324,24 +363,31 @@ export async function hostMutate<T = unknown>(
   }
 }
 
-export function subscribe(
+function subscribe(
   subscriptionId: string,
   endpoint: string,
   method: string,
-  input: Record<string, unknown> = {},
-  rootId?: string,
+  input: Record<string, unknown>,
+  rootId: string,
+  connectionGeneration: number,
 ): Promise<SubscriptionHandle> {
-  return host.call('ios.subscribe', {
-    subscriptionId,
-    rootId,
-    anchorSession: rootId ? undefined : hostState?.active?.session,
-    endpoint,
-    method,
-    input,
-  }) as Promise<SubscriptionHandle>;
+  // The native handshake has its own deadline. Keep the reply alive so a
+  // stopped watch can still unsubscribe if setup succeeds after it stops.
+  return host.call(
+    'ios.subscribe',
+    {
+      subscriptionId,
+      rootId,
+      generation: connectionGeneration,
+      endpoint,
+      method,
+      input,
+    },
+    { timeout: 0 },
+  ) as Promise<SubscriptionHandle>;
 }
 
-export function unsubscribe(handle: SubscriptionHandle): Promise<{ cancelled: boolean }> {
+function unsubscribe(handle: SubscriptionHandle): Promise<{ cancelled: boolean }> {
   return host.call('ios.unsubscribe', handle) as Promise<{ cancelled: boolean }>;
 }
 
@@ -362,24 +408,77 @@ export function onOperationRecovery(
   });
 }
 
-export function onSubscriptionItem(
-  listener: (payload: SubscriptionItemPayload) => void,
-): () => void {
-  return host.on('ios.subscriptionItem', (payload) => {
-    if (payload && typeof payload === 'object') {
-      listener(payload as unknown as SubscriptionItemPayload);
-    }
-  });
-}
+type SubscriptionEvent = SubscriptionItemPayload | SubscriptionEndedPayload;
+const subscriptionRoutes = new Map<string, (event: SubscriptionEvent) => void>();
 
-export function onSubscriptionEnded(
-  listener: (payload: SubscriptionEndedPayload) => void,
+// Register at module scope: host.on inside an effect is removed on its next run.
+const dispatchSubscription = (payload: unknown) => {
+  if (!payload || typeof payload !== 'object') return;
+  const event = payload as SubscriptionEvent;
+  subscriptionRoutes.get(event.subscriptionId)?.(event);
+};
+host.on('ios.subscriptionItem', dispatchSubscription);
+host.on('ios.subscriptionEnded', dispatchSubscription);
+
+// IDs are unique per watch attempt. The native reply precedes stream startup,
+// but the event and promise can reach JS in different turns.
+export function watchHost<T>(
+  rootId: string,
+  connectionGeneration: number,
+  subscriptionId: string,
+  method: string,
+  input: Record<string, unknown>,
+  onItem: (item: T) => void,
+  onError: (cause: unknown) => void,
+  onOpen?: () => void,
 ): () => void {
-  return host.on('ios.subscriptionEnded', (payload) => {
-    if (payload && typeof payload === 'object') {
-      listener(payload as unknown as SubscriptionEndedPayload);
+  let handle: SubscriptionHandle | undefined;
+  let stopped = false;
+  const early: SubscriptionEvent[] = [];
+  const current = () => !stopped && connection(rootId)?.generation === connectionGeneration;
+  const detach = () => {
+    stopped = true;
+    early.length = 0;
+    subscriptionRoutes.delete(subscriptionId);
+  };
+  const receive = (event: SubscriptionEvent) => {
+    if (!current() || event.rootId !== rootId || event.subscriptionId !== subscriptionId) return;
+    if (!handle) {
+      early.push(event);
+      return;
     }
-  });
+    if (event.generation !== handle.generation) return;
+    if ('item' in event) onItem(event.item as T);
+    else {
+      detach();
+      onError(event.error ?? 'Host subscription ended');
+    }
+  };
+  subscriptionRoutes.set(subscriptionId, receive);
+  const cancel = (opened: SubscriptionHandle) =>
+    void unsubscribe(opened).catch((cause) => console.warn('Could not stop Host watch', cause));
+  void subscribe(subscriptionId, 'agent', method, input, rootId, connectionGeneration).then(
+    (opened) => {
+      if (!current()) {
+        detach();
+        cancel(opened);
+        return;
+      }
+      handle = opened;
+      onOpen?.();
+      for (const event of early.splice(0)) receive(event);
+    },
+    (cause) => {
+      const report = current();
+      detach();
+      if (report) onError(cause);
+    },
+  );
+  return () => {
+    if (stopped) return;
+    detach();
+    if (handle) cancel(handle);
+  };
 }
 
 /* ---- Typed Agent Host RPC helpers ---- */

@@ -23,7 +23,7 @@ import type {
   AgentMcpConfigurationChange,
   AgentMcpConfigurationEntry,
 } from '../../../../../../packages/plugin-sdk/src/generated/runtime';
-import type { SettingsRpc } from './rpc';
+import { LocalizedSettingsError, type SettingsRpc } from './rpc';
 
 // Settings inventory exposes the desktop JSON shape; preserve fields this form doesn't edit.
 export type McpConfig = {
@@ -45,8 +45,15 @@ export function mcpConfig(entry?: AgentMcpConfigurationEntry): McpConfig {
 
 export async function changeMcp(rpc: SettingsRpc, input: AgentMcpConfigurationChange) {
   const result = await rpc.mutate('agent', 'manageMcpServer', input);
-  if (result.kind !== 'saved')
-    throw new Error(result.kind === 'rejected' ? result.reason : result.kind);
+  if (result.kind === 'saved') return;
+  if (result.kind === 'changed')
+    throw new LocalizedSettingsError('Refresh and try again.', { cause: result });
+  throw new Error(
+    input.change.kind === 'delete'
+      ? tr('Could not remove the MCP server.')
+      : tr('Could not save the MCP server.'),
+    { cause: result },
+  );
 }
 
 type ProjectMcp = Extract<

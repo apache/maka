@@ -47,7 +47,7 @@ order (`grep -n '^## ' references/design-guides.md`):
 | Section                               | Read when                                                              |
 | ------------------------------------- | ---------------------------------------------------------------------- |
 | Design thesis                         | Always                                                                 |
-| Establish the app's design system first | Always; app standards, token-only theme colors, styled controls and platform targets |
+| Establish the app's design system first | Always; app standards, token-only theme colors, styled controls (each wrapping its `nsh/base` element), icons and platform targets |
 | Learning from Shadcn                  | Choosing what to borrow from web component libraries                   |
 | Start from the task                   | Always; task hierarchy, what to leave out                              |
 | Visual language                       | Color, typography, spacing, radius, borders, elevation, density, icons |

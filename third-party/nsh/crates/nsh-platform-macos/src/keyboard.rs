@@ -23,7 +23,9 @@
 //!
 //! A key that is only listened to is not captured: the app hears it and
 //! the default still runs. The dev host's Cmd+R is never captured (as the
-//! keymap leaves it to the reload monitor).
+//! keymap leaves it to the reload monitor), nor are the system's reserved
+//! shortcuts (Cmd+Q, Cmd+H, Option+Cmd+H, Cmd+M, Control+Cmd+F), even under
+//! `KeyCapture::All`: the view hears them and the menu still takes them.
 //!
 //! A view that hears none of the raw keys and captures none builds no
 //! [`KeyEvent`] and takes the existing path. Fields, hosted views, menus
@@ -62,8 +64,10 @@ use std::{
 
 use block2::RcBlock;
 use nsh_core::{
-    EventKind, EventPayload, KeyEvent, ROOT_ID, ViewKind, element::SharedString,
-    platform::InputModality,
+    EventKind, EventPayload, KeyCapture, KeyEvent, ROOT_ID, ViewKind,
+    element::SharedString,
+    keymap::Keystroke,
+    platform::{InputModality, Os},
 };
 use objc2::{rc::Retained, runtime::AnyObject};
 use objc2_app_kit::{NSEvent, NSEventMask, NSEventModifierFlags, NSEventType, NSView, NSWindow};
@@ -525,7 +529,7 @@ fn captures(surface: &Surface, view: &NshView, event: &NSEvent) -> bool {
         let state = view.state();
         if !state.props.accessibility.state.disabled
             && !state.props.key_capture.is_none()
-            && state.props.key_capture.captures_key(stroke.as_ref())
+            && rule_captures(&state.props.key_capture, stroke.as_ref())
         {
             return true;
         }
@@ -533,6 +537,18 @@ fn captures(surface: &Surface, view: &NshView, event: &NSEvent) -> bool {
         current = key_ancestor(surface, &view);
     }
     false
+}
+
+/// Whether `rule` captures the key of `stroke` on macOS. The system's own
+/// shortcuts ([`Keystroke::reserved`]: quitting, hiding, minimizing, full
+/// screen) are never captured, not even by [`KeyCapture::All`]: the view
+/// still hears them, and the application menu then takes them, as
+/// `nsh/keymap` cannot bind them either.
+fn rule_captures(rule: &KeyCapture, stroke: Option<&Keystroke>) -> bool {
+    if stroke.is_some_and(|stroke| stroke.reserved(Os::MacOs).is_some()) {
+        return false;
+    }
+    rule.captures_key(stroke)
 }
 
 /// The transition being reported.
@@ -939,5 +955,51 @@ mod tests {
             "\u{f702}",
             NSEventModifierFlags::Function
         )));
+    }
+
+    /// The system's shortcuts reach the menu under `KeyCapture::All`;
+    /// other shortcuts stay captured.
+    #[test]
+    fn capture_all_leaves_the_system_shortcuts_to_the_menu() {
+        let cmd = NSEventModifierFlags::Command;
+        let all = KeyCapture::All;
+        let captures =
+            |event: &NSEvent| rule_captures(&all, crate::keymap::keystroke(event).as_ref());
+        // Cmd+Q, Cmd+H, Option+Cmd+H, Cmd+M, Control+Cmd+F.
+        assert!(!captures(&key(12, "q", "q", cmd)));
+        assert!(!captures(&key(4, "h", "h", cmd)));
+        assert!(!captures(&key(
+            4,
+            "\u{2d9}",
+            "h",
+            cmd | NSEventModifierFlags::Option
+        )));
+        assert!(!captures(&key(46, "m", "m", cmd)));
+        assert!(!captures(&key(
+            3,
+            "\u{6}",
+            "f",
+            cmd | NSEventModifierFlags::Control
+        )));
+        // Cmd+S, Cmd+Shift+Q, Control+Q and a bare Q stay captured.
+        assert!(captures(&key(1, "s", "s", cmd)));
+        assert!(captures(&key(
+            12,
+            "Q",
+            "q",
+            cmd | NSEventModifierFlags::Shift
+        )));
+        assert!(captures(&key(
+            12,
+            "\u{11}",
+            "q",
+            NSEventModifierFlags::Control
+        )));
+        assert!(captures(&key(12, "q", "q", NSEventModifierFlags::empty())));
+        // A key with no stroke (a modifier key) is still All's.
+        assert!(rule_captures(&all, None));
+        // A rule naming Cmd+Q does not take it either.
+        let quit = Keystroke::parse("mod+q", Os::MacOs).expect("mod+q");
+        assert!(!rule_captures(&KeyCapture::keys([quit]), Some(&quit)));
     }
 }

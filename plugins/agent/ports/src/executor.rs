@@ -178,6 +178,10 @@ pub enum Error {
 /// Resolves only after the observation is committed. Consumer loss does not
 /// undo accepted execution or permit unbounded output buffering.
 pub trait OutputSink: Send + Sync {
+    /// Optional live hints. These do not consume output indexes or participate in spool replay.
+    fn commentary(&self, _completed_text: &str) {}
+    fn current_plan_item(&self, _item: Option<&str>) {}
+
     fn turn_usage(
         &self,
         usage: maka_agent_facts::executor::TurnUsage,

@@ -166,7 +166,7 @@ function CompletionComposer(props: { prediction?: boolean; switchBackend?: boole
     loading: () => false,
     empty: () => false,
     workspace: () => '/workspace',
-    blockedReason: () => '',
+    sendBlock: () => null,
     error: () => '',
     dismissError: () => {},
     notice: () => '',

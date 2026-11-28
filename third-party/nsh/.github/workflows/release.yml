@@ -35,7 +35,7 @@ name: Release
 # download by that name. Every archive holds one directory, `nsh/`, laid out
 # as `dist/nsh`: a platform's archive the CLI and that machine's runtime, and
 # the components (`nsh-android.tar.gz`, `nsh-web.tar.gz`,
-# `nsh-android-symbols.tar.gz`, `nsh-ios-macos-arm64.tar.gz`,
+# `nsh-android-symbols.tar.gz`, `nsh-ios-macos-<arch>.tar.gz`,
 # `nsh-gpui-<platform>.tar.gz`, `nsh-tui-<platform>.tar.gz`) the other
 # runtimes, which an installed nsh downloads from its own release
 # (`nsh component`). The embedding SDKs are `nsh-embed-ios.zip` and
@@ -136,14 +136,21 @@ jobs:
         # there, they were thrown away at packing, and cost the macOS and
         # x86_64 Windows builds 40 to 65 minutes each.
         include:
-          # The iOS runtimes and SDK need Xcode and Apple silicon; the macOS
-          # runtime is built for this machine. Xcode's iOS 26+ SDK opts apps
-          # into the system's Liquid Glass appearance (deployment stays 15).
+          # The iOS runtimes need Xcode, and are built for the simulator and
+          # Mac Catalyst of this machine's processor (`ios_sdk` is the oldest
+          # SDK it accepts); the device runner and the embedding SDK come from
+          # Apple silicon alone, as Xcode 26 does not run on Intel Macs. The
+          # macOS runtime is built for this machine. Xcode's iOS 26+ SDK opts
+          # apps into the system's Liquid Glass appearance (deployment stays
+          # 15); an Intel Mac's last Xcode, 16.4, has the iOS 18 SDK, and its
+          # simulators run iOS 18 at most.
           - name: macos-arm64
             os: macos-26
             embed: ios
+            ios_sdk: 26
           - name: macos-x86_64
             os: macos-15-intel
+            ios_sdk: 18
           # Ubuntu 24.04 has GTK 4.14 and Pango 1.52+, what the Linux runtime
           # needs; its binaries need glibc 2.39 and GTK 4.14 or newer where
           # they run.
@@ -166,16 +173,20 @@ jobs:
           ref: ${{ needs.plan.outputs.ref }}
 
       - name: Check the Apple SDKs
-        if: matrix.embed == 'ios'
+        if: matrix.ios_sdk
         run: |
           xcodebuild -version
           # Catalyst uses the macOS SDK's iOSSupport. Check all three before
           # spending time building, even if the runner's default Xcode changes.
+          # Before Xcode 26 the macOS SDK is numbered 3 below the iOS SDK
+          # (Xcode 16.4: iOS 18.5, macOS 15.5).
           for sdk in iphoneos iphonesimulator macosx; do
             version=$(xcrun --sdk "$sdk" --show-sdk-version)
             echo "$sdk SDK: $version ($(xcrun --sdk "$sdk" --show-sdk-path))"
-            if (( ${version%%.*} < 26 )); then
-              echo "::error::$sdk SDK 26 or newer is required for the iOS distribution"
+            min=${{ matrix.ios_sdk }}
+            if [[ $sdk == macosx ]] && (( min < 26 )); then min=$((min - 3)); fi
+            if (( ${version%%.*} < min )); then
+              echo "::error::$sdk SDK $min or newer is required for the iOS distribution"
               exit 1
             fi
           done
@@ -327,8 +338,8 @@ jobs:
         run: cargo --locked xtask dist -v
 
       - name: Check the iOS runtime build versions
-        if: matrix.embed == 'ios'
-        run: python3 .github/ci/ios-build-versions.py dist/nsh/runtime/ios
+        if: matrix.ios_sdk
+        run: python3 .github/ci/ios-build-versions.py dist/nsh/runtime/ios ${{ matrix.ios_sdk }} ${{ matrix.embed == 'ios' && 'devices' || 'simulator' }}
 
       # The packaged CLI makes and bundles a new app.
       - name: Smoke test
@@ -394,6 +405,11 @@ jobs:
           name: nsh-${{ matrix.name }}
           path: target/release-assets/*
           if-no-files-found: error
+          # Only the release and nightly jobs of this run read it, and the
+          # published copies live on the release. Each build is about 1.5 GB
+          # across platforms, and the organization's artifact storage is
+          # shared, so keep it only long enough to re-run a failed job.
+          retention-days: 3
 
   release:
     name: Release

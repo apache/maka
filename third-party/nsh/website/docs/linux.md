@@ -23,14 +23,14 @@ from `nsh_core::element::desktop` in Rust ([Desktop title bars](./rust.md#deskto
   Arch, `webkitgtk6.0-devel` on Fedora to build the runtime. The development host and the release runner use it by
   default, so packaged apps need WebKitGTK 6.0 where they run (`libwebkitgtk-6.0-4` on Debian and Ubuntu; GNOME
   desktops have it). `cargo xtask dist` on a machine without its development files builds a runtime whose web views
-  are placeholders, and whose apps need only GTK.
-- **GStreamer** 1.14 or later, which GTK plays video through and NSH plays sound with: to build the runtime its
-  development packages, `libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev` on Debian and Ubuntu, `gstreamer
-  gst-plugins-base` on Arch, `gstreamer1-devel gstreamer1-plugins-base-devel` on Fedora. Where apps run, GStreamer and
-  its base plug-ins (desktops have them), and the plug-ins for the video and audio formats your app plays. The
-  development packages are for `Sound`, the runtime's Cargo feature `sound`: a Rust app that plays no sounds builds
-  without them by leaving that feature out (`default-features = false` on `nsh-platform-linux`), and video and
-  `AudioPlayer` still play through GTK.
+  are placeholders, and whose apps need only GTK. An app with its own Rust crates builds its development host and
+  runner with WebKitGTK only when it makes a `WebView`, so `nsh run` of an app without one compiles none of it.
+- **GStreamer** 1.14 or later, which GTK plays video through and NSH plays sound with. Nothing of it is needed to
+  build: NSH loads GStreamer when an app first plays a sound. Where apps run, GStreamer and its base plug-ins
+  (desktops have them), and the plug-ins for the video and audio formats your app plays. Without GStreamer an app
+  still starts; loading a sound then fails with an error naming the missing library. `nsh package` leaves sounds (the
+  runtime's Cargo feature `sound`) out of a TSX app's runner when the app imports no `Sound`; video and `AudioPlayer`
+  play through GTK either way.
 
 ## Running an app
 

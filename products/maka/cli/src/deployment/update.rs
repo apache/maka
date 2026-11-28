@@ -266,12 +266,15 @@ impl Expected {
 /// The executor and revision checks in `apply` close races with another CLI.
 pub(super) async fn recover_pending(root_id: &RootId) -> Result<(), HostError> {
     let directory = directory(&root_id.0)?;
-    let store::Installation::Installed(current) = store::read(&directory).await? else {
+    let store::Installation::Installed(current) = store::read_compatible(&directory).await? else {
         return Ok(());
     };
     if super::query::pending(&directory, &current).await?.is_none() {
         return Ok(());
     }
+    // Only reconcile in-process when the store already matches this binary's
+    // schema; never upgrade an older store behind an older pending target.
+    store::read(&directory).await?;
     Expected {
         root_id: RootId(current.root_id.clone()),
         expected_deployment_id: current.deployment_id,

@@ -277,6 +277,67 @@ pub fn cf_html(html: &str) -> String {
     format!("{header}{BEFORE}{html}{AFTER}")
 }
 
+/// The fragment held in Windows' `HTML Format` bytes (`cf_html`'s
+/// counterpart): what its `StartFragment` and `EndFragment` byte offsets
+/// name, or the fragment comments when the offsets are unusable, or the
+/// document when only its offsets or markup are usable. Bytes that carry no
+/// CF_HTML header are not HTML in this format (`None`). The offsets are byte
+/// offsets; malformed ones that split a UTF-8 sequence decode lossily, as
+/// the clipboard's producer wrote them.
+pub fn cf_html_fragment(bytes: &[u8]) -> Option<String> {
+    let len = bytes.iter().position(|b| *b == 0).unwrap_or(bytes.len());
+    let bytes = &bytes[..len];
+    if bytes.is_empty() {
+        return None;
+    }
+    let leading = bytes
+        .iter()
+        .position(|b| !b.is_ascii_whitespace())
+        .unwrap_or(bytes.len());
+    let decode = |bytes: &[u8]| String::from_utf8_lossy(bytes).into_owned();
+    if !bytes[leading..].starts_with(b"Version:") {
+        return None;
+    }
+    let header_end = bytes.iter().position(|b| *b == b'<').unwrap_or(bytes.len());
+    let header = &bytes[..header_end];
+    let field = |name: &str| {
+        let prefix = format!("{name}:");
+        for line in header.split(|b| *b == b'\n') {
+            let line = line.strip_suffix(b"\r").unwrap_or(line);
+            if let Some(value) = line.strip_prefix(prefix.as_bytes())
+                && let Ok(value) = std::str::from_utf8(value)
+                && let Ok(value) = value.trim().parse::<usize>()
+            {
+                return Some(value);
+            }
+        }
+        None
+    };
+    let valid = |start: usize, end: usize| start <= end && end <= bytes.len();
+    if let (Some(start), Some(end)) = (field("StartFragment"), field("EndFragment"))
+        && valid(start, end)
+    {
+        return Some(decode(&bytes[start..end]));
+    }
+    let marker = |needle: &[u8]| bytes.windows(needle.len()).position(|w| w == needle);
+    if let (Some(start), Some(end)) = (
+        marker(b"<!--StartFragment-->").map(|i| i + "<!--StartFragment-->".len()),
+        marker(b"<!--EndFragment-->"),
+    ) && start <= end
+    {
+        return Some(decode(&bytes[start..end]));
+    }
+    if let (Some(start), Some(end)) = (field("StartHTML"), field("EndHTML"))
+        && valid(start, end)
+    {
+        return Some(decode(&bytes[start..end]));
+    }
+    bytes
+        .iter()
+        .position(|b| *b == b'<')
+        .map(|start| decode(&bytes[start..]))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -293,6 +354,23 @@ mod tests {
         assert!(out[field("StartHTML")..].starts_with("<html>"));
         assert_eq!(field("EndHTML"), out.len());
         assert_eq!(&out[field("StartFragment")..field("EndFragment")], fragment);
+    }
+
+    #[test]
+    fn cf_html_fragments_round_trip() {
+        let fragment = "<p>a <b>b</b> \u{4e2d}</p>";
+        let mut bytes = cf_html(fragment).into_bytes();
+        bytes.push(0);
+        assert_eq!(cf_html_fragment(&bytes).as_deref(), Some(fragment));
+
+        // A document without fragment offsets or comments is still HTML.
+        let document = "Version:0.9\r\n<html><body><p>x</p></body></html>";
+        assert_eq!(
+            cf_html_fragment(document.as_bytes()).as_deref(),
+            Some("<html><body><p>x</p></body></html>")
+        );
+        assert_eq!(cf_html_fragment(b"<p>plain html</p>"), None);
+        assert_eq!(cf_html_fragment(b""), None);
     }
 
     /// A 3×2 PNG's signature and header.

@@ -36,3 +36,6 @@ tempfile.workspace = true
 thiserror.workspace = true
 url = "2.5.9"
 zeroize = "1.9.2"
+
+[target.'cfg(unix)'.dependencies]
+gethostname = "1.1.0"

@@ -20,7 +20,7 @@
 import { formatCount } from './numberFormat';
 import { cleanup, effect, Scroll, signal, Text, untracked, View } from 'nsh';
 import { Button, Popover } from 'nsh/base';
-import type { AgentSession } from '../../../../packages/plugin-sdk/src/index.js';
+
 import type {
   WorkspacePullRequestTarget,
   WorkspaceSourceItem,
@@ -29,6 +29,7 @@ import { type AnswerSource, AnswerSourceList } from './AnswerSources';
 import { useHost } from './host';
 import { Icon } from './Icon';
 import { tr } from './locale';
+import { createText, errorText } from './text';
 import {
   basenameLabel,
   type GitHubPullSummary,
@@ -40,12 +41,15 @@ import {
   C,
   captionTextStyle,
   controlStyle,
+  floatingShadow,
   floatingStyle,
+  lineWidth,
   menuRowHoverStyle,
   menuRowStyle,
   quietActiveStyle,
   quietFocusStyle,
   quietHoverStyle,
+  radius,
   textTooltip,
 } from './ui';
 import { compactHomePath, WorktreePicker } from './WorktreePicker';
@@ -79,20 +83,19 @@ export function SessionInspector(props: {
   sources?(): readonly WorkspaceSourceItem[];
   answerSources(): readonly AnswerSource[];
   openLink(target: string, restoreFocus: () => boolean): Promise<void>;
-  childSessions(): readonly AgentSession[];
   openChanges?(worktreePath?: string | null): void;
   openFiles?(): void;
   openLaunchpad?(): void;
   openPullRequest?(target: Omit<WorkspacePullRequestTarget, 'sessionId'>): void;
-  openChildSession?(sessionId: string): void;
 }) {
   const host = useHost();
   const revisions = signal<GitRevisions | null>(null);
   const diffStats = signal<{ files: number; added: number; deleted: number } | null>(null);
+  const changesError = createText();
+  const repositoryError = createText();
   const pulls = signal<GitHubPullSummary[]>([]);
   const githubRepo = signal<GitHubRepoRef | null>(null);
   const repoMenuOpen = signal(false);
-  const subagentsExpanded = signal(false);
   const scrollY = signal(0);
   const viewportHeight = signal(0);
   const contentHeight = signal(0);
@@ -107,6 +110,9 @@ export function SessionInspector(props: {
   const effectivePath = () => selectedWorktree() ?? props.workspacePath ?? '';
 
   const refreshGit = async () => {
+    const seq = ++loadSeq;
+    changesError.set('');
+    repositoryError.set('');
     if (!props.workspacePath) {
       revisions.set(null);
       diffStats.set(null);
@@ -114,25 +120,16 @@ export function SessionInspector(props: {
       githubRepo.set(null);
       return;
     }
-    const seq = ++loadSeq;
     const wt = selectedWorktree();
-    try {
-      const [rev, st, wsDiff] = await Promise.all([
-        host.query('agent', 'gitRevisions', {
-          sessionId: props.sessionId,
-          ...(wt ? { worktreePath: wt } : {}),
-        }),
-        host.query('agent', 'gitStatus', {
-          sessionId: props.sessionId,
-          ...(wt ? { worktreePath: wt } : {}),
-        }),
-        host.query('agent', 'gitWorkspaceDiff', {
-          sessionId: props.sessionId,
-          ...(wt ? { worktreePath: wt } : {}),
-        }),
+    const input = { sessionId: props.sessionId, ...(wt ? { worktreePath: wt } : {}) };
+    const current = () => alive && seq === loadSeq;
+
+    const loadChanges = async () => {
+      const [st, wsDiff] = await Promise.all([
+        host.query('agent', 'gitStatus', input),
+        host.query('agent', 'gitWorkspaceDiff', input),
       ]);
-      if (!alive || seq !== loadSeq) return;
-      revisions.set(rev);
+      if (!current()) return;
       if (wsDiff || st) {
         const counts = wsDiff ? countPatchLines(wsDiff.patch) : { added: 0, deleted: 0 };
         diffStats.set({
@@ -143,6 +140,15 @@ export function SessionInspector(props: {
       } else {
         diffStats.set(null);
       }
+    };
+
+    const loadRepository = async () => {
+      const rev = await host.query('agent', 'gitRevisions', input).catch((reason) => {
+        if (current()) repositoryError.set(errorText(reason, 'Workspace is unavailable'));
+        return null;
+      });
+      if (!current()) return;
+      revisions.set(rev);
       const ghRemote =
         rev?.remotes.find((r) => r.host.toLowerCase() === 'github.com' && r.remote === 'origin') ??
         rev?.remotes.find((r) => r.host.toLowerCase() === 'github.com');
@@ -154,11 +160,11 @@ export function SessionInspector(props: {
         };
         githubRepo.set(repoRef);
         const prRes = await host.query('agent', 'githubPullRequests', {
-          sessionId: props.sessionId,
+          sessionId: input.sessionId,
           repo: repoRef,
           state: 'open',
         });
-        if (!alive || seq !== loadSeq) return;
+        if (!current()) return;
         if (prRes.kind === 'ready') {
           const headBranch = rev?.headBranch ?? null;
           const sorted = [...prRes.pulls].sort((a, b) => {
@@ -174,9 +180,20 @@ export function SessionInspector(props: {
         githubRepo.set(null);
         pulls.set([]);
       }
-    } catch {
-      if (!alive || seq !== loadSeq) return;
-    }
+    };
+
+    await Promise.all([
+      loadRepository().catch((reason) => {
+        if (!current()) return;
+        pulls.set([]);
+        repositoryError.set(errorText(reason, 'Could not load GitHub pull requests.'));
+      }),
+      loadChanges().catch((reason) => {
+        if (!current()) return;
+        diffStats.set(null);
+        changesError.set(errorText(reason, 'Could not read file changes.'));
+      }),
+    ]);
   };
 
   effect(() => {
@@ -201,16 +218,6 @@ export function SessionInspector(props: {
     if (mainWt) return mainWt.name;
     return basenameLabel(effectivePath()) || tr('Files');
   };
-  const children = () => {
-    const raw = props.childSessions();
-    return [...raw].sort((a, b) => {
-      const aRun = a.activity !== 'idle' ? 0 : 1;
-      const bRun = b.activity !== 'idle' ? 0 : 1;
-      return aRun - bRun;
-    });
-  };
-  const visibleChildren = () => (subagentsExpanded() ? children() : children().slice(0, 6));
-  const runningChildren = () => children().filter((item) => item.activity !== 'idle').length;
   const openSources = () => props.sources?.() ?? [];
 
   const showScrollbar = () => viewportHeight() > 48 && contentHeight() > viewportHeight() + 2;
@@ -248,13 +255,13 @@ export function SessionInspector(props: {
         marginTop: props.floating ? 4 : 8,
         marginBottom: 12,
         marginRight: 12,
-        borderRadius: 12,
+        borderRadius: radius(12),
         backgroundColor: props.floating ? C.floating : C.card,
         ...(props.floating
           ? {
-              borderWidth: 1,
+              borderWidth: lineWidth(),
               borderColor: C.line,
-              boxShadow: `0 8px 24px ${C.shadow}`,
+              boxShadow: floatingShadow(`0 8px 24px ${C.shadow}`),
             }
           : {}),
         overflow: 'hidden',
@@ -285,7 +292,7 @@ export function SessionInspector(props: {
                   tooltip={textTooltip(() => tr('Refresh'))}
                   onPress={() => void refreshGit()}
                   style={{
-                    ...controlStyle,
+                    ...controlStyle(),
                     width: 24,
                     minHeight: 24,
                     height: 24,
@@ -299,6 +306,9 @@ export function SessionInspector(props: {
                   <Icon name="refresh" size={12} color={C.muted} />
                 </Button>
               </View>
+              <If when={Boolean(repositoryError())}>
+                <Text style={captionTextStyle}>{repositoryError()}</Text>
+              </If>
               <If
                 when={worktrees().length > 1 && props.selectWorktree !== undefined}
                 else={
@@ -372,7 +382,7 @@ export function SessionInspector(props: {
                     <Button
                       accessibilityLabel={tr('More')}
                       style={{
-                        ...controlStyle,
+                        ...controlStyle(),
                         width: 24,
                         minHeight: 24,
                         height: 24,
@@ -430,7 +440,7 @@ export function SessionInspector(props: {
                   paddingHorizontal: 8,
                   paddingVertical: 4,
                   marginHorizontal: -8,
-                  borderRadius: 8,
+                  borderRadius: radius(8),
                   flexDirection: 'row',
                   alignItems: 'center',
                   gap: 8,
@@ -472,6 +482,9 @@ export function SessionInspector(props: {
                   </Text>
                 </If>
               </Button>
+              <If when={Boolean(changesError())}>
+                <Text style={captionTextStyle}>{changesError()}</Text>
+              </If>
             </View>
             {divider()}
           </If>
@@ -505,7 +518,7 @@ export function SessionInspector(props: {
                         paddingHorizontal: 8,
                         paddingVertical: 4,
                         marginHorizontal: -8,
-                        borderRadius: 8,
+                        borderRadius: radius(8),
                         flexDirection: 'row',
                         alignItems: 'center',
                         gap: 8,
@@ -540,126 +553,6 @@ export function SessionInspector(props: {
             {divider()}
           </If>
 
-          {/* 4. Subagents */}
-          <View style={{ paddingHorizontal: 12, paddingVertical: 12, gap: 4 }}>
-            <View
-              style={{
-                flexDirection: 'row',
-                alignItems: 'center',
-                gap: 8,
-                marginBottom: 4,
-              }}
-            >
-              <Text style={{ ...sectionTitleStyle, flex: 1 }}>{tr('Subagents')}</Text>
-              <If when={children().length > 6 && subagentsExpanded()}>
-                <Button
-                  accessibilityLabel={tr('Show fewer project conversations')}
-                  onPress={() => subagentsExpanded.set(false)}
-                  style={{
-                    minHeight: 20,
-                    height: 20,
-                    paddingHorizontal: 6,
-                    borderRadius: 4,
-                    flexDirection: 'row',
-                    alignItems: 'center',
-                    gap: 2,
-                  }}
-                  hoverStyle={{ backgroundColor: C.cardRaised }}
-                  focusStyle={quietFocusStyle()}
-                >
-                  <Text style={{ fontSize: 11, lineHeight: 16, color: C.muted }}>
-                    {tr('Show fewer project conversations')}
-                  </Text>
-                  <Icon name="up" size={11} color={C.muted} />
-                </Button>
-              </If>
-              <If when={children().length > 0}>
-                <Text
-                  style={{
-                    fontSize: 12,
-                    lineHeight: 16,
-                    color: runningChildren() > 0 ? C.accentText : C.muted,
-                  }}
-                >
-                  {runningChildren() > 0
-                    ? tr('{count} running', { count: runningChildren() })
-                    : tr('{count} completed', { count: children().length })}
-                </Text>
-              </If>
-            </View>
-            <If
-              when={children().length > 0}
-              else={
-                <Text style={{ fontSize: 12, lineHeight: 16, color: C.muted }}>
-                  {tr('No subagents')}
-                </Text>
-              }
-            >
-              <Each of={visibleChildren()} key={(child) => child.id}>
-                {(child) => (
-                  <Button
-                    accessibilityLabel={child().title || tr('Untitled conversation')}
-                    onPress={() => props.openChildSession?.(child().id)}
-                    style={{
-                      minHeight: 32,
-                      paddingHorizontal: 8,
-                      paddingVertical: 4,
-                      marginHorizontal: -8,
-                      borderRadius: 8,
-                      flexDirection: 'row',
-                      alignItems: 'center',
-                      gap: 8,
-                    }}
-                    hoverStyle={{ backgroundColor: C.cardRaised }}
-                    activeStyle={quietActiveStyle()}
-                    focusStyle={quietFocusStyle()}
-                  >
-                    <Icon
-                      name={child().activity !== 'idle' ? 'statusRecorded' : 'statusSuccess'}
-                      size={14}
-                      color={child().activity !== 'idle' ? C.accentText : C.success}
-                    />
-                    <Text
-                      style={[
-                        { ...captionTextStyle, color: C.text, flex: 1, minWidth: 0 },
-                        { numberOfLines: 1 },
-                      ]}
-                    >
-                      {child().title || tr('Untitled conversation')}
-                    </Text>
-                  </Button>
-                )}
-              </Each>
-              <If when={children().length > 6 && !subagentsExpanded()}>
-                <Button
-                  accessibilityLabel={tr('Show all ({count})', { count: children().length })}
-                  onPress={() => subagentsExpanded.set(true)}
-                  style={{
-                    minHeight: 28,
-                    paddingHorizontal: 8,
-                    paddingVertical: 4,
-                    marginHorizontal: -8,
-                    borderRadius: 8,
-                    flexDirection: 'row',
-                    alignItems: 'center',
-                    gap: 4,
-                  }}
-                  hoverStyle={{ backgroundColor: C.cardRaised }}
-                  focusStyle={quietFocusStyle()}
-                >
-                  <Text style={{ fontSize: 12, lineHeight: 16, color: C.muted }}>
-                    {subagentsExpanded()
-                      ? tr('Show fewer project conversations')
-                      : tr('Show all ({count})', { count: children().length })}
-                  </Text>
-                  <Icon name={subagentsExpanded() ? 'up' : 'down'} size={12} color={C.muted} />
-                </Button>
-              </If>
-            </If>
-          </View>
-
-          {divider()}
-
           {/* Open workspace tabs */}
           <View style={{ paddingHorizontal: 12, paddingVertical: 12, gap: 4 }}>
             <View
@@ -677,7 +570,7 @@ export function SessionInspector(props: {
                   tooltip={textTooltip(() => tr('Browse files'))}
                   onPress={() => props.openFiles?.()}
                   style={{
-                    ...controlStyle,
+                    ...controlStyle(),
                     width: 24,
                     minHeight: 24,
                     height: 24,
@@ -711,7 +604,7 @@ export function SessionInspector(props: {
                       paddingHorizontal: 8,
                       paddingVertical: 4,
                       marginHorizontal: -8,
-                      borderRadius: 8,
+                      borderRadius: radius(8),
                       flexDirection: 'row',
                       alignItems: 'center',
                       gap: 8,
@@ -754,7 +647,7 @@ export function SessionInspector(props: {
                   paddingHorizontal: 8,
                   paddingVertical: 4,
                   marginHorizontal: -8,
-                  borderRadius: 8,
+                  borderRadius: radius(8),
                   flexDirection: 'row',
                   alignItems: 'center',
                 }}

@@ -1592,17 +1592,7 @@ pub(crate) fn frame(surface: &Rc<Surface>) -> bool {
         let readers = crate::shader::backdrop_areas(surface);
         with_backdrops(merged(rects), &pixel_rects(&readers, scale, size))
     });
-    let areas: Option<Vec<D2D_RECT_F>> = redraw.as_ref().map(|rects| {
-        rects
-            .iter()
-            .map(|r| D2D_RECT_F {
-                left: r.left as f32 / scale,
-                top: r.top as f32 / scale,
-                right: r.right as f32 / scale,
-                bottom: r.bottom as f32 / scale,
-            })
-            .collect()
-    });
+    let areas = redraw.as_deref().map(|rects| dip_rects(rects, scale));
     let fps = surface.fps();
     let started = fps.as_ref().map(|_| std::time::Instant::now());
     let drawn = draw_into(
@@ -1634,7 +1624,11 @@ pub(crate) fn frame(surface: &Rc<Surface>) -> bool {
                 return false;
             }
             if let (Some(fps), Some(painted)) = (&fps, painted) {
-                fps.painted(painted, shown.elapsed());
+                fps.painted(
+                    painted,
+                    shown.elapsed(),
+                    drawn_share(redraw.as_deref(), size),
+                );
             }
             drop(swap);
             surface.items_placed(drawn.items, redraw.as_deref());
@@ -1655,6 +1649,35 @@ pub(crate) fn frame(surface: &Rc<Surface>) -> bool {
         }
     }
     false
+}
+
+/// The share of the window's `size` (pixels) a frame drew: 1 for a whole
+/// frame (`None`), else the area of its rectangles (merged; overlaps, if
+/// any, counted twice, at most the whole).
+/// Pixel rectangles in DIPs.
+fn dip_rects(rects: &[RECT], scale: f32) -> Vec<D2D_RECT_F> {
+    rects
+        .iter()
+        .map(|r| D2D_RECT_F {
+            left: r.left as f32 / scale,
+            top: r.top as f32 / scale,
+            right: r.right as f32 / scale,
+            bottom: r.bottom as f32 / scale,
+        })
+        .collect()
+}
+
+fn drawn_share(redraw: Option<&[RECT]>, size: (u32, u32)) -> f32 {
+    let Some(rects) = redraw else { return 1.0 };
+    let window = f64::from(size.0) * f64::from(size.1);
+    if window <= 0.0 {
+        return 0.0;
+    }
+    let drawn: f64 = rects
+        .iter()
+        .map(|r| f64::from(r.right - r.left) * f64::from(r.bottom - r.top))
+        .sum();
+    (drawn / window).min(1.0) as f32
 }
 
 /// Clears `areas` (DIPs, on pixels) of the target to `background`, each
@@ -1828,7 +1851,7 @@ fn device_lost(surface: &Rc<Surface>) {
 }
 
 /// What a pass drew besides pixels.
-struct Drawn {
+pub(crate) struct Drawn {
     /// The hosted items drawn and their window rectangles.
     items: Vec<(Rc<dyn Hosted>, RECT)>,
     /// The composed items (web views) and where they go.
@@ -1860,9 +1883,11 @@ pub(crate) struct WindowFrame<'a> {
     /// The hosted items and the composed items its last frame drew.
     pub(crate) placed: &'a RefCell<Vec<(Rc<dyn Hosted>, RECT)>>,
     pub(crate) composed: &'a RefCell<Vec<Rc<dyn Hosted>>>,
+    /// What changed since its last frame.
+    pub(crate) damage: &'a crate::surface::Damage,
 }
 
-/// Draws a window of the app's own whole, then presents it: its web
+/// Draws what changed in a window of the app's own, then presents it: its web
 /// views between the layers of its composition, its hosted items' own
 /// windows placed where their views were drawn.
 ///
@@ -1880,6 +1905,7 @@ pub(crate) fn window_frame(surface: &Rc<Surface>, frame: WindowFrame<'_>) -> boo
         scale,
         placed,
         composed,
+        damage,
     } = frame;
     let Ok(gfx) = gfx::get() else { return false };
     if size.0 == 0 || size.1 == 0 {
@@ -1926,17 +1952,34 @@ pub(crate) fn window_frame(surface: &Rc<Surface>, frame: WindowFrame<'_>) -> boo
             return false;
         }
     };
+    // What changed, in pixels (`None`: everything), as the main window's
+    // ([`frame`]): a window with web views or backdrops draws whole.
+    let backdrops = base.is_some_and(Composition::has_backdrops);
+    let changed = damage
+        .take()
+        .filter(|_| composition.is_none() && !backdrops)
+        .map(|rects| merged(pixel_rects(&rects, scale, size)));
+    if changed.as_ref().is_some_and(Vec::is_empty) && chain.shows_a_frame() {
+        return false;
+    }
+    let changed = changed.filter(|rects| !rects.is_empty());
+    let redraw = chain.to_draw(changed.as_deref()).map(merged);
+    let areas = redraw.as_deref().map(|rects| dip_rects(rects, scale));
     let window = Some((root, size));
-    match draw_into(
+    let fps = surface.fps();
+    let started = fps.as_ref().map(|_| std::time::Instant::now());
+    let drawn = draw_into(
         surface,
         &gfx,
         &target,
         scale,
         false,
         composition,
-        None,
+        areas.as_deref(),
         window,
-    ) {
+    );
+    let painted = started.map(|s| s.elapsed());
+    match drawn {
         Ok(drawn) => {
             if let Some(c) = composition
                 && let Err(err) = c.present(drawn.layers.len())
@@ -1946,13 +1989,21 @@ pub(crate) fn window_frame(surface: &Rc<Surface>, frame: WindowFrame<'_>) -> boo
                 device_lost(surface);
                 return false;
             }
-            if let Err(err) = chain.present(None) {
+            let shown = std::time::Instant::now();
+            if let Err(err) = chain.present(changed) {
                 log::warn!("present failed: {err}");
                 *swap = None;
                 device_lost(surface);
                 return false;
             }
-            crate::surface::items_placed(placed, drawn.items, None);
+            if let (Some(fps), Some(painted)) = (&fps, painted) {
+                fps.painted(
+                    painted,
+                    shown.elapsed(),
+                    drawn_share(redraw.as_deref(), size),
+                );
+            }
+            crate::surface::items_placed(placed, drawn.items, redraw.as_deref());
             crate::surface::composed_placed(composed, composition, drawn.composed, &drawn.layers);
             if let Some(base) = base {
                 base.backdrops_placed(&drawn.backdrops);
@@ -1962,7 +2013,11 @@ pub(crate) fn window_frame(surface: &Rc<Surface>, frame: WindowFrame<'_>) -> boo
             *swap = None;
             device_lost(surface);
         }
-        Err(err) => log::error!("drawing a window failed: {err}"),
+        Err(err) => {
+            log::error!("drawing a window failed: {err}");
+            // The back buffer holds what is not known: drawn whole next.
+            damage.whole();
+        }
     }
     false
 }
@@ -1970,7 +2025,7 @@ pub(crate) fn window_frame(surface: &Rc<Surface>, frame: WindowFrame<'_>) -> boo
 /// Draws the tree into `target` (its DPI set for `scale`), and into the
 /// layers of `composition` above its web views.
 #[allow(clippy::too_many_arguments)]
-fn draw_into(
+pub(crate) fn draw_into(
     surface: &Rc<Surface>,
     gfx: &Gfx,
     target: &ID2D1Bitmap1,
@@ -2020,9 +2075,9 @@ fn draw_into(
     };
     cx.offscreen = offscreen;
     cx.opaque_target = opaque_target;
-    // A window of the app's own draws its root alone; where its views were
-    // painted is not the main window's.
-    cx.records = !offscreen && window.is_none();
+    // Views record where the window's frame painted them (a window of the
+    // app's own draws its root alone, whose views are its own).
+    cx.records = !offscreen;
     // A see-through window (it clears to transparent) shows the system's
     // blur under its backdrop views.
     if !offscreen && background.a <= 0.0 && crate::backdrop::supported() {

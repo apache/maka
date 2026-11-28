@@ -276,7 +276,7 @@ async fn model_reads_independent_bytes_of_a_rejected_tool_result() -> TestResult
         serde_json::to_value(result)?["source"]["text"],
         &expected[start..]
     );
-    let page = crate::service::history::read_page(&driver.owner, reader.scope(), serde_json::from_value(json!({
+    let page = crate::service::history::model_text_page(&driver.owner, reader.scope(), serde_json::from_value(json!({
         "sessionId":session,"through":cut.through_sequence,"position":{"kind":"row","position":position,"field":"body"}
     }))?).await?;
     assert!(
@@ -390,6 +390,51 @@ async fn child_result_text_uses_its_own_offset_in_the_recall_document() -> TestR
     Ok(())
 }
 
+async fn admit_external_history(
+    driver: &NativeDriver,
+    runtime: &str,
+) -> TestResult<maka_agent_state::DriverClaim> {
+    use maka_agent_facts::executor::{Selection, Settings};
+    let original = driver
+        .state
+        .frontier(driver.access.execution().run_id)
+        .await?;
+    let mut spec = original.spec;
+    let selection = Selection {
+        executor: "external".into(),
+        settings: Settings {
+            runtime: Some(runtime.into()),
+            ..Settings::default()
+        },
+    };
+    let descriptor = ContentBlob::json(&json!({
+        "selection":selection,"import":"fixture","member":0,"basis":"fixture"
+    }))?;
+    let mut contents = vec![descriptor.clone()];
+    for reference in [&spec.input, &spec.system_prompt, &spec.tool_selection] {
+        contents.push(ContentBlob::new(
+            driver
+                .state
+                .content(original.run, reference.clone())
+                .await?,
+        ));
+    }
+    spec.turn_id = Uuid::new_v4().to_string();
+    spec.trigger = Trigger::Message {
+        message_id: Uuid::new_v4().to_string(),
+    };
+    spec.backend = BackendSpec::Executor {
+        selection,
+        descriptor: descriptor.reference().clone(),
+    };
+    let admitted = driver
+        .state
+        .admit(Admission::new(spec, at(), contents))
+        .await?;
+    let run = admitted.facts[0].run;
+    Ok(driver.state.claim(run).await?)
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn external_return_keeps_the_name_of_its_original_call() -> TestResult<()> {
     use maka_agent_facts::external_effects::{
@@ -401,18 +446,15 @@ async fn external_return_keeps_the_name_of_its_original_call() -> TestResult<()>
             config["external"] = json!({"runtimes":{"codex":true}});
         })
         .await?;
-    rig.assemble_backend(
-        &session,
-        Budget {
-            tokens: None,
-            retries: 0,
-            deadline: None,
-        },
-        false,
-        true,
-    )
-    .await?;
+    rig.assemble(&session).await?;
     let driver = rig.driver.as_ref().unwrap();
+    let claim = admit_external_history(driver, "codex").await?;
+    let external = driver.state.frontier(claim.run()).await?;
+    let execution = ExecutionIdentity {
+        run_id: external.run,
+        session_id: session.clone(),
+        turn_id: external.spec.turn_id,
+    };
     let task = ExternalTaskId::new();
     let key = ExternalEffectKey {
         task,
@@ -433,7 +475,7 @@ async fn external_return_keeps_the_name_of_its_original_call() -> TestResult<()>
     let descriptor = ContentBlob::json(&ExternalEffectDescriptor {
         schema_version: SCHEMA_VERSION,
         protocol: "fixture".into(),
-        execution: driver.access.execution().clone(),
+        execution,
         key,
         origin: maka_agent_facts::tool_call::ToolOrigin::External {
             task,
@@ -460,7 +502,8 @@ async fn external_return_keeps_the_name_of_its_original_call() -> TestResult<()>
         settlement: ToolSettlement::Failed,
         diagnostic: "Monday is unavailable".into(),
     })?;
-    rig.append(
+    rig.append_for(
+        &claim,
         vec![
             Fact::ExternalTaskPrepared {
                 task,
@@ -472,7 +515,8 @@ async fn external_return_keeps_the_name_of_its_original_call() -> TestResult<()>
         vec![task_descriptor],
     )
     .await?;
-    rig.append(
+    rig.append_for(
+        &claim,
         vec![
             Fact::ExternalEffect {
                 event: ExternalEffectEvent::Prepared {
@@ -491,7 +535,8 @@ async fn external_return_keeps_the_name_of_its_original_call() -> TestResult<()>
     )
     .await?;
     let written = rig
-        .append(
+        .append_for(
+            &claim,
             vec![
                 Fact::ExternalEffect {
                     event: ExternalEffectEvent::CleanupObserved {
@@ -516,7 +561,7 @@ async fn external_return_keeps_the_name_of_its_original_call() -> TestResult<()>
     let cut = history.capture().await?;
     let fact = written.facts.last().unwrap().id;
     let sequence = history
-        .fact_sequence(&cut, driver.access.execution().run_id, fact)
+        .fact_sequence(&cut, claim.run(), fact)
         .await?
         .ok_or("missing return")?;
     let position = wire::HistoryRowAddress::Live {
@@ -1407,6 +1452,12 @@ async fn ended_calls_with_unknown_results_reach_the_model_and_settle_the_run() {
             run,
             &serde_json::from_value(frozen["prompt"].clone())?,
             &serde_json::from_value::<Vec<_>>(frozen["promptChunks"].clone())?,
+            &frozen
+                .get("promptMedia")
+                .cloned()
+                .map(serde_json::from_value::<Vec<_>>)
+                .transpose()?
+                .unwrap_or_default(),
             &serde_json::from_value(frozen["layout"].clone())?,
             &CancellationToken::new(),
         )
@@ -1687,7 +1738,7 @@ async fn record_background_notice(
     Ok((
         background,
         background_result,
-        serde_json::to_string(&returned)?.len() + 1,
+        "local_child_returned\n".len(),
     ))
 }
 
@@ -1820,11 +1871,11 @@ async fn check_wait_archive(rig: &mut Rig) -> TestResult<()> {
         fact: caller.id,
         item_index: 0,
     };
+    let _ = event;
     let quote = "logical";
     let source = args["code"].as_str().ok_or("missing fixture source")?;
     let offset = source.find(quote).ok_or("missing fixture quote")?;
-    let start = serde_json::to_string(event)?.len() + 1 + offset;
-    suppress_history_quotes(rig, &session, &[(source_sequence, start, quote)]).await?;
+    suppress_history_quotes(rig, &session, &[(source_sequence, offset, quote)]).await?;
     let spans = history
         .read_restrictions(vec![caller_address.clone()])
         .await?;
@@ -2009,7 +2060,7 @@ async fn followup_pairs_tool_call_with_failure_observed_after_run_termination() 
                 let receipt_at = history.fact_sequence(&cut, run, fact.id).await?.ok_or("missing receipt")?;
                 let receipt_start = serde_json::to_string(reply)?.find(diagnostic).ok_or("missing diagnostic")?;
                 let child_at = history.fact_sequence(&cut, run, child_id).await?.ok_or("missing child")?;
-                let child_start = serde_json::to_string(&child)?.len() + "\nvalue\n".len();
+                let child_start = "write_file\nvalue\n".len();
                 let background_at = history.fact_sequence(&cut, run, background_result).await?.ok_or("missing background result")?;
                 suppress_history_quotes(&rig, &session, &[
                     (receipt_at, receipt_start, diagnostic),
@@ -3282,6 +3333,301 @@ async fn compact_cell_tool_result_reads_the_original_observation() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn compact_external_effect_shares_definition_and_preserves_cross_run_cell_reads() {
+    use maka_agent_facts::{
+        cells::{
+            CellChild, CellInterruption, CellReply, CellReplyState, LocalCellResult,
+            StoredCellReturn,
+        },
+        durable::{ExternalTaskId, SCHEMA_VERSION},
+        executor::{Binding, TaskDescriptor},
+        external_effects::{
+            ExternalEffectDescriptor, ExternalEffectEvent, ExternalEffectKey,
+            StoredExternalEffectDescriptor,
+        },
+        model::prompt_source::source::json as stream,
+        tool_call::{ToolCallIdentity, ToolOrigin, ToolSettlement},
+        tool_output::{DurableToolProjection, ToolSuccess},
+        tools::{ToolDefinition, ToolSemantics},
+    };
+    use maka_agent_state::{
+        Admission, Change, Head,
+        session_history::{snapshot::CaptureRequest, tool_result_source::ToolResultReader},
+    };
+    use maka_tools::{ToolCallContext, ToolCatalog};
+
+    let mut rig = Rig::new().unwrap();
+    let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(60), async {
+        let session = rig
+            .start_configured(None, |c| c["external"] = json!({"runtimes":{"codex":true}}))
+            .await?;
+        rig.assemble_backend(&session, Budget { tokens: None, retries: 0, deadline: None }, false, true).await?;
+        let driver = rig.driver.as_ref().unwrap();
+        let run_b = driver.access.execution().run_id;
+        let view_b = driver.state.frontier(run_b).await?;
+        let effects = driver.external_effects.get().ok_or("missing NativeExternalEffects")?.clone();
+        let history = driver.state.session_history(view_b.spec.owner.clone(), session.clone());
+        let resources = driver.owner.services.model_preparation_resources();
+        let source = Binding {
+            executor_id: "external".to_string().try_into()?,
+            package_id: "maka.agent".into(),
+            entry_id: "maka.agent".into(),
+            activation: "test".into(),
+        };
+        let task_desc = ContentBlob::json(&TaskDescriptor {
+            protocol: maka_agent_facts::executor::NATIVE_TASK_PROTOCOL.into(),
+            source: source.clone(),
+            payload: json!({}),
+        })?;
+
+        // Run A owns a Completed cell observation and an Interrupted cell with a Run-A-only child blob.
+        let mut run_a_spec = view_b.spec.clone();
+        run_a_spec.turn_id = "turn-run-a".into();
+        run_a_spec.trigger = maka_agent_facts::durable::Trigger::Message {
+            message_id: format!("run-a-msg-{}", Uuid::new_v4()),
+        };
+        let run_a_input = ContentBlob::json(&maka_agent_facts::input::RunInput::Message {
+            content: maka_agent_facts::input::MessageInput::from("run a cell host"),
+            request_fingerprint: None,
+            source_messages: vec![],
+        })?;
+        run_a_spec.input = run_a_input.reference().clone();
+        let run_a = driver.state.admit(Admission::new(run_a_spec, at(), vec![run_a_input])).await?.facts[0].run;
+        let claim_a = driver.state.claim(run_a).await?;
+        let task_a = ExternalTaskId::new();
+        let key_a_comp = ExternalEffectKey { task: task_a, operation: Uuid::new_v4() };
+        let key_a_intr = ExternalEffectKey { task: task_a, operation: Uuid::new_v4() };
+        let cell_completed = CellId::for_external(run_a, key_a_comp);
+        let cell_interrupted = CellId::for_external(run_a, key_a_intr);
+        let completed_obs = CellObservation::Completed {
+            cell_id: cell_completed,
+            content: vec![],
+            result: json!({"answer": "original completed evidence"}),
+        };
+        let completed_blob = ContentBlob::json(&completed_obs)?;
+        let run_a_only_child = ContentBlob::json(&ToolReturn {
+            schema_version: SCHEMA_VERSION,
+            body: StoredCellReturn::Inline(CellReturnedResult {
+                output: ToolOutput::Json(json!({"secret": "run-a-only-child-evidence"})),
+                projection: Some(DurableToolProjection::Text { text: "run-a-only-child-evidence".into() }),
+                is_error: false,
+            }),
+            artifacts: vec![],
+        })?;
+        let child_op = Uuid::new_v4();
+        let child_input = ContentBlob::json(&json!({}))?;
+        let interrupted_report_blob = ContentBlob::json(&CellInterruption {
+            cell: cell_interrupted,
+            diagnostic: "cancelled during child wait".into(),
+            children: std::collections::BTreeMap::from([(
+                child_op,
+                CellChild {
+                    name: "child_tool".into(),
+                    display: None,
+                    semantics: ToolSemantics::Parallel,
+                    input: child_input.reference().clone(),
+                    resources: vec![],
+                    reference: None,
+                    reply: None,
+                    local_result: Some(LocalCellResult {
+                        result: run_a_only_child.reference().clone(),
+                        is_error: false,
+                        settlement: ToolSettlement::Returned,
+                    }),
+                    provider_result: None,
+                    approvals: Default::default(),
+                    admitted: true,
+                    rejected: None,
+                },
+            )]),
+            prior_output: None,
+        })?;
+        let mut exec_a = driver.access.execution().clone();
+        exec_a.run_id = run_a;
+        let run_a_desc = |key: ExternalEffectKey| -> TestResult<ContentBlob> {
+            Ok(ContentBlob::json(&ExternalEffectDescriptor {
+                schema_version: SCHEMA_VERSION,
+                protocol: "maka.external-host-effect.v1".into(),
+                execution: exec_a.clone(),
+                key,
+                origin: ToolOrigin::External {
+                    task: task_a,
+                    operation: key.operation,
+                    package_id: source.package_id.clone(),
+                    entry_id: source.entry_id.clone(),
+                    activation: source.activation.clone(),
+                },
+                operation_id: format!("external:{task_a}:{}", key.operation),
+                name: "exec".into(),
+                input: json!({}),
+                definition: ToolDefinition {
+                    name: "exec".into(),
+                    description: "run a exec".into(),
+                    input_schema: json!({"type": "object"}),
+                    provider: None,
+                    freeform: None,
+                    output_schema: None,
+                },
+                catalog_digest: format!("sha256:{}", "2".repeat(64)),
+                resources: vec![],
+            })?)
+        };
+        let (desc_a_comp, desc_a_intr) = (run_a_desc(key_a_comp)?, run_a_desc(key_a_intr)?);
+        let cell_source = ContentBlob::new(b"text('cell');".to_vec());
+        let vm_desc = ContentBlob::json(&json!({"vm": "run-a"}))?;
+        let head_a = driver.state.frontier(run_a).await?;
+        let head_a = driver.state.append(&claim_a, Head::from(&head_a), vec![
+            Change::new(Fact::ExternalTaskPrepared { task: task_a, descriptor: task_desc.reference().clone(), live_workspace: true }, at()),
+            Change::new(Fact::ExternalTaskAdmitted { task: task_a }, at()),
+        ], vec![task_desc.clone()]).await?.head;
+        let head_a = driver.state.append(&claim_a, head_a, vec![
+            Change::new(Fact::ExternalEffect { event: ExternalEffectEvent::Prepared { key: key_a_comp, descriptor: desc_a_comp.reference().clone() } }, at()),
+            Change::new(Fact::ExternalEffect { event: ExternalEffectEvent::Admitted { key: key_a_comp, approval: None } }, at()),
+            Change::new(Fact::ExternalEffect { event: ExternalEffectEvent::Prepared { key: key_a_intr, descriptor: desc_a_intr.reference().clone() } }, at()),
+            Change::new(Fact::ExternalEffect { event: ExternalEffectEvent::Admitted { key: key_a_intr, approval: None } }, at()),
+        ], vec![desc_a_comp, desc_a_intr]).await?.head;
+        let head_a = driver.state.append(&claim_a, head_a, vec![
+            Change { id: cell_completed.started_fact_id(), fact: Fact::Cell { event: CellEvent::Started { cell: cell_completed, owner: CellOwner::External { run: run_a, key: key_a_comp }, source: cell_source.reference().clone() } }, at: at() },
+            Change::new(Fact::Cell { event: CellEvent::VmBound { cell: cell_completed, binding: CellVmBinding { runtime: "v8".into(), version: 1, descriptor: vm_desc.reference().clone() } } }, at()),
+            Change::new(Fact::Cell { event: CellEvent::Completed { cell: cell_completed, result: completed_blob.reference().clone(), publication: SessionPublication { values: Default::default(), loaded_tools: None } } }, at()),
+        ], vec![cell_source.clone(), vm_desc, completed_blob.clone()]).await?.head;
+        driver.state.append(&claim_a, head_a, vec![
+            Change { id: cell_interrupted.started_fact_id(), fact: Fact::Cell { event: CellEvent::Started { cell: cell_interrupted, owner: CellOwner::External { run: run_a, key: key_a_intr }, source: cell_source.reference().clone() } }, at: at() },
+            Change::new(Fact::Cell { event: CellEvent::ChildPrepared { cell: cell_interrupted, operation: child_op, name: "child_tool".into(), input: child_input.reference().clone(), resources: vec![], semantics: ToolSemantics::Parallel } }, at()),
+            Change::new(Fact::Cell { event: CellEvent::ChildAdmitted { cell: cell_interrupted, operation: child_op } }, at()),
+            Change::new(Fact::Cell { event: CellEvent::LocalChildReturned { cell: cell_interrupted, operation: child_op, result: run_a_only_child.reference().clone(), is_error: false, settlement: ToolSettlement::Returned } }, at()),
+            Change::new(Fact::Cell { event: CellEvent::Interrupted { cell: cell_interrupted, report: interrupted_report_blob.reference().clone() } }, at()),
+        ], vec![cell_source, child_input, run_a_only_child.clone(), interrupted_report_blob.clone()]).await?;
+        assert!(driver.state.content(run_b, run_a_only_child.reference().clone()).await.is_err());
+
+        // Run B prepares two external calls through production prepare_descriptor() with a shared ToolDefinition.
+        let task = ExternalTaskId::new();
+        rig.append(vec![
+            Fact::ExternalTaskPrepared { task, descriptor: task_desc.reference().clone(), live_workspace: true },
+            Fact::ExternalTaskAdmitted { task },
+        ], vec![task_desc]).await?;
+        let definition = ToolDefinition {
+            name: "wait".into(),
+            description: "Unique tool definition marker for dedup check".into(),
+            input_schema: json!({"type": "object"}),
+            provider: None,
+            freeform: None,
+            output_schema: None,
+        };
+        let catalog = ToolCatalog::new(std::iter::empty())?;
+        let cancel = CancellationToken::new();
+        let make_ctx = |key: ExternalEffectKey| ToolCallContext {
+            execution: driver.access.execution().clone(),
+            operation_id: format!("external:{task}:{}", key.operation),
+            call: ToolCallIdentity {
+                tool_call_id: key.operation.to_string(),
+                origin: ToolOrigin::External {
+                    task,
+                    operation: key.operation,
+                    package_id: source.package_id.clone(),
+                    entry_id: source.entry_id.clone(),
+                    activation: source.activation.clone(),
+                },
+            },
+            custody: Some(driver.access.custody().clone()),
+        };
+        let key_completed = ExternalEffectKey { task, operation: Uuid::new_v4() };
+        let key_interrupted = ExternalEffectKey { task, operation: Uuid::new_v4() };
+        let desc_completed_ref = effects.prepare_descriptor(&make_ctx(key_completed), key_completed, &catalog, definition.clone(), json!({"cell_id": cell_completed}), &cancel).await?;
+        let desc_interrupted_ref = effects.prepare_descriptor(&make_ctx(key_interrupted), key_interrupted, &catalog, definition.clone(), json!({"cell_id": cell_interrupted}), &cancel).await?;
+        rig.append(vec![
+            Fact::ExternalEffect { event: ExternalEffectEvent::Admitted { key: key_completed, approval: None } },
+            Fact::ExternalEffect { event: ExternalEffectEvent::Admitted { key: key_interrupted, approval: None } },
+        ], vec![]).await?;
+
+        // Both descriptors omit inline definitions, share one definitionRef digest, and resolve identically.
+        let mut def_refs = Vec::new();
+        for (key, desc_ref) in [(key_completed, &desc_completed_ref), (key_interrupted, &desc_interrupted_ref)] {
+            let raw = driver.state.content(run_b, desc_ref.clone()).await?;
+            assert!(!String::from_utf8(raw.clone())?.contains("Unique tool definition marker"));
+            let stored: StoredExternalEffectDescriptor = serde_json::from_slice(&raw)?;
+            def_refs.push(stored.definition.content_ref().cloned().ok_or("expected definitionRef")?);
+            assert_eq!(driver.state.external_effect_descriptor(run_b, key).await?.definition, definition);
+        }
+        assert_eq!(def_refs[0], def_refs[1]);
+
+        // Settle both via production NativeExternalEffects::settle().
+        let completed_inline = serde_json::to_value(&completed_obs)?;
+        let expected_proj = maka_agent_facts::tool_output::completed_cell_text_projection(&completed_obs)
+            .ok_or("completed cell text projection")?;
+        let settled = effects.settle(
+            key_completed,
+            "wait",
+            Ok(ToolSuccess::projected(
+                ToolOutput::Cell(Box::new(CellReply {
+                    cell: cell_completed,
+                    state: CellReplyState::Completed { result: completed_blob.reference().clone() },
+                    observation: completed_inline.clone(),
+                })),
+                DurableToolProjection::Text { text: expected_proj.clone() },
+            )),
+            ToolSettlement::Failed,
+        ).await?;
+        assert!(matches!(&settled.output, ToolOutput::Cell(r) if r.observation == completed_inline));
+        effects.settle(
+            key_interrupted,
+            "wait",
+            Ok(ToolSuccess::projected(
+                ToolOutput::Cell(Box::new(CellReply {
+                    cell: cell_interrupted,
+                    state: CellReplyState::Interrupted { report: interrupted_report_blob.reference().clone() },
+                    observation: json!({
+                        "state": "interrupted",
+                        "cell_id": cell_interrupted,
+                        "report": { "diagnostic": "cancelled during child wait", "child": { "secret": "run-a-only-child-evidence" } }
+                    }),
+                })),
+                DurableToolProjection::Text { text: "Interrupted".into() },
+            )),
+            ToolSettlement::Failed,
+        ).await?;
+
+        let ret_completed_ref = driver.state.external_effect(run_b, key_completed).await?.and_then(|e| e.returned).ok_or("missing completed return")?;
+        let ret_interrupted_ref = driver.state.external_effect(run_b, key_interrupted).await?.and_then(|e| e.returned).ok_or("missing interrupted return")?;
+        let raw_completed_str = String::from_utf8(driver.state.content(run_b, ret_completed_ref.clone()).await?)?;
+        assert!(!raw_completed_str.contains("original completed evidence"));
+        let replayed = effects.read_return(key_completed, "wait", ret_completed_ref.clone()).await?;
+        assert!(matches!(&replayed.output, ToolOutput::Cell(r) if r.observation == completed_inline));
+        assert_eq!(replayed.projection, DurableToolProjection::Text { text: expected_proj });
+        assert!(driver.state.content(run_b, run_a_only_child.reference().clone()).await.is_err());
+
+        // Live reader, same-root snapshot, and fresh-root imported snapshot all reconstruct both returns.
+        let cut = history.capture().await?;
+        let frozen = history.capture_snapshot(CaptureRequest { id: SnapshotId::new(), cut: cut.clone() }, cancel.clone()).await?;
+        let (_dest_dir, _dest_root, imported) = transfer_snapshot(&frozen, view_b.spec.owner.clone(), &cancel).await?;
+        let ret_completed_fact = Fact::ExternalEffect { event: ExternalEffectEvent::Returned { key: key_completed, output: ret_completed_ref.clone(), finish_turn: false } };
+        let ret_interrupted_fact = Fact::ExternalEffect { event: ExternalEffectEvent::Returned { key: key_interrupted, output: ret_interrupted_ref.clone(), finish_turn: false } };
+        let budget = resources.acquire_work().await?.budget();
+        for reader in [
+            ToolResultReader::live(&history, &cut, run_b, &cancel),
+            ToolResultReader::snapshot(&frozen, run_b, &cancel),
+            ToolResultReader::snapshot(&imported, run_b, &cancel),
+        ] {
+            let v = reader.result(&ret_completed_fact, &ret_completed_ref, budget.clone()).await?.value(budget.clone()).await?;
+            let answer = stream::field(&v, &["observation", "result", "answer"], budget.clone()).await?.ok_or("missing answer")?;
+            assert!(stream::text_eq(&answer.text()?, "original completed evidence", budget.clone()).await?);
+            let v = reader.result(&ret_interrupted_fact, &ret_interrupted_ref, budget.clone()).await?.value(budget.clone()).await?;
+            let secret = stream::field(&v, &["observation", "report", "child", "secret"], budget.clone()).await?.ok_or("missing child secret")?;
+            assert!(stream::text_eq(&secret.text()?, "run-a-only-child-evidence", budget.clone()).await?);
+        }
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
+    }))
+    .catch_unwind()
+    .await;
+    let cleanup = rig.finish().await;
+    assert!(
+        matches!(&result, Ok(Ok(Ok(())))),
+        "External effect compaction regression: {result:?}"
+    );
+    assert!(cleanup.is_empty(), "fixture cleanup: {cleanup:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn shared_operation_receipt_survives_snapshot_transfer() {
     use maka_agent_facts::{
         model::prompt_source::source::json as stream, tool_output::DurableToolProjection,
@@ -3832,26 +4178,31 @@ async fn shared_cell_child_receipt_survives_snapshot_transfer() {
         .ok_or("missing original interruption payload")?;
         assert!(stream::text_eq(&restored.text()?, &payload, budget).await?);
         let tree = SourceTree::snapshot(&snapshot).await?;
-        let found = tree
-            .find_page(
-                SourceFind {
-                    after: None,
-                    query: "shared child evidence".into(),
-                    case_sensitive: true,
-                    whole_word: false,
-                    include_internal: true,
-                    mask_evidence: false,
-                },
-                stop,
-            )
-            .await?;
+        let query = |mask_evidence| SourceFind {
+            after: None,
+            query: "shared child evidence".into(),
+            case_sensitive: true,
+            whole_word: false,
+            include_internal: true,
+            mask_evidence,
+        };
+        let masked = tree.find_page(query(true), stop.clone()).await?;
+        assert_eq!(
+            masked.matches.len(),
+            0,
+            "model search exposed the transferred child receipt"
+        );
+        let found = tree.find_page(query(false), stop).await?;
+        // v60 compact snapshot parity: ref-backed ChildObserved strips duplicate payload
+        // bytes (matching live Recall), leaving OperationObserved's Field::Receipt plus
+        // ChildResultRecorded's Field::Result.
         assert_eq!(
             found
                 .matches
                 .iter()
                 .filter(|entry| entry.field == Field::Receipt)
                 .count(),
-            2
+            1
         );
         assert!(
             found
@@ -3874,52 +4225,17 @@ async fn shared_cell_child_receipt_survives_snapshot_transfer() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn executor_history_keeps_message_boundaries_and_tool_results() {
-    use maka_agent_facts::executor::{Output, Selection, Settings, ToolResultDetails, TurnUsage};
+    use maka_agent_facts::executor::{Output, ToolResultDetails, TurnUsage};
     let mut rig = Rig::new().unwrap();
     let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(60), async {
         let session = rig.start().await?;
         rig.assemble(&session).await?;
         let driver = rig.driver.as_ref().unwrap();
-        let original = driver
-            .state
-            .frontier(driver.access.execution().run_id)
-            .await?;
-        let mut spec = original.spec.clone();
-        let selection = Selection {
-            executor: "external".into(),
-            settings: Settings {
-                runtime: Some("antigravity".into()),
-                ..Settings::default()
-            },
-        };
-        let descriptor = ContentBlob::json(&json!({
-            "selection":selection,"import":"fixture","member":0,"basis":"fixture"
-        }))?;
-        let mut contents = vec![descriptor.clone()];
-        for reference in [&spec.input, &spec.system_prompt, &spec.tool_selection] {
-            contents.push(ContentBlob::new(
-                driver
-                    .state
-                    .content(original.run, reference.clone())
-                    .await?,
-            ));
-        }
-        spec.turn_id = Uuid::new_v4().to_string();
-        spec.trigger = Trigger::Message {
-            message_id: Uuid::new_v4().to_string(),
-        };
-        spec.backend = BackendSpec::Executor {
-            selection,
-            descriptor: descriptor.reference().clone(),
-        };
-        let admitted = driver
-            .state
-            .admit(Admission::new(spec, at(), contents))
-            .await?;
-        let run = admitted.facts[0].run;
-        let claim = driver.state.claim(run).await?;
+        let claim = admit_external_history(driver, "antigravity").await?;
+        let run = claim.run();
         let task = ExternalTaskId::new();
         let view = driver.state.frontier(run).await?;
+        let BackendSpec::Executor { descriptor, .. } = &view.spec.backend else { unreachable!() };
         let message_id = "native-reply".to_owned();
         let outputs = [
             Output::MessageStart {
@@ -3988,7 +4304,7 @@ async fn executor_history_keeps_message_boundaries_and_tool_results() {
             [
                 Fact::ExternalTaskPrepared {
                     task,
-                    descriptor: descriptor.reference().clone(),
+                    descriptor: descriptor.clone(),
                     live_workspace: true,
                 },
                 Fact::ExternalTaskAdmitted { task },
@@ -4180,7 +4496,7 @@ async fn executor_history_keeps_message_boundaries_and_tool_results() {
             return Err("missing executor answer".into());
         };
         suppress_history_quotes(&rig, &session, &[(answer_sequence, 0, "Written")]).await?;
-        let history = driver.state.session_history(original.spec.owner.clone(), session.clone());
+        let history = driver.state.session_history(driver.owner.run_owner(), session.clone());
         let cut = history.capture().await?;
         let input = "native wait original read failure";
         let prompt_sequence = page["chunks"].as_array().unwrap().iter()
@@ -4189,7 +4505,7 @@ async fn executor_history_keeps_message_boundaries_and_tool_results() {
         suppress_history_quotes(&rig, &session, &[(prompt_sequence, 0, "native wait")]).await?;
         let mut transcript = Vec::new();
         crate::service::history::readable_context_into(
-            &history, &cut, Some(original.run), &mut transcript, &CancellationToken::new()
+            &history, &cut, Some(driver.access.execution().run_id), &mut transcript, &CancellationToken::new()
         ).await?;
         let transcript = String::from_utf8(transcript)?;
         assert!(transcript.contains(input), "{transcript}");
@@ -4257,7 +4573,7 @@ async fn executor_history_keeps_message_boundaries_and_tool_results() {
                 && hit.preview.contains("tmp_test_fi") && !hit.preview.contains("Written")));
         }
         let start_row = &displayed[0].call.as_ref().unwrap().position;
-        let text_page = crate::service::history::read_page(
+        let text_page = crate::service::history::model_text_page(
             &driver.owner, reader.scope(),
             serde_json::from_value(json!({"sessionId":session,"through":page["through"],
                 "position":{"kind":"row","position":start_row,"field":"body"}}))?
@@ -5141,7 +5457,7 @@ async fn stale_snapshot_indexes_rebuild_without_skipping_pages_or_aborting_sibli
             poison(snap_peer.id(), None, Some(1), true, false).await?;
             let snap_source = HistoryDataSource::Snapshot(snap_peer.clone());
             let recall = RecallStore::new(writer.clone(), run_owner.clone(), owner.prefix.clone())?;
-            let query = SearchQuery { terms: vec!["Forked".into()], session_id: None, since: None, until: None, exclude: None, limit: None };
+            let query = SearchQuery { terms: vec!["Forked".into()], session_id: None, since: None, until: None, exclude: None, limit: None, transcript_only: false };
             let (r_m, r_c, r_cal, r_tr, r_f, r_l, r_t, r_r) = tokio::join!(
                 peer_history.metrics(&peer_cut, None),
                 peer_history.current_model_context(&peer_cut, None),
@@ -5279,4 +5595,804 @@ async fn stale_snapshot_indexes_rebuild_without_skipping_pages_or_aborting_sibli
     assert!(matches!(&result, Ok(Ok(Ok(())))), "{result:?}");
     assert!(cleanup.is_empty(), "{cleanup:?}");
     Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn recall_jump_anchors_verify_for_executor_deltas_and_hidden_facts() {
+    use maka_agent_facts::cells::{CellEvent, CellId};
+    use maka_agent_facts::executor::{Output, Selection, Settings};
+    let mut rig = Rig::new().unwrap();
+    let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(60), async {
+        let session = rig.start().await?;
+        rig.assemble(&session).await?;
+        let driver = rig.driver.as_ref().unwrap();
+
+        // 1. External executor turn with multi-chunk OutputDelta interleaved with thinking/tools.
+        let original = driver
+            .state
+            .frontier(driver.access.execution().run_id)
+            .await?;
+        let mut spec = original.spec.clone();
+        let selection = Selection {
+            executor: "external".into(),
+            settings: Settings {
+                runtime: Some("antigravity".into()),
+                ..Settings::default()
+            },
+        };
+        let descriptor = ContentBlob::json(&json!({
+            "selection": selection, "import": "fixture", "member": 0, "basis": "fixture"
+        }))?;
+        let mut contents = vec![descriptor.clone()];
+        for reference in [&spec.input, &spec.system_prompt, &spec.tool_selection] {
+            contents.push(ContentBlob::new(
+                driver
+                    .state
+                    .content(original.run, reference.clone())
+                    .await?,
+            ));
+        }
+        spec.turn_id = Uuid::new_v4().to_string();
+        spec.trigger = Trigger::Message {
+            message_id: Uuid::new_v4().to_string(),
+        };
+        spec.backend = BackendSpec::Executor {
+            selection,
+            descriptor: descriptor.reference().clone(),
+        };
+        let admitted = driver
+            .state
+            .admit(Admission::new(spec, at(), contents))
+            .await?;
+        let exec_run = admitted.facts[0].run;
+        let exec_claim = driver.state.claim(exec_run).await?;
+        let task = ExternalTaskId::new();
+        let exec_view = driver.state.frontier(exec_run).await?;
+        let message_id = "ext-reply-1".to_owned();
+        let outputs = [
+            Output::ThinkingDelta {
+                message_id: "ext-think-1".into(),
+                text: "internal reasoning".into(),
+            },
+            Output::MessageStart {
+                message_id: message_id.clone(),
+            },
+            Output::OutputDelta {
+                message_id: message_id.clone(),
+                text: "OpeningGamma first delta ".into(),
+            },
+            Output::ToolStart {
+                tool_call_id: "sh-1".into(),
+                name: "run_command".into(),
+                input: json!({"CommandLine": "echo ok"}),
+            },
+            Output::ToolResult {
+                tool_call_id: "sh-1".into(),
+                text: "ok".into(),
+                is_error: false,
+                details: None,
+            },
+            Output::OutputDelta {
+                message_id: message_id.clone(),
+                text: "ContinuationDelta second chunk.".into(),
+            },
+            Output::MessageEnd {
+                message_id: message_id.clone(),
+            },
+        ];
+        let exec_facts: Vec<_> = [
+            Fact::ExternalTaskPrepared {
+                task,
+                descriptor: descriptor.reference().clone(),
+                live_workspace: true,
+            },
+            Fact::ExternalTaskAdmitted { task },
+        ]
+        .into_iter()
+        .chain(outputs.into_iter().enumerate().map(|(index, output)| {
+            Fact::ExternalTaskObserved {
+                task,
+                index: index as u64,
+                model_time_ms: None,
+                output,
+            }
+        }))
+        .map(|fact| Change::new(fact, at()))
+        .collect();
+        driver
+            .state
+            .append(&exec_claim, (&exec_view).into(), exec_facts, vec![])
+            .await?;
+
+        // 2. Native model turn with a visible ToolCall, a hidden CellEvent::Started whose
+        // higher term density beats the visible ToolCall unless filtered, and a hidden
+        // ModelInterrupted diagnostic.
+        let (_, attempt, _) = rig.record_model_request(Preparation::Initial).await?;
+        let padding = "x".repeat(400);
+        let (cell_tool, _) = rig
+            .tool(
+                attempt,
+                "exec",
+                "exec-call-1",
+                json!({
+                    "code": format!("const token = 'CellSharedNeedle'; // {padding}")
+                }),
+            )
+            .await?;
+        let driver = rig.driver.as_ref().unwrap();
+        let model_view = driver
+            .state
+            .frontier(driver.access.execution().run_id)
+            .await?;
+        let link = AgentStepLink {
+            run: model_view.run,
+            step: model_view.attempts[&attempt].step,
+            attempt,
+        };
+        let cell = CellId::for_agent(link, &cell_tool.call);
+        let cell_source = ContentBlob::new(
+            "CellSharedNeedle CellSharedNeedle CellSharedNeedle CellSharedNeedle"
+                .as_bytes()
+                .to_vec(),
+        );
+        driver
+            .state
+            .append(
+                driver.access.claim(),
+                (&model_view).into(),
+                vec![
+                    Change {
+                        id: cell.started_fact_id(),
+                        at: at(),
+                        fact: Fact::Cell {
+                            event: CellEvent::Started {
+                                cell,
+                                owner: CellOwner::Agent {
+                                    link,
+                                    call: cell_tool.call.clone(),
+                                },
+                                source: cell_source.reference().clone(),
+                            },
+                        },
+                    },
+                    Change::new(
+                        Fact::ModelInterrupted {
+                            attempt,
+                            diagnostic: "HiddenInterruptNeedle diagnostic".into(),
+                        },
+                        at(),
+                    ),
+                ],
+                vec![cell_source],
+            )
+            .await?;
+
+        let recall_page = |input: Value| async {
+            let request = driver
+                .owner
+                .services
+                .request(
+                    maka_capabilities::call::Identity::Native,
+                    CancellationToken::new(),
+                )?;
+            let page = driver
+                .owner
+                .recall
+                .query(serde_json::from_value(input)?, request.scope())
+                .await
+                .map_err(|error| format!("recall query failed: {error}"))?;
+            Ok::<Value, Box<dyn Error + Send + Sync>>(serde_json::to_value(page)?)
+        };
+
+        let verify_passage = |passage: Value| {
+            let rig = &rig;
+            let session = &session;
+            async move {
+                let page = query(
+                    rig,
+                    "history",
+                    json!({
+                        "sessionId": session,
+                        "through": passage["through"],
+                        "position": {
+                            "kind": "row",
+                            "position": passage["anchorPosition"],
+                            "field": "body",
+                        },
+                        "includeThinking": true,
+                        "view": "conversation",
+                    }),
+                )
+                .await?;
+                assert_eq!(page["kind"], "ready", "history page not ready: {page}");
+                let chunks = page["chunks"].as_array().ok_or("missing chunks")?;
+                let resolved = page.get("resolvedAnchor").filter(|value| !value.is_null());
+                assert!(
+                    chunks.iter().any(|chunk| {
+                        let matches_row = match resolved {
+                            Some(target) => chunk["position"] == *target,
+                            None => {
+                                chunk["messageId"] == passage["anchorMessageId"]
+                                    && chunk["position"] == passage["anchorPosition"]
+                            }
+                        };
+                        matches_row && chunk["field"] == "body" && chunk["offset"] == 0
+                    }),
+                    "Recall passage anchor could not be verified in history page.\npassage={passage}\npage={page}"
+                );
+                Ok::<Value, Box<dyn Error + Send + Sync>>(page)
+            }
+        };
+
+        let expected_exec_msg_id =
+            maka_agent_facts::executor::message_id(exec_run, task, &message_id);
+
+        // First OutputDelta match: History resolves the executor message on demand.
+        let first_page =
+            recall_page(json!({"terms": ["OpeningGamma"], "session_id": session})).await?;
+        let first_passage = &first_page["passages"].as_array().unwrap()[0];
+        let first_history = verify_passage(first_passage.clone()).await?;
+        assert_eq!(first_history["resolvedAnchor"], first_passage["anchorPosition"]);
+        assert_eq!(first_history["chunks"][0]["messageId"], expected_exec_msg_id);
+
+        // Second (continuation) OutputDelta match: Recall keeps the continuation excerpt,
+        // and History resolves the jump lazily onto the first delta's visible row.
+        let cont_page =
+            recall_page(json!({"terms": ["ContinuationDelta"], "session_id": session})).await?;
+        let cont_passage = &cont_page["passages"].as_array().unwrap()[0];
+        assert_ne!(
+            cont_passage["anchorPosition"],
+            first_passage["anchorPosition"],
+            "recall search should not eagerly rewrite continuation anchors"
+        );
+        assert!(
+            cont_passage["excerpt"]
+                .as_str()
+                .unwrap()
+                .contains("ContinuationDelta"),
+            "excerpt should still show matched continuation text: {cont_passage}"
+        );
+        let cont_history = verify_passage(cont_passage.clone()).await?;
+        assert_eq!(cont_history["resolvedAnchor"], first_passage["anchorPosition"]);
+        assert_eq!(cont_history["chunks"][0]["messageId"], expected_exec_msg_id);
+
+        // Verify the unfiltered search genuinely picks hidden CellEvent::Started first...
+        let store = maka_agent_state::recall::RecallStore::new(
+            driver.owner.store.data_writer()?,
+            driver.owner.recall.owner.clone(),
+            driver.owner.prefix.clone(),
+        )?;
+        let unfiltered_cell = store
+            .search(
+                maka_agent_state::recall::SearchQuery {
+                    terms: vec!["CellSharedNeedle".into()],
+                    session_id: Some(session.clone()),
+                    since: None,
+                    until: None,
+                    exclude: None,
+                    limit: None,
+                    transcript_only: false,
+                },
+                0,
+                0,
+                CancellationToken::new(),
+            )
+            .await?;
+        assert_eq!(unfiltered_cell.hits.len(), 1);
+        assert_eq!(
+            unfiltered_cell.hits[0].anchor.fact,
+            cell.started_fact_id(),
+            "fixture must ensure hidden CellEvent::Started wins without transcript filtering"
+        );
+
+        // ...while UI recall filters it out and returns the verifiable visible ToolCall.
+        let cell_page =
+            recall_page(json!({"terms": ["CellSharedNeedle"], "session_id": session})).await?;
+        let cell_passages = cell_page["passages"].as_array().unwrap();
+        assert_eq!(
+            cell_passages.len(),
+            1,
+            "expected visible tool call hit: {cell_page}"
+        );
+        assert_ne!(
+            cell_passages[0]["anchorPosition"]["fact"],
+            cell.started_fact_id().to_string()
+        );
+        verify_passage(cell_passages[0].clone()).await?;
+
+        // Hidden ModelInterrupted must be excluded cleanly (complete=true, no gaps)...
+        let intr_page =
+            recall_page(json!({"terms": ["HiddenInterruptNeedle"], "session_id": session})).await?;
+        assert_eq!(intr_page["complete"], true, "recall reported incomplete: {intr_page}");
+        assert!(
+            intr_page["gaps"].as_array().unwrap().is_empty(),
+            "recall reported unexpected gaps: {intr_page}"
+        );
+        assert!(
+            intr_page["passages"].as_array().unwrap().is_empty(),
+            "hidden ModelInterrupted should not appear in UI recall: {intr_page}"
+        );
+
+        // ...while model-facing RecallStore search (transcript_only: false) still finds it.
+        let raw = store
+            .search(
+                maka_agent_state::recall::SearchQuery {
+                    terms: vec!["HiddenInterruptNeedle".into()],
+                    session_id: Some(session.clone()),
+                    since: None,
+                    until: None,
+                    exclude: None,
+                    limit: None,
+                    transcript_only: false,
+                },
+                0,
+                0,
+                CancellationToken::new(),
+            )
+            .await?;
+        assert_eq!(raw.hits.len(), 1);
+
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
+    }))
+    .catch_unwind()
+    .await;
+    let cleanup = rig.finish().await;
+    assert!(matches!(&result, Ok(Ok(Ok(())))), "{result:?}");
+    assert!(cleanup.is_empty(), "{cleanup:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn frozen_prompt_externalizes_and_deduplicates_media_with_tamper_guards() {
+    use maka_agent_engine::preparation;
+    use maka_agent_facts::model::prompt_source::source::{
+        ContentRecipe, MessageRecipe, SourceBytes, ToolOutputRecipe, json as prompt_json,
+    };
+    use maka_model::prompt::{ContentPart, FileData, Message, ToolOutput};
+
+    async fn read_all_bytes(
+        source: &SourceBytes,
+        budget: &Arc<dyn maka_agent_facts::model::prompt_source::source::SourceBudget>,
+    ) -> Result<Vec<u8>, Box<dyn Error + Send + Sync>> {
+        let mut cursor = source.open(budget.clone());
+        let mut buf = budget.allocate(32 * 1024).await?;
+        let mut out = Vec::new();
+        loop {
+            let read = cursor.read_chunk(buf).await?;
+            out.extend_from_slice(&read.buffer.as_ref()[..read.bytes_read]);
+            buf = read.buffer;
+            if read.eof {
+                break;
+            }
+        }
+        Ok(out)
+    }
+
+    let mut rig = Rig::new().unwrap();
+    let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(60), async {
+        let session = rig.start().await?;
+        rig.assemble(&session).await?;
+        let driver = rig.driver.as_ref().unwrap();
+        let owner = driver.owner.run_owner();
+        let run = driver.access.execution().run_id;
+        let resources = driver.owner.services.model_preparation_resources();
+        let io = || preparation::PreparationIo::new(&rig.lease.as_ref().unwrap().store());
+
+        // Two distinct 96 KiB incompressible synthetic payloads (equal length to test swap detection).
+        let image_a: Vec<u8> = (0..(96 * 1024))
+            .map(|i| ((i * 31 + 17) ^ (i >> 3)) as u8)
+            .collect();
+        let image_b: Vec<u8> = (0..(96 * 1024))
+            .map(|i| ((i * 53 + 99) ^ (i >> 5)) as u8)
+            .collect();
+        let expected_ref_a = ContentBlob::new(image_a.clone()).reference().clone();
+        let expected_ref_b = ContentBlob::new(image_b.clone()).reference().clone();
+        let b64_a = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &image_a);
+        let b64_b = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &image_b);
+
+        let build_prompt = |system_text: &str| {
+            let system_text = system_text.to_owned();
+            let b64_a = b64_a.clone();
+            let b64_b = b64_b.clone();
+            let resources = resources.clone();
+            let io_val = io().unwrap();
+            async move {
+                let mut builder =
+                    preparation::PromptBuilder::new(io_val, resources, &CancellationToken::new())
+                        .await?;
+                builder
+                    .append(Message::System {
+                        content: system_text,
+                        provider_options: None,
+                    })
+                    .await?;
+                builder
+                    .append(Message::User {
+                        content: vec![
+                            ContentPart::Text {
+                                text: "inspect screenshot A".into(),
+                                provider_options: None,
+                            },
+                            ContentPart::File {
+                                data: FileData::Data(b64_a.clone()),
+                                media_type: "image/png".into(),
+                                provider_options: Some(
+                                    json!({ "openai": { "imageDetail": "high" } }),
+                                ),
+                            },
+                        ],
+                        provider_options: None,
+                    })
+                    .await?;
+                builder
+                    .append(Message::tool(
+                        "call-img-1",
+                        "screenshot",
+                        ToolOutput::Content(vec![
+                            ContentPart::Text {
+                                text: "captured again".into(),
+                                provider_options: None,
+                            },
+                            ContentPart::File {
+                                data: FileData::Data(b64_a),
+                                media_type: "image/png".into(),
+                                provider_options: None,
+                            },
+                        ]),
+                    ))
+                    .await?;
+                builder
+                    .append(Message::User {
+                        content: vec![ContentPart::File {
+                            data: FileData::Data(b64_b),
+                            media_type: "image/webp".into(),
+                            provider_options: None,
+                        }],
+                        provider_options: None,
+                    })
+                    .await?;
+                builder.finish().await
+            }
+        };
+
+        // 1. Snapshot prompt with repeated image A (user + tool) and distinct image B.
+        let live_prompt = build_prompt("system-prefix-v1").await?;
+        let live_model = live_prompt.model();
+        let live_identity = live_model.identity().to_owned();
+        let snap1 = preparation::snapshot_prompt(
+            io()?,
+            resources.clone(),
+            &live_model,
+            &CancellationToken::new(),
+        )
+        .await?;
+        live_prompt.close().await?;
+        let (ref1, chunks1, media1, layout1, cleanup1) = snap1.into_parts();
+
+        assert_eq!(layout1.version, 3, "media-bearing prompt must use Layout v3");
+        assert_eq!(
+            media1.len(),
+            2,
+            "repeated image A must deduplicate into one media blob"
+        );
+        assert_eq!(media1[0].reference(), &expected_ref_a);
+        assert_eq!(media1[1].reference(), &expected_ref_b);
+        let total_chunk_bytes: u64 = chunks1.iter().map(|c| c.reference().bytes).sum();
+        assert!(
+            total_chunk_bytes < 8 * 1024,
+            "chunks must hold only compact refs, not base64 or raw images (got {total_chunk_bytes} bytes)"
+        );
+
+        // 2. Shifting an earlier system-prompt byte must keep media ContentRefs identical.
+        let shifted_prompt = build_prompt("system-prefix-v1-shifted-by-bytes").await?;
+        let shifted_model = shifted_prompt.model();
+        let snap2 = preparation::snapshot_prompt(
+            io()?,
+            resources.clone(),
+            &shifted_model,
+            &CancellationToken::new(),
+        )
+        .await?;
+        shifted_prompt.close().await?;
+        let (_ref2, chunks2, media2, layout2, cleanup2) = snap2.into_parts();
+        assert_eq!(layout2.version, 3);
+        assert_eq!(media2.len(), 2);
+        assert_eq!(media2[0].reference(), &expected_ref_a);
+        assert_eq!(media2[1].reference(), &expected_ref_b);
+        drop(chunks2);
+        drop(media2);
+        cleanup2.await?;
+
+        // Build a text-only Layout v3 snapshot so we can persist its chunks alongside snap1
+        // and verify paired legacy v2 restore (empty media OK vs non-empty media explicit error).
+        let mut text_builder =
+            preparation::PromptBuilder::new(io()?, resources.clone(), &CancellationToken::new())
+                .await?;
+        text_builder.append(Message::user("plain text only")).await?;
+        let text_prompt = text_builder.finish().await?;
+        let text_model = text_prompt.model();
+        let text_snap = preparation::snapshot_prompt(
+            io()?,
+            resources.clone(),
+            &text_model,
+            &CancellationToken::new(),
+        )
+        .await?;
+        text_prompt.close().await?;
+        let (t_ref, t_chunks, t_media, t_layout, t_cleanup) = text_snap.into_parts();
+        assert_eq!(
+            t_layout.version, 3,
+            "all new frozen prompt snapshots must emit Layout v3 uniformly"
+        );
+        assert!(t_media.is_empty());
+        let t_chunk_refs: Vec<_> = t_chunks.iter().map(|c| c.reference().clone()).collect();
+
+        // 3. Persist chunks + media into SQLite via StepPrepared request_contents and verify live restore.
+        let chunk_refs1: Vec<_> = chunks1.iter().map(|c| c.reference().clone()).collect();
+        let media_refs1: Vec<_> = media1.iter().map(|m| m.reference().clone()).collect();
+        let placeholder = ContentBlob::json(&json!({"kind": "media-test-placeholder"}))?;
+        let surface_blob = ContentBlob::json(&json!({"tools": [], "sources": []}))?;
+        let view = driver.state.frontier(run).await?;
+        let mut all_refs = chunk_refs1.clone();
+        all_refs.extend(media_refs1.clone());
+        all_refs.extend(t_chunk_refs.iter().cloned());
+        let step = StepId::new();
+        let step_spec = RequestSpec {
+            memory_replay: Default::default(),
+            schema_version: SCHEMA_VERSION,
+            step,
+            composition: RequestComposition {
+                surface: surface_blob.reference().clone(),
+                dynamic_context: Vec::new(),
+                tool_catalog_digest: "sha256:0000000000000000000000000000000000000000000000000000000000000000".into(),
+                provider_options: None,
+                max_output_tokens: Some(256),
+            },
+            accounting: maka_agent_facts::accounting::ModelEvidence {
+                binding: maka_agent_facts::execution::ModelBinding {
+                    connection_id: "test-conn".into(),
+                    connection_slug: "test".into(),
+                    model: "test-model".into(),
+                },
+                model_id: "test-model".into(),
+                purpose: ModelPurpose::Main,
+                quote: None,
+            },
+            summary_repair_of: None,
+            compaction_recovery: None,
+            source_capture: placeholder.reference().clone(),
+            source_digest: "sha256:0000000000000000000000000000000000000000000000000000000000000000".into(),
+            effective_source_digest: "sha256:0000000000000000000000000000000000000000000000000000000000000000".into(),
+            provenance: placeholder.reference().clone(),
+            tool_contracts: None,
+            projection: None,
+            adjudications: Vec::new(),
+            steering: Vec::new(),
+            request: placeholder.reference().clone(),
+            request_contents: all_refs,
+            recovery_contract: placeholder.reference().clone(),
+            protocol: "maka.test".into(),
+            protocol_version: 1,
+        };
+        let step_blob = ContentBlob::json(&step_spec)?;
+        let step_ref = step_blob.reference().clone();
+        let mut persist_blobs = vec![placeholder, surface_blob, step_blob];
+        persist_blobs.extend(chunks1);
+        persist_blobs.extend(media1);
+        persist_blobs.extend(t_chunks);
+        driver
+            .state
+            .append(
+                driver.access.claim(),
+                (&view).into(),
+                vec![Change::new(
+                    Fact::StepPrepared {
+                        step,
+                        request: step_ref,
+                        adjudications: Vec::new(),
+                    },
+                    at(),
+                )],
+                persist_blobs,
+            )
+            .await?;
+        cleanup1.await?;
+        t_cleanup.await?;
+
+        let history = driver.state.session_history(owner, session.clone());
+        let cut = history.capture().await?;
+        let restored = preparation::restore_prompt(
+            io()?,
+            resources.clone(),
+            &history,
+            &cut,
+            run,
+            &ref1,
+            &chunk_refs1,
+            &media_refs1,
+            &layout1,
+            &CancellationToken::new(),
+        )
+        .await?;
+        assert_eq!(
+            restored.model().identity(),
+            live_identity,
+            "restored Layout v3 prompt identity must match v2 inline prompt bit-for-bit"
+        );
+        let work = resources.acquire_work().await?;
+        let budget = work.budget();
+        let mut observed_media = Vec::new();
+        let mut messages = restored.recipes().ok_or("restored recipes missing")?.open(0);
+        while let Some(msg) = messages.next().await? {
+            match msg {
+                MessageRecipe::User { content, .. } => {
+                    let mut parts = content.open(0);
+                    while let Some(part) = parts.next().await? {
+                        if let ContentRecipe::Media { media, .. } = part {
+                            let bytes = read_all_bytes(&media.bytes, &budget).await?;
+                            let is_png =
+                                prompt_json::text_eq(&media.media_type, "image/png", budget.clone())
+                                    .await?;
+                            let is_high = match media.detail {
+                                Some(d) => prompt_json::text_eq(&d, "high", budget.clone()).await?,
+                                None => false,
+                            };
+                            observed_media.push(("user", bytes, is_png, is_high));
+                        }
+                    }
+                }
+                MessageRecipe::Tool { content, .. } => {
+                    let mut results = content.open(0);
+                    while let Some(res) = results.next().await? {
+                        if let ToolOutputRecipe::Content(parts_src) = res.output {
+                            let mut parts = parts_src.open(0);
+                            while let Some(part) = parts.next().await? {
+                                if let ContentRecipe::Media { media, .. } = part {
+                                    let bytes = read_all_bytes(&media.bytes, &budget).await?;
+                                    let is_png = prompt_json::text_eq(
+                                        &media.media_type,
+                                        "image/png",
+                                        budget.clone(),
+                                    )
+                                    .await?;
+                                    observed_media.push(("tool", bytes, is_png, false));
+                                }
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        drop((budget, work));
+        restored.close().await?;
+        assert_eq!(observed_media.len(), 3);
+        assert_eq!(observed_media[0].0, "user");
+        assert_eq!(observed_media[0].1, image_a);
+        assert!(observed_media[0].2 && observed_media[0].3);
+        assert_eq!(observed_media[1].0, "tool");
+        assert_eq!(observed_media[1].1, image_a);
+        assert!(observed_media[1].2);
+        assert_eq!(observed_media[2].0, "user");
+        assert_eq!(observed_media[2].1, image_b);
+        assert!(!observed_media[2].2);
+
+        // 4. Restore boundary guards must fail closed BEFORE returning PreparedPrompt.
+        // 4a. Swapped equal-length media refs fail at restore boundary.
+        let swapped = vec![media_refs1[1].clone(), media_refs1[0].clone()];
+        assert!(
+            preparation::restore_prompt(
+                io()?,
+                resources.clone(),
+                &history,
+                &cut,
+                run,
+                &ref1,
+                &chunk_refs1,
+                &swapped,
+                &layout1,
+                &CancellationToken::new(),
+            )
+            .await
+            .is_err(),
+            "swapped equal-length prompt_media refs must fail at restore boundary"
+        );
+
+        // 4b. Media-bearing v3 prompt with missing media fails at restore boundary.
+        assert!(
+            preparation::restore_prompt(
+                io()?,
+                resources.clone(),
+                &history,
+                &cut,
+                run,
+                &ref1,
+                &chunk_refs1,
+                &[],
+                &layout1,
+                &CancellationToken::new(),
+            )
+            .await
+            .is_err(),
+            "v3 prompt referencing external media must fail at restore boundary when media refs are missing"
+        );
+
+        // 4c. Extra unreferenced trailing pinned media ref fails at restore boundary.
+        let extra = vec![
+            media_refs1[0].clone(),
+            media_refs1[1].clone(),
+            media_refs1[0].clone(),
+        ];
+        assert!(
+            preparation::restore_prompt(
+                io()?,
+                resources.clone(),
+                &history,
+                &cut,
+                run,
+                &ref1,
+                &chunk_refs1,
+                &extra,
+                &layout1,
+                &CancellationToken::new(),
+            )
+            .await
+            .is_err(),
+            "v3 prompt with extra unreferenced media slot must fail at restore boundary"
+        );
+
+        // 4d. Legacy v2 paired assertions on persisted chunks: empty media restores cleanly,
+        //     non-empty media fails with the explicit legacy-v2 version error.
+        let mut legacy_v2_layout = t_layout.clone();
+        legacy_v2_layout.version = 2;
+        let restored_v2 = preparation::restore_prompt(
+            io()?,
+            resources.clone(),
+            &history,
+            &cut,
+            run,
+            &t_ref,
+            &t_chunk_refs,
+            &[],
+            &legacy_v2_layout,
+            &CancellationToken::new(),
+        )
+        .await?;
+        let mut v2_msgs = restored_v2.recipes().ok_or("v2 recipes missing")?.open(0);
+        let work = resources.acquire_work().await?;
+        let budget = work.budget();
+        let Some(MessageRecipe::User { content, .. }) = v2_msgs.next().await? else {
+            return Err("expected user message in restored v2 prompt".into());
+        };
+        let Some(ContentRecipe::Text { text, .. }) = content.open(0).next().await? else {
+            return Err("expected text part in restored v2 prompt".into());
+        };
+        assert!(prompt_json::text_eq(&text, "plain text only", budget).await?);
+        drop(work);
+        restored_v2.close().await?;
+
+        let bad_v2 = preparation::restore_prompt(
+            io()?,
+            resources.clone(),
+            &history,
+            &cut,
+            run,
+            &t_ref,
+            &t_chunk_refs,
+            &media_refs1,
+            &legacy_v2_layout,
+            &CancellationToken::new(),
+        )
+        .await;
+        let Err(maka_agent_engine::RunError::InvalidInput(msg)) = bad_v2 else {
+            return Err("expected InvalidInput for v2 layout with non-empty media".into());
+        };
+        assert!(msg.contains("legacy v2"), "unexpected error message: {msg}");
+
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
+    }))
+    .catch_unwind()
+    .await;
+    let cleanup = rig.finish().await;
+    assert!(matches!(&result, Ok(Ok(Ok(())))), "{result:?}");
+    assert!(cleanup.is_empty(), "{cleanup:?}");
 }

@@ -285,7 +285,7 @@ export function MermaidView(props: { source(): string; editable?: boolean }) {
       </If>
       <If when={sourceShown() || state().kind === 'error'}>{code()}</If>
       <If when={viewerImage()}>
-        <ImageViewer image={viewerImage()!} close={closeViewer} />
+        <ImageViewer images={[viewerImage()!]} close={closeViewer} />
       </If>
     </View>
   );

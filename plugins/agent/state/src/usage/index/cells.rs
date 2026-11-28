@@ -29,7 +29,7 @@ fn call(
     operation: Uuid,
 ) -> Result<String, StoreError> {
     let path = format!("$.children.\"{operation}\".name");
-    let (body,name):(String,String)=c.query_row("SELECT json_extract(body,'$.owner'),json_extract(body,?) FROM agent_cells WHERE cell=? AND session=?",params![path,cell.to_string(),position.session],|r|Ok((r.get(0)?,r.get(1)?)))?;
+    let (body,name):(String,String)=c.query_row("SELECT json_extract(doc,'$.owner'),json_extract(doc,?) FROM (SELECT jsonb(maka_content_text(body,body_encoding)) AS doc FROM agent_cells WHERE cell=? AND session=?)",params![path,cell.to_string(),position.session],|r|Ok((r.get(0)?,r.get(1)?)))?;
     let cell_owner: CellOwner = serde_json::from_str(&body)?;
     let binding = match &cell_owner {
         CellOwner::Agent { link, .. } => Some(evidence(c, link.run, link.attempt)?.1.binding),

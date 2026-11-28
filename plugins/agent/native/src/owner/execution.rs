@@ -250,9 +250,10 @@ impl Owner {
                 }),
             })
         };
+        let execution = self.execution_for_reader(&observed.view, scope).await?;
         Ok(Work::Delivered {
             shared,
-            execution: self.execution_for_reader(&observed.view, scope).await?,
+            execution,
             answer,
             pending_interactions,
         })

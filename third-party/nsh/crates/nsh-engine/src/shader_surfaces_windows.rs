@@ -155,6 +155,13 @@ pub(crate) struct Surfaces {
     fence: Option<Fence>,
 }
 
+// SAFETY: the handles are NT handles, valid in the whole process and usable
+// from any thread, and Direct3D 12's objects (the fence) are free-threaded;
+// a view's textures move to the render thread of its GPU views
+// (`crate::gpu`) whole, behind a mutex, and are used by one thread at a
+// time.
+unsafe impl Send for Surfaces {}
+
 /// No shared texture can be made: the device is not Direct3D 12's, or it
 /// refused one (the view reads its frames back then).
 #[derive(Debug)]

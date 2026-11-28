@@ -282,6 +282,16 @@ pub(crate) fn reloads(event: &NSEvent) -> bool {
 /// Shift+/ is `shift+/`), in lower case; on a layout that types no ASCII
 /// there, the US layout's character of the key, as menus match it.
 fn character(event: &NSEvent, shift: bool) -> Option<char> {
+    // A letter is the same key with Shift or without: the event's own
+    // letter, as without Shift. Applying no modifiers translates the key
+    // code again through the current layout, which for a key code from
+    // another layout (QWERTZ swaps Z and Y) is another letter.
+    if let Some(c) = event
+        .charactersIgnoringModifiers()
+        .and_then(|s| letter(&s.to_string()))
+    {
+        return Some(c);
+    }
     let typed = if shift {
         event.charactersByApplyingModifiers(NSEventModifierFlags::empty())
     } else {
@@ -291,6 +301,16 @@ fn character(event: &NSEvent, shift: bool) -> Option<char> {
         Some(c) if c.is_ascii_graphic() => Some(c.to_ascii_lowercase()),
         _ => crate::input::us_key(event.keyCode()),
     }
+}
+
+/// The letter, in lower case, that `typed` (an event's characters) starts
+/// with: none for any other character.
+fn letter(typed: &str) -> Option<char> {
+    typed
+        .chars()
+        .next()
+        .filter(char::is_ascii_alphabetic)
+        .map(|c| c.to_ascii_lowercase())
 }
 
 /// The virtual key codes of F1 to F20.
@@ -493,5 +513,20 @@ mod tests {
                 assert_eq!(match_at(false, 9), KeyMatch::Fire(1));
             }
         }
+    }
+
+    /// A key event's letter is its own, with Shift as without: not the
+    /// letter its key code types on the current layout (QWERTZ's Z is the
+    /// US layout's Y, #3245).
+    #[test]
+    fn a_letter_is_the_events_own_with_shift() {
+        assert_eq!(super::letter("Z"), Some('z'));
+        assert_eq!(super::letter("z"), Some('z'));
+        assert_eq!(super::letter("Y"), Some('y'));
+        // Not a letter: the key's character without Shift decides.
+        assert_eq!(super::letter("?"), None);
+        assert_eq!(super::letter("1"), None);
+        assert_eq!(super::letter("é"), None);
+        assert_eq!(super::letter(""), None);
     }
 }

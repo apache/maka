@@ -86,7 +86,11 @@ const distributionInputs = [
   'scripts/rust/migrations.lock.json',
   'scripts/install-nightly.sh',
 ];
-const bundledSkillInputs = ['skills/maka-generative-ui', 'skills/maka-plugin-authoring'];
+const bundledSkillInputs = [
+  'skills/maka-generative-ui',
+  'skills/maka-plugin-authoring',
+  'skills/maka-theme',
+];
 const skillInputs = [...bundledSkillInputs, 'platform/computer-use/skills'];
 const externalCodexFixture = 'products/maka/cli/tests/support/external_codex_cli.mjs';
 const externalAgentFixture = 'products/maka/terminal-shell/tests/support/external-agent-cli.mjs';
@@ -358,22 +362,35 @@ export const suites = {
   },
   'windows-desktop': {
     workspace: 'root',
-    packages: ['maka-desktop-shell', 'maka-workbench'],
+    packages: ['maka-desktop-shell', 'maka-workbench', 'maka-cli'],
     cargoArgs: [
       '--locked',
       '-p',
       'maka-desktop-shell',
       '-p',
       'maka-workbench',
+      '-p',
+      'maka-cli',
       '--lib',
       '--bin',
       'maka-desktop-shell',
+      '--bin',
+      'maka',
       '--test',
       'open_directly',
     ],
-    targetArgs: ['--lib', '--bin', 'maka-desktop-shell', '--test', 'open_directly'],
+    targetArgs: [
+      '--lib',
+      '--bin',
+      'maka-desktop-shell',
+      '--bin',
+      'maka',
+      '--test',
+      'open_directly',
+    ],
     filter:
-      'package(=maka-desktop-shell) | (package(=maka-workbench) & test(=bindings::quick_tools::windows_history::tests::isolated_windows_history_round_trip))',
+      '(binary_id(=maka-cli::bin/maka) & test(=windows::tests::desktop_releases_only_its_private_console)) | ' +
+      'package(=maka-desktop-shell) | (package(=maka-workbench) & (test(=bindings::quick_tools::windows_history::tests::isolated_windows_history_round_trip) | test(~bindings::quick_tools::start_menu::tests::)))',
     extraInputs: productInputs,
   },
   'windows-skills': {
@@ -417,8 +434,6 @@ export const suites = {
       ...distributionInputs,
       'scripts/rust/build-cli.mjs',
       'scripts/rust/build-cli.test.mjs',
-      'scripts/rust/pack-cli.mjs',
-      'scripts/rust/pack-cli.test.mjs',
       'scripts/rust/run-cli.mjs',
       'scripts/rust/run-cli.test.mjs',
     ],

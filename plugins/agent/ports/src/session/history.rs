@@ -715,6 +715,12 @@ pub enum Page {
         /// continuation deltas on the active group's tracked unfinished thinking row.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tail_thought: Option<Box<WorkThought>>,
+        /// Canonical visible transcript row resolved for an exact `Position::Row`
+        /// lookup when the source row is coalesced onto an earlier row (e.g. an
+        /// external executor `OutputDelta` continuation) or carries a projected
+        /// `message_id` distinct from its raw fact ID.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        resolved_anchor: Option<HistoryRowAddress>,
     },
 }
 

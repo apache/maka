@@ -5,7 +5,8 @@
 //!
 //! `fps 120/120 frame 1.21/1.10/2.40/3.90 gap 8.33/8.33/8.40/16.70 over 0%
 //! tick 0.10/… drain 0.20/… paint 1.00/… present 6.50/… canvas 0.10/…
-//! commits 20 js 0.30/… core 0.50/… items 42 engine 3% cpu 24% mem 92.4 MB`:
+//! commits 20 js 0.30/… core 0.50/… items 42 engine 3% cpu 24% mem 92.4 MB
+//! drawn 4% whole 0`:
 //! frames shown in the second over the display's rate, the main thread's
 //! time per shown frame (the ticker's work, batches applied and the tree
 //! drawn: presenting is not counted as work), the gaps
@@ -17,8 +18,9 @@
 //! `canvas` (the canvases' share of `paint`: recording and replaying their
 //! drawing, per frame that drew any); the engine's commits with their JS
 //! and core time, mount items per commit, the engine thread's busy share,
-//! the process' CPU (percent of one core) and working set (milliseconds as
-//! mean/p50/p95/max).
+//! the process' CPU (percent of one core) and working set, and how much of
+//! the window the frames drew: the mean share of its pixels per frame and
+//! how many frames drew it whole (milliseconds as mean/p50/p95/max).
 //!
 //! While it measures the ticker runs on every refresh (it closes the
 //! frames), as the macOS display link does.
@@ -60,6 +62,8 @@ struct Phases {
     paint: Vec<Duration>,
     present: Vec<Duration>,
     canvas: Vec<Duration>,
+    /// The share of the window each frame drew (1: all of it).
+    drawn: Vec<f32>,
 }
 
 /// The monitor of one surface.
@@ -90,13 +94,15 @@ impl Fps {
         }
     }
 
-    /// The window was drawn in `paint` and shown in `present`.
-    pub(crate) fn painted(&self, paint: Duration, present: Duration) {
+    /// The window was drawn in `paint` and shown in `present`; the frame
+    /// drew `drawn` of its pixels (1: a whole frame).
+    pub(crate) fn painted(&self, paint: Duration, present: Duration, drawn: f32) {
         self.monitor.record_work(paint, true);
         let canvas = CANVAS.take();
         let mut phases = self.phases.borrow_mut();
         phases.paint.push(paint);
         phases.present.push(present);
+        phases.drawn.push(drawn);
         if !canvas.is_zero() {
             phases.canvas.push(canvas);
         }
@@ -125,7 +131,8 @@ impl Fps {
             stat(&mut phases.present),
             stat(&mut phases.canvas),
         ];
-        log::info!(target: nsh_engine::perf::LOG_TARGET, "{}", line(&self.monitor.snapshot(), &stats));
+        let drawn = Drawn::of(&mut phases.drawn);
+        log::info!(target: nsh_engine::perf::LOG_TARGET, "{}", line(&self.monitor.snapshot(), &stats, drawn));
     }
 }
 
@@ -163,11 +170,11 @@ fn refresh_period() -> Duration {
 }
 
 /// One second's line (see the module documentation).
-fn line(s: &PerfSnapshot, phases: &[Stat; 5]) -> String {
+fn line(s: &PerfSnapshot, phases: &[Stat; 5], drawn: Drawn) -> String {
     let process = &s.process;
     format!(
         "fps {:.0}/{:.0} frame {} gap {} over {:.0}% tick {} drain {} paint {} present {} canvas {} \
-         commits {:.0} js {} core {} items {:.0} engine {:.0}% cpu {} mem {}",
+         commits {:.0} js {} core {} items {:.0} engine {:.0}% cpu {} mem {} drawn {:.0}% whole {}",
         s.fps,
         s.refresh_rate.unwrap_or(0.0),
         ms(&s.frame),
@@ -187,7 +194,32 @@ fn line(s: &PerfSnapshot, phases: &[Stat; 5]) -> String {
         process
             .memory
             .map_or("-".into(), |m| format!("{:.1} MB", m as f64 / 1e6)),
+        drawn.mean * 100.0,
+        drawn.whole,
     )
+}
+
+/// How much of the window the second's frames drew: the mean share per
+/// frame and how many were whole frames. A small change that makes whole
+/// frames (an effect or hosted item that widens the damage to everything)
+/// shows here before it shows as a GPU's load.
+#[derive(Clone, Copy, Default, Debug, PartialEq)]
+struct Drawn {
+    mean: f32,
+    whole: usize,
+}
+
+impl Drawn {
+    /// Of `shares` (one per frame), which it empties.
+    fn of(shares: &mut Vec<f32>) -> Drawn {
+        if shares.is_empty() {
+            return Drawn::default();
+        }
+        let mean = shares.iter().sum::<f32>() / shares.len() as f32;
+        let whole = shares.iter().filter(|&&s| s >= 1.0).count();
+        shares.clear();
+        Drawn { mean, whole }
+    }
 }
 
 /// The distribution of `samples`, which it empties.
@@ -216,4 +248,19 @@ fn ms(stat: &Stat) -> String {
         ms(stat.p95),
         ms(stat.max)
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Drawn;
+
+    #[test]
+    fn drawn_is_the_mean_share_and_the_whole_frames() {
+        let mut shares = vec![0.02, 1.0, 0.06, 1.0];
+        let drawn = Drawn::of(&mut shares);
+        assert!((drawn.mean - 0.52).abs() < 1e-6, "{drawn:?}");
+        assert_eq!(drawn.whole, 2);
+        assert!(shares.is_empty(), "the second's frames are taken");
+        assert_eq!(Drawn::of(&mut shares), Drawn::default());
+    }
 }

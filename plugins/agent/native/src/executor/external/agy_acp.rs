@@ -35,7 +35,6 @@ const HOST_SERVER: &str = "maka";
     reason = "one invocation owns the original process, protocol and Host bridge"
 )]
 pub(super) async fn execute(
-    fronts: &agy_front::Fronts,
     config: &NativeCommand,
     cwd: &str,
     request: &Value,
@@ -47,36 +46,63 @@ pub(super) async fn execute(
 ) -> Result<Outcome, Error> {
     let observation = journal.observation();
     let descriptor = owner.descriptor();
-    let mut owner = Some(owner);
-    let (lease, ticket) = match fronts.open(config, cwd, &mut owner).await {
-        Ok(lease) => {
-            let mut ticket = observation
-                .resources
-                .reserve()
-                .map_err(|_| Error::ObservationRetired)?;
-            ticket.start();
-            (lease, ticket)
-        }
-        Err(error) => {
-            if let Some(owner) = owner {
+    let (session, ticket) =
+        match agy_front::open(config, cwd, owner, &cancellation, &observation.retired).await {
+            Ok(session) => {
+                let mut ticket = observation
+                    .resources
+                    .reserve()
+                    .map_err(|_| Error::ObservationRetired)?;
+                ticket.start();
+                (session, ticket)
+            }
+            Err(agy_front::OpenError::BeforeLaunch(owner, error)) => {
                 let error = if cancellation.is_cancelled() {
                     Error::Cancelled
+                } else if observation.retired.is_cancelled() {
+                    Error::ObservationRetired
                 } else {
                     error
                 };
-                return runtime::fail_without_launch(&observation, owner, error).await;
+                return runtime::fail_without_launch(&observation, *owner, error).await;
             }
-            let mut ticket = observation
-                .resources
-                .reserve()
-                .map_err(|_| Error::ObservationRetired)?;
-            ticket.start();
-            ticket.unconfirmed(error.to_string(), descriptor);
-            return Err(error);
-        }
-    };
+            Err(agy_front::OpenError::Closed(error)) => {
+                let mut ticket = observation
+                    .resources
+                    .reserve()
+                    .map_err(|_| Error::ObservationRetired)?;
+                ticket.start();
+                ticket.complete(Ok(()));
+                observation
+                    .binding
+                    .cleanup(OperationCleanup::Confirmed)
+                    .await?;
+                return if cancellation.is_cancelled() {
+                    Err(Error::Cancelled)
+                } else if observation.retired.is_cancelled() {
+                    Err(Error::ObservationRetired)
+                } else {
+                    runtime::preparation_failure(error)
+                };
+            }
+            Err(agy_front::OpenError::Unconfirmed(error)) => {
+                let mut ticket = observation
+                    .resources
+                    .reserve()
+                    .map_err(|_| Error::ObservationRetired)?;
+                ticket.start();
+                ticket.unconfirmed(error.to_string(), descriptor);
+                return Err(Error::CleanupUnconfirmed);
+            }
+        };
+    let agy_front::Session {
+        stdin,
+        stdout,
+        child,
+    } = session;
     let mut io = Pipe::session(
-        lease.socket,
+        stdin,
+        stdout,
         observation.clone(),
         cancellation,
         bridge.failed.clone(),
@@ -99,9 +125,9 @@ pub(super) async fn execute(
         }
     };
     bridge.close_admission();
-    drop(io); // EOF asks the supervisor to close just this session.
+    drop(io); // EOF asks this Run's supervisor to close and reap its agy process tree.
     let (closed, bridge_closed) = tokio::join!(
-        agy_front::wait_for_close(&descriptor, lease.exited),
+        agy_front::wait_for_close(&descriptor, child),
         bridge.close()
     );
     bridge.clone().original_root_cleanup_signal().await;
@@ -206,6 +232,14 @@ impl Protocol<'_> {
         io: &mut Pipe,
     ) -> Result<(String, Vec<Value>, Option<String>, bool), Error> {
         let initialized = io.request("initialize", initialize_params()).await?;
+        if initialized["protocolVersion"] != 1
+            || initialized.pointer("/agentCapabilities/mcpCapabilities/http")
+                != Some(&Value::Bool(true))
+        {
+            return Err(Error::Invalid(
+                "agy must support ACP 1 with HTTP MCP".into(),
+            ));
+        }
         let system_prompt_append = supports_system_prompt_append(&initialized);
         let system_prompt = system_prompt_append
             .then(|| {
@@ -284,7 +318,7 @@ fn open_params(
     (method, params)
 }
 
-pub(super) fn initialize_params() -> Value {
+fn initialize_params() -> Value {
     json!({"protocolVersion":1,"clientCapabilities":{},"clientInfo":{
         "name":"maka","title":"Maka","version":env!("CARGO_PKG_VERSION")
     }})
@@ -510,6 +544,16 @@ impl Turn {
                 return Err(Error::Unknown);
             }
             let update = &params["update"];
+            if update["sessionUpdate"] == "plan"
+                && let Some(entries) = update["entries"].as_array()
+            {
+                output.current_plan_item(
+                    entries
+                        .iter()
+                        .find(|entry| entry["status"] == "in_progress")
+                        .and_then(|entry| entry["content"].as_str()),
+                );
+            }
             if update["sessionUpdate"] == "usage_update" {
                 if self.context
                     && let (Some(used), Some(window)) = (
@@ -751,6 +795,28 @@ mod tests {
         json!({"method":"session/update","params":{"sessionId":"session","update":update}})
     }
 
+    #[tokio::test]
+    async fn worker_progress_uses_acp_plan_and_active_tool() {
+        let (sink, rows) = crate::owner::worker_progress::tests::worker();
+        let mut turn = Turn::new("session".into(), 4, true);
+        for (event, expected) in [
+            (
+                json!({"sessionUpdate":"plan","entries":[{"status":"in_progress","content":"Run all tests","priority":"high"}]}),
+                "Run all tests",
+            ),
+            (
+                json!({"sessionUpdate":"tool_call","toolCallId":"cmd","name":"run_command","status":"in_progress","title":"cargo test","rawInput":{"CommandLine":"cargo test","toolSummary":"Test agent"}}),
+                "Test agent",
+            ),
+            (
+                json!({"sessionUpdate":"tool_call_update","toolCallId":"cmd","status":"completed"}),
+                "Run all tests",
+            ),
+        ] {
+            turn.event(update(event), sink.as_ref()).await.unwrap();
+            assert_eq!(rows.borrow()["child"].detail, expected);
+        }
+    }
     #[tokio::test]
     async fn replays_only_the_bound_prompt_with_the_same_activity_as_live() {
         let prior = update(json!({"sessionUpdate":"agent_message_chunk",

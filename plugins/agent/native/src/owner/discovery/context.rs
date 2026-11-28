@@ -571,6 +571,10 @@ mod tests {
             SessionCatalog::new(root.data_writer().unwrap(), owner, prefix.into()).unwrap();
         for (id, metadata) in [
             ("topic-chat", json!({"title":"Shipment timing"})),
+            (
+                "topic-pinned-child",
+                json!({"title":"Child","parentSessionId":"topic-chat","pinned":true}),
+            ),
             ("topic-bot", json!({"title":"Bot notebook"})),
             (
                 "topic-private",

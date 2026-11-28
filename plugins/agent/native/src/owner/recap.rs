@@ -118,15 +118,14 @@ impl Owner {
         // The full admitted identity, including namespace and immutable input, names this cache entry.
         let hash = Sha256::digest(serde_json::to_vec(operation).map_err(|e| e.to_string())?);
         let id = Uuid::from_bytes(hash[..16].try_into().expect("SHA-256 prefix"));
-        let recaps = self.recaps(
+        self.recaps(
             scope,
             input.session_id.clone(),
             Some((operation.clone(), dispatch, input.model)),
-        );
-        recaps
-            .generate(scope, &input.session_id, id, language)
-            .await
-            .map_err(|e| e.to_string())
+        )
+        .generate(scope, &input.session_id, id, language)
+        .await
+        .map_err(|e| e.to_string())
     }
 }
 impl recap::History for Backend {
@@ -141,7 +140,7 @@ impl recap::History for Backend {
                 return Err(failed("Recap session mismatch"));
             }
             self.owner.check_recap(&scope, &self.session).await?;
-            let page = crate::service::history::read_page(
+            let page = crate::service::history::model_text_page(
                 &self.owner,
                 &scope,
                 history::Read {

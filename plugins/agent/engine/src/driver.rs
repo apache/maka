@@ -2046,6 +2046,9 @@ impl Engine {
                     if retiring {
                         return Ok(());
                     }
+                    if let Some(Err(error @ RunError::FrozenMemoryDenied(_))) = other {
+                        return Err(error);
+                    }
                     let diagnostic=match other {Some(Err(error))=>error.to_string(),None=>"Original observation transport ended without an upstream completion receipt".into(),Some(Ok(_))=>unreachable!()};
                     if matches!(
                         view.attempts[&attempt].recovery,

@@ -393,7 +393,7 @@ fn sample_storage_xray(root: &Path) -> StorageXray {
             "SELECT 'non_receipt_contents', (SELECT count(*) FROM contents WHERE id NOT IN (SELECT outcome_content_id FROM application_operations WHERE outcome_content_id IS NOT NULL))".into(),
         );
         count_queries.push(
-            "SELECT 'request_spec_raw_bytes', (SELECT COALESCE(SUM(length(c.payload)), 0) FROM contents c WHERE c.id IN (SELECT content_id FROM agent_request_specs))".into(),
+            "SELECT 'request_spec_raw_bytes', (SELECT COALESCE(SUM(COALESCE(c.logical_bytes, length(c.payload))), 0) FROM contents c WHERE c.id IN (SELECT content_id FROM agent_request_specs))".into(),
         );
         let sql_counts = count_queries.join(" UNION ALL ");
         match std::process::Command::new("sqlite3")
@@ -2328,7 +2328,7 @@ async fn real_host_forever_running_o1_soak() {
             Some(db) => match sqlite_query_u64_checked(
                 db,
                 &format!(
-                    "SELECT count(*) FROM agent_session_history WHERE session='{escaped_immortal}' AND kind='context_compacted';"
+                    "SELECT count(*) FROM agent_session_history h JOIN agent_namespaces ns ON ns.id = h.namespace_id WHERE ns.session='{escaped_immortal}' AND h.kind='context_compacted';"
                 ),
             ) {
                 Ok(n) => n,

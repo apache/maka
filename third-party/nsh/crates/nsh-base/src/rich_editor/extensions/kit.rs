@@ -18,7 +18,10 @@ use serde_json::{Value, json};
 
 use super::{
     clear_document::clear_document,
-    code_block::{CodeBlockOptions, code_block_keymap, fence_language},
+    code_block::{
+        CODE_BLOCK_HIGHLIGHT, CodeBlockOptions, code_block_highlight_plugin, code_block_keymap,
+        fence_language,
+    },
     core_keymap::core_keymap as core_bindings,
     extension::{Extension, GlobalAttributes},
     helpers::{set_hard_break, update_attribute},
@@ -653,6 +656,15 @@ fn set_horizontal_rule(state: &EditorState, dispatch: Dispatch<'_>, ty: &NodeTyp
     true
 }
 
+/// `codeBlockHighlight` (like Tiptap's `CodeBlockLowlight`, but beside
+/// `codeBlock` rather than in its place): code blocks colored by their
+/// `language` with the highlighting `TextView`'s code blocks have, its
+/// syntaxes and palette. Part of [`starter_kit`]; `{ codeBlockHighlight:
+/// false }` leaves code plain. Needs feature `highlight`.
+pub fn code_block_highlight() -> Extension {
+    Extension::new(CODE_BLOCK_HIGHLIGHT).add_plugins(|_| vec![code_block_highlight_plugin()])
+}
+
 /// `codeBlock` with Tiptap's options (`exitOnTripleEnter`,
 /// `exitOnArrowDown`, `exitOnArrowUp`, `enableTabIndentation`, `tabSize`):
 /// its keys, fences; `setCodeBlock({ language })`, `toggleCodeBlock`.
@@ -1174,6 +1186,7 @@ pub fn starter_kit_extensions() -> Vec<(&'static str, Extension)> {
         ("horizontalRule", horizontal_rule()),
         ("heading", heading()),
         ("codeBlock", code_block()),
+        ("codeBlockHighlight", code_block_highlight()),
         ("text", text()),
         ("image", image()),
         ("hardBreak", hard_break()),

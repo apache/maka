@@ -52,6 +52,7 @@ import {
   disclosureTitleStyle,
 } from './ui';
 import { ToolImageStrip, type ImagePreview, type ToolImageRef } from './ToolImage';
+import type { HistoryTool } from '../../../../packages/plugin-sdk/src/index.js';
 import { LiveToolRow } from './ToolCard';
 import { toolActivitySummary, type ToolActivity } from './toolActivity';
 import { activityIcon, activityPresentation, activityTitle } from './toolActivityPresentation';
@@ -66,10 +67,11 @@ const panelStyle = {
   padding: 0,
   borderWidth: 0,
 };
-const groupHeaderHeight = Math.max(
-  controlStyle.minHeight,
-  captionTextStyle.lineHeight + 2 * controlStyle.paddingVertical,
-);
+const groupHeaderHeight = () =>
+  Math.max(
+    controlStyle().minHeight,
+    captionTextStyle.lineHeight + 2 * controlStyle().paddingVertical,
+  );
 const memberGap = platform.idiom === 'terminal' ? 6 : 0;
 const activityFollowThreshold = captionTextStyle.lineHeight;
 const activityEdgeFadeHeight = 14;
@@ -202,7 +204,7 @@ export function TurnSummary(props: {
     through: () => number;
     refs: () => ToolImageRef[];
     total?: () => number | undefined;
-    preview(image: ImagePreview): void;
+    all?(): Promise<HistoryTool[]>;
   };
 }) {
   const running = computed(() => {
@@ -298,7 +300,7 @@ export function TurnSummary(props: {
         foldable={props.canFold()}
         reserveChevron={false}
         mark={marked() ? thinkingMark : undefined}
-        terminalInset={controlStyle.paddingHorizontal}
+        terminalInset={controlStyle().paddingHorizontal}
         onPress={inputAction(choose, {
           turnKey: props.turn().turnKey,
           open: !props.expanded(),
@@ -326,7 +328,7 @@ export function TurnSummary(props: {
                 through={props.images!.through}
                 images={props.images!.refs}
                 total={props.images!.total}
-                preview={props.images!.preview}
+                all={props.images!.all}
               />
             </If>
           </View>
@@ -484,7 +486,7 @@ function ActivityLog(props: {
   // one-line row minimum; text length never acts as a layout authority.
   const bodyMaxHeight = () => {
     const chrome =
-      groupHeaderHeight +
+      groupHeaderHeight() +
       panelStyle.gap +
       panelStyle.marginTop +
       panelStyle.marginBottom +
@@ -504,7 +506,7 @@ function ActivityLog(props: {
       height +=
         row?.width === viewport.width
           ? row.height
-          : controlStyle.minHeight + (id === ids.at(-1) ? 0 : memberGap);
+          : controlStyle().minHeight + (id === ids.at(-1) ? 0 : memberGap);
       if (height >= maximum) return maximum;
     }
     return Math.min(maximum, Math.max(16, height));
@@ -538,7 +540,7 @@ function ActivityLog(props: {
             if (alive && lease === state.lease)
               state.visibleRows.set(new Set(event.viewableItems.map((item) => item.item)));
           }}
-          estimatedItemSize={controlStyle.minHeight + memberGap}
+          estimatedItemSize={controlStyle().minHeight + memberGap}
           scrollValue={state.offset}
           contentOffset={initial()!}
           maintainVisibleContentPosition={

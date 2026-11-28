@@ -52,7 +52,7 @@ export interface UsageLimitsHost {
   query(
     endpoint: 'agent',
     method: 'externalUsageLimits',
-    input: { runtime: AgentNativeRuntime },
+    input: { runtime: AgentNativeRuntime; refresh?: boolean },
   ): Promise<UsageResult>;
 }
 
@@ -85,10 +85,12 @@ type SharedEntry = {
     | { kind: 'external'; runtime: AgentNativeRuntime };
   subscribers: Set<(observation: UsageObservation | null) => void>;
   observation: UsageObservation | null;
+  observationRevision: number | null;
   cachedConnection: { basis: ConnectionVersionBasis; name: string } | null;
   lastKnownRevision: number | null;
   freshUntil: number;
   inFlight: boolean;
+  forceRefresh: boolean;
   generation: number;
   timer: ReturnType<typeof setTimeout> | undefined;
 };
@@ -132,12 +134,18 @@ async function resolveBasis(entry: SharedEntry, connectionId: string, generation
 async function queryEntry(
   entry: SharedEntry,
   generation: number,
-): Promise<{ result: UsageResult; sourceName?: string }> {
+): Promise<{ result: UsageResult; sourceName?: string; revision?: number }> {
   if (entry.target.kind === 'external') {
+    const refresh = entry.forceRefresh;
+    entry.forceRefresh = false;
     return {
-      result: await entry.host.query('agent', 'externalUsageLimits', {
-        runtime: entry.target.runtime,
-      }),
+      result: await entry.host.query(
+        'agent',
+        'externalUsageLimits',
+        refresh
+          ? { runtime: entry.target.runtime, refresh: true }
+          : { runtime: entry.target.runtime },
+      ),
       sourceName: EXTERNAL_USAGE_RUNTIME_NAMES[entry.target.runtime],
     };
   }
@@ -153,7 +161,9 @@ async function queryEntry(
 
   const first = await entry.host.query('settings', 'connectionUsageLimits', connection.basis);
   if (entry.generation !== generation) return { result: { kind: 'unavailable' } };
-  if (first.kind !== 'superseded') return { result: first, sourceName: connection.name };
+  if (first.kind !== 'superseded') {
+    return { result: first, sourceName: connection.name, revision: connection.basis.revision };
+  }
 
   entry.cachedConnection = null;
   let resolved: Awaited<ReturnType<typeof resolveBasis>>;
@@ -174,7 +184,7 @@ async function queryEntry(
   }
   if (entry.generation !== generation) return { result: { kind: 'unavailable' } };
   if (retried.kind === 'unavailable') return { result: { kind: 'superseded' } };
-  return { result: retried, sourceName: resolved.name };
+  return { result: retried, sourceName: resolved.name, revision: resolved.basis.revision };
 }
 
 async function fetchEntry(entry: SharedEntry) {
@@ -184,8 +194,9 @@ async function fetchEntry(entry: SharedEntry) {
 
   let result: UsageResult;
   let sourceName: string | undefined;
+  let revision: number | undefined;
   try {
-    ({ result, sourceName } = await queryEntry(entry, generation));
+    ({ result, sourceName, revision } = await queryEntry(entry, generation));
   } catch {
     result = { kind: 'unavailable' };
   }
@@ -193,21 +204,22 @@ async function fetchEntry(entry: SharedEntry) {
   entry.inFlight = false;
 
   const previous = entry.observation;
-  const observation: UsageObservation =
-    result.kind === 'unavailable' && previous?.reading.result.kind === 'ready'
-      ? {
-          reading: { result: previous.reading.result, refreshFailed: true },
-          sourceName: previous.sourceName,
-        }
-      : {
-          reading: { result, refreshFailed: false },
-          sourceName:
-            sourceName ??
-            (entry.target.kind === 'external'
-              ? EXTERNAL_USAGE_RUNTIME_NAMES[entry.target.runtime]
-              : (previous?.sourceName ?? '')),
-        };
+  const keptPrevious = result.kind === 'unavailable' && previous?.reading.result.kind === 'ready';
+  const observation: UsageObservation = keptPrevious
+    ? {
+        reading: { result: previous.reading.result, refreshFailed: true },
+        sourceName: previous.sourceName,
+      }
+    : {
+        reading: { result, refreshFailed: false },
+        sourceName:
+          sourceName ??
+          (entry.target.kind === 'external'
+            ? EXTERNAL_USAGE_RUNTIME_NAMES[entry.target.runtime]
+            : (previous?.sourceName ?? '')),
+      };
   entry.observation = observation;
+  if (!keptPrevious) entry.observationRevision = revision ?? null;
   entry.freshUntil = Date.now() + REFRESH_INTERVAL;
   for (const subscriber of [...entry.subscribers]) subscriber(observation);
 
@@ -234,6 +246,20 @@ function hostEntries(host: object, create: boolean): Map<string, SharedEntry> | 
   return entries;
 }
 
+export function peekUsageLimits(host: object, target: UsageTarget): UsageObservation | null {
+  const entries = hostEntries(host, false);
+  const entry = entries?.get(usageTargetKey(target));
+  if (!entry) return null;
+  if (
+    target.kind === 'connection' &&
+    target.basis &&
+    entry.observationRevision !== target.basis.revision
+  ) {
+    return null;
+  }
+  return entry.observation;
+}
+
 export function invalidateUsageLimits(host: object, target: UsageTarget) {
   const entries = hostEntries(host, false);
   const key = usageTargetKey(target);
@@ -241,8 +267,10 @@ export function invalidateUsageLimits(host: object, target: UsageTarget) {
   if (!entry) return;
   entry.generation++;
   entry.inFlight = false;
+  entry.forceRefresh = true;
   clearTimer(entry);
   entry.observation = null;
+  entry.observationRevision = null;
   entry.freshUntil = 0;
   if (entry.subscribers.size === 0) {
     entries!.delete(key);
@@ -280,10 +308,12 @@ export function watchUsageLimits(
           : { kind: 'connection', connectionId: target.connectionId },
       subscribers: new Set(),
       observation: null,
+      observationRevision: null,
       cachedConnection: null,
       lastKnownRevision: null,
       freshUntil: 0,
       inFlight: false,
+      forceRefresh: false,
       generation: 0,
       timer: undefined,
     };
@@ -303,6 +333,7 @@ export function watchUsageLimits(
       entry.inFlight = false;
       clearTimer(entry);
       entry.observation = null;
+      entry.observationRevision = null;
       entry.freshUntil = 0;
       entry.cachedConnection = { basis: target.basis, name: target.sourceName ?? '' };
       entry.lastKnownRevision = incomingRevision;

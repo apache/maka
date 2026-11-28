@@ -12,8 +12,9 @@
 //! view has a frame to render or collect ([`ShaderView::wants_frame`]: its
 //! uniforms or size changed, or it reads `nsh.time`); each tick renders at
 //! the screen's scale and a frame that comes back becomes the sublayer's
-//! contents. A view outside any window renders nothing until it is back in
-//! one.
+//! contents. A view out of sight ([`crate::sight::shown`]: outside any
+//! window, hidden, or clipped away by an ancestor, as a row scrolled out of
+//! its list) renders nothing until it shows again.
 //!
 //! Effects and transitions ([`ShaderRole`]) draw their children through
 //! the shader: the children are in a view of their own
@@ -44,7 +45,7 @@ use std::{cell::OnceCell, sync::Arc, time::Instant};
 use nsh_core::{
     NodeId, ViewStyle,
     animation::AnimationValue,
-    geometry::{Points, px, size},
+    geometry::{Points, size},
     shader::{ShaderInput, ShaderLayer, ShaderRole},
 };
 use nsh_engine::shader::{Frame, PixelFormat, Renderer, ShaderView};
@@ -56,10 +57,7 @@ use objc2_quartz_core::{CADisplayLink, CALayer, CAShapeLayer, kCAGravityResize};
 use objc2_ui_kit::UIView;
 use rustc_hash::FxHashMap;
 
-use crate::{
-    decor::{corner_mask, quiet, rounded, set_corners},
-    target::EventTarget,
-};
+use crate::{decor::quiet, target::EventTarget};
 
 /// Whether the children `view`'s shader draws are hidden at `now`: an
 /// effect's always, a transition's while it runs; never where the
@@ -71,9 +69,9 @@ fn hides(view: &mut ShaderView, renderer: &OnceCell<Option<Renderer>>, now: Inst
 
 /// Over the fills, gradients and inset shadows `decor` and `visual` put
 /// behind the children (from -1024), under the borders drawn there
-/// (-1023) and the children themselves: the shader paints the box as a
-/// background image would.
-const SHADER_Z: CGFloat = -1024.0 + 0.75;
+/// (-1023) and the children themselves: the shader (or a GPU view's
+/// renderer, [`crate::gpu`]) paints the box as a background image would.
+pub(crate) const SHADER_Z: CGFloat = -1024.0 + 0.75;
 
 /// Above every child: the frames of an effect show instead of them.
 const OVER: CGFloat = 1.0e6;
@@ -243,15 +241,12 @@ impl Shaders {
         }
         let role = layer.role;
         let state = self.views.entry(id).or_insert_with(|| {
-            let shown = CALayer::new();
-            shown.setZPosition(if role == ShaderRole::Fill {
+            let z = if role == ShaderRole::Fill {
                 SHADER_Z
             } else {
                 OVER
-            });
-            // SAFETY: an immutable Core Animation constant.
-            shown.setContentsGravity(unsafe { kCAGravityResize });
-            host.layer().addSublayer(&shown);
+            };
+            let shown = frames_layer(host, z);
             ShaderState {
                 host: host.retain(),
                 layer: shown,
@@ -524,9 +519,12 @@ impl Shaders {
             if !state.due() {
                 continue;
             }
-            // Out of every window: rendered once it is back in one, which
-            // wakes the link ([`Shaders::revisit`]); its pictures stay due.
-            if state.host.window().is_none() {
+            // Out of sight (out of every window, hidden, or clipped away by
+            // an ancestor: a row scrolled out of its list): not rendered.
+            // Its pictures stay due; the link keeps asking while it wants
+            // frames, so it renders once it shows again, and a view out of
+            // every window is woken by [`Shaders::revisit`].
+            if !crate::sight::shown(&state.host) {
                 wants |= state.view.wants_frame();
                 continue;
             }
@@ -701,38 +699,7 @@ impl ShaderState {
             self.view.set_size(size(Points(w), Points(h)), scale as f32);
             return;
         }
-        let local = CGRect::new(CGPoint::ZERO, bounds);
-        let raw = style.radii();
-        quiet(|| {
-            self.layer.setFrame(local);
-            self.layer.setContentsScale(scale);
-            match raw.shared() {
-                // One radius: the layer's own corners clip it.
-                Some(r) => {
-                    let half = w.min(h).max(0.0) / 2.0;
-                    let r = if w > 0.0 && h > 0.0 {
-                        r.0.min(half)
-                    } else {
-                        r.0
-                    };
-                    set_corners(&self.layer, r as CGFloat, corner_mask(&raw), raw.continuous);
-                    self.layer.setMasksToBounds(true);
-                    // SAFETY: clearing the mask.
-                    unsafe { self.layer.setMask(None) };
-                    self.mask = None;
-                }
-                // Different radii: a shape of them.
-                None => {
-                    set_corners(&self.layer, 0.0, corner_mask(&raw), raw.continuous);
-                    self.layer.setMasksToBounds(false);
-                    let mask = self.mask.get_or_insert_with(CAShapeLayer::new).clone();
-                    mask.setFrame(local);
-                    mask.setPath(Some(&rounded(local, raw.fit(size(px(w), px(h))))));
-                    // SAFETY: a mask layer owned by this state.
-                    unsafe { self.layer.setMask(Some(&mask)) };
-                }
-            }
-        });
+        crate::decor::clip_to_box(&self.layer, &mut self.mask, bounds, style, scale);
         self.view.set_size(size(Points(w), Points(h)), scale as f32);
     }
 
@@ -749,24 +716,45 @@ fn surface_view() -> ShaderView {
     view
 }
 
-/// Shows `view`'s last frame in `layer`: its IOSurface, which the render
-/// server shows as it is and matches from sRGB to the display on the GPU;
+/// A layer showing frames on `host`, at `z` among its sublayers, its
+/// contents stretched over its frame ([`show_surface`], [`show_pixels`]).
+pub(crate) fn frames_layer(host: &UIView, z: CGFloat) -> Retained<CALayer> {
+    let layer = CALayer::new();
+    layer.setZPosition(z);
+    // SAFETY: an immutable Core Animation constant.
+    layer.setContentsGravity(unsafe { kCAGravityResize });
+    host.layer().addSublayer(&layer);
+    layer
+}
+
+/// Shows `view`'s last frame in `layer`: its IOSurface ([`show_surface`]);
 /// else (no Metal device, or one that makes no IOSurface textures) the
-/// pixels read back, as a CGImage, whose colours Core Animation matches on
-/// the main thread.
+/// pixels read back ([`show_pixels`]).
 fn display_frame(layer: &CALayer, view: &ShaderView) {
     match view.surface() {
-        Some(surface) => quiet(|| {
-            // SAFETY: an IOSurfaceRef is an Objective-C object (`IOSurface`,
-            // toll-free bridged), a valid `contents` object.
-            unsafe {
-                layer.setContents(Some(
-                    &*(surface as *const objc2_io_surface::IOSurfaceRef as *const AnyObject),
-                ))
-            }
-        }),
-        None => set_image(layer, rgba_image(view.frame()).as_deref()),
+        Some(surface) => show_surface(layer, surface),
+        None => show_pixels(layer, view.frame()),
     }
+}
+
+/// Shows a frame's IOSurface in `layer`, which the render server shows as
+/// it is and matches from sRGB to the display on the GPU.
+pub(crate) fn show_surface(layer: &CALayer, surface: &objc2_io_surface::IOSurfaceRef) {
+    quiet(|| {
+        // SAFETY: an IOSurfaceRef is an Objective-C object (`IOSurface`,
+        // toll-free bridged), a valid `contents` object.
+        unsafe {
+            layer.setContents(Some(
+                &*(surface as *const objc2_io_surface::IOSurfaceRef as *const AnyObject),
+            ))
+        }
+    });
+}
+
+/// Shows a frame read back in `layer`, as a CGImage, whose colours Core
+/// Animation matches on the main thread (an empty frame clears it).
+pub(crate) fn show_pixels(layer: &CALayer, frame: &Frame) {
+    set_image(layer, rgba_image(frame).as_deref());
 }
 
 /// A CGImage of the frame's premultiplied sRGB RGBA pixels (`None` for an
@@ -1066,15 +1054,9 @@ impl NavOverlay {
                 render(&host.layer(), (rect.origin.x, rect.origin.y), pw, ph, scale)
             })
         });
-        let layer = CALayer::new();
-        // SAFETY: an immutable Core Animation constant.
-        layer.setContentsGravity(unsafe { kCAGravityResize });
-        layer.setZPosition(OVER);
+        let layer = frames_layer(host, OVER);
         let image = rows_image(pw, ph, before.chunks(pw * 4));
-        quiet(|| {
-            layer.setFrame(rect);
-            host.layer().addSublayer(&layer);
-        });
+        quiet(|| layer.setFrame(rect));
         // Until the first frame comes back: what showed.
         set_image(&layer, image.as_deref());
         let mut view = surface_view();

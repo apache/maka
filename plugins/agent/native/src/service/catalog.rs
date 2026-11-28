@@ -193,6 +193,8 @@ pub(crate) fn summary_for(data_source: &DataSource, record: Record) -> Result<Se
         }),
         incognito: session.configuration.incognito,
         parent_session_id: session.configuration.parent_session_id,
+        ancestor_ids: record.ancestor_ids,
+        parent_title: record.parent_title,
         branch,
         backend: session.configuration.backend,
         applied_preset: session.configuration.applied_preset,
@@ -207,10 +209,12 @@ pub(crate) fn summary_for(data_source: &DataSource, record: Record) -> Result<Se
         title: session.configuration.title,
         labels: session.configuration.labels,
         workspace: session.configuration.workspace,
+        created_at: session.created_at,
         updated_at: session.updated_at,
         archived: session.archived,
         pinned: session.configuration.pinned,
         has_unread: record.read_state.has_unread,
+        has_active_children: record.has_active_children,
         tail_message_id: record.last_message.map(|message| message.tail_message_id),
     })
 }

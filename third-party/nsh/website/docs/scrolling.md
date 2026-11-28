@@ -645,7 +645,7 @@ const list = signal<ViewRef>();
     style={{ position: "absolute", left: 0, right: 0, bottom: 0, padding: 16 }}
     ios={{ scrollEdgeElement: list() ? { scrollView: list()!, edge: "bottom" } : null }}
   >
-    <Button>New chat</Button>
+    <Button><Text>New chat</Text></Button>
   </View>
 </View>
 ```

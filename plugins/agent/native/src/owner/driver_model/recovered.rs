@@ -188,7 +188,9 @@ impl DriverModel {
                     })
                     .map(|f| f.id)
                     .collect();
-                self.history.restricted_archives(facts).await?
+                self.history
+                    .archive_restrictions(facts, reader.as_snapshot())
+                    .await?
             } else {
                 Default::default()
             };

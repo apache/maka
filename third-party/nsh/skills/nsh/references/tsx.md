@@ -74,7 +74,8 @@ Each read of `props.children` builds new views. Read it once, as `{props.childre
 Text shows only inside `<Text>`. Nested `<Text>` elements are spans.
 
 A literal string directly in `<View>` is a build error. A literal in any other component (`<Button>Save</Button>`) and a
-number or call in a `View` (`<View>{count()}</View>`) pass every tool and **show nothing**. Always wrap in `<Text>`.
+number or call in a `View` (`<View>{count()}</View>`) build and **show nothing**; the component case logs a warning when
+it runs. Always wrap in `<Text>`.
 
 ## If, Each, List
 
@@ -512,7 +513,8 @@ Every row was run through `nsh build` and `nsh check` at `nsh 0.4.0`, and the ru
 | Unknown class built at run time | The class does nothing | Run-time log, once |
 | Effect writing a signal it reads | App stops: `potential infinite loop` | `nsh test`, or at run time |
 | `eval`, `new Function`, writing to `Array.prototype` | Fine in `nsh run`; throws when hardened | `nsh test`, or in the package |
-| `<Button>Save</Button>`, `<View>{count()}</View>` | Not shown | Nothing |
+| `<Button>Save</Button>` | Not shown | Run-time warning |
+| `<View>{count()}</View>` | Not shown | Nothing |
 | `const { title } = props`, `const { a, ...rest } = props`, `const v = count()` or `props.title.toUpperCase()` in the body | Stale | Nothing |
 | `items().push(x); items.set(items())` | No update | Nothing |
 | `effect(() => b.set(a()))` | Works; an extra pass | Nothing |

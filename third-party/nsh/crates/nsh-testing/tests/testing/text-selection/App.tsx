@@ -28,6 +28,10 @@ function App() {
           renderMath={(math) => <View copyText={`$${math.tex}$`} style={{ width: 10, height: 10 }} />}
         />
       </View>
+      <View testID="chat" selectable onSelectionChange={heard} style={{ gap: 16, alignItems: "flex-start" }}>
+        <TextView markdown={"# Title\n\nFirst [link](https://nsh.dev).\n\n- one\n- two\n\n1. first\n2. second"} />
+        <TextView markdown="Next message." />
+      </View>
       <Text testID="outside">Elsewhere</Text>
       <View testID="clear" onPress={() => article.clearSelection()}>
         <Text>Clear</Text>

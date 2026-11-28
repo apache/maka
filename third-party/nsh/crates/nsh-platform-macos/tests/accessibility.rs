@@ -4,6 +4,9 @@
 //! so this test runs without libtest's harness, on the process's own.
 
 #[cfg(target_os = "macos")]
+#[path = "accessibility/input_confirm.rs"]
+mod input_confirm;
+#[cfg(target_os = "macos")]
 #[path = "accessibility/table.rs"]
 mod table;
 
@@ -11,6 +14,7 @@ mod table;
 fn main() {
     macos::run();
     table::run();
+    input_confirm::run();
 }
 
 #[cfg(not(target_os = "macos"))]

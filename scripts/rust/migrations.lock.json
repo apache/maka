@@ -18,6 +18,14 @@
         "version": 42,
         "sha384": "dd496b9df68a13f276b5c8291fa248b32f40d3f10f4e074128929993d11743d6114617ba30d6be2dc4781b67a1191bf7"
       },
+      "platform/event-log/migrations/0063_compress_contents.sql": {
+        "version": 63,
+        "sha384": "121302ca09694ee47aa890cb24b5634a4fe37b35bab6e7772ba78992a7613e1fea9e985b29f8680f8ecfc35b53c418bd"
+      },
+      "platform/event-log/migrations/0065_compress_application_tables.sql": {
+        "version": 65,
+        "sha384": "c16d8e6b21c6b390ec5e4547f5357c0ac20c57b60d5d6c8a2c1c275801f24dfcec18b7d3720d4648f81d5d8b00c13d3a"
+      },
       "plugins/agent/state/migrations/0002_agent.sql": {
         "version": 2,
         "sha384": "cc1d058e9b871d3ecdb844b7cd525dfa695cadbf0a70c2133def97d2f527089a198d3d433b0daa78bf214cf682a7f0c2"
@@ -222,24 +230,60 @@
         "version": 56,
         "sha384": "9f59f9989f0a121ae89b078ccbdd24f79e44ad2c87b819df38a4b8e7060bcfbf7cfb98fee878cac6b8e8efdb6b67ed59"
       },
-      "plugins/agent/state/migrations/0057_discovery_dossiers.sql": {
+      "plugins/agent/state/migrations/0057_pinned_memory.sql": {
         "version": 57,
+        "sha384": "49214f5fb500ad4ddd5a599e884fdf8cdc2975fda72857097b61cc1f5c0e3883da4341744ae4d9c876a8a5823ecb5f24"
+      },
+      "plugins/agent/state/migrations/0058_simplify_memory_replay.sql": {
+        "version": 58,
+        "sha384": "1c902ea7390fbaef4429b1296e45831e3671199708814c9bc97f9293bca852fa330d1a34c0cf16b6066f1cd30d63eb34"
+      },
+      "plugins/agent/state/migrations/0059_drop_duplicate_indexes.sql": {
+        "version": 59,
+        "sha384": "220abd74c51acfa8dd0085d7ed28f37d6e8f20dc256eaede1ff0e69e788cc6caed747937a5da50066e26207cb58bf782"
+      },
+      "plugins/agent/state/migrations/0060_drop_recall_folded.sql": {
+        "version": 60,
+        "sha384": "c3f4ef06fa72cf440f46848a02083644f8229ce365607feb4e7663f762283901a47dab76ff40d3f7ca4d62009709f589"
+      },
+      "plugins/agent/state/migrations/0061_dedup_recall_index.sql": {
+        "version": 61,
+        "sha384": "5dee9fc1a747264e063af1f3c29e2817adf5d4e77736c0fb673ea00d26365e28ced4084a688a01e64f504241498e7470"
+      },
+      "plugins/agent/state/migrations/0062_namespace_surrogate_keys.sql": {
+        "version": 62,
+        "sha384": "2397b5ea94b59167a0522fb31455b66b74d6cb5fa445ba5dfa2dabd0182379179c1d8cb0479f8e3d6595aeaaab3a09a3"
+      },
+      "plugins/agent/state/migrations/0064_agent_views_content_decode.sql": {
+        "version": 64,
+        "sha384": "a70590acbc13b4f0e054f0f278d6ff41a4300307ee08c31af4b6d93bad734f99da603cd119e8902054b181229cd52353"
+      },
+      "plugins/agent/state/migrations/0066_compress_cells_and_usage.sql": {
+        "version": 66,
+        "sha384": "3a227c1d1eebff049e7c83c65ce83400a71cf6ed236d07a902f76f08c56913d3c4e7a591d55301e32a2d905b02c3334a"
+      },
+      "plugins/agent/state/migrations/0067_catalog_live_runs_index.sql": {
+        "version": 67,
+        "sha384": "ba3edfc423b5363554af4e0a3c7a9bce6b0101216e097d4bc855bd99891e14a15ba091b1b1f25b6ad91439acdac8f48a"
+      },
+      "plugins/agent/state/migrations/0068_discovery_dossiers.sql": {
+        "version": 68,
         "sha384": "31e720459ce9893e34849810b326e32c85051784af550ce4c47399f40496060a8fb95e5e9743f712b161edf086d52251"
       },
-      "plugins/agent/state/migrations/0058_discovery_changes.sql": {
-        "version": 58,
+      "plugins/agent/state/migrations/0069_discovery_changes.sql": {
+        "version": 69,
         "sha384": "3a27e49d1e7bec82c6b4ff6cea38f19f2e0965d2fe75c92cf33382c20dcd205e41b0297626a314da5f571d3cd7ada7ea"
       },
-      "plugins/agent/state/migrations/0059_discovery_staging.sql": {
-        "version": 59,
+      "plugins/agent/state/migrations/0070_discovery_staging.sql": {
+        "version": 70,
         "sha384": "94781185752f12ec1d1b59216415c003ddb64fb440fcfc45886a1f0d43df847da62fc7693b965d8cb8680a43246951f9"
       },
-      "plugins/agent/state/migrations/0060_discovery_watch_runner.sql": {
-        "version": 60,
+      "plugins/agent/state/migrations/0071_discovery_watch_runner.sql": {
+        "version": 71,
         "sha384": "f94cea0098941388d8378a2de377098db9b007daf66c158e999831ce97c36b84aa41e648b6ff4f78c3d65c609e24fedd"
       },
-      "plugins/agent/state/migrations/0061_discovery_activity_pacing.sql": {
-        "version": 61,
+      "plugins/agent/state/migrations/0072_discovery_activity_pacing.sql": {
+        "version": 72,
         "sha384": "635ef14fb1ebba7b3142114d33f45be0e0a76adf804a05b9c49ecb0ff012c0ddd4525e0c7b5ae7e91028b5993b85a13e"
       }
     },
@@ -287,6 +331,10 @@
       "products/maka/cli/migrations/deployment/0001_deployment.sql": {
         "version": 1,
         "sha384": "e343252b6cfa048fbe3787b24a3194058743da5ab9c18b3368fc0112a01ec75d09249fd1e81f246b1a145f8c4d3cd713"
+      },
+      "products/maka/cli/migrations/deployment/0002_retire_rust_preview_policy.sql": {
+        "version": 2,
+        "sha384": "5164908f4ff688042c2b7c0735593d84704359e3c4010288d2a7b74e5bbee0a0466385ccce3e6122929290ef1b2003bb"
       }
     }
   }

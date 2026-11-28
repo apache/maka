@@ -42,6 +42,7 @@ pub use maka_config::access::{HostPeerAccess, PeerId};
 use maka_event_log::root_store::RootStore;
 use maka_plugin_core::deployment::DeploymentRef;
 use maka_remote_pairing::RelayEndpoint;
+pub use maka_remote_pairing::default_host_name;
 use protocol::{Connected, Opening, Request, Response, SessionControl};
 use sha2::Digest;
 use std::{
@@ -689,6 +690,16 @@ impl Host {
                 let result = self.revoke_peer_access(peer_id).await;
                 wire::write(&mut output, &Response::Revoked(result)).await
             }
+            Request::PeerPairingInfo => {
+                if !matches!(authority, Authority::AuthenticatedPeer { .. }) {
+                    return Err("pairing info requires authenticated QUIC".into());
+                }
+                wire::write(
+                    &mut output,
+                    &Response::PeerPairingInfo(maka_remote_pairing::HostPlatform::current()),
+                )
+                .await
+            }
             Request::RedeemPeerPairing {
                 invite_secret,
                 device_label,
@@ -758,9 +769,19 @@ impl Host {
             | Request::ConnectPeer { .. }
             | Request::ConnectUi { .. }) => {
                 let mut gate = Some(self.access_gate.lock().await);
-                let principal = self
-                    .identify(&authority, opening.client_instance.as_deref())
-                    .await?;
+                let principal = match &authority {
+                    Authority::AuthenticatedPeer { peer_id } => {
+                        if !self.peer_has_current_grant(peer_id).await? {
+                            drop(gate.take());
+                            return wire::write(&mut output, &Response::PeerAccessRevoked).await;
+                        }
+                        Principal::AuthenticatedPeer(peer_id.clone())
+                    }
+                    _ => {
+                        self.identify(&authority, opening.client_instance.as_deref())
+                            .await?
+                    }
+                };
                 let (mode, peer, endpoints, consumers, source, ui, parent) = match request {
                     Request::Connect => {
                         let selections = {

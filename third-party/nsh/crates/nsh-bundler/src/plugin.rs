@@ -47,6 +47,9 @@ pub(crate) struct NshPlugin {
     pub(crate) preloads: Option<Arc<Mutex<std::collections::BTreeSet<String>>>>,
     /// The native modules there are.
     pub(crate) modules: Arc<NativeModules>,
+    /// The Rust modules of the app's nshm its target leaves out, by
+    /// specifier, with their package: a static import of one is refused.
+    pub(crate) left_out: Arc<std::collections::BTreeMap<String, String>>,
     /// A split bundle: dynamic imports of chunks call the runtime's chunk
     /// loader (`split.rs`).
     pub(crate) split: bool,
@@ -544,6 +547,21 @@ impl Plugin for NshPlugin {
             .importer
             .map(|i| format!("{}: ", self.rel(Path::new(i))))
             .unwrap_or_default();
+        if let Some(package) = self.left_out.get(spec) {
+            // An `import()` the app makes only where the module is linked
+            // stays, as other optional native modules do.
+            if args.kind.is_dynamic() {
+                return Ok(Some(HookResolveIdOutput {
+                    external: Some(true.into()),
+                    ..HookResolveIdOutput::from_id(spec)
+                }));
+            }
+            return Err(self.refuse(format!(
+                "{from}`{spec}` is not linked for this target: nsh.json's \"dependencies\" \
+                 lists {package} for other \"targets\". Import it with `import()` where it is \
+                 linked, or give this target a stand-in with \"resolve\" \"alias\""
+            )));
+        }
         if spec == "solid-js" || spec.starts_with("solid-js/") {
             return Err(self.refuse(format!(
                 "{from}`{spec}` is not part of nsh apps: import signal, computed, effect, batch, untracked, cleanup, context and mount from \"nsh\""

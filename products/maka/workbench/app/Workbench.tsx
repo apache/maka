@@ -28,10 +28,11 @@ import {
   windowSize,
   type JSX,
 } from 'nsh';
-import { Dialog, ResizablePanel, ResizablePanelGroup } from 'nsh/base';
-import { C } from './ui';
+import { ResizablePanel, ResizablePanelGroup } from 'nsh/base';
+import { C, radius } from './ui';
 import { tr } from './locale';
 import { dialogTop, PANEL_INSET } from './chrome';
+import { WindowDialog } from './ModalDialog';
 
 const CELL = 8;
 const CENTER_DOCK_WIDTH = 72 * CELL;
@@ -263,7 +264,7 @@ export function Workbench(props: {
                 minHeight: 0,
                 margin: INSET,
                 marginLeft: browser() ? 0 : INSET,
-                borderRadius: 12,
+                borderRadius: radius(12),
                 overflow: 'hidden',
                 backgroundColor: C.panel,
               }}
@@ -314,13 +315,13 @@ export function Workbench(props: {
         </View>
       </If>
       <If when={props.previewDialog()}>
-        <Dialog
+        <WindowDialog
           animation="none"
           onOpenChange={inputAction(props.closePreview, null)}
           style={{ flex: 1, padding: 8, paddingTop: dialogTop(8), backgroundColor: C.scrim }}
         >
           {props.preview(false)}
-        </Dialog>
+        </WindowDialog>
       </If>
     </View>
   );

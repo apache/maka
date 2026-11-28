@@ -39,6 +39,7 @@ test('nightly-manifest generates SHA256SUMS, signed latest.json, and release not
   await writeFile(join(dir, 'Maka-nightly-linux-arm64.tar.gz'), 'fake-linux-arm64');
   await writeFile(join(dir, 'Maka-nightly-windows-x64-setup.exe'), 'fake-setup');
   await writeFile(join(dir, 'Maka-nightly-windows-x64.zip'), 'fake-win-zip');
+  await writeFile(join(dir, 'Maka-nightly-ios-arm64.ipa'), 'fake-ipa');
   await writeFile(join(dir, 'install.sh'), '#!/bin/sh\n');
 
   const keys = generateKeypair();
@@ -99,6 +100,7 @@ test('nightly-manifest generates SHA256SUMS, signed latest.json, and release not
       assets: [
         'Maka-nightly-macos-arm64.dmg',
         'Maka-nightly-windows-x64-setup.exe',
+        'Maka-nightly-ios-arm64.ipa',
         'SHA256SUMS.txt',
       ],
     },
@@ -122,12 +124,75 @@ test('nightly-manifest generates SHA256SUMS, signed latest.json, and release not
   const checksums = await readFile(join(dir, 'SHA256SUMS.txt'), 'utf8');
   assert.match(checksums, /Maka-nightly-macos-arm64\.dmg/);
   assert.match(checksums, /Maka-nightly-linux-arm64\.tar\.gz/);
+  assert.match(checksums, /Maka-nightly-ios-arm64\.ipa/);
+  assert.ok(result.assets.includes('Maka-nightly-ios-arm64.ipa'));
 
   const notes = await readFile(join(dir, 'RELEASE_NOTES.md'), 'utf8');
   assert.match(notes, /NOT AN APACHE SOFTWARE FOUNDATION RELEASE/);
   assert.doesNotMatch(notes, /\p{Script=Han}/u);
   assert.match(notes, /## Previous Nightly/);
+  assert.match(notes, /releases\/download\/nightly\/Maka-nightly-ios-arm64\.ipa/);
   assert.match(notes, /nightly-previous\/Maka-nightly-macos-arm64\.dmg/);
+  assert.match(notes, /nightly-previous\/Maka-nightly-ios-arm64\.ipa/);
   assert.match(notes, /@maka-agent\/cli@0\.2\.0-nightly\.20261121\.42/);
   assert.match(notes, /maka-agent@0\.2\.0-nightly\.20261121\.42/);
+});
+
+test('release channel signs versioned latest.json, omits nightly-meta.json, and links to the release tag', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'maka-release-manifest-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+
+  await writeFile(join(dir, 'Maka-0.3.0-macos-arm64.tar.gz'), 'fake-mac-tar');
+  await writeFile(join(dir, 'Maka-0.3.0-macos-arm64.dmg'), 'fake-mac-dmg');
+  await writeFile(join(dir, 'Maka-0.3.0-linux-x64.tar.gz'), 'fake-linux-x64');
+  await writeFile(join(dir, 'Maka-0.3.0-linux-arm64.tar.gz'), 'fake-linux-arm64');
+  await writeFile(join(dir, 'Maka-0.3.0-windows-x64-setup.exe'), 'fake-setup');
+  await writeFile(join(dir, 'Maka-0.3.0-windows-x64.zip'), 'fake-win-zip');
+
+  const keys = generateKeypair();
+  await assert.rejects(
+    generateNightlyMetadata({
+      directory: dir,
+      version: '0.3.0-rc.1',
+      commit: '1234567890abcdef1234567890abcdef12345678',
+      channel: 'release',
+      secretKey: keys.secretKey,
+      expectedPublicKey: keys.publicKey,
+      requireSignature: true,
+    }),
+    /stable X\.Y\.Z/,
+  );
+
+  const result = await generateNightlyMetadata({
+    directory: dir,
+    version: '0.3.0',
+    commit: '1234567890abcdef1234567890abcdef12345678',
+    buildDate: '2026-11-25T08:00:00Z',
+    repo: 'apache/maka',
+    channel: 'release',
+    releaseTag: 'v0.3.0-incubating',
+    secretKey: keys.secretKey,
+    expectedPublicKey: keys.publicKey,
+    requireSignature: true,
+    npmPublished: true,
+  });
+
+  assert.equal(result.signed, true);
+  const manifestBytes = await readFile(join(dir, 'latest.json'));
+  const sig = await readFile(join(dir, 'latest.json.sig'), 'utf8');
+  assert.equal(verifyManifest(keys.publicKey, manifestBytes, sig), true);
+
+  const manifest = JSON.parse(manifestBytes.toString('utf8'));
+  assert.equal(manifest.version, '0.3.0');
+  assert.equal(manifest.platforms['macos-aarch64'].url, 'Maka-0.3.0-macos-arm64.tar.gz');
+  assert.equal(manifest.platforms['linux-x86_64'].url, 'Maka-0.3.0-linux-x64.tar.gz');
+  assert.equal(manifest.platforms['linux-aarch64'].url, 'Maka-0.3.0-linux-arm64.tar.gz');
+  assert.equal(manifest.platforms['windows-x86_64'].url, 'Maka-0.3.0-windows-x64.zip');
+  await assert.rejects(readFile(join(dir, 'nightly-meta.json')));
+
+  const notes = await readFile(join(dir, 'RELEASE_NOTES.md'), 'utf8');
+  assert.doesNotMatch(notes, /UNOFFICIAL DEVELOPER NIGHTLY BUILD/);
+  assert.match(notes, /releases\/download\/v0\.3\.0-incubating\/Maka-0\.3\.0-macos-arm64\.dmg/);
+  assert.match(notes, /Update Channel\*\*: `release`/);
+  assert.match(notes, /@maka-agent\/cli@0\.3\.0/);
 });

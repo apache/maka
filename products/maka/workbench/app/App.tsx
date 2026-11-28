@@ -70,9 +70,10 @@ import {
 import { createWorkbenchPlugins, type PanelRoute } from './plugins/context';
 import { PluginPanel } from './plugins/PluginPanel';
 import { Toaster } from './Feedback';
+import { ConversationSkeleton, SidebarListSkeleton } from './Loading';
 import { currentLocale, tr } from './locale';
 import { toast } from './toastStore';
-import { bodyTextStyle, C, controlStyle, controlHoverStyle, controlFocusStyle } from './ui';
+import { bodyTextStyle, C, controlFocusStyle, controlHoverStyle, controlStyle, radius } from './ui';
 
 type Configuration = {
   navigation: UiTarget;
@@ -119,11 +120,13 @@ function App(
   const discovery = signal<{ topicId: string | null; runId?: string | null } | null>(null);
   const discoveryOpen = () => discovery() !== null;
   windowTitle(() =>
-    discoveryOpen()
-      ? tr('Discovery dossiers')
-      : workspaceMode() === 'rooms'
-        ? (roomWorkspace()?.title() ?? tr('Rooms'))
-        : (session()?.title() ?? null),
+    settingsOpened()
+      ? tr('Settings')
+      : discoveryOpen()
+        ? tr('Discovery dossiers')
+        : workspaceMode() === 'rooms'
+          ? (roomWorkspace()?.title() ?? tr('Rooms'))
+          : (session()?.title() ?? null),
   );
   const restoredSides = platform.idiom === 'terminal' ? [] : (saved?.sideSessionIds ?? []);
   const sides = signal<SidePane[]>(restoredSides.map((id) => createSide(id)));
@@ -146,16 +149,21 @@ function App(
       render: () => {
         const opening = first;
         first = undefined;
-        return runtime.renderView(configuration.session, conversationSessionView, {
-          shell: paneShell(pane),
-          active: () => workspaceMode() === 'conversations',
-          firstMessage: opening?.text,
-          firstQuotes: opening?.quotes,
-          compact,
-          attach(handle) {
-            if (pane.handle() !== handle) pane.handle.set(handle);
+        return runtime.renderView(
+          configuration.session,
+          conversationSessionView,
+          {
+            shell: paneShell(pane),
+            active: () => workspaceMode() === 'conversations',
+            firstMessage: opening?.text,
+            firstQuotes: opening?.quotes,
+            compact,
+            attach(handle) {
+              if (pane.handle() !== handle) pane.handle.set(handle);
+            },
           },
-        });
+          { loading: () => <ConversationSkeleton /> },
+        );
       },
     };
     return pane;
@@ -212,7 +220,10 @@ function App(
   };
   const previewDialog = createPreviewDialog({
     shown: previewShown,
-    suppressed: () => plugins.panel() === null && (preview()?.modalSuppressed() ?? false),
+    suppressed: () =>
+      settingsOpened() ||
+      workspaceMode() !== 'conversations' ||
+      (plugins.panel() === null && (preview()?.modalSuppressed() ?? false)),
     focused: () => plugins.panel() !== null || (preview()?.focused() ?? false),
     cardWidth: sideCardBudget,
     close: closePreview,
@@ -533,6 +544,7 @@ function App(
     },
     openSettings(model, page) {
       if (!alive || blocked()) return;
+      if (settingsOpened() && model === undefined && page === undefined) return;
       navigationGeneration++;
       batch(() => {
         discovery.set(null);
@@ -611,7 +623,7 @@ function App(
         flexDirection: 'row',
         backgroundColor: C.background,
         padding: 3,
-        borderRadius: 10,
+        borderRadius: radius(10),
       }}
     >
       <Each of={['conversations', 'rooms'] as const} key={(mode) => mode}>
@@ -626,7 +638,7 @@ function App(
               height: 30,
               alignItems: 'center',
               justifyContent: 'center',
-              borderRadius: 8,
+              borderRadius: radius(8),
               backgroundColor: workspaceMode() === mode() ? C.card : 'transparent',
             }}
             hoverStyle={controlHoverStyle()}
@@ -765,7 +777,7 @@ function App(
           closed={launcherClosed}
         />
       </If>
-      <WorkspaceSurface visible={() => workspaceMode() === 'conversations'}>
+      <WorkspaceSurface visible={() => !settingsOpened() && workspaceMode() === 'conversations'}>
         <Workbench
           expanded={sidebarExpanded}
           sidebarHover={sidebarHover}
@@ -783,13 +795,18 @@ function App(
           cardVisible={sideCardVisible}
           sideRoom={sideRoom}
           navigation={(temporary) =>
-            runtime.renderView(configuration.navigation, conversationNavigationView, {
-              shell,
-              openRooms: shell.openRooms,
-              suppressSidebarHover: sidebarHover.suppressUntilExit,
-              holdSidebarHover: temporary ? sidebarHover.hold : undefined,
-              pinSidebar: temporary ? shell.showSidebar : undefined,
-            })
+            runtime.renderView(
+              configuration.navigation,
+              conversationNavigationView,
+              {
+                shell,
+                openRooms: shell.openRooms,
+                suppressSidebarHover: sidebarHover.suppressUntilExit,
+                holdSidebarHover: temporary ? sidebarHover.hold : undefined,
+                pinSidebar: temporary ? shell.showSidebar : undefined,
+              },
+              { loading: () => <SidebarListSkeleton /> },
+            )
           }
           preview={(docked) =>
             plugins.panel() !== null ? (
@@ -806,15 +823,20 @@ function App(
             )
           }
         >
-          {runtime.renderView(configuration.session, conversationSessionView, {
-            shell,
-            attach(handle) {
-              if (session() !== handle) session.set(handle);
+          {runtime.renderView(
+            configuration.session,
+            conversationSessionView,
+            {
+              shell,
+              attach(handle) {
+                if (session() !== handle) session.set(handle);
+              },
             },
-          })}
+            { loading: () => <ConversationSkeleton /> },
+          )}
         </Workbench>
       </WorkspaceSurface>
-      <WorkspaceSurface visible={() => workspaceMode() === 'rooms'}>
+      <WorkspaceSurface visible={() => !settingsOpened() && workspaceMode() === 'rooms'}>
         {runtime.renderView(configuration.rooms, roomWorkspaceView, {
           initialSessionId: saved?.roomSessionId ?? null,
           agentSessionId: selected,
@@ -832,6 +854,28 @@ function App(
             if (roomWorkspace() !== handle) roomWorkspace.set(handle);
           },
         })}
+      </WorkspaceSurface>
+      <WorkspaceSurface visible={settingsOpened}>
+        {runtime.renderView(
+          configuration.settings,
+          settingsViewContract,
+          {
+            opened: settingsOpened,
+            navigation: settingsNavigation,
+            close: () => {
+              if (!alive || blocked()) return;
+              navigationGeneration++;
+              settingsOpened.set(false);
+            },
+            get model() {
+              return settingsModel();
+            },
+            get page() {
+              return settingsPage();
+            },
+          },
+          { loading: false },
+        )}
       </WorkspaceSurface>
       <If when={platform.idiom === 'terminal' && runtime.updateError() !== null}>
         <View
@@ -851,7 +895,7 @@ function App(
           <Button
             accessibilityLabel={tr('Details')}
             onPress={() => connectionDetails.set(!connectionDetails())}
-            style={controlStyle}
+            style={controlStyle()}
             hoverStyle={controlHoverStyle()}
             focusStyle={controlFocusStyle()}
             activeStyle={{ backgroundColor: C.pressed }}
@@ -861,7 +905,7 @@ function App(
           <Button
             accessibilityLabel={tr('Retry')}
             onPress={runtime.retryUpdates}
-            style={controlStyle}
+            style={controlStyle()}
             hoverStyle={controlHoverStyle()}
             focusStyle={controlFocusStyle()}
             activeStyle={{ backgroundColor: C.pressed }}
@@ -880,26 +924,6 @@ function App(
           docked: false,
           attach(handle) {
             if (preview() !== handle) preview.set(handle);
-          },
-        },
-        { loading: false },
-      )}
-      {runtime.renderView(
-        configuration.settings,
-        settingsViewContract,
-        {
-          opened: settingsOpened,
-          navigation: settingsNavigation,
-          close: () => {
-            if (!alive || blocked()) return;
-            navigationGeneration++;
-            settingsOpened.set(false);
-          },
-          get model() {
-            return settingsModel();
-          },
-          get page() {
-            return settingsPage();
           },
         },
         { loading: false },

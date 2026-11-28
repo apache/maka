@@ -33,7 +33,14 @@ import {
 } from '../../../../plugins/application/quick-library/library.ts';
 import { symbols } from '../../../../plugins/application/symbols/symbols.ts';
 import { afterKeyword, search } from '../../../../plugins/shared/quick-search.ts';
-import { MAX_USAGE, parseUsage, ranked, recommended, recordUse } from '../app/quick-results.ts';
+import {
+  homeRecommendations,
+  MAX_USAGE,
+  parseUsage,
+  ranked,
+  recommended,
+  recordUse,
+} from '../app/quick-results.ts';
 import {
   choose,
   entryMatch,
@@ -99,6 +106,27 @@ test('only used, rememberable results are recommended', () => {
     ['used'],
   );
   assert.deepEqual(recommended([{ key: 'used', remembered: false }], usage), []);
+});
+
+test('cold-start home recommendations wait for usage load and pick curated starters', () => {
+  const tools = [
+    'maka.quick-library/links',
+    'maka.symbols/symbols',
+    'maka.screenshot/capture',
+    'maka.clipboard-history/history',
+    'maka.applications/search',
+    'maka.conversations/bot',
+  ];
+  const id = (tool) => tool;
+  assert.deepEqual(homeRecommendations([], tools, id, false), []);
+  assert.deepEqual(homeRecommendations([], tools, id, true), [
+    'maka.conversations/bot',
+    'maka.applications/search',
+    'maka.clipboard-history/history',
+    'maka.screenshot/capture',
+  ]);
+  assert.deepEqual(homeRecommendations([], tools.slice(0, 4), id, true), []);
+  assert.deepEqual(homeRecommendations(['reply'], tools, id, true), ['reply']);
 });
 
 test('unread answers lead recommendations by reply time and do not require prior use', () => {

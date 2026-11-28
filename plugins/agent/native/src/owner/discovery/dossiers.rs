@@ -786,7 +786,7 @@ impl Owner {
         &self,
         session: &str,
         request: &mut maka_agent_state::queue::PreparedRequest,
-        summary: String,
+        summary: &str,
         elevated: bool,
         contents: &mut Vec<maka_agent_state::ContentBlob>,
     ) -> Result<(), String> {

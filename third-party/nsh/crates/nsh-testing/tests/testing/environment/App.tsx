@@ -1,7 +1,7 @@
 import { mount, signal, Text, View } from "nsh";
 import { Window } from "nsh/desktop";
 import { reduceMotion } from "nsh";
-import { colorScheme, lifecycle, locale, localeSettings, network, platform, wakeCount, windowSize } from "nsh";
+import { colorScheme, lifecycle, locale, localeSettings, network, platform, reservedRegions, wakeCount, windowSize } from "nsh";
 
 // Whether `Intl`'s local time is in the zone it names, read again when the
 // device's zone changes (a test's, which moves no local time): formatting in
@@ -48,6 +48,7 @@ function App() {
       <Text>{`Motion: ${reduceMotion() ? "reduced" : "full"}`}</Text>
       <Text>{`OS: ${platform.os}`}</Text>
       <Text>{`Size: ${windowSize().width}x${windowSize().height}`}</Text>
+      <Text>{`Reserved: ${reservedRegions().map((r) => `${r.kind} ${r.bounds.origin.x},${r.bounds.origin.y} ${r.bounds.size.width}x${r.bounds.size.height}`).join("; ") || "none"}`}</Text>
       <Text>{`App: ${lifecycle()}`}</Text>
       <Text>{`Wakes: ${wakeCount()}`}</Text>
       <Text>{route()}</Text>

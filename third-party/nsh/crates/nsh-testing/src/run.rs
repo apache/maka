@@ -689,6 +689,9 @@ impl Session {
                     bottom: safe_area.bottom,
                     left: safe_area.left,
                 },
+                reserved_regions: nsh_core::platform::ReservedRegions::new(
+                    launch.reserved_regions.iter().flatten().copied(),
+                ),
                 color_scheme: launch.color_scheme.unwrap_or_default().into(),
                 locale: locale.unwrap_or(Locale::EN_US),
                 // The locale's (it alone as the languages, its region's
@@ -953,6 +956,12 @@ fn check_launch(entry: &str, launch: &Launch, target: Option<&HostTarget>) -> Re
         return unsupported(
             "url",
             "the system hands links to packaged apps: run the test without --target",
+        );
+    }
+    if launch.reserved_regions.is_some() {
+        return unsupported(
+            "reservedRegions",
+            "the device reports the regions it reserves: run the test without --target",
         );
     }
     let Some(target) = target else {
@@ -1320,6 +1329,7 @@ mod tests {
             width: None,
             height: None,
             safe_area: None,
+            reserved_regions: None,
             clipboard: None,
             color_scheme: None,
             locale: None,
@@ -1364,6 +1374,17 @@ mod tests {
         let error = check(&linked, &macos).unwrap_err();
         assert!(
             error.contains("`url` is unsupported on --target macos"),
+            "{error}"
+        );
+        assert_eq!(code_of(&error), Some(UNSUPPORTED));
+
+        // Reserved regions: the device reports its own, the test's are
+        // headless only.
+        let mut folded = launch();
+        folded.reserved_regions = Some(Vec::new());
+        let error = check(&folded, &ios).unwrap_err();
+        assert!(
+            error.contains("`reservedRegions` is unsupported on --target ios"),
             "{error}"
         );
         assert_eq!(code_of(&error), Some(UNSUPPORTED));

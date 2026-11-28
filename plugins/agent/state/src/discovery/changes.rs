@@ -203,7 +203,7 @@ impl DiscoveryStore {
         let session_id = session_id.to_owned();
         self.read(move |c, owner| {
             let mut stmt = c.prepare_cached(
-                "SELECT f.at, json_extract(b.payload,'$.input')
+                "SELECT f.at, json_extract(maka_content_text(b.payload,b.encoding),'$.input')
                  FROM agent_catalog_runs k INDEXED BY agent_catalog_latest_run
                  JOIN agent_facts f ON f.sequence=k.admission_sequence
                  JOIN agent_run_specs s ON s.run=k.run

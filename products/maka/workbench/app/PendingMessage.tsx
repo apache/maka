@@ -29,10 +29,10 @@ import { LoadingIndicator } from './Loading';
 import { tr } from './locale';
 import {
   C,
-  bodyTextStyle,
   captionTextStyle,
   controlFocusStyle,
   controlStyle,
+  readingTextStyle,
   textTooltip,
 } from './ui';
 
@@ -57,7 +57,7 @@ export function PendingMessage(props: {
       <If when={props.message.text !== ''}>
         <Text
           style={[
-            { ...bodyTextStyle, color: C.text },
+            { ...readingTextStyle(), color: C.text },
             { numberOfLines: 4, userSelect: 'text' },
           ]}
         >
@@ -95,7 +95,7 @@ export function PendingMessage(props: {
           <Button
             accessibilityLabel={tr('Edit message in composer')}
             onPress={inputAction(session.editSend, props.message.id)}
-            style={controlStyle}
+            style={controlStyle()}
             hoverStyle={{ backgroundColor: C.cardRaised }}
             focusStyle={controlFocusStyle()}
           >
@@ -107,7 +107,7 @@ export function PendingMessage(props: {
             accessibilityLabel={tr('Retry message')}
             onPress={inputAction(session.retrySend, props.message.id)}
             disabled={!session.connected() || props.message.busy}
-            style={controlStyle}
+            style={controlStyle()}
             hoverStyle={{ backgroundColor: C.cardRaised }}
             focusStyle={controlFocusStyle()}
           >
@@ -119,7 +119,7 @@ export function PendingMessage(props: {
             accessibilityLabel={tr('Check message status')}
             onPress={inputAction(session.checkSend, props.message.id)}
             disabled={!session.connected() || props.message.busy}
-            style={controlStyle}
+            style={controlStyle()}
             hoverStyle={{ backgroundColor: C.cardRaised }}
             focusStyle={controlFocusStyle()}
           >

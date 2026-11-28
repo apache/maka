@@ -28,6 +28,8 @@ use crate::executor::NativeRuntime;
 pub struct ExternalAgentsRead {
     #[serde(default)]
     pub inspect: bool,
+    #[serde(default)]
+    pub refresh: bool,
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -70,6 +72,8 @@ pub fn runtime_options(
 #[schemars(rename = "AgentExternalUsageLimitsRead")]
 pub struct ExternalUsageLimitsRead {
     pub runtime: NativeRuntime,
+    #[serde(default)]
+    pub refresh: bool,
 }
 
 #[derive(Serialize, JsonSchema)]

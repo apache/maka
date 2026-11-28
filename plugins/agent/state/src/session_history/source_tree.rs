@@ -28,6 +28,7 @@ use maka_agent_facts::{
     history::{HistoryOrder, HistoryRowAddress},
     history_snapshot::{ImportedMessage, SnapshotId, SnapshotPosition},
 };
+pub(crate) use queries::TRANSCRIPT_CELL_SQL;
 use queries::{Latest, LivePositions, LiveToolPositions, RequestAt};
 use rusqlite::{OptionalExtension, params};
 use snapshot::{Snapshot, SnapshotSources, Source};

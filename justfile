@@ -98,27 +98,6 @@ migrations:
 i18n:
     node scripts/ci.mjs check i18n
 
-# Build a source-bound native npm package without publishing.
-[group('Release')]
-package source target build_id output="native-preview": setup
-    node scripts/rust/release-cli.mjs --source "$1" --target "$2" --build-id "$3" --output "$4"
-
-# Assemble and verify the launcher after all native packages have been built.
-[group('Release')]
-release-prepare directory="native-preview": setup
-    node scripts/rust/pack-launcher.mjs "$1"
-    node scripts/rust/publish-cli.mjs "$1"
-
-# Install and exercise the prepared release on this platform, offline.
-[group('Release')]
-release-check directory="native-preview": setup
-    node scripts/rust/verify-release.mjs "$1"
-
-# Publish the verified platform set and launcher.
-[group('Release')]
-publish directory="native-preview" *args: setup
-    node scripts/rust/publish-cli.mjs "$@" --publish
-
 # Create a reviewed ASF source archive.
 [group('Release')]
 source version revision="HEAD": setup

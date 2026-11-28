@@ -70,10 +70,13 @@ const linuxMultiarchDirs = {
 };
 
 // Zig treats glibc-versioned targets as cross-compilation and excludes host system
-// library directories; pass native dirs so GTK/X11/Vulkan link while Zig keeps its
-// bundled glibc 2.28 stubs for libc. Host .so files (e.g. Ubuntu's libvulkan.so)
-// internally reference newer host glibc symbols, so allow undefined symbols inside
-// external shared libraries while still requiring our own binary to satisfy 2.28.
+// library directories; pass native dirs via `-C link-arg=-L...` (never `-L native=...`)
+// so GTK/X11/Vulkan resolve at final link time without entering rustc's archive search
+// path ahead of crate OUT_DIRs (where host static libraries like Ubuntu's libsqlite3.a
+// silently shadow bundled -sys crates), while Zig keeps its glibc 2.28 stubs for libc.
+// Host .so files (e.g. Ubuntu's libvulkan.so) internally reference newer host glibc
+// symbols, so allow undefined symbols inside external shared libraries while still
+// requiring our own binary to satisfy 2.28.
 export function linuxSystemLibraryRustflags(triple, env = {}, exists = existsSync) {
   const multiarch = linuxMultiarchDirs[triple];
   const candidates =
@@ -85,7 +88,7 @@ export function linuxSystemLibraryRustflags(triple, env = {}, exists = existsSyn
   const hasFlag = (flag) =>
     new RegExp(`(?:^|\\s)${flag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:\\s|$)`).test(existing);
   const desired = [
-    ...dirs.map((dir) => `-L native=${dir}`),
+    ...dirs.map((dir) => `-C link-arg=-L${dir}`),
     '-C link-arg=-Wl,--allow-shlib-undefined',
   ];
   const added = desired.filter((flag) => !hasFlag(flag));

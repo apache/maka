@@ -25,7 +25,7 @@ import { Icon, type IconName } from './Icon';
 export function EmptyState(props: {
   icon: IconName;
   title: string;
-  subtitle: string;
+  subtitle?: string;
   tint?: 'primary' | 'success' | 'muted';
   actionTitle?: string;
   onAction?: () => void;
@@ -74,16 +74,18 @@ export function EmptyState(props: {
       >
         {props.title}
       </Text>
-      <Text
-        style={{
-          ...type.subheadline,
-          color: token('muted-foreground'),
-          textAlign: 'center',
-          maxWidth: 308,
-        }}
-      >
-        {props.subtitle}
-      </Text>
+      <If when={props.subtitle}>
+        <Text
+          style={{
+            ...type.subheadline,
+            color: token('muted-foreground'),
+            textAlign: 'center',
+            maxWidth: 308,
+          }}
+        >
+          {props.subtitle}
+        </Text>
+      </If>
       <If when={props.actionTitle && props.onAction}>
         <View style={{ marginTop: 8, width: '100%', maxWidth: 260 }}>
           <ActionButton title={props.actionTitle!} onPress={props.onAction!} />

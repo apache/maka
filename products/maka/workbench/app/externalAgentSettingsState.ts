@@ -38,6 +38,7 @@ type Target = {
   runtimes: AgentExternalAgents['runtimes'];
 };
 type Basis = { source: DeploymentRef; target: Target };
+class BasisMismatchError extends UiError {}
 export type ExternalAgentAction = { view: number };
 export function createExternalAgentSettings(
   host: Host,
@@ -54,6 +55,7 @@ export function createExternalAgentSettings(
   } | null>(null);
   const failure = signal<string | null>(null);
   const loading = signal(false);
+  const checking = signal(false);
   let alive = true;
   const view = signal(0);
   let read = 0;
@@ -63,8 +65,9 @@ export function createExternalAgentSettings(
   });
   const action = (): ExternalAgentAction => ({ view: view() });
   const current = (request: ExternalAgentAction) => alive && active() && request.view === view();
-  const disabled = () =>
-    loading() || operations.busy() || !operations.pendingKnown() || operations.pending().length > 0;
+  const busy = () =>
+    operations.busy() || !operations.pendingKnown() || operations.pending().length > 0;
+  const disabled = () => (loading() && !basis()) || busy();
   const source = async () => (await host.query('management', 'read', {})).source.reference;
   const observeBasis = async (): Promise<Basis> => {
     const before = await source();
@@ -73,15 +76,15 @@ export function createExternalAgentSettings(
     })) as AgentExternalAgents;
     const after = await source();
     if (!sameValue(before, after)) {
-      invalidate();
-      throw new UiError('These settings changed elsewhere. Reload before saving again.');
+      throw new BasisMismatchError('These settings changed elsewhere. Reload before saving again.');
     }
     if (
       status.target.source.stateDomain !== after.stateDomain ||
       status.target.source.deployment !== after.deployment
     ) {
-      invalidate();
-      throw new UiError('This agent belongs to another deployment and cannot be configured here.');
+      throw new BasisMismatchError(
+        'This agent belongs to another deployment and cannot be configured here.',
+      );
     }
     return {
       source: after,
@@ -92,47 +95,84 @@ export function createExternalAgentSettings(
       },
     };
   };
-  const invalidate = () => {
+  const clearView = () => {
     view.set(view() + 1);
     basis.set(null);
     confirmation.set(null);
     catalog.set(null);
   };
-  const load = async () => {
-    if (!alive || !active() || loading()) return;
+  const invalidate = () => {
+    read += 1;
+    loading.set(false);
+    checking.set(false);
+    clearView();
+  };
+  const load = async (forceRefresh = false, retried = false): Promise<void> => {
+    if (!alive || !active()) return;
+    if (!forceRefresh && !retried && (loading() || checking())) return;
     const generation = ++read;
-    loading.set(true);
+    const hasBasis = basis() !== null;
+    if (!hasBasis) {
+      loading.set(true);
+      view.set(view() + 1);
+    }
     failure.set(null);
-    view.set(view() + 1);
     confirmation.set(null);
     try {
       const next = await observeBasis();
       if (!alive || !active() || generation !== read) return;
-      const status = next.target.runtimes.some((runtime) => runtime.enabled)
-        ? await host.query('agent', 'externalAgents', {})
-        : null;
+      const hasEnabled = next.target.runtimes.some((runtime) => runtime.enabled);
+      batch(() => {
+        basis.set(next);
+        loading.set(false);
+        if (!hasEnabled) {
+          catalog.set(null);
+          checking.set(false);
+        } else {
+          checking.set(true);
+        }
+      });
+      if (!hasEnabled) return;
+      const status = await host.query(
+        'agent',
+        'externalAgents',
+        forceRefresh ? { refresh: true } : {},
+      );
       if (!alive || !active() || generation !== read) return;
       const latest = await source();
       if (!alive || !active() || generation !== read) return;
       if (!sameValue(next.source, latest)) {
-        invalidate();
-        throw new UiError('These settings changed elsewhere. Reload before saving again.');
+        if (!retried) {
+          checking.set(false);
+          await load(forceRefresh, true);
+          return;
+        }
+        throw new BasisMismatchError(
+          'These settings changed elsewhere. Reload before saving again.',
+        );
       }
-      batch(() => {
-        basis.set(next);
-        catalog.set(status);
-      });
+      catalog.set(status);
     } catch (error) {
       if (alive && active() && generation === read) {
+        if (error instanceof BasisMismatchError) clearView();
         failure.set(errorMessage(error));
-        operations.report(new UiError('Could not check external agents. Open details or refresh.'));
       }
     } finally {
-      if (alive && generation === read) loading.set(false);
+      if (alive && generation === read) {
+        loading.set(false);
+        checking.set(false);
+      }
     }
   };
   const verify = async (original: Basis, request: ExternalAgentAction) => {
-    const observed = await observeBasis();
+    let observed: Basis;
+    try {
+      observed = await observeBasis();
+    } catch (error) {
+      if (!current(request)) return false;
+      if (error instanceof BasisMismatchError) invalidate();
+      throw error;
+    }
     if (!current(request)) return false;
     if (!sameValue(original, observed)) {
       invalidate();
@@ -143,12 +183,7 @@ export function createExternalAgentSettings(
   const run = (operation: () => Promise<void>) =>
     operations.run(async () => {
       failure.set(null);
-      try {
-        await operation();
-      } catch (error) {
-        failure.set(errorMessage(error));
-        throw new UiError('Could not update external agents. Open details or refresh.');
-      }
+      await operation();
     });
   const save = (request: ExternalAgentAction, runtime: string, enabled: boolean) => {
     if (!current(request) || disabled()) return;
@@ -182,8 +217,10 @@ export function createExternalAgentSettings(
         },
       );
       if (result.status !== 'committed') {
-        if (result.status === 'conflict')
+        if (result.status === 'conflict') {
+          invalidate();
           throw new UiError('These settings changed elsewhere. Reload before saving again.');
+        }
         if (result.diagnostic) throw new UiError('Error: {detail}', { detail: result.diagnostic });
         throw new UiError('The Host rejected this service change. Reload and review it.');
       }
@@ -221,18 +258,29 @@ export function createExternalAgentSettings(
     return state?.kind === 'ready' ? state.runtimes : [];
   };
   const reload = (request: ExternalAgentAction) => {
-    if (!current(request) || disabled()) return;
+    if (!current(request) || busy()) return;
+    for (const runtime of runtimes()) {
+      if (runtime.enabled && runtime.usageLimits && isExternalUsageRuntime(runtime.id)) {
+        invalidateUsageLimits(host, { kind: 'external', runtime: runtime.id });
+      }
+    }
+    void load(true);
+  };
+  const reloadConflict = (request: ExternalAgentAction) => {
+    if (!current(request) || busy()) return;
     operations.error.set('');
-    void load();
+    void load(true);
   };
   const deactivate = () => {
     read += 1;
     loading.set(false);
-    invalidate();
+    checking.set(false);
+    confirmation.set(null);
+    view.set(view() + 1);
   };
   const reset = () => {
-    deactivate();
-    if (active()) void load();
+    invalidate();
+    if (active()) void load(false);
   };
   return {
     basis,
@@ -241,6 +289,7 @@ export function createExternalAgentSettings(
     status: (runtime: string) => statuses().find((item) => item.id === runtime),
     confirmation,
     loading,
+    checking,
     disabled,
     action,
     runtimes,
@@ -248,14 +297,15 @@ export function createExternalAgentSettings(
     acknowledge,
     cancel,
     reload,
+    reloadConflict,
     refresh() {
-      if (!confirmation() && !disabled()) void load();
+      if (!confirmation() && !busy()) void load(false);
     },
     enable: (request: ExternalAgentAction) => save(request, confirmation()?.runtime ?? '', true),
     disable: (request: ExternalAgentAction & { runtime: string }) =>
       save(request, request.runtime, false),
     activate: () => {
-      if (!basis()) void load();
+      void load(false);
     },
     deactivate,
     reset,

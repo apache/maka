@@ -17,9 +17,9 @@ use nsh_core::{
 };
 
 use super::{
-    DataTableColumn, DataTableColumnPress, DataTableContextMenu, DataTableDump, DataTableEvent,
-    DataTablePress, DataTableProps, DataTableRange, DataTableSelection, DataTableSort,
-    DataTableSortDirection, DataTableTarget,
+    DataTableCellPosition, DataTableCellRange, DataTableColumn, DataTableColumnPress,
+    DataTableContextMenu, DataTableDump, DataTableEvent, DataTablePress, DataTableProps,
+    DataTableRange, DataTableSelection, DataTableSort, DataTableSortDirection, DataTableTarget,
     axis::{Anchor, Axis},
     columns::{Columns, Spec},
     selection::{self, Move, Nav, Selectable, Selection},
@@ -123,8 +123,12 @@ pub(crate) struct Dt {
     pub(crate) data_rev: Signal<u64>,
     /// Cell/column selection and cell menu target; unchanged on row selection.
     pub(crate) cell_marks: Signal<CellMarks>,
+    pub(crate) cell_range: Signal<Option<DataTableCellRange>>,
     /// Row selection and row menu target; unchanged on cell/column selection.
     pub(crate) row_marks: Signal<RowMarks>,
+    // Native scroll reports can arrive several wheel events behind.
+    pub(super) wheel_x: Signal<Option<Points>>,
+    pub(super) wheel_y: Signal<Option<Points>>,
     pub(crate) scroll_x: Signal<Points>,
     pub(crate) scroll_y: Signal<Points>,
     pub(crate) viewport: Signal<Size<Points>>,
@@ -198,6 +202,14 @@ impl CustomCells {
     }
 }
 
+pub(super) fn secondary_modifier(modifiers: Modifiers) -> bool {
+    if matches!(os(), Os::Ios | Os::MacOs) {
+        modifiers.cmd
+    } else {
+        modifiers.ctrl
+    }
+}
+
 fn spec_of(column: &DataTableColumn) -> Spec {
     let min = column.min_width.map_or(MIN_WIDTH, |w| w.0).max(0.0);
     let max = column.max_width.map_or(MAX_WIDTH, |w| w.0).max(min);
@@ -231,7 +243,10 @@ impl Dt {
             layout_rev: signal(0),
             data_rev: signal(0),
             cell_marks: signal((None, None, None)),
+            cell_range: signal(None),
             row_marks: signal((None, None)),
+            wheel_x: signal(None),
+            wheel_y: signal(None),
             scroll_x: signal(Points::ZERO),
             scroll_y: signal(Points::ZERO),
             viewport: signal(Size::default()),
@@ -278,7 +293,7 @@ impl Dt {
     }
 
     pub(crate) fn bump_data(&self) {
-        let (cell_marks, row_marks) = {
+        let (cell_marks, row_marks, range) = {
             let st = self.st.borrow();
             let sel_cell = match st.selection {
                 Selection::Cell(r, c) => Some((r, c)),
@@ -300,10 +315,19 @@ impl Dt {
                 Some((Some(r), None)) => Some(r),
                 _ => None,
             };
-            ((sel_cell, sel_col, active_cell), (sel_row, active_row))
+            let range = match st.selection {
+                Selection::Range(range) => Some(range),
+                _ => None,
+            };
+            (
+                (sel_cell, sel_col, active_cell),
+                (sel_row, active_row),
+                range,
+            )
         };
         self.cell_marks.set(cell_marks);
         self.row_marks.set(row_marks);
+        self.cell_range.set(range);
         self.data_rev.update(|r| *r += 1);
     }
 
@@ -336,6 +360,20 @@ impl Dt {
                         Selection::Column(c) => kept(c).map_or(Selection::None, Selection::Column),
                         Selection::Cell(r, c) => {
                             kept(c).map_or(Selection::None, |c| Selection::Cell(r, c))
+                        }
+                        Selection::Range(range) => {
+                            let remap = |cell: DataTableCellPosition| {
+                                let column = kept(cell.column as usize)?;
+                                Some(DataTableCellPosition::new(cell.row, column as u32))
+                            };
+                            match (remap(range.start), remap(range.end)) {
+                                (Some(start), Some(end)) => Selection::Range(DataTableCellRange {
+                                    start,
+                                    end,
+                                    active: range.active.and_then(remap),
+                                }),
+                                _ => Selection::None,
+                            }
                         }
                         other => other,
                     };
@@ -818,18 +856,19 @@ impl Dt {
         let columns = self.st.borrow().columns.len();
         // A ref's command cannot throw: a row or column the table does not
         // have leaves the selection as it is, logged.
-        let (row, column) = match next {
-            Selection::Row(r) => (Some(r), None),
-            Selection::Column(c) => (None, Some(c)),
-            Selection::Cell(r, c) => (Some(r), Some(c)),
-            Selection::None => (None, None),
-        };
+        let (row, column) = (next.row(), next.column());
         if let Some(row) = row.filter(|&r| r >= rows) {
             log::warn!("DataTable.select: row {row} out of range (the table has {rows})");
             return;
         }
         if let Some(column) = column.filter(|&c| c >= columns) {
             log::warn!("DataTable.select: column {column} out of range (the table has {columns})");
+            return;
+        }
+        if let Selection::Range(range) = next
+            && !selection::range_in_bounds(range, rows, columns)
+        {
+            log::warn!("DataTable.select: cell range extends outside the table");
             return;
         }
         self.set_selection(selection::clamp(next, allowed, rows, columns), report);
@@ -880,9 +919,9 @@ impl Dt {
 
     fn bind_keys(&self) {
         let dt = self.clone();
-        // A terminal's Tab moves the focus on, out of the table, as Tab does
-        // everywhere in a terminal; the arrows move between the columns.
-        let tab = !crate::terminal::is_terminal();
+        // Tab moves between the cells everywhere, a terminal included, as
+        // a spreadsheet's does; Escape (with nothing selected) gives up the
+        // keyboard, and Tab then moves the focus on.
         effect(move || {
             if !dt.focused.get() {
                 return;
@@ -900,9 +939,6 @@ impl Dt {
                 ("end", Move::Last, true),
             ];
             for (keys, movement, repeat) in moves {
-                if !tab && keys.ends_with("tab") {
-                    continue;
-                }
                 let dt = dt.clone();
                 on_key_with(
                     keys,
@@ -1048,6 +1084,11 @@ impl Dt {
     /// Explicit desktop drags (the web scrollbar) use the whole range;
     /// wheels use the local anchor. Both start from the content now shown.
     pub(crate) fn drag_started(&self, horizontal: bool, offset: Point<Points>) {
+        if horizontal {
+            self.wheel_x.set(None);
+        } else {
+            self.wheel_y.set(None);
+        }
         if !self.web_desktop {
             return;
         }
@@ -1085,8 +1126,37 @@ impl Dt {
         self.rest();
     }
 
+    /// The two axes of one touchpad event move the same viewport together.
+    pub(super) fn pan_by_wheel(&self, event: &nsh_core::WheelEvent) {
+        let g = untracked(|| self.geo());
+        let delta = event.delta.points(px(g.row_height));
+        let advance =
+            |axis: &Axis, by: Points, pending: Signal<Option<Points>>, current: Signal<Points>| {
+                if by == Points::ZERO {
+                    return None;
+                }
+                let from = pending
+                    .get_untracked()
+                    .unwrap_or_else(|| current.get_untracked());
+                let to =
+                    axis.scroll_points(axis.content_offset(f64::from(from.0)) + f64::from(by.0));
+                if to == from {
+                    return None;
+                }
+                pending.set(Some(to));
+                Some(to)
+            };
+        if let Some(x) = advance(&g.x, delta.x, self.wheel_x, self.scroll_x) {
+            self.hscroll.scroll_to(point(x, Points::ZERO), false);
+        }
+        if let Some(y) = advance(&g.y, delta.y, self.wheel_y, self.scroll_y) {
+            self.vscroll.scroll_to(point(Points::ZERO, y), false);
+        }
+    }
+
     /// Scrolls the rows to content offset `content` at the top.
     pub(super) fn scroll_rows_to(&self, g: &Geo, content: f64, animated: bool) {
+        self.wheel_y.set(None);
         let y = self.offset_to(&g.y, g.cy, content, animated, self.anchor_y, self.scroll_y);
         self.vscroll
             .scroll_to(Point { x: Points::ZERO, y }, animated);
@@ -1095,6 +1165,7 @@ impl Dt {
     /// Scrolls the scrolling columns to content offset `content` at the
     /// start.
     fn scroll_columns_to(&self, g: &Geo, content: f64, animated: bool) {
+        self.wheel_x.set(None);
         let x = self.offset_to(&g.x, g.cx, content, animated, self.anchor_x, self.scroll_x);
         self.hscroll
             .scroll_to(Point { x, y: Points::ZERO }, animated);
@@ -1198,6 +1269,160 @@ impl Dt {
         }
     }
 
+    /// The anchor and active cell of a drag, preserving them on Shift.
+    pub(super) fn drag_range(
+        &self,
+        hit: DataTableCellPosition,
+        extend: bool,
+    ) -> DataTableCellRange {
+        if extend {
+            match self.st.borrow().selection {
+                Selection::Range(range) => return DataTableCellRange { end: hit, ..range },
+                Selection::Cell(row, col) => {
+                    return DataTableCellRange::new(
+                        DataTableCellPosition::new(row as u32, col as u32),
+                        hit,
+                    );
+                }
+                _ => {}
+            }
+        }
+        DataTableCellRange::new(hit, hit)
+    }
+
+    pub(super) fn select_drag_range(&self, range: DataTableCellRange) {
+        let rows = self.row_count();
+        let columns = self.st.borrow().columns.len();
+        if !selection::range_in_bounds(range, rows, columns) {
+            return;
+        }
+        let cleared = self.st.borrow_mut().active.take().is_some();
+        if cleared {
+            self.bump_data();
+        }
+        self.set_selection(Selection::Range(range), true);
+    }
+
+    pub(super) fn range_columns(&self, range: DataTableCellRange) -> Option<Range<usize>> {
+        self.layout_rev.get();
+        let st = self.st.borrow();
+        let first = st.columns.display_of(range.start.column as usize)?;
+        let last = st.columns.display_of(range.end.column as usize)?;
+        Some(first.min(last)..last.max(first) + 1)
+    }
+
+    pub(crate) fn drag_cell_at(&self, position: Point<Points>) -> Option<DataTableCellPosition> {
+        let hit = self.target_at(position);
+        let row = hit.row?;
+        let column = hit.column?;
+        (!hit.header && self.selectable(column))
+            .then_some(DataTableCellPosition::new(row as u32, column as u32))
+    }
+
+    /// Viewport-relative pointer coordinates from a `hit_view` content point.
+    pub(crate) fn drag_viewport_point(&self, position: Point<Points>) -> Point<Points> {
+        Point {
+            x: position.x - self.scroll_x.get_untracked(),
+            y: position.y - self.scroll_y.get_untracked(),
+        }
+    }
+
+    /// Resolves the cell under the pointer after clamping it to the body.
+    /// A column that cannot be selected leaves the drag's end where it was.
+    pub(crate) fn drag_cell_at_viewport(
+        &self,
+        viewport: Point<Points>,
+    ) -> Option<DataTableCellPosition> {
+        let g = untracked(|| self.geo());
+        self.drag_cell_at_offsets(viewport, &g, g.cx, g.cy)
+    }
+
+    fn drag_cell_at_offsets(
+        &self,
+        viewport: Point<Points>,
+        g: &Geo,
+        cx: f64,
+        cy: f64,
+    ) -> Option<DataTableCellPosition> {
+        let row_count = self.row_count();
+        if row_count == 0 {
+            return None;
+        }
+        let raw_row = ((cy + viewport.y.0 as f64) / g.row_height as f64).floor();
+        let row = (raw_row.max(0.0) as usize).min(row_count - 1);
+        let col_view = g.columns_view();
+        let col_x = (viewport.x.0 as f64 - g.lead as f64).clamp(0.0, (col_view - 0.5).max(0.0));
+        let column = {
+            let st = self.st.borrow();
+            let display = st
+                .columns
+                .display_at(col_x, cx, col_view)
+                .or_else(|| st.columns.len().checked_sub(1))?;
+            st.columns.def(display)
+        };
+        self.selectable(column)
+            .then_some(DataTableCellPosition::new(row as u32, column as u32))
+    }
+
+    /// Whether a viewport-relative pointer is outside the scroll area and should auto-scroll.
+    pub(crate) fn drag_needs_auto_scroll(&self, viewport: Point<Points>) -> bool {
+        let g = untracked(|| self.geo());
+        let vx = viewport.x.0 as f64;
+        let vy = viewport.y.0 as f64;
+        let lead = g.lead as f64;
+        let right = lead + g.columns_view();
+        let bottom = g.y.viewport;
+        vx < lead || vx > right - 8.0 || vy < 0.0 || vy > bottom - 8.0
+    }
+
+    /// Advances scroll by one frame while dragging past an edge and returns the new target cell.
+    pub(crate) fn drag_auto_scroll(
+        &self,
+        viewport: Point<Points>,
+    ) -> Option<DataTableCellPosition> {
+        let g = untracked(|| self.geo());
+        let vx = viewport.x.0 as f64;
+        let vy = viewport.y.0 as f64;
+        let lead = g.lead as f64;
+        let right = lead + g.columns_view();
+        let bottom = g.y.viewport;
+
+        let dx = if vx < lead {
+            -((lead - vx) * 0.45).clamp(6.0, 36.0)
+        } else if vx > right - 8.0 {
+            ((vx - (right - 8.0)) * 0.45).clamp(6.0, 36.0)
+        } else {
+            0.0
+        };
+        let dy = if vy < 0.0 {
+            -((-vy) * 0.45).clamp(6.0, 36.0)
+        } else if vy > bottom - 8.0 {
+            ((vy - (bottom - 8.0)) * 0.45).clamp(6.0, 36.0)
+        } else {
+            0.0
+        };
+        if dx == 0.0 && dy == 0.0 {
+            return None;
+        }
+
+        let max_cx = (g.x.extent() - g.x.viewport).max(0.0);
+        let max_cy = (g.y.extent() - g.y.viewport).max(0.0);
+        let next_cx = (g.cx + dx).clamp(0.0, max_cx);
+        let next_cy = (g.cy + dy).clamp(0.0, max_cy);
+        let moved_x = (next_cx - g.cx).abs() > 0.5;
+        let moved_y = (next_cy - g.cy).abs() > 0.5;
+        if !moved_x && !moved_y {
+            return None;
+        }
+        if moved_x {
+            self.scroll_columns_to(&g, next_cx, false);
+        }
+        if moved_y {
+            self.scroll_rows_to(&g, next_cy, false);
+        }
+        self.drag_cell_at_offsets(viewport, &g, next_cx, next_cy)
+    }
+
     /// A press (or tap) of the body, at `press.position` in the hit layer's
     /// content. On a cell `renderCell` draws, a view of the app's there
     /// that hears presses takes it (the body under the hit layer takes no
@@ -1289,12 +1514,8 @@ impl Dt {
     /// Whether a press with `modifiers` held selects (`selectOnModifierPress`):
     /// a row, a cell or a title.
     fn selects_on(&self, modifiers: Modifiers) -> bool {
-        let secondary = if matches!(os(), Os::Ios | Os::MacOs) {
-            modifiers.cmd
-        } else {
-            modifiers.ctrl
-        };
-        self.props.select_on_modifier_press.get_untracked() || !(secondary || modifiers.shift)
+        self.props.select_on_modifier_press.get_untracked()
+            || !(secondary_modifier(modifiers) || modifiers.shift)
     }
 
     /// What a press selects, as gpui-component's table: a cell when cells
@@ -1319,6 +1540,14 @@ impl Dt {
             Some(c) if !self.selectable(c) => None,
             // Shift or the secondary modifier, left for the app.
             Some(_) if !self.selects_on(modifiers) => None,
+            Some(column)
+                if modifiers.shift
+                    && !secondary_modifier(modifiers)
+                    && self.props.cell_range_selectable.get_untracked() =>
+            {
+                let position = DataTableCellPosition::new(row as u32, column as u32);
+                Some(Selection::Range(self.drag_range(position, true)))
+            }
             Some(c) => {
                 let again = self.st.borrow().selection == Selection::Cell(row, c);
                 let escalate = !untracked(|| self.row_header_shown())
@@ -1774,6 +2003,10 @@ impl Dt {
         match sel {
             Selection::None => return None,
             Selection::Cell(row, def) => self.write_cell(row, def, &mut text),
+            Selection::Range(range) => {
+                let active = range.active_cell();
+                self.write_cell(active.row as usize, active.column as usize, &mut text);
+            }
             Selection::Row(row) => {
                 for (i, &def) in order.iter().enumerate() {
                     if i > 0 {
@@ -1834,24 +2067,20 @@ fn range_of(range: &Range<usize>) -> DataTableRange {
 }
 
 fn to_public(selection: Selection) -> Option<DataTableSelection> {
-    match selection {
-        Selection::None => None,
-        Selection::Row(r) => Some(DataTableSelection {
-            row: Some(r as u32),
-            column: None,
-        }),
-        Selection::Column(c) => Some(DataTableSelection {
-            row: None,
-            column: Some(c as u32),
-        }),
-        Selection::Cell(r, c) => Some(DataTableSelection {
-            row: Some(r as u32),
-            column: Some(c as u32),
-        }),
-    }
+    (selection != Selection::None).then(|| DataTableSelection {
+        row: selection.row().map(|row| row as u32),
+        column: selection.column().map(|column| column as u32),
+        range: match selection {
+            Selection::Range(range) => Some(range),
+            _ => None,
+        },
+    })
 }
 
 fn from_public(selection: DataTableSelection) -> Selection {
+    if let Some(range) = selection.range {
+        return Selection::Range(range);
+    }
     match (selection.row, selection.column) {
         (Some(r), Some(c)) => Selection::Cell(r as usize, c as usize),
         (Some(r), None) => Selection::Row(r as usize),

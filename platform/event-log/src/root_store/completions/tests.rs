@@ -178,6 +178,37 @@ async fn completion_scans_are_scoped_paged_and_do_not_retain_task_tombstones() {
             .await
             .is_err()
     );
+    let pair_first = root
+        .message_completions_for_recipient("host", "worker", "caller", None)
+        .await
+        .unwrap();
+    assert_eq!(pair_first.len(), 64);
+    let pair_second = root
+        .message_completions_for_recipient(
+            "host",
+            "worker",
+            "caller",
+            Some(&pair_first.last().unwrap().key),
+        )
+        .await
+        .unwrap();
+    assert_eq!(pair_second.len(), 6);
+    assert!(
+        root.message_completions_for_recipient("host", "worker", "caller-other", None)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        root.message_completions_for_recipient(
+            "host",
+            "worker",
+            "caller-other",
+            Some(&pair_first[0].key),
+        )
+        .await
+        .is_err()
+    );
     for entry in first.into_iter().chain(second) {
         root.settle_message_completion("host", &entry.key, None)
             .await

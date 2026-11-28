@@ -397,6 +397,24 @@ impl Editor {
         self.host().caret.get()
     }
 
+    /// Shifts the cached caret with a moved client rectangle.
+    ///
+    /// RichEdit does not re-issue `TxSetCaretPos` when `TXTBIT_CLIENTRECTCHANGE`
+    /// translates its client rectangle (nor on draw when the old caret still
+    /// lies inside the moved rectangle). Translating the cached caret keeps it
+    /// in the new client frame until RichEdit places it anew.
+    pub(crate) fn shift_caret(&self, dx: i32, dy: i32) {
+        if dx == 0 && dy == 0 {
+            return;
+        }
+        let mut c = self.host().caret.get();
+        if c.height > 0 {
+            c.x += dx;
+            c.y += dy;
+            self.host().caret.set(c);
+        }
+    }
+
     /// The text (plain, lines broken by `\r`, as the services keep it).
     pub(crate) fn text_units(&self) -> Vec<u16> {
         text_of(&self.services, self.host().props.borrow().bits)
@@ -460,35 +478,19 @@ impl Editor {
         self.send(EM_SETSCROLLPOS, 0, &mut scroll as *mut _ as isize);
     }
 
-    /// The height of the text laid out `width` pixels wide (pixels).
-    pub(crate) fn text_height(&self, width: i32) -> Option<i32> {
-        use windows::Win32::{
-            Foundation::SIZE,
-            Graphics::Gdi::{GetDC, ReleaseDC},
-            UI::Controls::RichEdit::{TXTNS_FITTOCONTENT, TXTNS_INCLUDELASTLINE},
+    /// The farthest the text scrolls down (pixels): the last line at the
+    /// client rectangle's bottom. From the services' own scroll range, the
+    /// one `EM_SETSCROLLPOS` clamps to, so it holds at any display scale
+    /// (a measurement through the screen's DC fell short at HiDPI, #3200).
+    pub(crate) fn scroll_limit(&self) -> i32 {
+        let (min, max, _, page) = self.vscroll();
+        let page = if page > 0 {
+            page
+        } else {
+            let c = self.props().client;
+            c.bottom - c.top
         };
-        let (mut w, mut h) = (width.max(1), 1);
-        // The extent (HIMETRIC) sets the width to fit the text in.
-        let extent = SIZE {
-            cx: w * 2540 / 96,
-            cy: 2540 / 96,
-        };
-        // SAFETY: the screen's DC, released below; local out values.
-        unsafe {
-            let dc = GetDC(None);
-            let done = self.services.TxGetNaturalSize(
-                1, // DVASPECT_CONTENT
-                dc,
-                Default::default(),
-                std::ptr::null_mut(),
-                (TXTNS_FITTOCONTENT.0 | TXTNS_INCLUDELASTLINE.0) as u32,
-                &extent,
-                &mut w,
-                &mut h,
-            );
-            ReleaseDC(None, dc);
-            done.ok().map(|_| h)
-        }
+        (max - page).max(min).max(0)
     }
 
     /// Draws the text into `target` (an `ID2D1RenderTarget` whose
@@ -1247,13 +1249,16 @@ unsafe extern "system" fn tx_notify(this: This, code: u32, _: *mut c_void) -> HR
 }
 
 unsafe extern "system" fn tx_imm_get_context(this: This) -> HIMC {
-    // SAFETY: the host's window (moving IMC to shown_in breaks composition, #2094).
-    unsafe { ImmGetContext(host(this).hwnd) }
+    // The context of the window the field shows in, which has the keys
+    // (one of the app's own windows has its own): where the services
+    // place the composition and the candidates, in its client pixels.
+    // SAFETY: the host's window.
+    unsafe { ImmGetContext(host(this).shown_in.get()) }
 }
 
 unsafe extern "system" fn tx_imm_release_context(this: This, himc: HIMC) {
     // SAFETY: a context from `tx_imm_get_context`.
-    let _ = unsafe { ImmReleaseContext(host(this).hwnd, himc) };
+    let _ = unsafe { ImmReleaseContext(host(this).shown_in.get(), himc) };
 }
 
 unsafe extern "system" fn tx_get_selection_bar_width(_: This, out: *mut i32) -> HRESULT {

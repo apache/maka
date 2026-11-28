@@ -262,8 +262,11 @@ the registry's app windows. This avoids a second rendering model.
 }
 ```
 
-- `"platform"` (the default): macOS keeps the app running with no windows;
-  Windows and Linux quit when the last window closes.
+- `"platform"` (the default for explicit `<Window>` apps): macOS keeps the
+  app running with no windows; Windows and Linux quit when the last window
+  closes. A plain root's implicit first window quits on every platform
+  (including macOS) when it closes unless the app explicitly configures
+  `application.quitMode` or calls `Application.setQuitMode`.
 - `"lastWindowClosed"`: every platform quits when the last window closes.
 - `"explicit"`: the app decides. The app host stays alive with no windows; the
   app opens a window, shows a tray menu, or calls `Application.quit()`.
@@ -502,10 +505,14 @@ Window model v2 is a major-version break for apps that declare windows, but
 released apps keep running: `mount` gives a plain root the implicit first
 window, `currentWindow()` in the app root is its ref, and root keymap
 bindings stay app-wide as they were. Apps that declare `<Window>` scenes do
-not get it (the runtime drops it unshown). The first window inherits the
-`"window"` launch defaults; its `<Window>` attributes override them. An app
-that needs the old "quit when the first window closes" behavior sets
-`quitMode: "lastWindowClosed"`.
+not get it (the runtime drops it unshown). The first window inherits the `"window"` launch defaults; its `<Window>`
+attributes override them. Closing the implicit first window quits on every
+platform (as `"lastWindowClosed"`) unless the app explicitly configures
+`application.quitMode` in `nsh.json` or calls `Application.setQuitMode`, so
+a plain `mount(App)` app on macOS does not stay running in the Dock with no
+way to reopen its window. Explicit `<Window>` apps default to `"platform"`
+and set `quitMode: "lastWindowClosed"` when they want every platform to quit
+with the last window.
 
 ## Compatibility and migration
 

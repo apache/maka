@@ -35,7 +35,10 @@ async function setupPreferences(t, storage) {
   const hooks = registerHooks({
     resolve(specifier, ctx, next) {
       return specifier === 'nsh'
-        ? { url: `data:text/javascript,${encodeURIComponent(native)}`, shortCircuit: true }
+        ? {
+            url: `data:text/javascript,${encodeURIComponent(native)}`,
+            shortCircuit: true,
+          }
         : next(specifier, ctx);
     },
   });
@@ -52,11 +55,13 @@ async function setupPreferences(t, storage) {
 
 test('normalizes pinned features, supports empty selection, and persists across bundles', async (t) => {
   const saved = new Map();
+  let writes = 0;
   const storage = {
     async getItem(key) {
       return saved.get(key) ?? null;
     },
     async setItem(key, value) {
+      writes += 1;
       saved.set(key, value);
     },
   };
@@ -76,9 +81,15 @@ test('normalizes pinned features, supports empty selection, and persists across 
   assert.deepEqual(nav.sidebarPreferences.pinnedFeatures(), ['bot', 'automations']);
   assert.equal(nav.sidebarPreferences.sortMode(), 'project');
 
+  // Re-selecting the active sort mode is a complete no-op.
+  nav.sidebarPreferences.setSortMode('project');
+  await root.sidebarPreferences.whenIdle();
+  assert.equal(writes, 0);
+  assert.equal(saved.has('sidebar-preferences'), false);
+
   nav.sidebarPreferences.toggleFeature('rooms');
   nav.sidebarPreferences.toggleFeature('bot');
-  nav.sidebarPreferences.toggleSortMode();
+  nav.sidebarPreferences.setSortMode('time');
   await root.sidebarPreferences.whenIdle();
 
   assert.deepEqual(root.sidebarPreferences.pinnedFeatures(), ['automations', 'rooms']);
@@ -86,5 +97,19 @@ test('normalizes pinned features, supports empty selection, and persists across 
   assert.deepEqual(JSON.parse(saved.get('sidebar-preferences')), {
     pinnedFeatures: ['automations', 'rooms'],
     sortMode: 'time',
+  });
+
+  const writesAfterTime = writes;
+  nav.sidebarPreferences.setSortMode('time');
+  await root.sidebarPreferences.whenIdle();
+  assert.equal(writes, writesAfterTime);
+
+  nav.sidebarPreferences.setSortMode('project');
+  await root.sidebarPreferences.whenIdle();
+  assert.equal(root.sidebarPreferences.sortMode(), 'project');
+  assert.equal(writes, writesAfterTime + 1);
+  assert.deepEqual(JSON.parse(saved.get('sidebar-preferences')), {
+    pinnedFeatures: ['automations', 'rooms'],
+    sortMode: 'project',
   });
 });

@@ -2,8 +2,9 @@
 //! the text area (a horizontal scroll view without soft wrap), whose box
 //! of rows holds, from back to front, the line backgrounds, indent guides,
 //! search matches, selections, the rows of text, diagnostics' marks, the
-//! carets, the composition and the sink. Only the rows in view (and a few
-//! around them) are made, each a text whose spans are highlighted tokens.
+//! carets and the sink. Only the rows in view (and a few around them) are
+//! made, each a text whose spans are highlighted tokens (and, at the
+//! primary caret, what an input method is composing).
 
 use nsh_core::{
     element::{ContextMenuEvent, Cursor, EventKind, EventPayload, Style},
@@ -11,11 +12,11 @@ use nsh_core::{
 };
 
 use super::{
-    EditorDiagnosticSeverity, EditorPart, EditorProps,
+    EditorDecoration, EditorDiagnosticSeverity, EditorPart, EditorProps,
     controller::Ed,
-    state::{GutterMark, GutterPlace, RowContent, RulerMark, SpanTags},
+    state::{GutterMark, GutterPlace, RowContent, RulerMark, SpanFont, SpanLabel, SpanTags},
 };
-use crate::{input, theme};
+use crate::{input, text_view::merge_styles, theme};
 
 /// The width of a caret.
 pub(crate) const CARET_WIDTH: f32 = 2.0;
@@ -52,26 +53,15 @@ pub(crate) fn parts<E: Element>(el: E, props: EditorProps, list: &'static [Edito
         })
     })
     .inline_style(move || {
-        props.styles.with(|s| {
-            Style::from_decls(
-                list.iter()
-                    .filter_map(|p| s.get(*p))
-                    .flat_map(|s| s.decls().iter().cloned()),
-            )
-        })
+        props
+            .styles
+            .with(|s| merge_styles(list.iter().filter_map(|p| s.get(*p))))
     })
 }
 
 /// The editor.
 pub(crate) fn render(ed: Ed) -> impl IntoElement {
     let props = ed.props;
-    let lh = {
-        let ed = ed.clone();
-        move || {
-            ed.text_rev.get();
-            ed.st.borrow().line_height()
-        }
-    };
     let vscroll_ed = ed.clone();
     let layout_ed = ed.clone();
     let place_ed = ed.clone();
@@ -104,6 +94,7 @@ pub(crate) fn render(ed: Ed) -> impl IntoElement {
                 .element_ref(&ed.vscroll)
                 .absolute()
                 .inset_0()
+                .scrollbar_inset(move || super::layout::bar_inset(props.scrollbar_inset.get()))
                 .on_scroll(move |e: &ScrollEvent| {
                     vscroll_ed.scroll_y.set(e.offset.y);
                     vscroll_ed.viewport.set(e.size);
@@ -119,7 +110,7 @@ pub(crate) fn render(ed: Ed) -> impl IntoElement {
                             content_ed.content_height.set(b.size.height)
                         })
                         .child(gutter(ed.clone(), Layer::Hit, pointer))
-                        .child(text_area(ed.clone(), lh.clone(), Layer::Hit)),
+                        .child(text_area(ed.clone(), Layer::Hit)),
                 ),
         )
         // What the scroll views show, drawn over them where the editor last
@@ -142,12 +133,12 @@ pub(crate) fn render(ed: Ed) -> impl IntoElement {
                         .flex_row()
                         .items_stretch()
                         .child(gutter(ed.clone(), Layer::Paint, pointer))
-                        .child(text_area(ed.clone(), lh.clone(), Layer::Paint)),
+                        .child(text_area(ed.clone(), Layer::Paint)),
                 ),
         )
         .child(overview_ruler(ed.clone()))
         .child(super::completion::menu(ed.clone()))
-        .child(sink(ed, lh))
+        .child(sink(ed))
 }
 
 /// Which of the editor's two trees a part is made for.
@@ -260,8 +251,8 @@ fn gutter(ed: Ed, layer: Layer, pointer: GutterPointer) -> impl IntoElement {
                     }
                     let row = {
                         let st = press_ed.st.borrow();
-                        let row = (e.position.y / st.line_height()).floor().max(0.0) as usize;
-                        (row < st.display.row_count()).then_some(row)
+                        let row = st.display.row_at_y(e.position.y);
+                        (e.position.y < st.display.rows_height()).then_some(row)
                     };
                     if let Some(row) = row {
                         press_ed.line_number_press(row);
@@ -368,7 +359,8 @@ fn decoration_mark<E: Element>(
 /// The overview ruler's width, a scroll bar's (Monaco's).
 const RULER_WIDTH: f32 = 14.0;
 
-/// The overview ruler: along the editor's right edge, over the text, the
+/// The overview ruler: along the editor's right edge (within its
+/// `scrollbarInset`, as the vertical bar), over the text, the
 /// decorations' marks at their rows' places in the whole text.
 fn overview_ruler(ed: Ed) -> impl IntoElement {
     let props = ed.props;
@@ -393,12 +385,15 @@ fn overview_ruler(ed: Ed) -> impl IntoElement {
                 })
             };
             let ed = ed.clone();
+            // The vertical scroll bar's track: within the editor's
+            // `scrollbarInset`, as the bar is.
+            let inset = move || super::layout::bar_inset(props.scrollbar_inset.get());
             part(
                 view()
                     .absolute()
-                    .top_0()
-                    .bottom_0()
-                    .right_0()
+                    .top(move || Length::from(inset().top))
+                    .bottom(move || Length::from(inset().bottom))
+                    .right(move || Length::from(inset().right))
                     // A scroll bar's width, the part's to change: the
                     // lanes are shares of it.
                     .w(px(RULER_WIDTH))
@@ -449,12 +444,25 @@ fn overview_ruler(ed: Ed) -> impl IntoElement {
 
 /// Where a mark is down the overview ruler: its top and height.
 fn ruler_place(ed: &Ed, mark: &RulerMark) -> (Points, Points) {
-    let track = ed.viewport.get().height;
-    let lh = {
+    let inset = super::layout::bar_inset(ed.props.scrollbar_inset.get());
+    let track = (ed.viewport.get().height - inset.top - inset.bottom).max(px(0.0));
+    let (top, bottom) = {
         ed.text_rev.get();
-        ed.st.borrow().line_height()
+        let st = ed.st.borrow();
+        (
+            st.display.row_top(mark.rows.start),
+            st.display.row_top(mark.rows.end),
+        )
     };
-    super::layout::ruler_place(mark.rows.clone(), lh, rows_height(ed), track)
+    super::layout::ruler_place(top, bottom - top, rows_height(ed), track)
+}
+
+/// The top and height of display row `row` in the rows' box, with the
+/// text's layout.
+fn row_box(ed: &Ed, row: usize) -> (Points, Points) {
+    ed.text_rev.get();
+    let st = ed.st.borrow();
+    (st.display.row_top(row), st.display.row_height(row))
 }
 
 /// What takes the pointer for the fold marker of the display row in
@@ -487,14 +495,10 @@ fn fold_hit(
                 number_width.clone(),
                 fold_width.clone(),
             );
-            let lh = {
+            let place = {
                 let ed = ed.clone();
-                move || {
-                    ed.text_rev.get();
-                    ed.st.borrow().line_height()
-                }
+                computed(move || row_box(&ed, slot.get().1))
             };
-            let lh2 = lh.clone();
             view()
                 .absolute()
                 .left(move || {
@@ -505,9 +509,9 @@ fn fold_hit(
                     };
                     Length::from(strip_width() + numbers)
                 })
-                .top(move || Length::from(lh() * slot.get().1 as f32))
+                .top(move || Length::from(place.get().0))
                 .w(move || Length::from(fold_width()))
-                .h(move || Length::from(lh2()))
+                .h(move || Length::from(place.get().1))
                 .on_mouse_enter(move |_: &MouseEvent| pointer.hover.set(Some(row())))
                 .on_mouse_leave(move |_: &MouseEvent| {
                     if pointer.hover.get_untracked() == Some(row()) {
@@ -552,14 +556,10 @@ fn gutter_row(
         })
     };
     let row = move || slot.get_untracked().1;
-    let lh = {
+    let place = {
         let ed = ed.clone();
-        move || {
-            ed.text_rev.get();
-            ed.st.borrow().line_height()
-        }
+        computed(move || row_box(&ed, slot.get().1))
     };
-    let lh2 = lh.clone();
     let press_ed = ed.clone();
     let fold_ed = ed.clone();
     let marks_ed = ed.clone();
@@ -568,8 +568,8 @@ fn gutter_row(
         .absolute()
         .left_0()
         .right_0()
-        .top(move || Length::from(lh() * slot.get().1 as f32))
-        .h(move || Length::from(lh2()))
+        .top(move || Length::from(place.get().0))
+        .h(move || Length::from(place.get().1))
         .flex_row()
         .items_center()
         .pl(move || Length::from(pad()))
@@ -764,11 +764,12 @@ fn grow_height(ed: &Ed) -> Option<Points> {
         return None;
     }
     ed.text_rev.get();
-    let (rows, lh) = {
+    let rows_h = {
         let st = ed.st.borrow();
-        (st.display.row_count(), st.line_height())
+        super::layout::grow_height(st.display.row_count(), min, max, |rows| {
+            st.display.row_top(rows)
+        })?
     };
-    let rows_h = super::layout::grow_height(rows, lh, min, max)?;
     // What the content holds besides the rows (the parts' padding), as
     // last laid out.
     let padding = (ed.content_height.get() - rows_height(ed)).max(px(0.0));
@@ -777,19 +778,14 @@ fn grow_height(ed: &Ed) -> Option<Points> {
 
 /// The text area: the rows' box, in a horizontal scroll view unless lines
 /// wrap.
-fn text_area(ed: Ed, lh: impl Fn() -> Points + Clone + 'static, layer: Layer) -> impl IntoElement {
+fn text_area(ed: Ed, layer: Layer) -> impl IntoElement {
     let props = ed.props;
     let wrap = move || props.soft_wrap.get();
     let a = ed.clone();
     let b = ed.clone();
-    let c = lh.clone();
     when(wrap, move || {
         let ed = a.clone();
-        part(view().flex_1().pl(px(4.0)), props, EditorPart::Content).child(rows_box(
-            ed,
-            c.clone(),
-            layer,
-        ))
+        part(view().flex_1().pl(px(4.0)), props, EditorPart::Content).child(rows_box(ed, layer))
     })
     .otherwise(move || {
         let ed = b.clone();
@@ -812,32 +808,51 @@ fn text_area(ed: Ed, lh: impl Fn() -> Points + Clone + 'static, layer: Layer) ->
                         props,
                         EditorPart::Content,
                     )
-                    .child(rows_box(ed, lh.clone(), layer)),
+                    .child(rows_box(ed, layer)),
                 )
                 .into_element();
         }
         let scroll_ed = ed.clone();
         let layout_ed = ed.clone();
+        let content_ed = ed.clone();
+        // Where the text area starts in the editor (past the gutter): the
+        // editor's `scrollbarInset` counts from the editor's left. A memo,
+        // so that a layout that leaves the bar's inset as it was sends
+        // nothing.
+        let left = signal(px(0.0));
+        let inset = computed(move || {
+            super::layout::text_bar_inset(props.scrollbar_inset.get(), left.get())
+        });
         scroll()
             .horizontal()
             .flex_1()
             .element_ref(&ed.hscroll)
+            .scrollbar_inset(move || inset.get())
             .on_scroll(move |e: &ScrollEvent| scroll_ed.scroll_x.set(e.offset.x))
-            .on_layout(move |bounds: &Bounds<Points>| layout_ed.text_width.set(bounds.size.width))
+            .on_layout(move |bounds: &Bounds<Points>| {
+                left.set(bounds.origin.x);
+                layout_ed.text_width.set(bounds.size.width);
+            })
             .child(
                 part(
-                    view().min_w(relative(1.0)).pl(px(4.0)),
+                    view()
+                        .min_w(relative(1.0))
+                        .pl(px(4.0))
+                        // How far the text scrolls sideways (`onScroll`).
+                        .on_layout(move |bounds: &Bounds<Points>| {
+                            content_ed.text_content_width.set(bounds.size.width)
+                        }),
                     props,
                     EditorPart::Content,
                 )
-                .child(rows_box(ed, lh.clone(), layer)),
+                .child(rows_box(ed, layer)),
             )
             .into_element()
     })
 }
 
 /// The box of the rows and everything drawn over and under them.
-fn rows_box(ed: Ed, lh: impl Fn() -> Points + Clone + 'static, layer: Layer) -> impl IntoElement {
+fn rows_box(ed: Ed, layer: Layer) -> impl IntoElement {
     let props = ed.props;
     let width = {
         let ed = ed.clone();
@@ -955,22 +970,21 @@ fn rows_box(ed: Ed, lh: impl Fn() -> Points + Clone + 'static, layer: Layer) -> 
         // indicators. The paint overlay above it holds the foreground.
         // The selection's handles take touches of their own.
         return el
-            .child(active_lines(ed.clone(), lh))
+            .child(active_lines(ed.clone()))
             .child(super::touch::handles(ed))
             .into_element();
     }
     el.child(rulers(ed.clone()))
-        .child(indent_guides(ed.clone(), lh.clone()))
+        .child(indent_guides(ed.clone()))
         .child(match_rects(ed.clone()))
         .child(selection_rects(ed.clone()))
         .child(bracket_rects(ed.clone()))
-        .child(rows(ed.clone(), lh.clone()))
+        .child(rows(ed.clone()))
         .child(whitespace_marks(ed.clone()))
         .child(diagnostic_marks(ed.clone()))
         .child(super::definition::link_marks(ed.clone()))
         .child(placeholder(ed.clone()))
-        .child(carets(ed.clone(), lh.clone()))
-        .child(composition(ed.clone(), lh.clone()))
+        .child(carets(ed.clone()))
         .child(super::completion::marks(ed))
         .into_element()
 }
@@ -987,7 +1001,7 @@ fn rect(b: Bounds<Points>) -> View {
 }
 
 /// The backgrounds of the active lines' rows.
-fn active_lines(ed: Ed, lh: impl Fn() -> Points + Clone + 'static) -> impl IntoElement {
+fn active_lines(ed: Ed) -> impl IntoElement {
     let props = ed.props;
     dynamic(move || {
         if !props.active_line.get() {
@@ -996,18 +1010,23 @@ fn active_lines(ed: Ed, lh: impl Fn() -> Points + Clone + 'static) -> impl IntoE
         ed.text_rev.get();
         ed.sel_rev.get();
         let rows = ed.visible_rows();
-        let active = ed.st.borrow().active_rows(rows);
-        let lh = lh();
+        let active: Vec<(Points, Points)> = {
+            let st = ed.st.borrow();
+            st.active_rows(rows)
+                .into_iter()
+                .map(|row| (st.display.row_top(row), st.display.row_height(row)))
+                .collect()
+        };
         active
             .into_iter()
-            .map(|row| {
+            .map(|(top, height)| {
                 part(
                     view()
                         .absolute()
                         .left_0()
                         .right_0()
-                        .top(Length::from(lh * row as f32))
-                        .h(Length::from(lh))
+                        .top(Length::from(top))
+                        .h(Length::from(height))
                         .pointer_events(PointerEvents::None)
                         .bg(move || theme().muted.opacity(0.6)),
                     props,
@@ -1019,7 +1038,7 @@ fn active_lines(ed: Ed, lh: impl Fn() -> Points + Clone + 'static) -> impl IntoE
 }
 
 /// The indent guides of the rows in view.
-fn indent_guides(ed: Ed, lh: impl Fn() -> Points + Clone + 'static) -> impl IntoElement {
+fn indent_guides(ed: Ed) -> impl IntoElement {
     let props = ed.props;
     dynamic(move || {
         if !props.indent_guides.get() {
@@ -1027,17 +1046,22 @@ fn indent_guides(ed: Ed, lh: impl Fn() -> Points + Clone + 'static) -> impl Into
         }
         ed.text_rev.get();
         let rows = ed.visible_rows();
-        let guides = ed.st.borrow().indent_guides(rows);
-        let lh = lh();
+        let guides: Vec<(Points, Points, Points)> = {
+            let st = ed.st.borrow();
+            st.indent_guides(rows)
+                .into_iter()
+                .map(|(x, rows)| {
+                    let top = st.display.row_top(rows.start);
+                    (x, top, st.display.row_top(rows.end) - top)
+                })
+                .collect()
+        };
         guides
             .into_iter()
-            .map(|(x, rows)| {
+            .map(|(x, top, height)| {
                 part(
-                    rect(Bounds::new(
-                        Point::new(x, lh * rows.start as f32),
-                        Size::new(px(1.0), lh * rows.len() as f32),
-                    ))
-                    .bg(move || theme().border),
+                    rect(Bounds::new(Point::new(x, top), Size::new(px(1.0), height)))
+                        .bg(move || theme().border),
                     props,
                     EditorPart::IndentGuide,
                 )
@@ -1053,6 +1077,7 @@ fn match_rects(ed: Ed) -> impl IntoElement {
         ed.text_rev.get();
         ed.marks_rev.get();
         ed.sel_rev.get();
+        ed.composing.with(|_| ());
         let rows = ed.visible_rows();
         let rects = ed.st.borrow().match_rects(rows);
         rects
@@ -1079,6 +1104,7 @@ fn selection_rects(ed: Ed) -> impl IntoElement {
     dynamic(move || {
         ed.text_rev.get();
         ed.sel_rev.get();
+        ed.composing.with(|_| ());
         let rows = ed.visible_rows();
         let rects = ed.st.borrow().selection_rects(rows);
         rects
@@ -1100,6 +1126,7 @@ fn bracket_rects(ed: Ed) -> impl IntoElement {
     dynamic(move || {
         ed.text_rev.get();
         ed.sel_rev.get();
+        ed.composing.with(|_| ());
         if !ed.focused.get() {
             return Vec::new();
         }
@@ -1121,30 +1148,35 @@ fn bracket_rects(ed: Ed) -> impl IntoElement {
 }
 
 /// The rows of text in view.
-fn rows(ed: Ed, lh: impl Fn() -> Points + Clone + 'static) -> impl IntoElement {
+fn rows(ed: Ed) -> impl IntoElement {
     let list = visible_rows(ed.clone());
     each(
         list,
         |slot: &(usize, usize)| slot.0,
-        move |slot, _| row_view(ed.clone(), slot, lh.clone()),
+        move |slot, _| row_view(ed.clone(), slot),
     )
 }
 
 /// The display row in `slot`.
-fn row_view(
-    ed: Ed,
-    slot: ReadSignal<(usize, usize)>,
-    lh: impl Fn() -> Points + Clone + 'static,
-) -> impl IntoElement {
+fn row_view(ed: Ed, slot: ReadSignal<(usize, usize)>) -> impl IntoElement {
     let props = ed.props;
     let row = move || slot.get().1;
+    // What an input method composes in this row: only the row it shows in
+    // (and the one it leaves) changes with it.
+    let composing = {
+        let composing = ed.composing;
+        computed(move || {
+            let row = row();
+            composing.with(|c| c.as_ref().filter(|c| c.row == row).cloned())
+        })
+    };
     let content = {
         let ed = ed.clone();
         computed(move || {
             ed.text_rev.get();
             ed.hl_rev.get();
             ed.marks_rev.get();
-            ed.st.borrow().row_content(row())
+            composing.with(|c| ed.st.borrow().row_content(row(), c.as_ref()))
         })
     };
     let indent = {
@@ -1160,15 +1192,18 @@ fn row_view(
             }
         }
     };
-    let lh2 = lh.clone();
+    let place = {
+        let ed = ed.clone();
+        computed(move || row_box(&ed, row()))
+    };
     let line_ed = ed.clone();
     let line = part(
         view()
             .absolute()
             .left_0()
             .right_0()
-            .top(move || Length::from(lh() * row() as f32))
-            .h(move || Length::from(lh2()))
+            .top(move || Length::from(place.get().0))
+            .h(move || Length::from(place.get().1))
             .pointer_events(PointerEvents::None),
         props,
         EditorPart::Line,
@@ -1202,7 +1237,17 @@ fn row_view(
                             .and_then(|d| d.line_style.clone())
                     })
                     .collect();
-                Style::from_decls(styles.iter().flat_map(|s| s.decls().iter().cloned()))
+                let style = merge_styles(&styles);
+                // A row with larger text is taller, and so is its text's
+                // line (the others take the root's): in the binding the row
+                // has, no style of its own for the rows that need none.
+                match content.with(|c| c.line_height) {
+                    Some(height) => style.with(
+                        nsh_core::StyleKey::LineHeight,
+                        nsh_core::PropertyValue::LineHeight(nsh_core::LineHeight::from(height)),
+                    ),
+                    None => style,
+                }
             }
         });
     let span_ed = ed.clone();
@@ -1237,11 +1282,26 @@ fn spans(ed: Ed, slot: ReadSignal<(usize, usize)>, content: RowContent) -> Vec<A
     {
         let st = ed.st.borrow();
         for span in content.spans {
+            if let Some(label) = span.label {
+                if let Some(d) = st.decoration_items.get(label.item) {
+                    out.push(label_box(&ed, label, d, span.font, span.text).into_element());
+                }
+                continue;
+            }
             let mut el = text(span.text);
             if let Some(token) = span.token {
                 *el.style() = token.style();
             }
+            // A decoration's font, as the display map measures the span.
+            if let Some(font) = span.font {
+                el = el
+                    .font_family(font.family)
+                    .text_size(Length::from(font.size));
+            }
             let tags = span.tags;
+            if span.composition {
+                el = el.underline();
+            }
             if tags.unnecessary {
                 el = el.text_color(move || theme().muted_foreground);
             }
@@ -1272,17 +1332,15 @@ fn spans(ed: Ed, slot: ReadSignal<(usize, usize)>, content: RowContent) -> Vec<A
                 .iter()
                 .filter_map(|i| st.decoration_items.get(*i).and_then(|d| d.style.clone()))
                 .collect();
-            if tags.is_empty() {
+            if tags.is_empty() && !span.composition {
                 if !classes.is_empty() {
                     el = el.app_class(Some(SharedString::from(classes.join(" "))));
                 }
                 if !styles.is_empty() {
-                    el = el.inline_style(Style::from_decls(
-                        styles.iter().flat_map(|s| s.decls().iter().cloned()),
-                    ));
+                    el = el.inline_style(merge_styles(&styles));
                 }
             } else {
-                el = tagged(el, props, tags, classes, styles);
+                el = tagged(el, props, tags, span.composition, classes, styles);
             }
             out.push(el.into_element());
         }
@@ -1301,13 +1359,61 @@ fn spans(ed: Ed, slot: ReadSignal<(usize, usize)>, content: RowContent) -> Vec<A
     out
 }
 
-/// Span `el` under tagged diagnostics: the classes and styles of the
-/// tags' parts, then its decorations' (`classes`, `styles`), which are
+/// The label of replacing decoration `d` (`label`) in its row, in place of
+/// `source` (the range's text): a box of the decoration's `labelClass` and
+/// `labelStyle` holding its label in `font` (the decorations' font around
+/// it, else the editor's), centered on the row's text, its lines as tall as
+/// the font (so padding keeps it within the row unless the app sets
+/// another `leading-*`). The box reports the width it was laid out at
+/// (its margins included, as the outer box's) for the caret and presses
+/// after this decoration's range; copies and screen readers take the
+/// range's text, and presses pass to the rows below, as on the text.
+///
+/// The box is keyed by its decoration, look and font. A row made again
+/// keeps a box only for the same label: a kept box's listener hears the
+/// frame it was last laid out at, before the new content is, which for
+/// another label's box would be that label's width reported as this one's.
+fn label_box(
+    ed: &Ed,
+    label: SpanLabel,
+    d: &EditorDecoration,
+    font: Option<SpanFont>,
+    source: String,
+) -> View {
+    let SpanLabel { item, key } = label;
+    let width_ed = ed.clone();
+    let mut outer = view().key(format!("label:{item}:{:x}:{:x}", key.0, key.1));
+    if let Some(font) = font {
+        // Inherited, so the box's classes can still set another.
+        outer = outer
+            .font_family(font.family)
+            .text_size(Length::from(font.size));
+    }
+    outer
+        .align_middle()
+        .line_height(nsh_core::LineHeight::Multiple(1.0))
+        .pointer_events(PointerEvents::None)
+        .copy_text(SharedString::from(source.clone()))
+        .accessible(true)
+        .label(SharedString::from(source))
+        .on_layout(move |b: &Bounds<Points>| width_ed.set_label_width(item, key, b.size.width))
+        .child(
+            view()
+                .app_class(d.label_class.clone())
+                .inline_style(d.label_style.clone().unwrap_or_default())
+                .child(text(d.label.clone().unwrap_or_default()).number_of_lines(1u32)),
+        )
+}
+
+/// Span `el` under tagged diagnostics or composed by an input method
+/// (`composition`): the classes and styles of the tags' parts and of the
+/// composition's, then its decorations' (`classes`, `styles`), which are
 /// about this range alone.
 fn tagged(
     el: Text,
     props: EditorProps,
     tags: SpanTags,
+    composition: bool,
     classes: Vec<String>,
     styles: Vec<Style>,
 ) -> Text {
@@ -1317,6 +1423,7 @@ fn tagged(
         .into_iter()
         .chain(tags.unnecessary.then_some(EditorPart::UnnecessaryText))
         .chain(tags.deprecated.then_some(EditorPart::DeprecatedText))
+        .chain(composition.then_some(EditorPart::Composition))
         .collect();
     let style_list = list.clone();
     let classes = classes.join(" ");
@@ -1332,12 +1439,11 @@ fn tagged(
     })
     .inline_style(move || {
         props.styles.with(|s| {
-            Style::from_decls(
+            merge_styles(
                 style_list
                     .iter()
                     .filter_map(|p| s.get(*p))
-                    .chain(styles.iter())
-                    .flat_map(|s| s.decls().iter().cloned()),
+                    .chain(styles.iter()),
             )
         })
     })
@@ -1360,6 +1466,7 @@ fn diagnostic_marks(ed: Ed) -> impl IntoElement {
     dynamic(move || {
         ed.text_rev.get();
         ed.marks_rev.get();
+        ed.composing.with(|_| ());
         let rows = ed.visible_rows();
         let marks = ed.st.borrow().diagnostic_rects(rows);
         marks
@@ -1376,12 +1483,13 @@ fn diagnostic_marks(ed: Ed) -> impl IntoElement {
     })
 }
 
-/// The placeholder, while the text is empty.
+/// The placeholder, while the text is empty and no input method composes
+/// (the composition shows where it would).
 fn placeholder(ed: Ed) -> impl IntoElement {
     let props = ed.props;
     dynamic(move || {
         ed.text_rev.get();
-        let empty = ed.st.borrow().buffer.is_empty();
+        let empty = ed.st.borrow().buffer.is_empty() && ed.composing.with(|c| c.is_none());
         let text_ = props.placeholder.get()?;
         if !empty {
             return None;
@@ -1400,7 +1508,7 @@ fn placeholder(ed: Ed) -> impl IntoElement {
 }
 
 /// The carets in view, blinking while the editor has the focus.
-fn carets(ed: Ed, lh: impl Fn() -> Points + Clone + 'static) -> impl IntoElement {
+fn carets(ed: Ed) -> impl IntoElement {
     let props = ed.props;
     let blink = ed.blink;
     let focused = ed.focused;
@@ -1421,14 +1529,13 @@ fn carets(ed: Ed, lh: impl Fn() -> Points + Clone + 'static) -> impl IntoElement
         if composing {
             return Vec::new();
         }
-        let lh = lh();
         points
             .into_iter()
-            .map(|p| {
+            .map(|(p, height)| {
                 part(
                     rect(Bounds::new(
                         Point::new(p.x - px(CARET_WIDTH / 2.0), p.y),
-                        Size::new(px(CARET_WIDTH), lh),
+                        Size::new(px(CARET_WIDTH), height),
                     ))
                     .bg(move || theme().foreground)
                     .opacity(move || {
@@ -1446,71 +1553,29 @@ fn carets(ed: Ed, lh: impl Fn() -> Points + Clone + 'static) -> impl IntoElement
     })
 }
 
-/// What an input method is composing, drawn at the primary caret over the
-/// text, with what follows it on the row moved aside (the text changes only
-/// when the composition commits).
-fn composition(ed: Ed, lh: impl Fn() -> Points + Clone + 'static) -> impl IntoElement {
-    let props = ed.props;
-    dynamic(move || {
-        ed.sel_rev.get();
-        ed.text_rev.get();
-        let (text_, tail, at) = {
-            let st = ed.st.borrow();
-            let text_ = st.composition.clone()?;
-            let head = st.primary_head();
-            (text_, st.row_after(head), st.caret_point(head))
-        };
-        // The row it covers is the active line's.
-        let active = props.active_line.get();
-        Some(
-            view()
-                .absolute()
-                .left(Length::from(at.x))
-                .top(Length::from(at.y))
-                .h(Length::from(lh()))
-                .pointer_events(PointerEvents::None)
-                .bg(move || theme().background)
-                .child(
-                    view()
-                        .flex_row()
-                        .h_full()
-                        .bg(move || match active {
-                            true => theme().muted.opacity(0.6),
-                            false => AdaptiveColor::TRANSPARENT,
-                        })
-                        .child(part(
-                            text(text_).number_of_lines(1).underline(),
-                            props,
-                            EditorPart::Composition,
-                        ))
-                        .child(text(tail).number_of_lines(1)),
-                ),
-        )
-    })
-}
-
 /// The native input that takes typed text and input methods, kept at the
 /// primary caret (where the input method's candidates open), invisible.
 /// It lies over the scroll views, not in them, and inside the editor's box:
 /// the platforms scroll a focused field into view, which the editor does
 /// itself for its caret, and would scroll the text from under it.
-fn sink(ed: Ed, lh: impl Fn() -> Points + Clone + 'static) -> impl IntoElement {
+fn sink(ed: Ed) -> impl IntoElement {
+    // Where the primary caret is, and its row's height.
     let at = {
         let ed = ed.clone();
-        let lh = lh.clone();
         computed(move || {
             ed.text_rev.get();
             ed.sel_rev.get();
-            let caret = {
+            let (caret, height) = {
                 let st = ed.st.borrow();
-                st.caret_point(st.primary_head())
+                st.caret_box(st.primary_head())
             };
             let at = ed.in_editor(caret);
             let size = ed.viewport.get();
-            Point::new(
+            let at = Point::new(
                 at.x.min(size.width - px(1.0)).max(px(0.0)),
-                at.y.min(size.height - lh()).max(px(0.0)),
-            )
+                at.y.min(size.height - height).max(px(0.0)),
+            );
+            (at, height)
         })
     };
     let props = ed.props;
@@ -1528,10 +1593,10 @@ fn sink(ed: Ed, lh: impl Fn() -> Points + Clone + 'static) -> impl IntoElement {
     input()
         .element_ref(&ed.input)
         .absolute()
-        .left(move || Length::from(at.get().x))
-        .top(move || Length::from(at.get().y))
+        .left(move || Length::from(at.get().0.x))
+        .top(move || Length::from(at.get().0.y))
         .w(px(1.0))
-        .h(move || Length::from(lh()))
+        .h(move || Length::from(at.get().1))
         // Presses at the caret are the rows' (a click there places it).
         .pointer_events(PointerEvents::None)
         .p_0()
@@ -1615,6 +1680,7 @@ fn whitespace_marks(ed: Ed) -> impl IntoElement {
             return Vec::new();
         }
         ed.text_rev.get();
+        ed.composing.with(|_| ());
         let rows = ed.visible_rows();
         let marks = ed.st.borrow().whitespace_marks(rows);
         marks

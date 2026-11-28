@@ -33,22 +33,48 @@ const keywords = () =>
   localizedKeywords(['app', 'apps', 'Search applications'], 'launcher.keywords.applications');
 const applicationName = (path: string) => path.slice(path.lastIndexOf('/') + 1, -'.app'.length);
 
-function Applications(props: { input: QuickToolInput; host: ApplicationHost }) {
-  const { input, host } = props;
+function applicationIcons(host: ApplicationHost) {
+  const icons = new Map<string, () => string | undefined>();
+  return (id: string) => {
+    let icon = icons.get(id);
+    if (!icon) {
+      const loaded = signal<string | undefined>(undefined);
+      icon = loaded;
+      icons.set(id, icon);
+      host.applicationIcon(id).then(loaded.set, () => loaded.set(undefined));
+    }
+    return icon();
+  };
+}
+
+function runningActions(
+  name: string,
+  visibility: 'hide' | 'minimize',
+  invoke: (action: 'hide' | 'minimize' | 'quit' | 'forceQuit' | 'restart') => void,
+): QuickAction[] {
+  return [
+    {
+      title: visibility === 'hide' ? tr('Hide application') : tr('Minimize application'),
+      icon: 'minus',
+      startsGroup: true,
+      run: () => invoke(visibility),
+    },
+    { title: tr('Restart application'), icon: 'refresh', run: () => invoke('restart') },
+    { title: tr('Quit application'), icon: 'close', run: () => invoke('quit') },
+    {
+      title: tr('Force quit application'),
+      icon: 'stop',
+      confirm: tr('Force quit {app}? Unsaved changes may be lost.', { app: name }),
+      run: () => invoke('forceQuit'),
+    },
+  ];
+}
+
+function macItems(input: QuickToolInput, host: ApplicationHost) {
   const installed = signal<readonly string[]>([]);
   host.installedApplications().then(installed.set, input.report);
-  const icons = signal<ReadonlyMap<string, string>>(new Map());
-  const requested = new Set<string>();
-  const iconOf = (path: string) => {
-    if (!requested.has(path)) {
-      requested.add(path);
-      host
-        .applicationIcon(path)
-        .then((icon) => icons.set(new Map(icons()).set(path, icon)), input.report);
-    }
-    return icons().get(path);
-  };
-  const items = computed(() =>
+  const iconOf = applicationIcons(host);
+  return computed(() =>
     search(installed(), input.query(), keywords(), (path) => [applicationName(path)], true).map(
       ({ item: path, match }): QuickItem => ({
         id: path,
@@ -73,32 +99,9 @@ function Applications(props: { input: QuickToolInput; host: ApplicationHost }) {
             },
             ...(pid == null
               ? []
-              : [
-                  {
-                    title: tr('Hide application'),
-                    icon: 'minus' as const,
-                    startsGroup: true,
-                    run: () => run(host.applicationAction(path, pid, 'hide')),
-                  },
-                  {
-                    title: tr('Restart application'),
-                    icon: 'refresh' as const,
-                    run: () => run(host.applicationAction(path, pid, 'restart')),
-                  },
-                  {
-                    title: tr('Quit application'),
-                    icon: 'close' as const,
-                    run: () => run(host.applicationAction(path, pid, 'quit')),
-                  },
-                  {
-                    title: tr('Force quit application'),
-                    icon: 'stop' as const,
-                    confirm: tr('Force quit {app}? Unsaved changes may be lost.', {
-                      app: applicationName(path),
-                    }),
-                    run: () => run(host.applicationAction(path, pid, 'forceQuit')),
-                  },
-                ]),
+              : runningActions(applicationName(path), 'hide', (action) =>
+                  run(host.applicationAction(path, pid, action)),
+                )),
           ];
         },
         match,
@@ -107,6 +110,53 @@ function Applications(props: { input: QuickToolInput; host: ApplicationHost }) {
       }),
     ),
   );
+}
+
+function windowsItems(input: QuickToolInput, host: ApplicationHost) {
+  const installed = signal<Awaited<ReturnType<ApplicationHost['startMenuApplications']>>>([]);
+  host.startMenuApplications().then(installed.set, input.report);
+  const iconOf = applicationIcons(host);
+  return computed(() =>
+    search(installed(), input.query(), keywords(), (app) => [app.name], true).map(
+      ({ item, match }): QuickItem => ({
+        id: item.id,
+        title: item.name,
+        icon: 'app',
+        image: () => iconOf(item.id),
+        source: tr('Application'),
+        action: tr('Open'),
+        async actions(): Promise<readonly QuickAction[]> {
+          const { path, instance } = await host.startMenuActions(item.id);
+          const run = (task: Promise<unknown>) => void task.then(input.close, input.report);
+          return [
+            {
+              title: tr('Show in File Explorer'),
+              icon: 'folder',
+              run: () => run(host.startMenuAction(item.id, 'reveal', null)),
+            },
+            {
+              title: path ? tr('Copy application path') : tr('Copy application ID'),
+              icon: 'copy',
+              run: () => run(Clipboard.writeText(path ?? item.id)),
+            },
+            ...(instance == null
+              ? []
+              : runningActions(item.name, 'minimize', (action) =>
+                  run(host.startMenuAction(item.id, action, instance)),
+                )),
+          ];
+        },
+        match,
+        remembered: true,
+        run: () => void host.openStartMenuApplication(item.id).then(input.close, input.report),
+      }),
+    ),
+  );
+}
+
+function Applications(props: { input: QuickToolInput; host: ApplicationHost }) {
+  const { input, host } = props;
+  const items = platform.os === 'windows' ? windowsItems(input, host) : macItems(input, host);
   input.attach({
     items,
     entries: () => [{ id: 'search', title: tr('Applications'), icon: 'app', keywords: keywords() }],
@@ -121,7 +171,7 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
         kind: 'view',
         contract: quickToolView.id,
         render: ({ input }: UiEmbeddedViewProps<QuickToolInput, JSX.Element>) =>
-          platform.os === 'macos' ? (
+          platform.os === 'macos' || platform.os === 'windows' ? (
             <Applications input={input} host={context.application as ApplicationHost} />
           ) : null,
       },

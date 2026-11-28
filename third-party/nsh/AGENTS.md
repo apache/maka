@@ -33,6 +33,7 @@ comments before editing. Read only the relevant sections of these reference page
 | Build, platform prerequisites, packaging, signing, native testing | [Commands](docs/dev/commands.md) |
 | PRs, reviews, CI scheduling, caches, parallel work | [Workflow](docs/dev/workflow.md) |
 | Public names and compatibility | [API naming](docs/dev/api-naming.md), [compatibility](docs/dev/compatibility.md) |
+| User docs and website copy | [Writing user docs](docs/dev/writing-docs.md) |
 | Platform code | [Pitfalls](docs/dev/pitfalls.md) and the platform's dev page |
 | Hot paths | [Performance baselines](docs/dev/performance.md) |
 
@@ -133,6 +134,9 @@ cargo +nightly fmt --manifest-path crates/gpui/Cargo.toml --all
 5. **Text**: measurements are cached per constraint (`TextContext.cache`); platforms cache font objects (`FontCache`).
 6. **Changes to hot paths come with before / after `nsh test --trace` timings and item counts**, compared with the baselines
    in `docs/dev/performance.md` (update them when they move).
+7. **Changes to window showing, frame scheduling or scrolling come with `examples/bench/jank/jank.py` results** from before and
+   after the change, on each desktop the change touches. The jank benchmark does not run in CI, so the PR is where a startup
+   wait or a long frame gets caught.
 
 ## Delivery
 

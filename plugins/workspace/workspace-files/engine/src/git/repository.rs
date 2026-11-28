@@ -128,9 +128,9 @@ impl Repository {
             private_admin.as_deref(),
             &cancel,
         )?;
-        let repo = gix::open::Options::isolated()
+        let mut repo = gix::open::Options::isolated()
             .strict_config(true)
-            .filter_config_section(|_| false)
+            .filter_config_section(|section| section.source == gix::config::Source::Api)
             .open(&root)
             .map_err(io::Error::other)?;
         if repo
@@ -152,6 +152,20 @@ impl Repository {
         {
             return Err(failure("git_unsupported"));
         }
+        // Honor Git's checkout format without letting gix probe symlink support by
+        // creating a temporary entry in the worktree during a read.
+        let symlinks = config
+            .try_boolean("core.symlinks")
+            .map_err(io::Error::other)?
+            .unwrap_or(true);
+        let mut observation_config = repo.config_snapshot_mut();
+        observation_config
+            .append_config(
+                [format!("core.symlinks={symlinks}")],
+                gix::config::Source::Api,
+            )
+            .map_err(io::Error::other)?;
+        observation_config.commit().map_err(io::Error::other)?;
         let index_before = optional(&repo.index_path())?;
         let index = repo.index_or_empty().map_err(io::Error::other)?;
         for entry in index.entries() {

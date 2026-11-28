@@ -148,6 +148,29 @@ impl HistoryDataSource {
             Self::Snapshot(_) => Ok(None),
         }
     }
+    /// Tool results of `run` that produced images, oldest first; live history only.
+    pub async fn image_sources(
+        &self,
+        run: RunId,
+        after: u64,
+        limit: u32,
+    ) -> Result<Vec<HistoryRowAddress>, StoreError> {
+        match self {
+            Self::Live { history, cut } => {
+                history
+                    .data
+                    .query(queries::ImageSourcesAt {
+                        namespace: history.namespace.clone(),
+                        cut: cut.clone(),
+                        run,
+                        after,
+                        limit,
+                    })
+                    .await
+            }
+            Self::Snapshot(_) => Ok(Vec::new()),
+        }
+    }
     pub async fn reported_model(
         &self,
         run: RunId,
@@ -478,36 +501,43 @@ impl CompactionDuration {
         match &self.0 {
             HistoryDataSource::Live { history, cut } => {
                 sql::validate_cut(c, &history.namespace.owner, &history.namespace.session, cut)?;
+                let namespace_id = crate::namespace::find_owner_id(
+                    c,
+                    &history.namespace.owner,
+                    &history.namespace.session,
+                )?;
                 let index = if live_key == "sequence" {
                     ""
                 } else {
                     "INDEXED BY agent_session_history_run"
                 };
                 let attempt_step = if live_key == "attempt" {
-                    " AND step=(SELECT step FROM agent_attempt_ids WHERE run=?3 AND attempt=?6)"
+                    " AND step=(SELECT step FROM agent_attempt_ids WHERE run=?2 AND attempt=?5)"
                 } else {
                     ""
                 };
-                let found = c
-                    .query_row(
-                        &format!(
-                            "SELECT sequence FROM agent_session_history {index}
-                             WHERE owner=?1 AND session=?2 AND run=?3
-                               AND (kind=?4 OR (?4='step_prepared' AND kind='proactive_summary_prepared'))
-                               AND sequence<=?5 AND {live_key}=?6{attempt_step}
-                             ORDER BY sequence LIMIT 1"
-                        ),
-                        params![
-                            serde_json::to_string(&history.namespace.owner)?,
-                            history.namespace.session,
-                            target_run.to_string(),
-                            kind,
-                            sql::bind_u64(cut.through_sequence)?,
-                            key,
-                        ],
-                        |row| sql::read_u64(row, 0),
-                    )
-                    .optional()?;
+                let found = match namespace_id {
+                    Some(namespace_id) => c
+                        .query_row(
+                            &format!(
+                                "SELECT sequence FROM agent_session_history {index}
+                                 WHERE namespace_id=?1 AND run=?2
+                                   AND (kind=?3 OR (?3='step_prepared' AND kind='proactive_summary_prepared'))
+                                   AND sequence<=?4 AND {live_key}=?5{attempt_step}
+                                 ORDER BY sequence LIMIT 1"
+                            ),
+                            params![
+                                namespace_id,
+                                target_run.to_string(),
+                                kind,
+                                sql::bind_u64(cut.through_sequence)?,
+                                key,
+                            ],
+                            |row| sql::read_u64(row, 0),
+                        )
+                        .optional()?,
+                    None => None,
+                };
                 let found = found.ok_or_else(|| {
                     invalid("compaction timing original fact is missing from this fixed source cut")
                 })?;
@@ -526,40 +556,49 @@ impl CompactionDuration {
                 let raw = raw.ok_or_else(|| {
                     invalid("compaction timing snapshot index requires its original cold metadata")
                 })?;
-                let maka_agent_facts::history_snapshot::Entry::Fact {
-                    run,
-                    sequence,
-                    admission_sequence,
-                    step,
-                    attempt,
-                    id,
-                    revision,
-                    body,
-                    ..
-                } = serde_json::from_str(&raw)?
-                else {
-                    return Err(invalid("compaction timing snapshot has another entry kind"));
-                };
-                let recorded: RecordedFact = snapshot.metadata_in_snapshot(c, run, &body)?;
-                if run != target_run
-                    || recorded.run != run
-                    || recorded.id != id
-                    || recorded.revision != revision
-                    || recorded.schema_version != SCHEMA_VERSION
-                {
-                    return Err(invalid(
-                        "compaction timing snapshot original fact identity/schema differs",
-                    ));
-                }
-                Ok(HistoryItem {
-                    sequence,
-                    admission_sequence,
-                    scope: HistoryScope { step, attempt },
-                    recorded,
-                })
+                decode_snapshot_fact(c, snapshot, target_run, &raw)
             }
         }
     }
+}
+
+fn decode_snapshot_fact(
+    c: &Connection,
+    snapshot: &Snapshot,
+    target_run: RunId,
+    raw: &str,
+) -> Result<HistoryItem, StoreError> {
+    let maka_agent_facts::history_snapshot::Entry::Fact {
+        run,
+        sequence,
+        admission_sequence,
+        step,
+        attempt,
+        id,
+        revision,
+        body,
+        ..
+    } = serde_json::from_str(raw)?
+    else {
+        return Err(invalid("compaction timing snapshot has another entry kind"));
+    };
+    let recorded: RecordedFact = snapshot.metadata_in_snapshot(c, run, &body)?;
+    if run != target_run
+        || recorded.run != run
+        || recorded.id != id
+        || recorded.revision != revision
+        || recorded.schema_version != SCHEMA_VERSION
+    {
+        return Err(invalid(
+            "compaction timing snapshot original fact identity/schema differs",
+        ));
+    }
+    Ok(HistoryItem {
+        sequence,
+        admission_sequence,
+        scope: HistoryScope { step, attempt },
+        recorded,
+    })
 }
 impl Query for CompactionDuration {
     type Output = snapshot::IndexedRead<u64>;
@@ -657,16 +696,113 @@ impl CompactionDuration {
             ));
         }
         let crossed: bool=match &self.0 {
-            HistoryDataSource::Live {history,..} => c.query_row("SELECT EXISTS(SELECT 1 FROM agent_session_history WHERE owner=? AND session=? AND run=? AND kind='context_compacted' AND sequence>? AND sequence<?)",params![serde_json::to_string(&history.namespace.owner)?,history.namespace.session,self.1.to_string(),sql::bind_u64(prepared.sequence)?,sql::bind_u64(adopted.sequence)?],|row|row.get(0))?,
+            HistoryDataSource::Live {history,..} => match crate::namespace::find_owner_id(c, &history.namespace.owner, &history.namespace.session)? {
+                Some(namespace_id) => c.query_row("SELECT EXISTS(SELECT 1 FROM agent_session_history INDEXED BY agent_session_history_run WHERE namespace_id=? AND run=? AND step IS NULL AND kind='context_compacted' AND sequence>? AND sequence<?)",params![namespace_id,self.1.to_string(),sql::bind_u64(prepared.sequence)?,sql::bind_u64(adopted.sequence)?],|row|row.get(0))?,
+                None => false,
+            },
             HistoryDataSource::Snapshot(snapshot) => c.query_row("SELECT EXISTS(SELECT 1 FROM agent_history_snapshot_entries WHERE snapshot=? AND run=? AND kind='fact' AND fact_kind='context_compacted' AND sequence>? AND sequence<?)",params![snapshot.id().to_string(),self.1.to_string(),sql::bind_u64(prepared.sequence)?,sql::bind_u64(adopted.sequence)?],|row|row.get(0))?,
         };
         if crossed {
-            return Err(invalid(
-                "compaction timing crossed another adopted checkpoint",
-            ));
+            // Historical runs that re-adopted an earlier Summary after another checkpoint
+            // still have that Summary's own successful closure timestamp; measure the
+            // Summary's actual execution span instead of bricking history reads.
+            let closed = self.successful_closure(
+                c,
+                self.2,
+                self.3,
+                selected_prepared.sequence,
+                adopted.sequence,
+            )?;
+            return duration(prepared.recorded.at, closed.recorded.at);
         }
         // ModelRequested was committed before dispatch; repairs retain that original preparation span.
         duration(prepared.recorded.at, adopted.recorded.at)
+    }
+
+    fn successful_closure(
+        &self,
+        c: &Connection,
+        target_run: RunId,
+        step: StepId,
+        after_sequence: u64,
+        before_sequence: u64,
+    ) -> Result<HistoryItem, StoreError> {
+        use maka_agent_facts::accounting::Outcome;
+        let is_success = |item: &HistoryItem| {
+            matches!(
+                &item.recorded.fact,
+                Fact::ModelClosed {
+                    outcome: Outcome::Success,
+                    diagnostic: None,
+                    ..
+                }
+            )
+        };
+        match &self.0 {
+            HistoryDataSource::Live { history, cut } => {
+                if let Some(namespace_id) = crate::namespace::find_owner_id(
+                    c,
+                    &history.namespace.owner,
+                    &history.namespace.session,
+                )? {
+                    let mut stmt = c.prepare_cached(
+                        "SELECT sequence FROM agent_session_history INDEXED BY agent_session_history_run
+                         WHERE namespace_id=?1 AND run=?2 AND step=?3 AND kind='model_closed'
+                           AND sequence>?4 AND sequence<?5
+                         ORDER BY sequence DESC",
+                    )?;
+                    let sequences = stmt
+                        .query_map(
+                            params![
+                                namespace_id,
+                                target_run.to_string(),
+                                step.to_string(),
+                                sql::bind_u64(after_sequence)?,
+                                sql::bind_u64(before_sequence)?,
+                            ],
+                            |row| sql::read_u64(row, 0),
+                        )?
+                        .collect::<Result<Vec<_>, _>>()?;
+                    for sequence in sequences {
+                        if let Some(item) = sql::item(c, &history.namespace, cut, sequence)?
+                            && is_success(&item)
+                        {
+                            return Ok(item);
+                        }
+                    }
+                }
+            }
+            HistoryDataSource::Snapshot(snapshot) => {
+                let mut stmt = c.prepare_cached(
+                    "SELECT entry_json FROM agent_history_snapshot_entries INDEXED BY agent_history_snapshot_step
+                     WHERE snapshot=?1 AND kind='fact' AND run=?2 AND json_extract(entry_json,'$.step')=?3
+                       AND fact_kind='model_closed'
+                       AND sequence>?4 AND sequence<?5
+                     ORDER BY sequence DESC",
+                )?;
+                let raws = stmt
+                    .query_map(
+                        params![
+                            snapshot.id().to_string(),
+                            target_run.to_string(),
+                            step.to_string(),
+                            sql::bind_u64(after_sequence)?,
+                            sql::bind_u64(before_sequence)?,
+                        ],
+                        |row| row.get::<_, String>(0),
+                    )?
+                    .collect::<Result<Vec<_>, _>>()?;
+                for raw in raws {
+                    let item = decode_snapshot_fact(c, snapshot, target_run, &raw)?;
+                    if is_success(&item) {
+                        return Ok(item);
+                    }
+                }
+            }
+        }
+        Err(invalid(
+            "compaction timing crossed another adopted checkpoint",
+        ))
     }
 }
 

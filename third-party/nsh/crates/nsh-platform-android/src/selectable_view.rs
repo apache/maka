@@ -26,7 +26,9 @@ use jni::{
 use nsh_core::{
     Points,
     geometry::{Bounds, Point, bounds, point, px, size},
-    selection::{Handle, KeptRows, SelectionModel, SelectionTexts, reading_order, reorder},
+    selection::{
+        Handle, KeptRows, SelectionModel, SelectionTexts, marker_of, reading_order, reorder,
+    },
 };
 
 /// The selection of one area and what it knows of the area's texts.
@@ -38,6 +40,8 @@ struct Area {
     keys: Vec<u64>,
     /// Which texts continue the one before them (`ViewProps::continues_text`).
     continues: Vec<bool>,
+    /// The list marker beside each text (`selection::marker_of`).
+    markers: Vec<Option<String>>,
     frames: Vec<Bounds<Points>>,
     /// The virtual list rows its ends are in, kept rendered.
     kept: KeptRows,
@@ -49,6 +53,7 @@ struct Texts<'a, 'local> {
     contents: &'a [String],
     keys: &'a [u64],
     continues: &'a [bool],
+    markers: &'a [Option<String>],
     frames: &'a [Bounds<Points>],
     env: RefCell<&'a mut JNIEnv<'local>>,
     this: &'a JObject<'local>,
@@ -73,6 +78,10 @@ impl SelectionTexts for Texts<'_, '_> {
 
     fn continues(&self, i: usize) -> bool {
         self.continues.get(i).copied().unwrap_or(false)
+    }
+
+    fn marker(&self, i: usize) -> Option<&str> {
+        self.markers.get(i).and_then(|m| m.as_deref())
     }
 
     fn copied(&self, i: usize, range: std::ops::Range<u32>) -> String {
@@ -175,6 +184,7 @@ fn with_texts<'local, R>(
         contents,
         keys,
         continues,
+        markers,
         frames,
         ..
     } = area;
@@ -182,6 +192,7 @@ fn with_texts<'local, R>(
         contents,
         keys,
         continues,
+        markers,
         frames,
         env: RefCell::new(env),
         this,
@@ -212,8 +223,9 @@ extern "system" fn Java_com_longbridge_nsh_SelectableView_nativeDestroy(
 }
 
 /// The area's texts, in document order, are now these (content, view
-/// ids, whether each continues the one before, frames): the selection follows (`texts_changed`). Returns whether it
-/// changed.
+/// ids, whether each continues the one before, frames, and the text left
+/// out listed last before each with its frame, maybe its list marker): the
+/// selection follows (`texts_changed`). Returns whether it changed.
 #[unsafe(no_mangle)]
 #[allow(clippy::too_many_arguments)]
 extern "system" fn Java_com_longbridge_nsh_SelectableView_nativeSetTexts<'local>(
@@ -225,6 +237,8 @@ extern "system" fn Java_com_longbridge_nsh_SelectableView_nativeSetTexts<'local>
     keys: JIntArray<'local>,
     continues: JBooleanArray<'local>,
     frames: JFloatArray<'local>,
+    chromes: JObjectArray<'local>,
+    chrome_frames: JFloatArray<'local>,
 ) -> jboolean {
     // SAFETY: Java passes its live handle, on the UI thread.
     let area = unsafe { area(handle) };
@@ -263,6 +277,25 @@ extern "system" fn Java_com_longbridge_nsh_SelectableView_nativeSetTexts<'local>
     read_frames(&env, &frames, &mut area.frames);
     // Frames for every text, even if Java's array falls short.
     area.frames.resize(area.contents.len(), Bounds::default());
+    let mut at = Vec::new();
+    read_frames(&env, &chrome_frames, &mut at);
+    area.markers = (0..area.contents.len())
+        .map(|i| {
+            let s: JString<'_> = env
+                .get_object_array_element(&chromes, i as i32)
+                .ok()?
+                .into();
+            if s.is_null() {
+                return None;
+            }
+            let text = String::from(env.get_string(&s).ok()?);
+            let _ = env.delete_local_ref(s);
+            marker_of(Some(&(text, *at.get(i)?)), area.frames[i])
+        })
+        .collect();
+    if env.exception_check().unwrap_or(false) {
+        let _ = env.exception_clear();
+    }
     with_texts(&mut env, &this, area, |model, texts| {
         model.texts_changed(texts)
     }) as jboolean
@@ -345,6 +378,26 @@ extern "system" fn Java_com_longbridge_nsh_SelectableView_nativeBounds(
         ],
         _ => Vec::new(),
     };
+    ints_array(&env, &ints)
+}
+
+/// The selection's anchor and focus as `SelectionModel::ends` gives them
+/// (anchor node, offset, focus node, offset), or an empty array without a
+/// selection: `onSelectionChange`'s `anchorNode` ... `focusNodeOffset`,
+/// which the core places in list items.
+#[unsafe(no_mangle)]
+extern "system" fn Java_com_longbridge_nsh_SelectableView_nativeEnds<'local>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    handle: jlong,
+    this: JObject<'local>,
+) -> jintArray {
+    // SAFETY: Java passes its live handle, on the UI thread.
+    let area = unsafe { area(handle) };
+    let ends = with_texts(&mut env, &this, area, |model, texts| model.ends(texts));
+    let ints: Vec<jint> = ends.map_or_else(Vec::new, |[(a, a_at), (f, f_at)]| {
+        vec![a as jint, a_at as jint, f as jint, f_at as jint]
+    });
     ints_array(&env, &ints)
 }
 

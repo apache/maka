@@ -709,6 +709,53 @@ mod tests {
     }
 
     #[test]
+    fn turn_image_gallery_retries_empty_reads_and_adds_live_screenshots() {
+        use nsh_core::{EventKind, EventPayload, ViewKind, prelude::DevicePixels};
+        let mut app = fixture("tool-image-gallery.tsx");
+        let all = "label:Show all 5 images";
+        app.wait_for(all).unwrap();
+        app.press(all).unwrap();
+        assert!(
+            !app.screen()
+                .matches("label:Full screen image viewer")
+                .unwrap()
+        );
+        app.press(all).unwrap();
+        app.wait_for("text:1 / 7 · Loading image…").unwrap();
+        app.fail_images("asset:/*").unwrap();
+        app.wait_for("text:/failed to load asset:/").unwrap();
+        app.wait_for("text:1 / 7").unwrap();
+        app.press("label:Close full screen image").unwrap();
+        app.press("label:New screenshot").unwrap();
+        app.wait_for("text:+4").unwrap();
+        // Headless renders the image views but has no native decoder.
+        for image in app
+            .screen()
+            .layout_nodes()
+            .iter()
+            .filter(|node| node.kind == ViewKind::Image)
+        {
+            app.engine().control().dispatch_event(
+                image.id,
+                EventKind::Load,
+                EventPayload::Image(Size::new(DevicePixels(16), DevicePixels(16))),
+            );
+        }
+        app.settle();
+        app.press("label:Open image preview >> nth=3").unwrap();
+        app.wait_for("text:/8 / 8/").unwrap();
+    }
+
+    #[test]
+    fn imported_turn_opens_its_loaded_images() {
+        let mut app = fixture("tool-image-gallery.tsx");
+        let all = "label:Show all 9 images";
+        app.wait_for(all).unwrap();
+        app.press(all).unwrap();
+        app.wait_for("text:/1 / 9/").unwrap();
+    }
+
+    #[test]
     fn tool_cards_show_inputs_before_outputs_and_fold_long_scripts() {
         let mut app = headless_fixture_with_locales(
             "tests/fixtures/tool-card-order.tsx",
@@ -2288,9 +2335,23 @@ mod tests {
         app.wait_for("label:Checking external agents…").unwrap();
 
         app.press_key("f7").unwrap();
-        app.wait_for("label:Disable Codex").unwrap();
+        app.wait_for("role:switch[Codex]").unwrap();
         app.wait_for("text:0.42.0 · 5 models available").unwrap();
-        app.wait_for("label:Enable Claude Code").unwrap();
+        app.wait_for("role:switch[Claude Code]").unwrap();
+        assert_eq!(
+            app.screen()
+                .accessibility_state("role:switch[Codex]")
+                .unwrap()
+                .checked,
+            Some(nsh_core::Checked::True)
+        );
+        assert_eq!(
+            app.screen()
+                .accessibility_state("role:switch[Claude Code]")
+                .unwrap()
+                .checked,
+            Some(nsh_core::Checked::False)
+        );
         assert!(
             !app.screen()
                 .matches("label:Checking external agents…")
@@ -2309,7 +2370,7 @@ mod tests {
                 .origin
                 .y
         };
-        let codex_y = y_of(&app, "label:Disable Codex");
+        let codex_y = y_of(&app, "role:switch[Codex]");
 
         app.press_key("f6").unwrap();
         app.set_environment("background", |env| {
@@ -2320,21 +2381,21 @@ mod tests {
             env.lifecycle = nsh_core::platform::Lifecycle::Active;
         })
         .unwrap();
-        assert!(app.screen().matches("label:Disable Codex").unwrap());
-        assert!(!app.screen().enabled("label:Disable Codex").unwrap());
+        assert!(app.screen().matches("role:switch[Codex]").unwrap());
+        assert!(app.screen().enabled("role:switch[Codex]").unwrap());
         assert!(
             !app.screen()
                 .matches("label:Checking external agents…")
                 .unwrap()
         );
-        assert_eq!(y_of(&app, "label:Disable Codex"), codex_y);
+        assert_eq!(y_of(&app, "role:switch[Codex]"), codex_y);
 
         app.press_key("f7").unwrap();
         assert!(app.settle());
-        assert!(app.screen().enabled("label:Disable Codex").unwrap());
-        assert_eq!(y_of(&app, "label:Disable Codex"), codex_y);
+        assert!(app.screen().enabled("role:switch[Codex]").unwrap());
+        assert_eq!(y_of(&app, "role:switch[Codex]"), codex_y);
 
-        app.press("label:Enable Claude Code").unwrap();
+        app.press("role:switch[Claude Code]").unwrap();
         app.wait_for("text:Confirm permissions and enable").unwrap();
         app.press("label:Cancel enabling external agents").unwrap();
         app.wait_for("label:Edit connection OpenAI").unwrap();
@@ -2350,13 +2411,26 @@ mod tests {
         app.wait_for("label:Edit model gpt-4.1").unwrap();
 
         app.press("label:Edit model gpt-4.1").unwrap();
-        app.wait_for("label:Use provider reasoning efforts: On")
+        app.wait_for("role:switch[Use provider reasoning efforts]")
             .unwrap();
+        assert_eq!(
+            app.screen()
+                .accessibility_state("role:switch[Use provider reasoning efforts]")
+                .unwrap()
+                .checked,
+            Some(nsh_core::Checked::True)
+        );
         assert!(!app.screen().matches("label:Support effort high").unwrap());
-        app.press("label:Use provider reasoning efforts: On")
+        app.press("role:switch[Use provider reasoning efforts]")
             .unwrap();
-        app.wait_for("label:Use provider reasoning efforts: Off")
-            .unwrap();
+        app.wait_for("label:Support effort high").unwrap();
+        assert_eq!(
+            app.screen()
+                .accessibility_state("role:switch[Use provider reasoning efforts]")
+                .unwrap()
+                .checked,
+            Some(nsh_core::Checked::False)
+        );
         assert!(app.screen().enabled("label:Support effort high").unwrap());
         app.wait_for("text:Save").unwrap();
 
@@ -2364,9 +2438,322 @@ mod tests {
         app.wait_for("text:Discard unsaved changes?").unwrap();
         app.press("text:Discard changes").unwrap();
         app.wait_for("label:Edit connection OpenAI").unwrap();
-        app.wait_for("label:Disable Codex").unwrap();
+        app.wait_for("role:switch[Codex]").unwrap();
+    }
+
+    #[test]
+    fn settings_switches_confine_press_targets_to_the_switch_control() {
+        let mut app = fixture("models-settings.tsx");
+        app.set_viewport(Size::new(px(1040.0), px(900.0))).unwrap();
+        app.press_key("f7").unwrap();
+        app.wait_for("role:switch[Codex]").unwrap();
+        app.wait_for("role:switch[Claude Code]").unwrap();
+        app.wait_for("text:0.42.0 · 5 models available").unwrap();
+
+        let bounds_of = |app: &nsh_testing::Headless, selector: &str| {
+            let id = app.screen().id(selector).unwrap();
+            app.screen()
+                .layout_nodes()
+                .into_iter()
+                .find(|node| node.id == id)
+                .unwrap()
+                .bounds
+        };
+
+        // External agent rows keep their label and description non-interactive; only the switch
+        // control on the right toggles the agent, well clear of the label and hitSlop margin.
+        let claude_label = bounds_of(&app, "text:Claude Code");
+        let claude_switch = bounds_of(&app, "role:switch[Claude Code]");
+        assert!(
+            claude_label.origin.x + claude_label.size.width + px(6.0) <= claude_switch.origin.x
+        );
+        assert_eq!(app.screen().press_target("text:Claude Code").unwrap(), None);
+        assert_eq!(
+            app.screen()
+                .press_target("text:0.42.0 · 5 models available")
+                .unwrap(),
+            None
+        );
+        assert!(app.press("text:Claude Code").is_err());
+        assert!(
+            !app.screen()
+                .matches("text:Confirm permissions and enable")
+                .unwrap()
+        );
+
+        app.press("role:switch[Claude Code]").unwrap();
+        app.wait_for("text:Confirm permissions and enable").unwrap();
+        assert_eq!(
+            app.screen()
+                .press_target("text:I understand and accept these permissions")
+                .unwrap(),
+            None
+        );
+        assert!(
+            app.screen()
+                .matches("role:switch[I understand and accept the external agent permissions]")
+                .unwrap()
+        );
+        app.press("label:Cancel enabling external agents").unwrap();
+        app.wait_for("label:Edit connection OpenAI").unwrap();
+
+        // Standard settings switches keep a stable accessible name while their native checked
+        // state toggles.
+        app.press("label:Edit connection OpenAI").unwrap();
+        app.wait_for("label:Edit model gpt-4.1").unwrap();
+        app.press("label:Edit model gpt-4.1").unwrap();
+        app.wait_for("role:switch[Use provider reasoning efforts]")
+            .unwrap();
+        assert_eq!(
+            app.screen()
+                .press_target("text:Use provider reasoning efforts")
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            app.screen()
+                .accessibility_state("role:switch[Use provider reasoning efforts]")
+                .unwrap()
+                .checked,
+            Some(nsh_core::Checked::True)
+        );
+        app.press("role:switch[Use provider reasoning efforts]")
+            .unwrap();
+        app.wait_for("label:Support effort high").unwrap();
+        assert_eq!(
+            app.screen()
+                .accessibility_state("role:switch[Use provider reasoning efforts]")
+                .unwrap()
+                .checked,
+            Some(nsh_core::Checked::False)
+        );
+
+        // Terminal idiom also exposes and activates the switch without turning the row text into
+        // a press target.
+        let mut tui = headless_fixture_in(
+            "tests/fixtures/models-settings.tsx",
+            Size::new(px(640.0), px(384.0)),
+            true,
+            nsh_core::platform::Idiom::Terminal,
+        );
+        tui.wait_for("text:Checking external agents…").unwrap();
+        tui.press_key("f7").unwrap();
+        tui.wait_for("role:switch[Claude Code]").unwrap();
+        assert_eq!(tui.screen().press_target("text:Claude Code").unwrap(), None);
+        tui.press("role:switch[Claude Code]").unwrap();
+        tui.wait_for("text:Confirm permissions and enable").unwrap();
+    }
+
+    #[test]
+    fn models_settings_renders_each_error_once_without_cross_section_retry() {
+        let mut app = fixture("models-settings.tsx");
+        app.set_viewport(Size::new(px(1040.0), px(900.0))).unwrap();
+        app.wait_for("label:Edit connection OpenAI").unwrap();
+        app.wait_for("label:Checking external agents…").unwrap();
+
+        // Fail externalAgents read: error and Retry must appear once, scoped to external agents.
+        app.press_key("f9").unwrap();
+        app.press_key("f7").unwrap();
+        app.wait_for("text:External runtime probe failed").unwrap();
+        assert_eq!(
+            app.screen()
+                .count("text:External runtime probe failed")
+                .unwrap(),
+            1
+        );
+        assert_eq!(app.screen().count("text:Retry").unwrap(), 1);
+        assert!(
+            !app.screen()
+                .matches("text:/Could not check external agents/")
+                .unwrap()
+        );
+
+        // Clicking Retry must reload externalAgents rather than connections.
+        app.press_key("f9").unwrap();
+        app.press("text:Retry").unwrap();
+        app.wait_for("role:switch[Codex]").unwrap();
+        assert_eq!(
+            app.screen()
+                .count("text:External runtime probe failed")
+                .unwrap(),
+            0
+        );
+
+        // Host configureBatch conflict clears basis; header owns message, section offers Retry to reload.
+        app.press_key("f11").unwrap();
+        app.press("role:switch[Codex]").unwrap();
+        app.wait_for("text:/These settings changed elsewhere/")
+            .unwrap();
+        assert_eq!(
+            app.screen()
+                .count("text:/These settings changed elsewhere/")
+                .unwrap(),
+            1
+        );
+        assert_eq!(app.screen().count("text:Retry").unwrap(), 1);
+        app.press_key("f11").unwrap();
+        app.press("text:Retry").unwrap();
+        app.wait_for("role:switch[Codex]").unwrap();
+        assert_eq!(
+            app.screen()
+                .count("text:/These settings changed elsewhere/")
+                .unwrap(),
+            0
+        );
+
+        // Retrying externalAgents read failure must not wipe an active connections error in the header.
+        app.press_key("f12").unwrap();
+        app.press_key("f9").unwrap();
+        app.press_key("f8").unwrap();
+        app.wait_for("text:/Connection catalog unavailable/")
+            .unwrap();
+        app.wait_for("text:External runtime probe failed").unwrap();
+        assert_eq!(app.screen().count("text:Retry").unwrap(), 2);
+        app.press_key("f9").unwrap();
+        app.press("text:Retry >> nth=0").unwrap();
+        app.wait_for("role:switch[Codex]").unwrap();
+        assert_eq!(
+            app.screen()
+                .count("text:/Connection catalog unavailable/")
+                .unwrap(),
+            1
+        );
+        app.press_key("f12").unwrap();
+        app.press("text:Retry").unwrap();
+        app.wait_for("label:Edit connection OpenAI").unwrap();
+
+        // Fail providers read: ProviderPicker owns the error, not the Settings header.
+        app.press_key("f10").unwrap();
+        app.press("label:Add connection").unwrap();
+        app.wait_for("text:/Provider registry unavailable/")
+            .unwrap();
+        assert_eq!(
+            app.screen()
+                .count("text:/Provider registry unavailable/")
+                .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn settings_page_shell_navigation_and_terminal_folding() {
+        let mut app = fixture("models-settings.tsx");
+        app.set_viewport(Size::new(px(1120.0), px(900.0))).unwrap();
+        app.press_key("f7").unwrap();
+        app.wait_for("label:Edit connection OpenAI").unwrap();
+        assert!(!app.screen().matches("label:Close settings").unwrap());
+
+        // Enter nested model page, verify real ModalDialog Escape closes only the dialog.
+        app.press("label:Edit connection OpenAI").unwrap();
+        app.wait_for("label:Edit model gpt-4.1").unwrap();
+        app.press("label:Edit model gpt-4.1").unwrap();
+        app.wait_for("label:Connection default reasoning effort")
+            .unwrap();
+        app.press("label:Associate catalog model").unwrap();
+        app.wait_for("label:Search catalog models").unwrap();
+        app.press_key("escape").unwrap();
+        assert!(app.settle());
+        assert!(!app.screen().matches("label:Search catalog models").unwrap());
+        assert!(
+            app.screen()
+                .matches("label:Connection default reasoning effort")
+                .unwrap()
+        );
+
+        // Dirty draft: Escape prompts Discard unsaved changes; second Escape keeps editing.
+        app.press("role:switch[Use provider reasoning efforts]")
+            .unwrap();
+        app.wait_for("label:Support effort high").unwrap();
+        app.press_key("escape").unwrap();
+        app.wait_for("text:Discard unsaved changes?").unwrap();
+        app.press_key("escape").unwrap();
+        app.wait_for("label:Support effort high").unwrap();
+        assert_eq!(
+            app.screen()
+                .accessibility_state("role:switch[Use provider reasoning efforts]")
+                .unwrap()
+                .checked,
+            Some(nsh_core::Checked::False)
+        );
+
+        // Back to app while dirty also protects unsaved edits before leaving Settings.
+        app.press("label:Back to app").unwrap();
+        app.wait_for("text:Discard unsaved changes?").unwrap();
+        app.press("text:Discard changes").unwrap();
+        app.wait_for("text:Back in app").unwrap();
+
+        // Reopen: Escape steps back through nested subpage to root, then returns to the app.
+        app.press_key("f5").unwrap();
+        app.wait_for("label:Back from connection settings").unwrap();
+        app.press_key("escape").unwrap();
+        app.wait_for("label:Edit connection OpenAI").unwrap();
+        app.press_key("escape").unwrap();
+        app.wait_for("text:Back in app").unwrap();
+
+        // Terminal idiom folds navigation above content on narrow viewports and closes on Escape.
+        let mut tui = headless_fixture_in(
+            "tests/fixtures/models-settings.tsx",
+            Size::new(px(640.0), px(384.0)),
+            true,
+            nsh_core::platform::Idiom::Terminal,
+        );
+        tui.press_key("f7").unwrap();
+        tui.wait_for("label:Edit connection OpenAI").unwrap();
+        let bounds_of = |app: &nsh_testing::Headless, selector: &str| {
+            let id = app.screen().id(selector).unwrap();
+            app.screen()
+                .layout_nodes()
+                .into_iter()
+                .find(|node| node.id == id)
+                .unwrap()
+                .bounds
+        };
+        let back = bounds_of(&tui, "label:Back to app");
+        let section = bounds_of(&tui, "label:Settings section Models");
+        let content = bounds_of(&tui, "label:Edit connection OpenAI");
+        assert!(back.origin.x + back.size.width <= section.origin.x);
+        assert!(back.origin.y + back.size.height <= content.origin.y);
+        assert!(section.origin.y + section.size.height <= content.origin.y);
+        tui.press_key("escape").unwrap();
+        tui.wait_for("text:Back in app").unwrap();
+    }
+
+    #[test]
+    fn sidebar_sort_segmented_control_switches_between_project_and_time_grouping() {
+        let mut app = headless_fixture(
+            "tests/fixtures/sidebar-sort-segment.tsx",
+            Size::new(px(320.0), px(640.0)),
+            true,
+        );
+        app.wait_for("role:tablist[Conversation grouping]").unwrap();
+        app.wait_for("label:Collapse Alpha").unwrap();
+        assert!(app.screen().selected("role:tab[Project]").unwrap());
+        assert!(!app.screen().selected("role:tab[Time]").unwrap());
+        assert!(!app.screen().matches("text:Today").unwrap());
+
+        app.press("role:tab[Time]").unwrap();
+        app.wait_for("text:Today").unwrap();
+        app.wait_for("text:Earlier").unwrap();
+        assert!(app.screen().selected("role:tab[Time]").unwrap());
+        assert!(!app.screen().selected("role:tab[Project]").unwrap());
+        assert!(!app.screen().matches("label:Collapse Alpha").unwrap());
+
+        // Re-selecting the active segment leaves chronological grouping intact.
+        app.press("role:tab[Time]").unwrap();
+        app.wait_for("text:Today").unwrap();
+        assert!(app.screen().selected("role:tab[Time]").unwrap());
+        assert!(!app.screen().matches("label:Collapse Alpha").unwrap());
+
+        app.press("role:tab[Project]").unwrap();
+        app.wait_for("label:Collapse Alpha").unwrap();
+        assert!(app.screen().selected("role:tab[Project]").unwrap());
+        assert!(!app.screen().selected("role:tab[Time]").unwrap());
+        assert!(!app.screen().matches("text:Today").unwrap());
     }
 }
+
+#[cfg(test)]
+mod composer_notices_tests;
 
 #[cfg(test)]
 mod desktop_residency_tests;

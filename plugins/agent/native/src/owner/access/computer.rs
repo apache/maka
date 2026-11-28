@@ -236,6 +236,9 @@ impl Interactions for BoundCall {
     fn read<'a>(&'a self, id: &'a str) -> BoxFuture<'a, Result<Option<InteractionRecord>, String>> {
         self.access.read(id)
     }
+    fn settled(&self, record: &InteractionRecord) {
+        self.access.settled(record);
+    }
     fn establish<'a>(
         &'a self,
         record: &'a InteractionRecord,

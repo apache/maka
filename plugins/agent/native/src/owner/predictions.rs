@@ -189,7 +189,14 @@ impl Owner {
         else {
             return Ok(result);
         };
+        // Prediction requires the exact original wire prefix, but its transport
+        // cannot renew Run-scoped memory authority on physical retries.
         if boundary.spec.turn_id != input.expected_turn_id
+            || boundary.spec.memory_projection.is_some()
+            || history
+                .has_memory_reads(boundary.run)
+                .await
+                .map_err(|e| e.to_string())?
             || history
                 .view_at(&cut, boundary.run)
                 .await

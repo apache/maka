@@ -203,6 +203,7 @@ impl Owner {
                 &input.session_id,
                 Some(preference),
                 operation.fingerprint.clone(),
+                crate::owner::send::PinCapture::Excluded,
                 parent,
             )
             .await?;
@@ -319,7 +320,42 @@ impl super::driver::NativeDriver {
         );
         selection.definitions.sort_by(|a, b| a.name.cmp(&b.name));
         let tools = ContentBlob::json(&selection)?;
+        let policy = owner
+            .configuration
+            .runtime_policy()
+            .await
+            .map_err(|e| RunError::InvalidInput(e.to_string()))?;
+        let writer = self.access.data_writer().map_err(RunError::InvalidInput)?;
+        let user_run = writer
+            .query(maka_agent_state::memory::reads::OriginalUserRun(view.run))
+            .await?;
+        let (admission_kind, memory) = match user_run {
+            Some(user_run) => owner
+                .admit_memory(session, &metadata.configuration, user_run, &policy)
+                .await
+                .map_err(RunError::InvalidInput)?,
+            None => (maka_agent_facts::memory::MemoryAdmission::Unknown, None),
+        };
+        if let Some(memory) = &memory {
+            let system: Option<SystemPrompt> = owner
+                .run_content(view.run, &view.spec.system_prompt)
+                .await?;
+            memory
+                .check_admitted_window(
+                    source.accepted.input_limit,
+                    system.as_ref(),
+                    owner.tool_catalog.fixed_schema_tokens(
+                        &source.accepted,
+                        view.spec.tool_discovery,
+                        selection.definitions.iter(),
+                    ),
+                )
+                .map_err(RunError::InvalidInput)?;
+        }
+        let memory = memory.as_deref().map(ContentBlob::json).transpose()?;
         let mut spec = view.spec.clone();
+        spec.memory_admission = admission_kind;
+        spec.memory_projection = memory.as_ref().map(|blob| blob.reference().clone());
         spec.tool_selection = tools.reference().clone();
         spec.trigger = Trigger::CheckpointHandoff { source: view.run };
         spec.input = input.reference().clone();
@@ -327,6 +363,8 @@ impl super::driver::NativeDriver {
             binding: source.accepted.binding,
             descriptor: model.reference().clone(),
         };
+        let mut contents = vec![input, model, tools];
+        contents.extend(memory);
         let admission = Admission::new(
             spec,
             UnixMillis(
@@ -334,12 +372,11 @@ impl super::driver::NativeDriver {
                     .try_into()
                     .map_err(|_| RunError::Internal("invalid clock".into()))?,
             ),
-            vec![input, model, tools],
+            contents,
         );
         let statement =
             self.state
                 .checkpoint_handoff(self.access.claim(), view.into(), baseline, admission)?;
-        let writer = self.access.data_writer().map_err(RunError::InvalidInput)?;
         let _ordered = owner.runs.ordered(session).await;
         if metadata.archived
             || metadata.configuration.permission_basis() != view.spec.permission_basis

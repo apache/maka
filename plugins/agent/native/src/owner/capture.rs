@@ -163,6 +163,7 @@ impl Owner {
         input: RunInput,
         parent: &Scope,
     ) -> Result<(RunSpec, Vec<ContentBlob>), String> {
+        self.check_pinned_model(&execution.session_id, basis)?;
         let trigger = match &input {
             RunInput::Continuation { claim, .. } => Trigger::Continuation {
                 source: claim.source.execution.run_id,
@@ -334,7 +335,15 @@ impl Owner {
             .map(ContentBlob::json)
             .transpose()
             .map_err(|e| e.to_string())?;
+        let memory = basis
+            .memory
+            .as_deref()
+            .map(ContentBlob::json)
+            .transpose()
+            .map_err(|e| e.to_string())?;
         let spec = RunSpec {
+            memory_admission: basis.memory_admission,
+            memory_projection: memory.as_ref().map(|blob| blob.reference().clone()),
             schema_version: SCHEMA_VERSION,
             owner: self.run_owner(),
             session_id: session_id.into(),
@@ -362,6 +371,7 @@ impl Owner {
             budget_basis: budget.basis.as_ref().map(|basis| basis.reference().clone()),
         };
         contents.extend([system, tools, input]);
+        contents.extend(memory);
         contents.extend(compaction_prompt);
         contents.extend(budget.basis);
         Ok((spec, contents))

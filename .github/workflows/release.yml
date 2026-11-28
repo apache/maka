@@ -1,0 +1,343 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+name: Release
+
+# Build and publish convenience binaries (GitHub Release + latest.json updater
+# manifest) and optional @latest npm packages from a pre-pushed immutable
+# release tag (v<version>-incubating) pointing to the exact commit approved in
+# an ASF source release vote:
+#   gh workflow run release.yml --ref v<version>-incubating
+on:
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: "Publish the GitHub Release and signed latest.json updater manifest"
+        type: boolean
+        default: true
+      publish_npm:
+        description: "Also publish @maka-agent/cli and maka-agent under npm @latest"
+        type: boolean
+        default: true
+      notes:
+        description: "Optional short release highlights"
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-build
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    environment: release
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      tag: ${{ steps.meta.outputs.tag }}
+      commit: ${{ steps.meta.outputs.commit }}
+      build_date: ${{ steps.meta.outputs.build_date }}
+      v8_linux_arm64_key: ${{ steps.v8.outputs.key }}
+      v8_linux_arm64_pinned: ${{ steps.v8.outputs.pinned }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "26"
+
+      - name: Update Rust
+        run: rustup update stable --no-self-update
+
+      - id: meta
+        name: Validate release tag, voted commit, and version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_PUBLISH_RELEASE: ${{ inputs.publish_release }}
+        run: |
+          if [[ "$GITHUB_REF_TYPE" != "tag" || "$GITHUB_REF" != "refs/tags/${GITHUB_REF_NAME}" ]]; then
+            echo "::error::Releases must be dispatched from an immutable release tag v<version>-incubating (got ref_type=$GITHUB_REF_TYPE ref=$GITHUB_REF)"
+            exit 1
+          fi
+          tag="$GITHUB_REF_NAME"
+          if [[ ! "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-incubating$ ]]; then
+            echo "::error::Release tag must match vX.Y.Z-incubating with strict SemVer (got $tag)"
+            exit 1
+          fi
+          version="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.${BASH_REMATCH[3]}"
+          commit="$GITHUB_SHA"
+          if [[ ! "$commit" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Expected 40-character commit SHA in GITHUB_SHA (got $commit)"
+            exit 1
+          fi
+          head_commit="$(git rev-parse 'HEAD^{commit}')"
+          if [[ "$head_commit" != "$commit" ]]; then
+            echo "::error::Checked-out HEAD ($head_commit) does not match GITHUB_SHA ($commit)"
+            exit 1
+          fi
+          if ! git rev-parse --verify origin/main >/dev/null 2>&1; then
+            git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          fi
+          if ! git merge-base --is-ancestor "$commit" origin/main; then
+            echo "::error::Tag $tag commit $commit is not an ancestor of origin/main"
+            exit 1
+          fi
+          pkg_version="$(node -p "JSON.parse(require('fs').readFileSync('package.json','utf8')).version")"
+          if [[ "$pkg_version" != "$version" ]]; then
+            echo "::error::package.json version at $commit is $pkg_version, expected $version"
+            exit 1
+          fi
+          if [[ "$INPUT_PUBLISH_RELEASE" == "true" ]]; then
+            http_code=$(curl -sS -o /dev/null -w '%{http_code}' \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/releases/tags/${tag}")
+            if [[ "$http_code" == "200" ]]; then
+              echo "::error::GitHub Release $tag already exists; refusing to overwrite"
+              exit 1
+            elif [[ "$http_code" != "404" ]]; then
+              echo "::error::Failed to query existing GitHub Release $tag (HTTP ${http_code})"
+              exit 1
+            fi
+          fi
+          build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "commit=${commit}" >> "$GITHUB_OUTPUT"
+          echo "build_date=${build_date}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify updater signing keypair before building or publishing
+        env:
+          MAKA_UPDATE_SIGNING_KEY: ${{ secrets.MAKA_UPDATE_SIGNING_KEY }}
+          MAKA_UPDATE_PUBLIC_KEY: ${{ vars.MAKA_UPDATE_PUBLIC_KEY }}
+        run: |
+          node --input-type=module -e '
+            import { derivePublicKey } from "./scripts/rust/nightly-manifest.mjs";
+            const secret = (process.env.MAKA_UPDATE_SIGNING_KEY ?? "").trim();
+            const pub = (process.env.MAKA_UPDATE_PUBLIC_KEY ?? "").trim();
+            if (!secret || !pub) {
+              throw new Error("Both MAKA_UPDATE_SIGNING_KEY secret and MAKA_UPDATE_PUBLIC_KEY variable must be configured in the release environment");
+            }
+            if (derivePublicKey(secret) !== pub) {
+              throw new Error("MAKA_UPDATE_SIGNING_KEY does not match MAKA_UPDATE_PUBLIC_KEY");
+            }
+          '
+
+      - id: v8
+        name: Check Linux ARM64 V8 prebuilt pin
+        run: |
+          key=$(node scripts/rust/build-v8.mjs --cache-key --target aarch64-unknown-linux-gnu)
+          pinned=$(node scripts/rust/build-v8.mjs --pinned --target aarch64-unknown-linux-gnu)
+          echo "key=${key}" >> "$GITHUB_OUTPUT"
+          echo "pinned=${pinned}" >> "$GITHUB_OUTPUT"
+
+  artifacts:
+    needs: [prepare]
+    uses: ./.github/workflows/build-release-artifacts.yml
+    with:
+      channel: release
+      pack_npm: ${{ inputs.publish_npm }}
+      version: ${{ needs.prepare.outputs.version }}
+      commit: ${{ needs.prepare.outputs.commit }}
+      environment: release
+      v8_linux_arm64_key: ${{ needs.prepare.outputs.v8_linux_arm64_key }}
+      v8_linux_arm64_pinned: ${{ needs.prepare.outputs.v8_linux_arm64_pinned }}
+    secrets: inherit
+
+  publish-npm:
+    needs: [prepare, artifacts]
+    if: >-
+      inputs.publish_npm &&
+      !cancelled() &&
+      needs.prepare.result == 'success' &&
+      needs.artifacts.result == 'success'
+    runs-on: ubuntu-latest
+    environment: release
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "26"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Upgrade npm for OIDC Trusted Publishing
+        run: npm install --global --no-audit --no-fund npm@latest
+
+      - name: Download release npm platform packages
+        uses: actions/download-artifact@v8
+        with:
+          pattern: release-npm-*
+          path: npm-dist
+          merge-multiple: true
+
+      - name: Pack @maka-agent/cli launcher and maka-agent alias
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          node scripts/rust/package-nightly.mjs pack-npm-launchers \
+            --channel release \
+            --version "$VERSION" \
+            --output npm-dist \
+            --tag latest
+
+      - name: Publish packages under the @latest tag via npm Trusted Publishing (OIDC)
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          node scripts/rust/package-nightly.mjs publish-npm \
+            --dir npm-dist \
+            --version "$VERSION" \
+            --tag latest \
+            --provenance
+
+  release:
+    needs: [prepare, artifacts, publish-npm]
+    if: >-
+      inputs.publish_release &&
+      !cancelled() &&
+      needs.prepare.result == 'success' &&
+      needs.artifacts.result == 'success' &&
+      (needs.publish-npm.result == 'success' || needs.publish-npm.result == 'skipped')
+    runs-on: ubuntu-latest
+    environment: release
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "26"
+
+      - name: Download release platform artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: release-pkg-*
+          path: dist
+          merge-multiple: true
+
+      - name: Include ASF DISCLAIMER
+        run: cp DISCLAIMER dist/DISCLAIMER
+
+      - name: Generate checksums, signed updater manifest, and release notes
+        env:
+          MAKA_UPDATE_SIGNING_KEY: ${{ secrets.MAKA_UPDATE_SIGNING_KEY }}
+          MAKA_UPDATE_PUBLIC_KEY: ${{ vars.MAKA_UPDATE_PUBLIC_KEY }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          COMMIT: ${{ needs.prepare.outputs.commit }}
+          BUILD_DATE: ${{ needs.prepare.outputs.build_date }}
+          RELEASE_NOTES: ${{ inputs.notes }}
+          NPM_PUBLISHED: ${{ needs.publish-npm.result == 'success' }}
+        run: |
+          args=(
+            --channel release
+            --tag "$TAG"
+            --dir dist
+            --version "$VERSION"
+            --commit "$COMMIT"
+            --build-date "$BUILD_DATE"
+            --repo "$GITHUB_REPOSITORY"
+            --notes-out release-notes.md
+            --require-signature
+            --expected-public-key "$MAKA_UPDATE_PUBLIC_KEY"
+          )
+          if [[ -n "$RELEASE_NOTES" ]]; then
+            args+=(--notes "$RELEASE_NOTES")
+          fi
+          if [[ "$NPM_PUBLISHED" == "true" ]]; then
+            args+=(--npm-published)
+          fi
+          node scripts/rust/nightly-manifest.mjs generate "${args[@]}"
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          shopt -s nullglob
+          assets=(dist/*)
+          gh release create "$TAG" "${assets[@]}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --latest \
+            --title "Apache Maka ${VERSION} (incubating)" \
+            --notes-file release-notes.md
+
+  seal-capsule:
+    needs: [prepare, artifacts, release]
+    if: >-
+      inputs.publish_release &&
+      !cancelled() &&
+      needs.release.result == 'success'
+    runs-on: ubuntu-latest
+    environment: release
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "26"
+
+      - name: Download verified candidate time capsule
+        uses: actions/download-artifact@v8
+        with:
+          name: compat-capsule-candidate
+          path: compat-capsule
+
+      - name: Publish pinned milestone capsule to compat-capsules release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_COMMIT: ${{ needs.prepare.outputs.commit }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          short_sha="${RELEASE_COMMIT:0:9}"
+          node scripts/rust/compat-capsule.mjs publish \
+            --capsule compat-capsule/compat-capsule.tar.gz \
+            --repo "$GITHUB_REPOSITORY" \
+            --name "capsule-milestone-${RELEASE_VERSION}-${short_sha}.tar.gz"

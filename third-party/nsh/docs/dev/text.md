@@ -19,6 +19,10 @@
   (Dynamic Type on iOS; on both, a box a fraction of a point shorter than the line's measured height).
   CoreText positions it from the same top edge as an unconstrained line; the view's drawing bounds clip the
   excess. Empty and zero-height boxes stay empty.
+  On both, the box a text measures holds its cut last line as drawn: the end of the text that `ellipsis-start` and
+  `ellipsis-middle` keep (and an ellipsis, which takes the font of the text's end) grows that line when it is set in a
+  larger font or holds a taller attachment, below the line above, as on a line not cut; a fixed `lineHeight` holds a
+  larger font there as on any line. A box too short for the text keeps such a line below the line above too.
   `onTextLayout` reports the final lines (`TextEngine::lines`: range, box, ascender, descender, cap / x height); Rust
   components can subscribe with `Text::on_text_layout` (`TextGeometry`) to query `lines`, `hit_test`, `caret_rect` and
   `range_rects` directly on the engine's final layout in source UTF-16 offsets (skipping synthetic span-padding
@@ -113,7 +117,9 @@
   column (falling back to document order when no column has width). Words are runs of letters, digits and `_`, runs
   of spaces, or single other characters (each CJK ideograph, kana, emoji or punctuation mark); a triple click selects
   a whole text. Desktops select as their single texts do (drag, double click words, triple click paragraphs, drags go
-  on by them, Shift+click extends; Ctrl / Cmd+A, Ctrl / Cmd+C, Escape; a press elsewhere clears), touch screens with a
+  on by them, Shift+click extends; Ctrl / Cmd+A, Ctrl / Cmd+C, Escape; a press elsewhere clears; keys extend the
+  selection's focus with `SelectionModel::extend` by a `Movement` (a character cluster, a word, a line at a kept x, a
+  line's or paragraph's edge, the document's) and the backend reveals `focus_caret`: macOS so far), touch screens with a
   long press (a word) and then the platform's handles and edit menu (Copy, Select All). Texts with `userSelect: "none"`
   stay out; an area inside another is part of the outer one (only the outermost area keeps a model); texts outside
   areas select alone, as above. Views without the flag change nothing (no extra mount items). iOS
@@ -133,6 +139,16 @@
   (`selectable_view.rs`, `SelectableView.java`): the shared Rust model runs on the UI thread over JNI, hit-testing
   through a Java callback; a long press selects a word (the long press haptic), then handles (the text handles' tick
   as an end moves) and a floating `ActionMode` (Copy, Select all, Share).
+- **Ends in list items**: `onSelectionChange`'s `anchor` and `focus` name the list item each end of a selectable
+  view's selection is in (`{ key, offset }`). Backends report each end as its text's node and the offset in it
+  (`SelectionModel::ends`, `selection::end_fields`) and keep the rows of the ends rendered (`KeptRows`). The engine
+  has the core name them (`Core::name_selection_ends`, `core/selection_ends.rs`): from the innermost list cell around
+  the text out, the runtime says what it calls each row (`selection::ListItemKey`, `nsh-js` `list::row_key`, the same
+  naming as `onViewableItemsChange`). The first row it names gives the key, and the offset is in the copy of that
+  row's item; a row it cannot name leaves the end out; rows of lists it does not hold (a Rust component's) go by the
+  innermost one's index. The core lists a cell's texts with `selection::list_texts`, which macOS and the headless
+  backend also use for an area; the other backends still walk their views themselves. An end outside a list item
+  leaves its field out. The web does not report them yet.
 - **Selection menu**: `selectionMenu` on a selectable view (Rust `Element::selection_menu`, the host prop
   `Prop::SelectionMenu`, `ViewProps::selection_menu`) takes `nsh/desktop`'s `MenuItem`s, each running its `onSelect`;
   they go after the system's items, which always stay. The core keeps plain items and separators

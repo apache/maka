@@ -6,11 +6,11 @@
 // name, on top of their own padding (`calc`); `keyboardFrame()` (no
 // keyboard headless), `Keyboard.dismiss` and views padded (or given a
 // bottom margin) by `env(keyboard-inset-height)`, which makes no room while
-// no keyboard shows, with an offset added only while one shows. Its script
-// checks each.
+// no keyboard shows, with an offset added only while one shows;
+// `reservedRegions()` (none headless). Its script checks each.
 import { Text, View, signal } from "nsh";
 import { Button, Dialog, type Edges, NavPage, NavStack, createNavStack } from "nsh/base";
-import { Keyboard, keyboardFrame, safeArea, safeAreaInsets } from "nsh";
+import { Keyboard, keyboardFrame, reservedRegions, safeArea, safeAreaInsets } from "nsh";
 
 // The keyboard's height plus `offset` while a keyboard shows, nothing
 // otherwise.
@@ -78,6 +78,7 @@ function App() {
           <View testID="dialog-inner" style={{ flex: 1 }} />
         </View>
       </Dialog>
+      <Text>{`Reserved regions: ${reservedRegions().length}`}</Text>
     </View>
   );
 }

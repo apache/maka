@@ -254,7 +254,7 @@ pub struct List {
     /// Include archived conversations alongside active ones.
     #[serde(default)]
     pub include_archived: bool,
-    /// Only conversations without a parent; omitted queries still include children.
+    /// Only conversations without a parent and explicitly pinned ones; omitted queries still include all children.
     #[serde(default)]
     pub roots_only: bool,
     pub position: SessionPosition,
@@ -927,6 +927,12 @@ pub struct Session {
     /// Session that initiated creation, independent of fork ancestry and task ownership.
     #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<String>")]
     pub parent_session_id: Option<String>,
+    /// Ordered live ancestor session ids from immediate parent to top-level root.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ancestor_ids: Vec<String>,
+    /// Title of the immediate live parent session when this session is a child.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_title: Option<String>,
     #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<SessionBranch>")]
     pub branch: Option<SessionBranch>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -942,15 +948,66 @@ pub struct Session {
     pub labels: Vec<String>,
     pub workspace: Workspace,
     pub revision: u64,
+    #[serde(default)]
+    pub created_at: u64,
     pub updated_at: u64,
     pub archived: bool,
     pub pinned: bool,
     pub has_unread: bool,
+    /// Whether at least one direct unarchived child conversation is currently working.
+    #[serde(default)]
+    pub has_active_children: bool,
     /// Exact durable visible tail accepted by markRead; independent of preview clocks.
     #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<String>")]
     pub tail_message_id: Option<String>,
     pub activity: SessionActivity,
 }
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentWorkerProgressRead")]
+pub struct WorkerProgressRead {
+    pub parent_session_id: String,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[schemars(rename = "AgentWorkerProgressKind")]
+pub enum WorkerProgressKind {
+    #[default]
+    Working,
+    Thinking,
+    Generating,
+    Summary,
+    Command,
+    Edit,
+    Read,
+    Tool,
+    Approval,
+    Question,
+    Form,
+    Permission,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[schemars(rename = "AgentWorkerProgress")]
+pub struct WorkerProgress {
+    pub session_id: String,
+    pub run_id: maka_agent_facts::durable::RunId,
+    pub seq: u64,
+    pub kind: WorkerProgressKind,
+    pub detail: String,
+}
+
+#[derive(Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[schemars(rename = "AgentWorkerProgressFrame")]
+pub struct WorkerProgressFrame {
+    pub snapshot: bool,
+    pub upsert: Vec<WorkerProgress>,
+    pub remove: Vec<String>,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, JsonSchema, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[schemars(rename = "AgentSessionActivity")]
@@ -1668,6 +1725,30 @@ pub struct HistoryRequestsRead {
     pub after: Option<u64>,
 }
 
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentHistoryImagesRead")]
+pub struct HistoryImagesRead {
+    #[schemars(length(min = 1))]
+    pub session_id: String,
+    #[schemars(range(min = 1, max = 9_007_199_254_740_991u64))]
+    pub through: u64,
+    /// Any original row in the Run whose images are listed.
+    pub position: RowPosition,
+    #[serde(default)]
+    #[schemars(range(max = 9_007_199_254_740_991u64))]
+    pub after: Option<u64>,
+}
+
+/// The Run's tool results that produced images, oldest first, each with its call.
+#[derive(Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[schemars(rename = "AgentHistoryImages")]
+pub struct HistoryImages {
+    pub tools: Vec<maka_agent_ports::session::history::Tool>,
+    pub next: Option<u64>,
+}
+
 #[derive(Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[schemars(rename = "AgentHistoryRequests")]
@@ -1792,6 +1873,8 @@ pub enum HistoryPage {
         after: Option<Cursor>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tail_thought: Option<Box<maka_agent_ports::session::history::WorkThought>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        resolved_anchor: Option<maka_agent_facts::history::HistoryRowAddress>,
     },
 }
 
@@ -2031,12 +2114,14 @@ impl From<maka_agent_ports::session::history::Page> for HistoryPage {
             before,
             after,
             tail_thought,
+            resolved_anchor,
         } = value;
         HistoryPage::Ready {
             through,
             before,
             after,
             tail_thought,
+            resolved_anchor,
             chunks: chunks
                 .into_iter()
                 .map(|chunk| HistoryChunk {
@@ -2296,6 +2381,7 @@ pub fn contract() -> Contract {
             methods: BTreeMap::from([
                 ("presets".into(), method::<PresetsRead, Vec<PresetSummary>>(MethodMode::Query)),
                 ("preset".into(), method::<PresetRead, Option<PresetDetail>>(MethodMode::Query)),
+                ("loadedMemories".into(), method::<LoadedMemoriesRead, Vec<LoadedMemory>>(MethodMode::Query)),
                 ("memorySource".into(), method::<MemorySourceSelection, MemoryEvidenceReference>(MethodMode::Query)),
                 ("memoryEvidence".into(), method::<MemoryEvidenceRead, MemoryEvidencePage>(MethodMode::Query)),
                 ("memoryHistory".into(), method::<MemoryHistoryRead, MemoryHistoryPage>(MethodMode::Query)),
@@ -2370,6 +2456,10 @@ pub fn contract() -> Contract {
                 (
                     "generateRecap".into(),
                     method::<RecapGenerate, RecapReceipt>(MethodMode::Mutation),
+                ),
+                (
+                    "watchWorkerProgress".into(),
+                    method::<WorkerProgressRead, WorkerProgressFrame>(MethodMode::Subscription),
                 ),
                 (
                     "watchChecklist".into(),
@@ -2498,6 +2588,10 @@ pub fn contract() -> Contract {
                 (
                     "historyRequests".into(),
                     method::<HistoryRequestsRead, HistoryRequests>(MethodMode::Query),
+                ),
+                (
+                    "historyImages".into(),
+                    method::<HistoryImagesRead, HistoryImages>(MethodMode::Query),
                 ),
                 (
                     "search".into(),

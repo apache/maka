@@ -39,7 +39,7 @@
   "pkg.maka.agent.workspace-web.displayName": "網頁工具",
   "pkg.maka.application.host-logs.description": "查看和跟隨所連線 Host 的已擷取日誌。",
   "pkg.maka.application.host-logs.displayName": "Host 日誌",
-  "pkg.maka.applications.description": "在 macOS 的快速啟動器裡尋找、開啟和管理已安裝的應用程式。",
+  "pkg.maka.applications.description": "在 Windows 和 macOS 的快速啟動器裡尋找、開啟和管理已安裝的應用程式。",
   "pkg.maka.applications.displayName": "應用程式",
   "pkg.maka.calculator.description": "在快速啟動器裡計算和換算單位，並複製結果。",
   "pkg.maka.calculator.displayName": "計算機",

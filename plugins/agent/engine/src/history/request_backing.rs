@@ -163,6 +163,28 @@ impl RequestBackingBuilder {
         Ok(start..self.length)
     }
 
+    /// Rewind unsealed trailing bytes appended since `position` (e.g. a deduplicated media write).
+    pub(crate) fn truncate_unsealed(&mut self, position: u64) -> io::Result<()> {
+        if position < self.sealed || position > self.length {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "cannot truncate past sealed prefix or length",
+            ));
+        }
+        match self.storage.as_mut().expect("unfinished backing") {
+            Building::Resident { bytes, .. } => {
+                bytes
+                    .truncate(usize::try_from(position).map_err(|_| io::Error::other("overflow"))?);
+            }
+            Building::File { file, .. } => {
+                file.set_len(position)?;
+                file.seek(SeekFrom::Start(position))?;
+            }
+        }
+        self.length = position;
+        Ok(())
+    }
+
     /// Reserve a new zero-filled table in this backing; file regions stay sparse.
     pub(crate) fn reserve_zeroed(&mut self, bytes: u64) -> io::Result<Range<u64>> {
         let start = self.length;

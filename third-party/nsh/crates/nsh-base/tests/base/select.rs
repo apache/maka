@@ -44,6 +44,9 @@ struct HarnessProps {
     invalid: bool,
     /// The app's `cover`, unless left to the platform.
     cover: Option<bool>,
+    /// The app binds Space (`space` in the log), taking it over a control
+    /// a pointer focused when true (`OverFocused::Pointer`).
+    space: Option<bool>,
 }
 
 fn fruits() -> Vec<SelectItem> {
@@ -78,6 +81,7 @@ fn props(items: Vec<SelectItem>) -> HarnessProps {
         cleanable: false,
         invalid: false,
         cover: None,
+        space: None,
     }
 }
 
@@ -100,6 +104,19 @@ fn Harness(props: HarnessProps) -> impl IntoElement {
     // tests' trigger carries no state of the app's.
     let busy = props.invalid;
     on_key("f6", move |_| invalid.update(|i| *i = !*i));
+    if let Some(over) = props.space {
+        let over_focused = if over {
+            nsh_core::keymap::OverFocused::Pointer
+        } else {
+            nsh_core::keymap::OverFocused::Never
+        };
+        let options = KeyOptions {
+            when: nsh_core::keymap::When::NotEditing,
+            over_focused,
+            ..Default::default()
+        };
+        on_key_with("space", options, move |_| push("space".into()));
+    }
     on_key("f5", move |_| {
         items.set(vec![
             SelectItem::new("kiwi", "Kiwi"),
@@ -791,6 +808,53 @@ fn choosing_in_a_list_a_press_opened_leaves_the_trigger_without_the_keyboard() {
     app.press("role:option[Carrot]").unwrap();
     app.gone("role:listbox");
     assert!(!app.sent(trigger, &Command::Focus));
+}
+
+#[test]
+fn on_windows_an_app_binding_over_a_pointers_focus_takes_space_from_the_trigger() {
+    for over in [false, true] {
+        let mut p = props(fruits());
+        p.space = Some(over);
+        let mut app = start_on(p, Os::Windows, Idiom::Desktop, false);
+        // Chosen with the pointer, the trigger has the focus back.
+        app.open_list();
+        app.press("role:option[Carrot]").unwrap();
+        app.gone("role:listbox");
+        app.key("space");
+        if over {
+            // The pointer's focus: the app's Space takes the key.
+            app.log_ends("space");
+            assert!(!app.shows("role:listbox"), "the list stays closed");
+        } else {
+            // Without the option the trigger's Space opens it again.
+            app.wait_for("role:listbox").unwrap();
+            assert!(!app.log().ends_with("space"), "{}", app.log());
+        }
+        // Opened with the pointer, closed with Escape: still the pointer's.
+        if over {
+            app.open_list();
+            app.key("escape");
+            app.gone("role:listbox");
+            app.key("space");
+            app.log_ends("openChange:false:Cancel close space");
+            assert!(!app.shows("role:listbox"), "the list stays closed");
+        }
+    }
+}
+
+#[test]
+fn an_app_binding_over_a_pointers_focus_leaves_space_to_a_trigger_the_keyboard_focused() {
+    for os in [Os::Windows, Os::MacOs] {
+        let mut p = props(fruits());
+        p.space = Some(true);
+        let mut app = start_on(p, os, Idiom::Desktop, false);
+        // Tab gives the trigger the focus: Space opens the list.
+        app.key("tab");
+        app.key("space");
+        app.wait_for("role:listbox")
+            .unwrap_or_else(|e| panic!("{os:?}: {e}"));
+        assert!(!app.log().contains("space"), "{os:?}: {}", app.log());
+    }
 }
 
 #[test]

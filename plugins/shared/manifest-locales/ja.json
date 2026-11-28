@@ -39,7 +39,7 @@
   "pkg.maka.agent.workspace-web.displayName": "ウェブツール",
   "pkg.maka.application.host-logs.description": "接続中のホストから収集されたログを読み取り・追跡します。",
   "pkg.maka.application.host-logs.displayName": "ホストログ",
-  "pkg.maka.applications.description": "macOS のクイックランチャーからインストール済みアプリを検索・起動・管理します。",
+  "pkg.maka.applications.description": "Windows と macOS のクイックランチャーからインストール済みアプリを検索・起動・管理します。",
   "pkg.maka.applications.displayName": "アプリケーション",
   "pkg.maka.calculator.description": "クイックランチャーで計算や単位換算を行い、結果をコピーします。",
   "pkg.maka.calculator.displayName": "計算機",

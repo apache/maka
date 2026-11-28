@@ -423,6 +423,7 @@ pub(crate) fn draw_indicator(snapshot: &gtk::Snapshot, state: &ViewState) {
             center.x.0,
             center.y.0,
             progress,
+            s.spinner_opacity(),
             s.live.spin,
             s.live.dark,
         );
@@ -455,6 +456,7 @@ fn draw_spinner(
     cx: f32,
     cy: f32,
     progress: Percentage,
+    opacity: f32,
     spin: Radians,
     dark: bool,
 ) {
@@ -465,7 +467,7 @@ fn draw_spinner(
         snapshot.rotate(angle.0.to_degrees());
         let rect = graphene::Rect::new(-1.25, -10.0, 2.5, 5.5);
         snapshot.push_rounded_clip(&crate::view::rounded(rect, [1.25; 4]));
-        snapshot.append_color(&gdk::RGBA::new(base, base, base, fade), &rect);
+        snapshot.append_color(&gdk::RGBA::new(base, base, base, fade * opacity), &rect);
         snapshot.pop();
         snapshot.restore();
     }

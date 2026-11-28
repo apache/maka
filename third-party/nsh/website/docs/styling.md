@@ -481,7 +481,7 @@ view()
 
 | Property | Value | Rust |
 |---|---|---|
-| `transitionProperty` | What animates: `"all"`, or names separated by commas: colors (`"colors"`, `"backgroundColor"`, `"borderColor"`, ...), `"opacity"`, `"transform"` (every transform property), `"boxShadow"`, `"borderRadius"` / `"borderWidth"`, `"clip-path"` | `.transition()`, `.transition_all()`, `.transition_colors()`, `.transition_opacity()`, `.transition_transform()`, `.transition_shadow()`, `.transition_clip_path()` |
+| `transitionProperty` | What animates: `"all"`, or names separated by commas: colors (`"colors"`, `"backgroundColor"`, `"borderColor"`, ...), `"opacity"`, `"transform"` (every transform property), `"boxShadow"`, `"borderRadius"` / `"borderWidth"`, `"clip-path"`, `"mask-image"` | `.transition()`, `.transition_all()`, `.transition_colors()`, `.transition_opacity()`, `.transition_transform()`, `.transition_shadow()`, `.transition_clip_path()`, `.transition_mask()` |
 | `transitionDuration` | `300`, `"300ms"`, `"0.3s"` | `.duration(300.0)` |
 | `transitionDelay` | As the duration | `.delay(100.0)` |
 | `transitionTimingFunction` | `"linear"`, `"ease"`, `"ease-in"`, `"ease-out"`, `"ease-in-out"`, `"cubic-bezier(x1, y1, x2, y2)"`, `"spring(stiffness, damping)"`, `"spring(stiffness, damping, mass)"` | `.ease_linear()`, `.ease_in()`, `.ease_out()`, `.ease_in_out()`, `.ease_bezier(x1, y1, x2, y2)`, `.ease_spring(Spring { .. })` |

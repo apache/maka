@@ -55,7 +55,7 @@ import { DialogFooter, DialogHeader, ModalDialog } from './ModalDialog';
 import { LoadingIndicator } from './Loading';
 import { readSettingsModels, settingsModelKey } from './settings';
 import { accessLabel } from './SessionPermissionsSelect';
-import { C, bodyTextStyle, captionTextStyle, toolbarControlStyle, textTooltip } from './ui';
+import { bodyTextStyle, C, captionTextStyle, radius, textTooltip, toolbarControlStyle } from './ui';
 import { sameValue } from '../../../../plugins/shared/value';
 import { nativeModelSelection } from './modelSelection';
 
@@ -161,7 +161,7 @@ export function DiscoveryPanel(props: { open(): void }) {
     <Button
       accessibilityLabel={tr('Proactive discovery')}
       tooltip={textTooltip(() => tr('Proactive discovery'))}
-      style={{ ...toolbarControlStyle, flexDirection: 'row', gap: 6, alignItems: 'center' }}
+      style={{ ...toolbarControlStyle(), flexDirection: 'row', gap: 6, alignItems: 'center' }}
       onPress={props.open}
       hoverStyle={{ backgroundColor: C.card }}
     >
@@ -758,7 +758,9 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
           )}
         </If>
         <If when={!editing() && detail() !== null}>
-          <View style={{ padding: 10, borderRadius: 8, backgroundColor: C.background, gap: 6 }}>
+          <View
+            style={{ padding: 10, borderRadius: radius(8), backgroundColor: C.background, gap: 6 }}
+          >
             <Text style={{ ...bodyTextStyle, color: C.text, fontWeight: '500' }}>
               {tr(state())}
             </Text>
@@ -922,7 +924,7 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
                   gap: 2,
                   padding: 2,
                   backgroundColor: C.background,
-                  borderRadius: 8,
+                  borderRadius: radius(8),
                 }}
               >
                 <Each of={['read_only', 'session'] as const}>

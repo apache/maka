@@ -93,6 +93,11 @@ final class FileDrops implements View.OnDragListener {
 
     /** The destination at ({@code x}, {@code y}) of the root, 0 when none. */
     private int targetAt(float x, float y) {
+        return targetAt(mounter, root, x, y);
+    }
+
+    /** The destination at ({@code x}, {@code y}) of {@code root}, 0 when none. */
+    static int targetAt(Mounter mounter, View root, float x, float y) {
         for (View v = TouchTracker.deepest(root, x, y); v != null; ) {
             if (v instanceof Node) {
                 int id = ((Node) v).nodeId();

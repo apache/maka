@@ -320,18 +320,14 @@ test('stages localized network and camera prompts for every Apple bundle localiz
         { encoding: 'utf8' },
       ).trim();
     for (const field of ['NSLocalNetworkUsageDescription', 'NSCameraUsageDescription']) {
-      for (const tag of info.CFBundleLocalizations) assert.ok(localizedDescription(tag, field));
       assert.equal(localizedDescription('en', field), info[field]);
-      assert.notEqual(localizedDescription('zh-Hans', field), localizedDescription('en', field));
+      for (const tag of info.CFBundleLocalizations.filter((tag) => tag !== 'en')) {
+        const description = localizedDescription(tag, field);
+        assert.ok(description, `${tag}: ${field} is empty`);
+        assert.notEqual(description, info[field], `${tag}: ${field} fell back to English`);
+      }
+      assert.notEqual(localizedDescription('zh-HK', field), localizedDescription('zh-Hant', field));
     }
-    assert.equal(
-      localizedDescription('zh-HK', 'NSLocalNetworkUsageDescription'),
-      localizedDescription('zh-Hant', 'NSLocalNetworkUsageDescription'),
-    );
-    assert.notEqual(
-      localizedDescription('zh-HK', 'NSCameraUsageDescription'),
-      localizedDescription('zh-Hant', 'NSCameraUsageDescription'),
-    );
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

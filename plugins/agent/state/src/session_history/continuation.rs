@@ -329,7 +329,7 @@ fn boundary(
 ) -> Result<(String, Option<StepId>), StoreError> {
     let mut hash = Hasher(Sha256::new());
     hash.write_all(b"[")?;
-    let mut statement=c.prepare_cached("SELECT f.id,f.revision,f.schema_version,b.payload,b.content_sha256 FROM agent_facts f JOIN contents b ON b.id=f.body_content_id WHERE f.run=? AND f.revision<=? ORDER BY f.revision")?;
+    let mut statement=c.prepare_cached("SELECT f.id,f.revision,f.schema_version,maka_content_bytes(b.payload,b.encoding),b.content_sha256 FROM agent_facts f JOIN contents b ON b.id=f.body_content_id WHERE f.run=? AND f.revision<=? ORDER BY f.revision")?;
     let mut rows = statement.query(params![run.to_string(), sql::bind_u64(through)?])?;
     let mut previous = 0u64;
     let mut first = None;

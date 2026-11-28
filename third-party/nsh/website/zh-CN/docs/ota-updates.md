@@ -65,6 +65,43 @@ nsh certify --root keys/root.secret --key keys/release.pub --apps com.example.no
 
 `nsh package` 会把 `"updater"` 和 `build` 写进应用，所以应用信任哪些根密钥、拿哪个构建号和包比较，在构建应用时就已确定。只有用这份配置构建的应用才接收 OTA 更新：请在第一次 OTA 发布前先发布这样一个应用构建。
 
+### 运行时指定的更新源
+
+有些应用只发一个构建，给多个服务器用，用户登录时才选择服务器，应用到那时才知道更新源的地址。用 `"source": "runtime"` 让应用代码来指定：
+
+```json
+{
+  "updater": {
+    "publicKey": "<keys/update.pub 的内容>",
+    "packages": {
+      "roots": ["<keys/root.pub 的内容>"],
+      "source": "runtime"
+    }
+  }
+}
+```
+
+每次检查时传入清单的 URL：
+
+```tsx
+import { checkForPackage, downloadPackage } from "nsh/updater";
+
+const url = new URL("/updates/latest.json", serverOrigin).href;
+if (await checkForPackage({ url })) {
+  await downloadPackage(); // 下载这次检查找到的包
+}
+```
+
+代码能决定的只有这个 URL，密钥仍然来自应用本身：必须配 `publicKey`，清单要用它签名，包要由某个根密钥认证的发布密钥签名。服务器填错了或被人控制，也只能给出通不过这些校验的包。这时 `"github"` 和 `"url"` 可以不写；不写时 `checkForPackage()` 必须传 `url`，`checkForUpdate()` 会 reject，因为没有新应用的来源。
+
+更新源必须是 HTTPS。内网服务器没有 TLS 时，在 `"source"` 旁边加上 `"allowHttp": true`。明文 HTTP 下签名校验照常进行，但网络上的人能看到更新流量，也能拦下它。NSH 限制了他们还能做的事：
+
+- 清单的签名、多语言说明和包都必须来自更新源自己的 origin（协议、主机和端口）。来自它的重定向只能留在这个 origin，或者转到 HTTPS。
+- 构建号不比当前运行代码新的包永远不会提供；已经接受过的构建之前的旧构建，应用也会拒绝（[回滚保护](#回滚保护)）。重放一份旧的、签名有效的清单，什么也拿不到。
+- 带用户名或密码的更新源 URL 会被拒绝。NSH 不给更新请求加任何凭据。
+
+`allowHttp` 只对运行时指定的更新源生效；`"url"`、`"github"` 和 `"channels"` 仍然只能是 HTTPS。
+
 ### CI 密钥
 
 把发布密钥、它的证书和清单密钥存为发布仓库的 secret：

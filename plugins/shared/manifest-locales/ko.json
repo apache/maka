@@ -39,7 +39,7 @@
   "pkg.maka.agent.workspace-web.displayName": "웹 도구",
   "pkg.maka.application.host-logs.description": "연결된 Host에서 수집된 로그를 읽고 실시간으로 추적합니다.",
   "pkg.maka.application.host-logs.displayName": "Host 로그",
-  "pkg.maka.applications.description": "macOS의 빠른 실행기에서 설치된 앱을 찾고 열고 관리합니다.",
+  "pkg.maka.applications.description": "Windows와 macOS의 빠른 실행기에서 설치된 앱을 찾고 열고 관리합니다.",
   "pkg.maka.applications.displayName": "응용 프로그램",
   "pkg.maka.calculator.description": "빠른 실행기에서 계산 및 단위 변환을 수행하고 결과를 복사합니다.",
   "pkg.maka.calculator.displayName": "계산기",

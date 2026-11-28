@@ -73,8 +73,10 @@ absent d
 tap id:cleanup
 expect Result: closed
 tap id:outside
-expect Result: outside TypeError
+expect Result: outside TypeError, bar 0 0, state null null
 covers [nsh/desktop] currentWindow
+covers [nsh/desktop] titleBar
+covers [nsh/desktop] windowState
 # window-props
 tap id:case-window-props
 expect Document

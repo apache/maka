@@ -210,7 +210,7 @@ fn free(cx: *mut JsContext, v: JsValue) {
 }
 
 /// The pointer fields of `p` on `o` (`pointerType`, `pressure`, `tiltX`,
-/// `tiltY`).
+/// `tiltY`, `eraser`, `barrel`, `coalesced`).
 fn set_pointer(cx: *mut JsContext, o: JsValue, p: &TouchPoint) {
     let name = p.pointer_type.name();
     // SAFETY: a new string the object takes.
@@ -219,6 +219,27 @@ fn set_pointer(cx: *mut JsContext, o: JsValue, p: &TouchPoint) {
     set(cx, o, c"pressure", number(p.pressure as f64));
     set(cx, o, c"tiltX", number(p.tilt_x as f64));
     set(cx, o, c"tiltY", number(p.tilt_y as f64));
+    let flag = |v: bool| if v { qjs::JS_TRUE } else { qjs::JS_FALSE };
+    set(cx, o, c"eraser", flag(p.eraser));
+    set(cx, o, c"barrel", flag(p.barrel));
+    let samples = p
+        .coalesced
+        .iter()
+        .map(|c| {
+            // SAFETY: a new object.
+            let s = unsafe { qjs::JS_NewObject(cx) };
+            set(cx, s, c"pageX", number(c.page.x.0 as f64));
+            set(cx, s, c"pageY", number(c.page.y.0 as f64));
+            set(cx, s, c"locationX", number(c.location.x.0 as f64));
+            set(cx, s, c"locationY", number(c.location.y.0 as f64));
+            set(cx, s, c"pressure", number(c.pressure as f64));
+            set(cx, s, c"tiltX", number(c.tilt_x as f64));
+            set(cx, s, c"tiltY", number(c.tilt_y as f64));
+            set(cx, s, c"timestamp", number(c.timestamp));
+            s
+        })
+        .collect();
+    set(cx, o, c"coalesced", array(cx, samples));
 }
 
 /// A touch point as JS sees it.
@@ -958,6 +979,29 @@ export interface TouchPoint {
    * 0 when the device does not report it. */
   tiltX: number;
   tiltY: number;
+  /** A pen used with its eraser end (`pointerType` stays `"pen"`). */
+  eraser: boolean;
+  /** A pen's barrel (side) button is held. */
+  barrel: boolean;
+  /** The samples the platform merged into this event, oldest first, as
+   * `PointerEvent.getCoalescedEvents()` without the last one (this point):
+   * a pen moves at 120-240 Hz, and a slow frame only gets its latest
+   * position. Draw them before this point for a smooth stroke. Empty when
+   * nothing was merged. */
+  coalesced: CoalescedSample[];
+}
+
+/** A pointer sample merged into a `TouchPoint` (points). */
+export interface CoalescedSample {
+  pageX: number;
+  pageY: number;
+  locationX: number;
+  locationY: number;
+  pressure: number;
+  tiltX: number;
+  tiltY: number;
+  /** When the device took it, in milliseconds (the clock of `timestamp`). */
+  timestamp: number;
 }
 
 /** A touch or responder event: the finger it is about, the fingers down
@@ -1056,6 +1100,9 @@ mod tests {
                 pressure: 0.5,
                 tilt_x: 0.0,
                 tilt_y: 0.0,
+                coalesced: Vec::new(),
+                eraser: false,
+                barrel: false,
             }],
         }))
     }

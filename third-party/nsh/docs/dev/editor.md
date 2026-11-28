@@ -28,7 +28,8 @@ user-facing page is `website/elements/editor.md`; how each module works inside i
 | `select.rs` | The selection history (`undoSelection`), expanding and shrinking selections, block selections, the scope of a search in the selection |
 | `keymap.rs` | The default key bindings as data, in `nsh`'s keystroke syntax, Apple's and the others' |
 | `language.rs` | `LanguageConfig`: per-language comments, brackets, auto-close pairs, word characters, indentation, tab size and the syntax hint; the lookup by name, alias, extension or file name |
-| `display.rs` | `DisplayMap`: tabs, measured widths, soft wrap and folds as display rows |
+| `display.rs` | `DisplayMap`: tabs, measured widths, soft wrap, folds, labels and the decorations' fonts as display rows of their heights |
+| `line_break.rs` | Where soft-wrapped text may break, shared with `DiffView`'s soft wrap |
 | `fold.rs` | Where folds can start, by indentation |
 | `fold_set.rs` | Folds as sets of ranges: the app's `foldRanges` normalized and carried through edits, the folded set after an edit, levels, nesting, the outermost folds |
 | `search.rs` | Find and replace on `regex`: matches, replacements with groups, the next and previous match |
@@ -80,9 +81,19 @@ user-facing page is `website/elements/editor.md`; how each module works inside i
 `DisplayMap` (`display_map.rs`) lays the text out in display rows: tabs advance to the next stop, widths come from
 the editor's font as drawn (the app's `fontSize` and `lineHeight` grown by the user's text size, `fontScale`, as the
 core grows every text's: `controller::drawn_font`) measured with the platform's text engine, and large files lay out without measuring every row.
-With `softWrap`, a line breaks after whitespace where the row would overflow, else between graphemes, and its
-continuation rows start at its indentation unless that is over half the width. A folded line shows as one row and the
-lines it hides as none. An edit lays out only the lines it touched.
+With `softWrap`, a line breaks where the row would overflow at its last break opportunity: between ASCII characters
+after whitespace, as before, so code and Latin text keep their tokens, operators and paths whole; elsewhere at
+Unicode's line break opportunities (UAX #14, from `unicode-linebreak`, as the core's text layout), so CJK text breaks
+between characters but not before closing punctuation or after opening punctuation. A run without one breaks between
+graphemes, never inside one. A replacing decoration's label is one unit that never splits; rows break around it as
+around an object replacement character (U+FFFC), except between ASCII neighbours, where the ASCII rule keeps it with
+the code beside it. A line's continuation rows start at its indentation unless that is over half the width. A folded line
+shows as one row and the
+lines it hides as none. An edit lays out only the lines it touched. A decoration's `fontFamily` / `fontSize` measure
+its text in that font (as drawn, grown by `fontScale`), and a row is as tall as its largest text needs, never shorter
+than `lineHeight`; every place that turns rows into points (carets, selections, presses, the rows made, scrolling,
+`minRows` / `maxRows`, the overview ruler) asks the display map for a row's top and height rather than multiplying
+by the line height. New decorations lay out again only the lines whose fonts changed.
 
 ### Rendering and virtualization
 
@@ -93,7 +104,7 @@ finger or a wheel on a row's glyphs scrolls as on blank space. Only the rows in 
 (`window.rs`'s `RowWindow`, which the `DiffView` shares); each row is an absolutely placed view holding one `Text`
 whose spans are the row's runs of one token and one set of decorations (`State::row_content`). The rows' box draws,
 from back to front: the rulers, indent guides, search matches, selections, the matching brackets, the rows, the
-whitespace marks, diagnostics' marks, the placeholder, the carets and the composition. In a terminal a row is one Cell, whatever `lineHeight` is (`terminal::row_height`, the `DiffView`'s too):
+whitespace marks, diagnostics' marks, the placeholder and the carets. In a terminal a row is one Cell, whatever `lineHeight` is (`terminal::row_height`, the `DiffView`'s too):
 rows on another step would land on the Cell grid unevenly, a blank row every few lines.
 
 `showWhitespaces` draws a `·` per space and a `→` per tab over the rows in view: one `Text` per run of spaces and per
@@ -107,15 +118,27 @@ is the room the rows' box has past its last row. With `minRows` and / or `maxRow
 root's height is its display rows within those bounds plus the padding its parts take around the rows (the vertical
 scroll view's content as last laid out, less the rows' box), and there is no room past the last line; past `maxRows`
 the text scrolls. Moving the caret keeps `cursorSurroundingLines` rows around it (a row by default, at most a quarter
-of the viewport; never more than half of what the caret's row leaves).
+of the viewport; never more than half of what the caret's row leaves). `scrollbarInset` is a scroll view's, measured
+from the editor's edges: the vertical scroll view takes it as it is; the horizontal one its sides along its bar and
+the bottom, the left less where the text area starts past the gutter (`layout::text_bar_inset`).
 
 A drag that selects (`drag_to`) never jumps to the caret: while the pointer is near or past the viewport's top or
 bottom edge (from 16 points inside), or past the text area's left or right edge without soft wrap, a 16 ms
 `set_interval` scrolls by 12 to 64 points a tick, faster the farther out (`edge_speed`), within the content, and
 extends the selection to the pointer again; it stops when the pointer comes back, on release, and when the drag ends.
 
+`onScroll` (`Ed::report_scroll`) gives the app what a `Scroll`'s `onScroll` would: the offset (`scrollOffset()`'s),
+the content's size and the viewport's, once laid out and whenever one of them differs from the last report. The
+height is the vertical scroll view's content; the width is the viewport's plus how far the horizontal scroll view's
+content outgrows it (none while lines wrap, `x` then 0), so the offset stays within `contentSize - size` as a scroll
+view's does. It is how an app draws a separator or a fade at an edge the text scrolls under: the rows are drawn over
+the scroll views, so a mask or a view laid over the editor reaches neither cleanly. Like the other reports it is emitted
+whether or not the app listens; an event with no handler is dropped before it reaches JS.
+
 Revisions (`Signal<u64>` in `Ed`) keep a change to the parts that depend on it: `text_rev` (the text or its layout),
-`hl_rev` (highlighting progressed), `sel_rev` (selections), `marks_rev` (diagnostics, decorations, matches). The state
+`hl_rev` (highlighting progressed), `sel_rev` (selections), `marks_rev` (diagnostics, decorations, matches),
+`composition_rev` (what an input method composes). `composing` holds where a composition shows; each row and mark
+painter reads that, so a composing keystroke recomputes only the composing row's content. The state
 itself lives in an `Rc<RefCell<State>>` outside the reactive graph.
 
 ### Typed text and input methods
@@ -128,12 +151,16 @@ editor's box (`Ed::in_editor`) and held inside it: the platforms scroll the scro
 show it, which the editor does itself for its caret, and doing it again moved the text under the caret by a margin,
 animated, when the editor took the focus. It holds only what was just typed: each `onChange` is
 compared with what it held around the place in it the caret stands for, and the difference becomes Backspaces,
-forward deletions and typed text at every selection (`sink_changed`, `sink_text.rs`), which is how autocorrection and
+forward deletions (one per grapheme deleted) and typed text at every selection (`sink_changed`, `sink_text.rs`), which is how autocorrection and
 input methods that replace their text work. The caret stands for the sink's end until the platform moves the sink's
 own caret without a key (an input method that types a pair of brackets and puts its caret between them): a single
 caret then follows it (`sink_selection`), over text the editor holds the same way. While an input method composes, its text
-is drawn at the caret over the text (the `composition` part, underlined) and the carets hide; the commit arrives as
-typed text. The sink is emptied when the caret moves (unless a composition is under way) and once it holds 256 bytes.
+is a span of the primary caret's row (the `composition` part, underlined) and the carets hide; the commit arrives as
+typed text. The row keeps its tokens and decorations, and the composed span takes those its commit will fall inside
+(the ones around the caret, not those starting or ending there, as edits map them), a decoration's font included.
+Marks drawn over the row after the caret (selections, matches, brackets, whitespace, diagnostics, links) move aside by
+the composed text's width in that font, and the
+placeholder hides while a composition shows in an empty editor. The sink is emptied when the caret moves (unless a composition is under way) and once it holds 256 bytes.
 A paste reaches the sink as a paste event (`PasteBehavior::Report`) and goes through `Editing::paste`; text copied
 from carets (whole lines) pastes back as whole lines.
 
@@ -327,7 +354,9 @@ the linter has not answered yet. A diagnostic underlines its text with a 1 point
 Kit draws it: the spans are cut at its bounds and carry the most serious severity over them (`SpanTags`), so the text
 engine draws the line; an empty range marks the character after it (the one before it at a line's end), and on an
 empty line a short line a space wide is drawn under the row (`diagnostic_rects`). A decoration's `class` / `style` style its text (the spans are cut at its
-bounds), its `lineClass` / `lineStyle` the rows of its lines behind the text. A row looks for its decorations by two
+bounds), its `lineClass` / `lineStyle` the rows of its lines behind the text, its `fontFamily` / `fontSize` the font
+the text is measured and drawn in (the innermost decoration's family and size, each on its own; fields rather than
+classes, as the editor's own font is props: the editor must measure it). A row looks for its decorations by two
 binary searches over the marks (sorted by start): those starting from the longest mark's length before the row
 (`decoration_reach`) up to its end, so thousands of short ones (semantic tokens) cost a row only its own.
 
@@ -341,11 +370,27 @@ its line's first row at a line start, across the bottom of its last row elsewher
 line break); that boundary is `placement: "before"`, and by default an empty range covers its line, as it does for
 `lineClass` (one decoration, one meaning of its range). Empty ranges are kept through edits (`adjust` collapses a deleted range to its boundary). The overview
 ruler (`view::overview_ruler`, the `overviewRuler` part, 14 points wide unless the part sets a width; its lanes are
-shares of that width, so a width the app's classes set moves them too) lies over the scroll view's right edge, receiving no pointer;
+shares of that width, so a width the app's classes set moves them too) lies over the scroll view's right edge, within
+`scrollbarInset` as the vertical bar is, receiving no pointer;
 its marks' display rows (`State::overview_ruler_marks`) are worked out again only when the text, folds, wrapping or
 decorations change (`text_rev`, `marks_rev`), and their places (`layout::ruler_place`: the rows scaled from the
-rows' box to the viewport's height, at least 6 points; `layout::ruler_lane`, Monaco's lanes) when the viewport does. GPUI Kit's folded
+rows' box to the ruler's height, at least 6 points; `layout::ruler_lane`, Monaco's lanes) when the viewport does. GPUI Kit's folded
 color and the theme's status colors are left out: a mark's look is the app's `class` / `style`.
+
+A decoration's `label` replaces its range's text on screen, as CodeMirror's replace decorations do: the display map
+lays the range out as one unit as wide as the label's box (as its layout reports it; the label's text in its font until
+then), so carets, presses, wrapping and the rows' widths go around it, and the row draws the box in its place. Each range
+keeps its own box's width, so boxes of one look laid out a little apart in different rows never take turns relaying
+the rows; a range whose box has not been laid out yet (a row out of view) takes the width the first box of its look and
+font reported. A row made again keeps a label's box only for the same decoration, look and font, so a box never reports
+another label's width. The label
+is in the font of the decoration font run around its start (a date in a heading is a heading's size), and the row keeps
+the height the display map gives it. The range's text comes back while the editor has the focus and a selection touches the range (inside it or at
+either end), worked out again when the selections, the text, the decorations or the focus change: a move that touches
+no other label costs a search per selection. The caret then moves through the text as through any other, rather than
+skipping the range as one atomic unit: the labels stand for text the user edits (a date, a link's source in a Markdown
+notes app), and every command, edit and position stays the buffer's, so copying, undo, search and accessibility read
+the text. Ranges over a line break, empty ones and ones overlapping an earlier label show their text.
 
 A diagnostic is LSP's `Diagnostic` with names for its enums: `codeDescription` and `relatedInformation` are data the
 hover hands back (related ranges as the app gave them, as they may be in other documents), and `tags` style its text.
@@ -402,7 +447,7 @@ The defaults are the theme's tokens (`crate::theme()`), so a theme and the dark 
 | `activeLine` | `muted` at 60 % behind the rows of lines with a caret |
 | `selection` | The theme's selection color: its `selection` color, else `primary` at 22 % |
 | `caret` | 2 points wide, `foreground`, blinking every 530 ms while focused; in a terminal none: the terminal's cursor stands at the sink, which is kept at the primary caret |
-| `composition` | Underlined, on `background` |
+| `composition` | Underlined |
 | `searchMatch` / `currentSearchMatch` | Amber (`#fbbf24` / `#d97706` dark) at 25 % / 55 % |
 | `matchingBracket` | A 1 point border, `muted-foreground` at 60 %, while focused |
 | `indentGuide` | A 1 point line of `border` per level |
@@ -429,7 +474,8 @@ texts keep the app's values, which the core grows. A row's text is one line, cli
 
 ## Accessibility
 
-The sink carries `accessibilityLabel`; the rows are real texts, read in order.
+The sink carries `accessibilityLabel`; the rows are real texts, read in order. A decoration's label reads as its
+range's text.
 
 ## From GPUI Kit
 
@@ -455,3 +501,4 @@ The sink carries `accessibilityLabel`; the rows are real texts, read in order.
   (parsed from 40 lines before them) until the parse reaches them, which can differ inside a long comment or string.
 - At most 10 000 search matches are found and 1000 undo steps kept.
 - On touch screens the sweep after a long press does not extend the selection: the handles do.
+- A label replaces a range on one line; nothing shows a box at a position without replacing text (an inlay hint).

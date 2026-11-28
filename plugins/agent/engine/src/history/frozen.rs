@@ -114,6 +114,7 @@ impl RecipeCursor<MessageMetadata> for MetadataCursor {
                 return Ok(None);
             };
             let result = MessageMetadata {
+                is_pinned_memory: message.recipe.is_pinned_memory(),
                 message_index: self.position,
                 logical_identity: message.logical_identity.clone(),
                 role: message.role,
@@ -244,6 +245,7 @@ mod tests {
         );
         let descriptor = MessageDescriptor {
             recipe: MessageRecipe::User {
+                is_pinned_memory: false,
                 content: Arc::new(Items::new(
                     vec![
                         maka_agent_facts::model::prompt_source::source::ContentRecipe::Text {

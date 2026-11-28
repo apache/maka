@@ -23,7 +23,7 @@ import type {
   CredentialStatus,
   CredentialVersionBasis,
 } from '../../../../../../packages/plugin-sdk/src/generated/runtime';
-import { tr } from '../../locale';
+import { type MessageKey, tr } from '../../locale';
 import { activeHostInfo } from '../hostPool';
 import { hostMutate, hostQuery, type MutationProgress } from '../../bridge';
 
@@ -90,6 +90,12 @@ export function credentialBasis(status: CredentialStatus | null): CredentialVers
   return { locator: status.locator, credentialId: status.credentialId, revision: status.revision };
 }
 
+export class LocalizedSettingsError extends Error {
+  constructor(key: MessageKey, options?: ErrorOptions) {
+    super(tr(key), options);
+  }
+}
+
 export function settingsWork(rootId: string, active?: () => boolean) {
   const busy = signal(false);
   const error = signal('');
@@ -122,7 +128,11 @@ export function settingsWork(rootId: string, active?: () => boolean) {
       await work();
     } catch (cause) {
       if (current())
-        error.set(safeError ?? (cause instanceof Error ? cause.message : String(cause)));
+        error.set(
+          cause instanceof LocalizedSettingsError
+            ? cause.message
+            : (safeError ?? (cause instanceof Error ? cause.message : String(cause))),
+        );
     } finally {
       operation = undefined;
       if (alive) busy.set(false);

@@ -108,6 +108,8 @@ pub(crate) struct VideoItem {
     props: RefCell<Option<VideoProps>>,
     /// The last frame.
     frame: RefCell<Option<Frame>>,
+    /// The image shown until the first frame.
+    poster: RefCell<Option<crate::image::CanvasBitmap>>,
     /// The video's size in pixels.
     natural: Cell<(u32, u32)>,
     /// The frame client runs.
@@ -153,6 +155,7 @@ impl VideoItem {
             status: Status::default(),
             props: RefCell::new(None),
             frame: RefCell::new(None),
+            poster: RefCell::default(),
             natural: Cell::new((0, 0)),
             pumping: Cell::new(false),
             want_frame: Cell::new(None),
@@ -179,6 +182,9 @@ impl VideoItem {
         let toggled = reopened || old.as_ref().is_none_or(|o| o.paused != p.paused);
         *self.props.borrow_mut() = Some(p.clone());
         self.status.playing.set(!p.paused);
+        if reopened || old.as_ref().is_none_or(|o| o.poster != p.poster) {
+            self.show_poster(surface, p.poster.as_deref(), p.resize_mode);
+        }
         let engine = self.engine.borrow().clone();
         if let Some(engine) = engine {
             // SAFETY: calls on a live engine, from the thread that made it.
@@ -203,6 +209,38 @@ impl VideoItem {
             }
         }
         surface.invalidate();
+    }
+
+    /// Shows `source` (an image) under the video until its first frame.
+    fn show_poster(
+        self: &Rc<Self>,
+        surface: &Rc<Surface>,
+        source: Option<&str>,
+        _mode: ResizeMode,
+    ) {
+        self.poster.borrow_mut().take();
+        // The first frame is there: it replaces the poster.
+        if self.status.loaded.get() {
+            return;
+        }
+        let Some(source) = source else { return };
+        let scale = surface.scale();
+        let serial = self.serial.get();
+        let weak = Rc::downgrade(self);
+        let name = source.to_owned();
+        crate::image::load_bitmap(surface, source, scale, move |result| match result {
+            Ok(bitmap) => {
+                if let Some(item) = weak.upgrade()
+                    && item.serial.get() == serial
+                {
+                    *item.poster.borrow_mut() = Some(bitmap);
+                    if let Some(surface) = item.surface() {
+                        surface.invalidate();
+                    }
+                }
+            }
+            Err(message) => log::warn!("video poster {name}: {message}"),
+        });
     }
 
     /// Opens `source` (or nothing).
@@ -345,6 +383,9 @@ impl VideoItem {
                 }
             }
             MF_MEDIA_ENGINE_EVENT_FIRSTFRAMEREADY | MF_MEDIA_ENGINE_EVENT_SEEKED => {
+                if event == MF_MEDIA_ENGINE_EVENT_FIRSTFRAMEREADY {
+                    self.poster.borrow_mut().take();
+                }
                 self.want_frame.set(Some(surface.clock() + FRAME_WAIT));
                 self.pump(surface);
             }
@@ -637,6 +678,27 @@ impl Hosted for VideoItem {
     fn draw(&self, cx: &mut DrawCx<'_>, size: (f32, f32)) {
         let (w, h) = size;
         cx.push_clip_rect(0.0, 0.0, w, h);
+        if let Some(poster) = &*self.poster.borrow()
+            && let Some(bitmap) = poster.frame.bitmap(cx.dc)
+        {
+            let natural = (
+                poster.frame.size().0 as f32 / poster.scale,
+                poster.frame.size().1 as f32 / poster.scale,
+            );
+            let (x, y, fw, fh) = fit(self.resize_mode(), natural, size);
+            // SAFETY: a Direct2D call between BeginDraw and EndDraw, with a
+            // bitmap of the context's device.
+            unsafe {
+                cx.dc.DrawBitmap(
+                    &bitmap,
+                    Some(&rect_f(x, y, fw, fh)),
+                    1.0,
+                    D2D1_INTERPOLATION_MODE_LINEAR,
+                    None,
+                    None,
+                );
+            }
+        }
         if let Some(frame) = &*self.frame.borrow()
             && frame.filled
             && frame.generation == gfx::generation()

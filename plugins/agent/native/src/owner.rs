@@ -92,6 +92,7 @@ mod system_permission;
 mod title;
 mod todo;
 mod work;
+pub(crate) mod worker_progress;
 mod workspace_change;
 mod worktrees;
 use maka_agent_facts::composition::SourceKind;
@@ -171,6 +172,8 @@ struct CapturedRun {
     background: Option<ScheduledTarget>,
     background_sandbox_ceiling: Option<maka_sandbox::Sandbox>,
     internal_bindings: Arc<BTreeMap<String, Option<String>>>,
+    memory_admission: maka_agent_facts::memory::MemoryAdmission,
+    memory: Option<Arc<MemoryProjection>>,
     behavior: Option<SystemPrompt>,
     model: Option<crate::model::AcceptedModel>,
     executor: Option<crate::executor::Accepted>,
@@ -294,6 +297,7 @@ pub(crate) struct Owner {
     watch_scopes: discovery::watch_scope::WatchScopes,
     wake_notify: tokio::sync::Notify,
     physical_changes: tokio::sync::watch::Sender<()>,
+    pub(crate) progress: worker_progress::Registry,
     pub recall: Arc<recall::Recall>,
     scheduler: Arc<scheduler::Scheduler>,
     todo: Arc<todo::Todo>,
@@ -664,14 +668,29 @@ impl Owner {
             .chain(mcp_registrations.iter())
             .map(|tool| tool.definition.clone())
             .collect();
-        let prepared_tools = crate::tools::catalog(context.services(), &settings.tools, additional)
-            .and_then(|mut catalog| {
-                catalog.tools = catalog
-                    .tools
-                    .with_additional(mcp_registrations)
-                    .map_err(|_| "agent_tool_catalog_invalid".to_owned())?;
-                Ok(catalog)
-            });
+        let always_visible: Vec<_> = [bot::SEND_USER, bot::SLEEP]
+            .into_iter()
+            .chain(discovery::VISIBLE_TOOLS.iter().copied())
+            .chain(
+                goal::tools::NAMES
+                    .iter()
+                    .copied()
+                    .filter(|_| settings.goals),
+            )
+            .collect();
+        let prepared_tools = crate::tools::catalog(
+            context.services(),
+            &settings.tools,
+            additional,
+            &always_visible,
+        )
+        .and_then(|mut catalog| {
+            catalog.tools = catalog
+                .tools
+                .with_additional(mcp_registrations)
+                .map_err(|_| "agent_tool_catalog_invalid".to_owned())?;
+            Ok(catalog)
+        });
         let crate::tools::Catalog {
             tools,
             prepared: tool_catalog,
@@ -758,6 +777,7 @@ impl Owner {
             quick_answer: Mutex::default(),
             todo,
             bot,
+            progress: Default::default(),
             recap_storage,
             discovery,
             scheduler,

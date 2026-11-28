@@ -83,6 +83,7 @@ impl Connect {
         if opening.version != VERSION {
             return Err("unsupported public application Host protocol".into());
         }
+        super::update::recover_pending(&self.root_id).await?;
         let (deployment, lease) = activation::prepare(&self.root_id).await?;
         let (probe, live) = activation::connect_or_launch(&deployment, lease.clone()).await?;
         let epoch = uuid::Uuid::parse_str(&live.epoch)?;

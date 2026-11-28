@@ -190,6 +190,8 @@ export type RuntimeProtocol =
   | AgentGoalView
   | AgentGoalChange
   | AgentGoalResult
+  | AgentWorkerProgressRead
+  | AgentWorkerProgressFrame
   | AgentChecklistRead
   | AgentChecklist
   | AgentRecapRead
@@ -2499,6 +2501,19 @@ export type AgentGoalResult =
       kind: 'rejected';
       reason: string;
     };
+export type AgentWorkerProgressKind =
+  | 'working'
+  | 'thinking'
+  | 'generating'
+  | 'summary'
+  | 'command'
+  | 'edit'
+  | 'read'
+  | 'tool'
+  | 'approval'
+  | 'question'
+  | 'form'
+  | 'permission';
 export type AgentTodoStatus = 'pending' | 'in_progress' | 'completed';
 export type AgentRecapReceipt =
   | {
@@ -4820,6 +4835,7 @@ export type AgentHistoryPage =
       before: Cursor | null;
       after: Cursor | null;
       tailThought?: HistoryWorkThought | null;
+      resolvedAnchor?: HistoryRowAddress | null;
     };
 export type AgentRoomActor =
   | {
@@ -6294,6 +6310,7 @@ export interface AgentExecutors {
 }
 export interface AgentExternalAgentsRead {
   inspect?: boolean;
+  refresh?: boolean;
 }
 export interface AgentExternalAgents {
   target: AgentExternalAgentsTarget;
@@ -7570,7 +7587,7 @@ export interface AgentList {
    */
   includeArchived?: boolean;
   /**
-   * Only conversations without a parent; omitted queries still include children.
+   * Only conversations without a parent and explicitly pinned ones; omitted queries still include all children.
    */
   rootsOnly?: boolean;
   position: AgentSessionPosition;
@@ -7670,6 +7687,23 @@ export interface BindingStamp {
 }
 export interface AgentGoalBudget {
   tokenBudget?: number | null;
+}
+export interface AgentWorkerProgressRead {
+  parentSessionId: string;
+}
+export interface AgentWorkerProgressFrame {
+  snapshot: boolean;
+  upsert: AgentWorkerProgress[];
+  remove: string[];
+  [k: string]: unknown | undefined;
+}
+export interface AgentWorkerProgress {
+  sessionId: string;
+  runId: RunId;
+  seq: number;
+  kind: AgentWorkerProgressKind;
+  detail: string;
+  [k: string]: unknown | undefined;
 }
 export interface AgentChecklistRead {
   sessionId: string;
@@ -7827,6 +7861,14 @@ export interface AgentSession {
    * Session that initiated creation, independent of fork ancestry and task ownership.
    */
   parentSessionId: string | null;
+  /**
+   * Ordered live ancestor session ids from immediate parent to top-level root.
+   */
+  ancestorIds?: string[];
+  /**
+   * Title of the immediate live parent session when this session is a child.
+   */
+  parentTitle?: string | null;
   branch: AgentSessionBranch | null;
   backend?: AgentBackendPreference | null;
   tools?: string[] | null;
@@ -7839,10 +7881,15 @@ export interface AgentSession {
   labels: string[];
   workspace: AgentWorkspace;
   revision: number;
+  createdAt?: number;
   updatedAt: number;
   archived: boolean;
   pinned: boolean;
   hasUnread: boolean;
+  /**
+   * Whether at least one direct unarchived child conversation is currently working.
+   */
+  hasActiveChildren?: boolean;
   /**
    * Exact durable visible tail accepted by markRead; independent of preview clocks.
    */

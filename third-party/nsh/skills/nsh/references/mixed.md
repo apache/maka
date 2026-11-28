@@ -137,6 +137,11 @@ A native component (`#[native_components(linux)]`, a platform view; `native/src/
 view of the OS. TSX declares it with `nativeComponent`, and props cross as JSON. Where nothing registers it, it is an
 empty view. See `website/docs/native-components.md`.
 
+A GPU view is a box the crate draws with wgpu: implement `nsh_gpu::GpuRenderer`, register it with
+`registry.gpu_renderer("app/scene", Scene::new)` in the `#[native_module]` function, and declare it in TSX with
+`gpuView("app/scene", { props, events })` from `nsh`. It renders on a thread of its own, so 2D drawings of many
+primitives and 3D scenes keep the display's rate. See `gpuView` in `website/modules/nsh.md`.
+
 ### A component
 
 `native/src/gauge.rs`:

@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { LoadingIndicator } from './Loading';
+import { SettingsSkeleton } from './Loading';
 import type { McpSettingsOwner, McpEditor } from './mcpSettingsState';
 import { mcpLaunch, mcpDisabled } from './mcpSettingsState';
 import { ConfigurationScope, LocationChoices } from './ConfigurationScope';
@@ -78,7 +78,7 @@ function ServerList(props: { owner: McpSettingsOwner }) {
         />
       </If>
       <If when={owner.loading() && !owner.inventory()}>
-        <LoadingIndicator />
+        <SettingsSkeleton padded={false} rows={3} />
       </If>
       <If when={!owner.loading() && !owner.inventory()}>
         <SettingsProblem retry={owner.refresh} />

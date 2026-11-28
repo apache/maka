@@ -8,10 +8,17 @@ applications need no JavaScript runtime. Ordinary pointer drags and title-bar
 dragging retain their existing behavior. The application decides how to consume
 dropped files.
 
-The web backend and the mobile backends deliver no file drags today. A browser
-gives a page only each item's kind and MIME type while a drag hovers (names and
-contents arrive at the drop, as `File`s, never as local paths), so a web drop
-would carry `File`s rather than `file:` URLs and needs its own payload design.
+iOS (`UIDropInteraction`) and Android (`View.DRAG_FLAG_GLOBAL` drags from
+another app in split screen or a freeform window) deliver the same events. Their
+drags carry no local paths until the drop, so `on_file_drag_enter` reports no
+URLs there, and the drop copies each item into the app's temporary directory
+and reports those copies' `file:` URLs.
+
+The web backend hands over contents instead of paths. A browser gives a page
+only each item's kind and MIME type while a drag hovers (names and contents
+arrive at the drop, as `File`s, never as local paths), so its events carry
+`EventPayload::FileContents`: types on entry, the read files in `files` at the
+drop, and `uris` empty.
 
 ## Contract
 
@@ -19,7 +26,15 @@ would carry `File`s rather than `file:` URLs and needs its own payload design.
   `FileDragEvent { uris, mime_types }` for the active drop destination (unit
   listeners still work); `on_file_drag_leave(listener)` receives a unit event.
 - `Interactive::on_file_drop(listener)` receives
-  `FileDropEvent { uris, mime_types, page_position }`.
+  `FileDropEvent { uris, mime_types, page_position }`. `page_position` is
+  where the files were let go, in the coordinates of a mouse event's
+  `page_position` (the root view of the window, in points): a drop carries it
+  as `EventPayload::FileDropAt` (or `FileContents` with a point); entry
+  carries none. AppKit converts `draggingLocation` (window base
+  coordinates) to the flipped event root as its mouse events do; Win32
+  converts `IDropTarget::Drop`'s screen pixels with `ScreenToClient` and
+  divides by the surface's scale; GTK, UIKit, Android and the browser use the
+  drop point their pointer input uses. The GPUI backend sends no point yet.
 - `mime_types` is derived from each URL's file name in `nsh-core`
   (`platform::file_mime_type`), when a payload is decoded for Rust or JS: the
   platforms send only URLs, no file is read, and every backend reports the
@@ -49,7 +64,11 @@ would carry `File`s rather than `file:` URLs and needs its own payload design.
 - On the GPUI backend the first enter comes with the platform's first move
   report after the drag enters the window, not with the entry itself: the
   layer that receives the drag appears with the drag's next frame.
-- The operation is Copy. Delivery means the user dropped the URI list, not that
+- The operation is Copy. AppKit also takes the generic operation when the
+  source offers no copy, as chat apps and similar sources do when they drag
+  a picture as image data; such pictures, and promised files, drop as their
+  contents (`files`; see "File drag metadata" in `macos.md`). A move or a
+  link is refused. Delivery means the user dropped the URI list, not that
   the application accepted or read the files. No transfer starts automatically.
 
 ## Implementation sequence

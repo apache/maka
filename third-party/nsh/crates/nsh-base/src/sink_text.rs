@@ -5,12 +5,15 @@
 //! (an input method that types a pair of brackets and puts its caret
 //! between them).
 
+use unicode_segmentation::UnicodeSegmentation;
+
 /// What a change of the sink's text does at the editor's caret.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SinkEdit {
-    /// Characters deleted before the caret.
+    /// Graphemes deleted before the caret: the editors' Backspace deletes
+    /// one.
     pub backspaces: usize,
-    /// Characters deleted after it.
+    /// Graphemes deleted after it.
     pub deletes: usize,
     /// The text typed in their place.
     pub inserted: String,
@@ -35,8 +38,8 @@ pub(crate) fn sink_edit(old: &str, caret: usize, new: &str) -> SinkEdit {
     );
     let before = caret - prefix;
     SinkEdit {
-        backspaces: deleted[..before].chars().count(),
-        deletes: deleted[before..].chars().count(),
+        backspaces: deleted[..before].graphemes(true).count(),
+        deletes: deleted[before..].graphemes(true).count(),
         inserted: inserted.to_owned(),
         caret: prefix + inserted.len(),
     }
@@ -124,6 +127,20 @@ mod tests {
         // The sink's caret moved left before its text lost the end.
         assert_eq!(sink_edit("abc", 2, "ab"), edit(0, 1, "", 2));
         assert_eq!(sink_edit("abc", 1, "axc"), edit(0, 1, "x", 2));
+    }
+
+    #[test]
+    fn deleting_counts_graphemes() {
+        // A thumbs up with a skin tone modifier, a decomposed accented
+        // letter and a family (joined by ZWJ) are one grapheme each.
+        assert_eq!(sink_edit("a👍🏽", 9, "a"), edit(1, 0, "", 1));
+        assert_eq!(sink_edit("ae\u{301}", 4, "a"), edit(1, 0, "", 1));
+        assert_eq!(
+            sink_edit("a👨\u{200d}👩\u{200d}👧", 19, "a"),
+            edit(1, 0, "", 1)
+        );
+        assert_eq!(sink_edit("a👍🏽b", 9, "ab"), edit(1, 0, "", 1));
+        assert_eq!(sink_edit("a👍🏽b", 1, "ab"), edit(0, 1, "", 1));
     }
 
     #[test]

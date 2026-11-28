@@ -26,7 +26,7 @@ use maka_event_log::{
     root_store::DataWriter,
     writeback::{Notification, Prepared, Statement},
 };
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 mod continuation;
@@ -41,10 +41,12 @@ mod sql;
 pub mod tool_result_source;
 pub use continuation::ContinuationSource;
 pub(crate) use continuation::admit_continuation;
+pub(crate) use sql::{
+    capture_at, captured_tool_call, check_bytes, source_content_at, sources_at, validate_cut,
+};
+pub(crate) use sql::{index, index_queue, index_retained, index_retained_with_external};
 #[cfg(test)]
-pub(crate) use sql::recovery_diagnostic;
-pub(crate) use sql::{capture_at, captured_tool_call, source_content_at, sources_at, validate_cut};
-pub(crate) use sql::{index, index_queue, index_retained};
+pub(crate) use sql::{index_legacy_owner_session, recovery_diagnostic};
 
 pub use maka_agent_facts::history_snapshot::HistoryCut;
 pub use metrics::{
@@ -80,6 +82,8 @@ pub struct ExecutorTranscript {
     messages: std::collections::BTreeMap<(String, bool), ExecutorText>,
 }
 
+type ExecutorTextPiece = (FactId, FactId, u64, usize, usize);
+
 pub struct ExecutorText {
     pub sequence: u64,
     pub fact: FactId,
@@ -105,7 +109,7 @@ impl ExecutorTranscript {
         &mut self,
         sequence: u64,
         record: &RecordedFact,
-        pieces: &mut Option<Vec<(FactId, FactId, usize)>>,
+        pieces: &mut Option<Vec<ExecutorTextPiece>>,
     ) {
         use maka_agent_facts::executor::Output;
         let Fact::ExternalTaskObserved { output, .. } = &record.fact else {
@@ -124,37 +128,160 @@ impl ExecutorTranscript {
                 fact: record.id,
                 body: Default::default(),
             });
-        if let Some(pieces) = pieces {
-            pieces.push((record.id, message.fact, message.body.len_bytes()));
-        }
+        let piece_start = message.body.len_bytes();
         message.body = message
             .body
-            .inserted(message.body.len_bytes(), text)
+            .inserted(piece_start, text)
             .expect("append at text end");
+        let piece_end = message.body.len_bytes();
+        if let Some(pieces) = pieces {
+            pieces.push((record.id, message.fact, sequence, piece_start, piece_end));
+        }
     }
     fn mask_pieces(
         &mut self,
         c: &Connection,
         owner: &RunOwner,
-        pieces: Option<Vec<(FactId, FactId, usize)>>,
+        snapshot: Option<maka_agent_facts::history_snapshot::SnapshotId>,
+        pieces: Option<Vec<ExecutorTextPiece>>,
     ) -> Result<(), StoreError> {
         let Some(pieces) = pieces else { return Ok(()) };
         let namespace = serde_json::to_string(owner)?;
         let mut hidden = std::collections::BTreeMap::<FactId, Vec<(u64, u64)>>::new();
         let mut statement = c.prepare_cached(
-            "SELECT p.value->>1, (p.value->>2)+s.start, (p.value->>2)+s.end
-            FROM json_each(?1) p CROSS JOIN agent_memory_hidden_spans s
-            WHERE s.namespace=?2 AND s.fact=p.value->>0 AND s.ordinal=0",
+            "SELECT p.value->>0, p.value->>1, CAST(p.value->>2 AS INTEGER),
+                    CAST(p.value->>3 AS INTEGER), CAST(p.value->>4 AS INTEGER),
+                    s.start, s.end,
+                    (SELECT octet_length(m.body)
+                     FROM agent_session_history h
+                     JOIN agent_namespaces ns ON ns.id = h.namespace_id
+                     JOIN agent_recall_messages m
+                       ON m.namespace_id = h.namespace_id
+                      AND m.sequence = h.sequence AND m.ordinal = s.ordinal
+                     WHERE ns.owner = s.namespace AND h.fact_id = s.fact
+                     LIMIT 1)
+             FROM json_each(?1) p CROSS JOIN agent_memory_hidden_spans s
+             WHERE s.namespace=?2 AND s.fact=p.value->>0 AND s.ordinal=0",
         )?;
         for page in pieces.chunks(256) {
             let mut rows =
                 statement.query(rusqlite::params![serde_json::to_string(page)?, namespace])?;
             while let Some(row) = rows.next()? {
-                let fact = sql::identity(row.get(0)?)?;
-                hidden
-                    .entry(fact)
-                    .or_default()
-                    .push((sql::read_u64(row, 1)?, sql::read_u64(row, 2)?));
+                let piece_fact = sql::identity(row.get(0)?)?;
+                let message_fact = sql::identity(row.get(1)?)?;
+                let sequence = sql::read_u64(row, 2)?;
+                let piece_start = sql::read_u64(row, 3)?;
+                let piece_end = sql::read_u64(row, 4)?;
+                let span_start = sql::read_u64(row, 5)?;
+                let span_end = sql::read_u64(row, 6)?;
+                let indexed_body_len: Option<u64> = row
+                    .get::<_, Option<i64>>(7)?
+                    .map(|v| {
+                        u64::try_from(v)
+                            .map_err(|_| crate::store::invalid("negative recall body length"))
+                    })
+                    .transpose()?;
+                let base = if let Some(body_len) = indexed_body_len {
+                    // For legacy single-delta rows body_len == piece_end - piece_start, so base == piece_start.
+                    // For v60 sealed S_last rows (d_1..d_last), piece_end - body_len aligns to d_1's start.
+                    piece_end.saturating_sub(body_len)
+                } else if let Some(snap_id) = snapshot {
+                    let compact: Option<bool> = c
+                        .prepare_cached(
+                            "SELECT compact FROM agent_history_snapshot_positions
+                             WHERE snapshot=?1 AND kind='canonical' AND major=?2 AND minor=0",
+                        )?
+                        .query_row(
+                            rusqlite::params![
+                                snap_id.to_string(),
+                                i64::try_from(sequence).map_err(|_| crate::store::invalid(
+                                    "snapshot sequence overflow"
+                                ))?
+                            ],
+                            |r| r.get(0),
+                        )
+                        .optional()?;
+                    if compact == Some(true) {
+                        let mut seg_start = piece_start;
+                        let mut pos_check = c.prepare_cached(
+                            "SELECT EXISTS(SELECT 1 FROM agent_history_snapshot_positions
+                             WHERE snapshot=?1 AND kind='canonical' AND major=?2 AND minor=0)",
+                        )?;
+                        if let Some(idx) = pieces
+                            .iter()
+                            .position(|p| p.0 == piece_fact && p.2 == sequence)
+                        {
+                            for prev in pieces[..idx].iter().rev() {
+                                if prev.1 != message_fact {
+                                    continue;
+                                }
+                                let has_pos: bool = pos_check.query_row(
+                                    rusqlite::params![
+                                        snap_id.to_string(),
+                                        i64::try_from(prev.2).map_err(
+                                            |_| crate::store::invalid("snapshot sequence overflow")
+                                        )?
+                                    ],
+                                    |r| r.get(0),
+                                )?;
+                                if has_pos {
+                                    break;
+                                }
+                                seg_start = prev.3 as u64;
+                            }
+                        }
+                        seg_start
+                    } else {
+                        piece_start
+                    }
+                } else {
+                    piece_start
+                };
+                hidden.entry(message_fact).or_default().push((
+                    base.saturating_add(span_start),
+                    base.saturating_add(span_end),
+                ));
+            }
+        }
+        // When a live historical cut straddles an already-sealed coalesced segment
+        // (tail_start_sequence <= cut < tail_end_sequence), hidden spans captured after
+        // sealing are keyed on tail_end_fact rather than the cut's pieces; anchor them at
+        // tail_start_sequence's piece_start (the exact d_1 offset).
+        if snapshot.is_none() && !pieces.is_empty() {
+            let max_seq = pieces.iter().map(|p| p.2).max().unwrap_or(0);
+            let mut straddle = c.prepare_cached(
+                "SELECT p.value->>1, CAST(p.value->>3 AS INTEGER), s.start, s.end
+                 FROM json_each(?1) p
+                 JOIN agent_session_history h
+                   ON h.fact_id = p.value->>0
+                 JOIN agent_namespaces ns
+                   ON ns.id = h.namespace_id AND ns.owner = ?2
+                 JOIN agent_recall_external_segments seg
+                   ON seg.namespace_id = h.namespace_id AND seg.run = h.run
+                  AND seg.sealed = 1
+                  AND seg.tail_end_sequence IS NOT NULL
+                  AND seg.tail_end_sequence > ?3
+                  AND seg.tail_start_sequence = CAST(p.value->>2 AS INTEGER)
+                 JOIN agent_memory_hidden_spans s
+                   ON s.namespace = ns.owner AND s.fact = seg.tail_end_fact AND s.ordinal = 0",
+            )?;
+            let max_seq_i64 = sql::bind_u64(max_seq)?;
+            for page in pieces.chunks(256) {
+                let mut rows = straddle.query(rusqlite::params![
+                    serde_json::to_string(page)?,
+                    namespace,
+                    max_seq_i64
+                ])?;
+                while let Some(row) = rows.next()? {
+                    let message_fact = sql::identity(row.get(0)?)?;
+                    let base = sql::read_u64(row, 1)?;
+                    let span_start = sql::read_u64(row, 2)?;
+                    let span_end = sql::read_u64(row, 3)?;
+                    hidden.entry(message_fact).or_default().push((
+                        base.saturating_add(span_start),
+                        base.saturating_add(span_end),
+                    ));
+                }
             }
         }
         for message in self.messages.values_mut() {
@@ -243,7 +370,7 @@ impl Query for FactBodyRestrictions {
             .1
             .into_iter()
             .enumerate()
-            .map(|(i, fact)| (i, fact, 0))
+            .map(|(i, fact)| (i, fact, 0, None))
             .collect::<Vec<_>>();
         crate::memory::recall::indexed_spans(c, &self.0, &keys, &[])
     }
@@ -284,18 +411,17 @@ impl Query for MaskTerminalDiagnostic {
         let Self(namespace, run, mut diagnostic) = self;
         // A recovery reason and the terminal row share byte offsets only when the
         // engine persisted that diagnostic verbatim for this Run.
+        let Some(ns_id) = crate::namespace::find_owner_id(c, &namespace.owner, &namespace.session)?
+        else {
+            return Ok(diagnostic);
+        };
         let terminal = c
             .query_row(
                 "SELECT h.fact_id FROM agent_session_history h
              JOIN agent_facts f ON f.sequence=h.sequence JOIN contents b ON b.id=f.body_content_id
-             WHERE h.run=?1 AND h.kind='run_terminated' AND h.owner=?2 AND h.session=?3
-               AND CAST(b.payload AS TEXT)->>'$.fact.diagnostic'=?4",
-                params![
-                    run.to_string(),
-                    serde_json::to_string(&namespace.owner)?,
-                    namespace.session,
-                    diagnostic
-                ],
+             WHERE h.run=?1 AND h.kind='run_terminated' AND h.namespace_id=?2
+               AND maka_content_text(b.payload,b.encoding)->>'$.fact.diagnostic'=?3",
+                params![run.to_string(), ns_id, diagnostic],
                 |row| row.get::<_, String>(0),
             )
             .optional()?;
@@ -303,7 +429,7 @@ impl Query for MaskTerminalDiagnostic {
             let spans = crate::memory::recall::indexed_spans(
                 c,
                 &namespace.owner,
-                &[(0, sql::identity(fact)?, 0)],
+                &[(0, sql::identity(fact)?, 0, None)],
                 &[],
             )?;
             if let Some(spans) = spans.get(&0) {
@@ -314,7 +440,54 @@ impl Query for MaskTerminalDiagnostic {
     }
 }
 
+/// Check whether a request or checkpoint may be replayed by `target`.
+/// Shared records are always reusable; Run-scoped or legacy unrecorded ones
+/// check whether the producer actually consumed any memory facts and whether
+/// those facts remain active and authorized for `target`.
+pub async fn permits_memory_replay(
+    live: Option<&SessionHistory>,
+    recorded: maka_agent_facts::memory::MemoryReplay,
+    producer: RunId,
+    target: Option<RunId>,
+) -> Result<bool, StoreError> {
+    use maka_agent_facts::memory::MemoryReplay;
+    match recorded {
+        MemoryReplay::Shared => Ok(true),
+        MemoryReplay::Run(owner) => {
+            if Some(owner) == target {
+                return Ok(true);
+            }
+            let Some(history) = live else {
+                return Ok(false);
+            };
+            history
+                .data
+                .query(crate::memory::reads::PermitsReplay {
+                    producer: owner,
+                    target,
+                })
+                .await
+        }
+        MemoryReplay::Unrecorded => {
+            let Some(history) = live else {
+                return Ok(false);
+            };
+            if Some(producer) == target {
+                return Ok(true);
+            }
+            history
+                .data
+                .query(crate::memory::reads::PermitsReplay { producer, target })
+                .await
+        }
+    }
+}
+
 impl SessionHistory {
+    pub async fn has_memory_reads(&self, run: RunId) -> Result<bool, StoreError> {
+        self.data.query(crate::memory::reads::HasReads(run)).await
+    }
+
     pub fn new(data: DataWriter, owner: RunOwner, session: String) -> Self {
         Self {
             data,
@@ -369,6 +542,17 @@ impl SessionHistory {
         std::collections::BTreeMap<FactId, crate::memory::recall::ArchiveRestriction>,
         StoreError,
     > {
+        self.archive_restrictions(facts, None).await
+    }
+
+    pub async fn archive_restrictions(
+        &self,
+        facts: Vec<FactId>,
+        snapshot: Option<&snapshot::Snapshot>,
+    ) -> Result<
+        std::collections::BTreeMap<FactId, crate::memory::recall::ArchiveRestriction>,
+        StoreError,
+    > {
         if facts.is_empty() {
             return Ok(Default::default());
         }
@@ -376,6 +560,7 @@ impl SessionHistory {
             .query(crate::memory::recall::RestrictedArchives {
                 owner: self.namespace.owner.clone(),
                 facts,
+                snapshot: snapshot.map(snapshot::Snapshot::id),
             })
             .await
     }
@@ -860,7 +1045,7 @@ impl Query for ExecutorViewAt {
         let view = sql::view_at(c, &self.0.namespace, &self.1, self.2, |sequence, record| {
             transcript.observe(sequence, record, &mut pieces);
         })?;
-        transcript.mask_pieces(c, &view.spec.owner, pieces)?;
+        transcript.mask_pieces(c, &view.spec.owner, None, pieces)?;
         Ok((view, transcript))
     }
 }
@@ -939,19 +1124,33 @@ mod executor_tests {
     use maka_agent_facts::executor::Output;
 
     #[test]
-    fn model_transcript_masks_evidence_in_a_later_delta_at_its_original_offset() {
+    fn model_transcript_masks_evidence_in_coalesced_multi_delta_segment_at_d1_offset() {
         let c = Connection::open_in_memory().unwrap();
-        c.execute_batch("CREATE TABLE agent_memory_hidden_spans(namespace,fact,ordinal,start,end)")
-            .unwrap();
+        // Match real migrated table columns: agent_recall_messages has NO fact_id column.
+        c.execute_batch(
+            "CREATE TABLE agent_memory_hidden_spans(namespace,fact,ordinal,start,end,session,sequence);
+             CREATE TABLE agent_namespaces(id INTEGER PRIMARY KEY, owner TEXT, session TEXT);
+             CREATE TABLE agent_session_history(namespace_id INTEGER,sequence,run,fact_id);
+             CREATE TABLE agent_recall_messages(namespace_id INTEGER,sequence,ordinal,body);
+             CREATE TABLE agent_recall_external_segments(namespace_id INTEGER,run,sealed,tail_start_sequence,tail_end_sequence,tail_end_fact);",
+        )
+        .unwrap();
         let owner = RunOwner {
             deployment: uuid::Uuid::new_v4(),
             namespace: maka_plugin_core::composition::InstanceId(vec![uuid::Uuid::new_v4()]),
         };
+        let owner_json = serde_json::to_string(&owner).unwrap();
         let mut transcript = ExecutorTranscript::default();
         let mut pieces = Some(Vec::new());
         let run = RunId::new();
         let task = ExternalTaskId::new();
-        for (index, text) in ["开头 ", "hidden visible"].into_iter().enumerate() {
+        // 4 deltas: d0="开头 ", d1="secret-", d2="mid ", d3="visible".
+        // Under v60 sealing, S_last (seq=4, fact=F_3) indexes d1..d3 = "secret-mid visible" (18 bytes),
+        // so hiding bytes [0..10) ("secret-mid") on F_3 must mask d1..d2, NOT shift right into d3!
+        for (index, text) in ["开头 ", "secret-", "mid ", "visible"]
+            .into_iter()
+            .enumerate()
+        {
             let id = FactId::new();
             let sequence = index as u64 + 1;
             let record = RecordedFact {
@@ -971,18 +1170,38 @@ mod executor_tests {
                 },
             };
             transcript.observe(sequence, &record, &mut pieces);
-            if index == 1 {
+            c.execute(
+                "INSERT INTO agent_session_history VALUES(1,?1,?2,?3)",
+                rusqlite::params![sequence as i64, run.to_string(), id.to_string()],
+            )
+            .unwrap();
+            if index == 3 {
                 c.execute(
-                    "INSERT INTO agent_memory_hidden_spans VALUES(?,?,0,0,6)",
-                    rusqlite::params![serde_json::to_string(&owner).unwrap(), id.to_string()],
+                    "INSERT INTO agent_namespaces(id,owner,session) VALUES(1,?1,'s')",
+                    rusqlite::params![owner_json],
+                )
+                .unwrap();
+                c.execute(
+                    "INSERT INTO agent_recall_messages VALUES(1,4,0,'secret-mid visible')",
+                    [],
+                )
+                .unwrap();
+                c.execute(
+                    "INSERT INTO agent_recall_external_segments VALUES(1,?1,1,2,4,?2)",
+                    rusqlite::params![run.to_string(), id.to_string()],
+                )
+                .unwrap();
+                c.execute(
+                    "INSERT INTO agent_memory_hidden_spans VALUES(?1,?2,0,0,10,'s',4)",
+                    rusqlite::params![owner_json, id.to_string()],
                 )
                 .unwrap();
             }
         }
-        transcript.mask_pieces(&c, &owner, pieces).unwrap();
+        transcript.mask_pieces(&c, &owner, None, pieces).unwrap();
         assert_eq!(
             transcript.text("m", false).unwrap().body.to_string(),
-            "开头 ****** visible"
+            "开头 ********** visible"
         );
     }
 }
