@@ -19,7 +19,7 @@
 
 import { cleanup, computed, effect, inputAction, signal, Text, View } from 'nsh';
 import type { CredentialStatus } from '../../../../packages/plugin-sdk/src/generated/runtime';
-import type { ModelSettingsOwner } from './settings';
+import type { ConnectionEditor, ModelSettingsOwner } from './settings';
 import { ConnectionLogin } from './ConnectionLogin';
 import { useHost } from './host';
 import { tr } from './locale';
@@ -41,6 +41,19 @@ import { C, captionTextStyle } from './ui';
 const blocked = (owner: ModelSettingsOwner) =>
   owner.busy() || owner.loading() || !owner.pendingKnown() || owner.pending().length > 0;
 
+const baseUrlPlaceholder = (provider: ConnectionEditor['provider']) => {
+  const defaults = provider.descriptor.configurationDefaults as Record<string, unknown> | null;
+  return typeof defaults?.baseUrl === 'string' && defaults.baseUrl.trim()
+    ? defaults.baseUrl
+    : 'https://…';
+};
+
+const submitConnection = (owner: ModelSettingsOwner) => () => {
+  const form = owner.editor();
+  if (!form || blocked(owner) || (form.baseline && !owner.dirty())) return;
+  void owner.saveConnection(owner.action());
+};
+
 export function ConnectionForm(props: { settings: ModelSettingsOwner }) {
   const owner = props.settings;
   const form = () => owner.editor()!;
@@ -52,6 +65,14 @@ export function ConnectionForm(props: { settings: ModelSettingsOwner }) {
     form().provider.descriptor.authentication.some(
       (method) => method.id === 'api-key' && !method.interactive,
     );
+  const hasMainFields = () =>
+    Boolean(
+      keyed() ||
+        owner.offersDictation() ||
+        form().provider.descriptor.customEndpoint ||
+        form().baseline,
+    );
+  const submit = submitConnection(owner);
   const canDiscover = () =>
     !disabled() &&
     !owner.dirty() &&
@@ -77,44 +98,53 @@ export function ConnectionForm(props: { settings: ModelSettingsOwner }) {
       <If when={interactive()}>
         <ConnectionLogin owner={owner} disabled={disabled()} />
       </If>
-      <SettingsSection>
-        <If when={keyed()}>
-          <SettingsInput
-            label={tr('API key')}
-            value={form().apiKey}
-            masked
-            placeholder={owner.credential()?.configured ? tr('Stored') : undefined}
-            change={(text) => owner.edit('apiKey', text)}
-            disabled={disabled()}
-          />
-        </If>
-        <If when={owner.offersDictation()}>
-          <SettingsSwitch
-            label={tr('Use for dictation')}
-            description={tr('Saving will enable dictation with this connection.')}
-            checked={!!form().useForDictation}
-            disabled={disabled()}
-            onPress={inputAction(owner.toggleDictation, owner.action())}
-          />
-        </If>
-        <If when={form().provider.descriptor.customEndpoint}>
-          <SettingsInput
-            label={tr('Base URL')}
-            value={form().baseUrl}
-            change={(text) => owner.edit('baseUrl', text)}
-            disabled={disabled()}
-          />
-        </If>
-        <SettingsSwitch
-          label={tr('Connection enabled')}
-          checked={form().enabled}
-          disabled={disabled()}
-          onPress={inputAction(owner.toggleEnabled, {
-            ...owner.action(),
-            enabled: !form().enabled,
-          })}
-        />
-      </SettingsSection>
+      <If when={hasMainFields()}>
+        <SettingsSection>
+          <If when={keyed()}>
+            <SettingsInput
+              label={tr('API key')}
+              value={form().apiKey}
+              masked
+              autoFocus={!form().baseline}
+              placeholder={owner.credential()?.configured ? tr('Stored') : undefined}
+              change={(text) => owner.edit('apiKey', text)}
+              onSubmit={submit}
+              disabled={disabled()}
+            />
+          </If>
+          <If when={owner.offersDictation()}>
+            <SettingsSwitch
+              label={tr('Use for dictation')}
+              description={tr('Saving will enable dictation with this connection.')}
+              checked={!!form().useForDictation}
+              disabled={disabled()}
+              onPress={inputAction(owner.toggleDictation, owner.action())}
+            />
+          </If>
+          <If when={form().provider.descriptor.customEndpoint}>
+            <SettingsInput
+              label={tr('Base URL')}
+              value={form().baseUrl}
+              autoFocus={!form().baseline && !keyed()}
+              placeholder={baseUrlPlaceholder(form().provider)}
+              change={(text) => owner.edit('baseUrl', text)}
+              onSubmit={submit}
+              disabled={disabled()}
+            />
+          </If>
+          <If when={form().baseline}>
+            <SettingsSwitch
+              label={tr('Connection enabled')}
+              checked={form().enabled}
+              disabled={disabled()}
+              onPress={inputAction(owner.toggleEnabled, {
+                ...owner.action(),
+                enabled: !form().enabled,
+              })}
+            />
+          </If>
+        </SettingsSection>
+      </If>
       <If
         when={
           form().baseline &&
@@ -358,6 +388,7 @@ export function ConnectionAdvanced(props: { settings: ModelSettingsOwner }) {
   const owner = props.settings;
   const form = () => owner.editor()!;
   const disabled = () => blocked(owner);
+  const submit = submitConnection(owner);
   const interactive = () =>
     form().provider.descriptor.authentication.some((method) => method.interactive);
   return (
@@ -389,7 +420,9 @@ export function ConnectionAdvanced(props: { settings: ModelSettingsOwner }) {
           <SettingsInput
             label={tr('Base URL')}
             value={form().baseUrl}
+            placeholder={baseUrlPlaceholder(form().provider)}
             change={(text) => owner.edit('baseUrl', text)}
+            onSubmit={submit}
             disabled={disabled()}
           />
         </If>

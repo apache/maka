@@ -2635,6 +2635,186 @@ mod tests {
         assert!(!app.screen().selected("role:tab[Time]").unwrap());
         assert!(!app.screen().matches("text:Today").unwrap());
     }
+
+    #[test]
+    fn connection_create_ux_declutters_form_toggles_reveal_and_submits_on_enter() {
+        use std::collections::HashMap;
+        use std::sync::{Arc, Mutex};
+
+        let mut app = headless_fixture(
+            "tests/fixtures/connection-create.tsx",
+            Size::new(px(900.0), px(760.0)),
+            true,
+        );
+        let inputs: Arc<Mutex<HashMap<nsh_core::NodeId, (bool, bool, String)>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let seen = inputs.clone();
+        app.observe(move |_, batch| {
+            let mut map = seen.lock().unwrap();
+            for item in &batch.items {
+                if let nsh_core::MountItem::Input { id, config } = item {
+                    map.insert(
+                        *id,
+                        (config.secure, config.auto_focus, config.placeholder.clone()),
+                    );
+                }
+            }
+        });
+        let input_state = |app: &nsh_testing::Headless, selector: &str| {
+            let id = app.screen().id(selector).unwrap();
+            inputs.lock().unwrap().get(&id).cloned().unwrap()
+        };
+
+        // 1. Existing connection (edit-mode): shows Connection enabled and does not steal focus.
+        app.wait_for("label:Edit connection Existing OpenAI")
+            .unwrap();
+        app.press("label:Edit connection Existing OpenAI").unwrap();
+        app.wait_for("role:switch[Connection enabled]").unwrap();
+        let (secure, auto_focus, _) = input_state(&app, "label:API key");
+        assert!(secure, "API key starts masked in edit-mode");
+        assert!(!auto_focus, "edit-mode must not steal focus to API key");
+        let (_, base_auto_focus, base_placeholder) = input_state(&app, "label:Base URL");
+        assert!(
+            !base_auto_focus,
+            "edit-mode must not steal focus to Base URL"
+        );
+        assert_eq!(base_placeholder, "https://api.openai.com/v1");
+
+        // Pressing Enter in clean edit-mode does not trigger a redundant save.
+        app.submit("label:API key").unwrap();
+        assert!(app.settle());
+        assert!(app.screen().shows("stats:0:0:0"));
+
+        // 2. Interactive OAuth-only provider (create-mode): hides Connection enabled with no empty section.
+        app.press_key("f5").unwrap();
+        app.wait_for("label:Connect ChatGPT Subscription").unwrap();
+        app.press("label:Connect ChatGPT Subscription").unwrap();
+        app.wait_for("text:Not signed in").unwrap();
+        app.wait_for("label:Advanced connection settings").unwrap();
+        assert!(
+            !app.screen()
+                .matches("role:switch[Connection enabled]")
+                .unwrap(),
+            "create-mode must hide Connection enabled"
+        );
+        assert!(
+            !app.screen().matches("label:API key").unwrap(),
+            "OAuth-only provider has no API key input"
+        );
+        // Verify no empty zero-height SettingsSection card sits between Account and Advanced.
+        let account_bottom = {
+            let id = app.screen().id("text:Not signed in").unwrap();
+            let bounds = app
+                .screen()
+                .layout_nodes()
+                .into_iter()
+                .find(|n| n.id == id)
+                .unwrap()
+                .bounds;
+            bounds.origin.y + bounds.size.height
+        };
+        let advanced_top = {
+            let id = app
+                .screen()
+                .id("label:Advanced connection settings")
+                .unwrap();
+            app.screen()
+                .layout_nodes()
+                .into_iter()
+                .find(|n| n.id == id)
+                .unwrap()
+                .bounds
+                .origin
+                .y
+        };
+        let empty_between = app
+            .screen()
+            .layout_nodes()
+            .into_iter()
+            .filter(|n| {
+                n.bounds.origin.y >= account_bottom
+                    && n.bounds.origin.y <= advanced_top
+                    && n.bounds.size.height == px(0.0)
+            })
+            .count();
+        assert_eq!(
+            empty_between, 0,
+            "interactive-only create-mode must not render an empty SettingsSection"
+        );
+
+        // 3. Custom-endpoint-only provider (create-mode): auto-focuses Base URL with https://… placeholder
+        // and submits on Enter.
+        app.press_key("f5").unwrap();
+        app.wait_for("label:Connect Local Endpoint").unwrap();
+        app.press("label:Connect Local Endpoint").unwrap();
+        app.wait_for("label:Base URL").unwrap();
+        assert!(
+            !app.screen()
+                .matches("role:switch[Connection enabled]")
+                .unwrap()
+        );
+        let (_, local_base_focus, local_placeholder) = input_state(&app, "label:Base URL");
+        assert!(
+            local_base_focus,
+            "custom-endpoint-only provider auto-focuses Base URL in create-mode"
+        );
+        assert_eq!(local_placeholder, "https://…");
+        app.type_text("label:Base URL", "https://local.example/v1")
+            .unwrap();
+        app.submit("label:Base URL").unwrap();
+        app.wait_for("text:stats:1:0:0").unwrap();
+        app.wait_for("role:switch[Connection enabled]").unwrap();
+
+        // 4. API-key provider (create-mode): auto-focuses API key, reveal toggle works & resets on Enter save.
+        app.press_key("f5").unwrap();
+        app.wait_for("label:Connect OpenAI").unwrap();
+        app.press("label:Connect OpenAI").unwrap();
+        app.wait_for("label:API key").unwrap();
+        assert!(
+            !app.screen()
+                .matches("role:switch[Connection enabled]")
+                .unwrap(),
+            "create-mode must hide Connection enabled"
+        );
+        let (create_secure, create_focus, _) = input_state(&app, "label:API key");
+        assert!(create_secure, "API key starts masked");
+        assert!(create_focus, "create-mode auto-focuses API key");
+        let (_, openai_base_focus, _) = input_state(&app, "label:Base URL");
+        assert!(
+            !openai_base_focus,
+            "Base URL does not steal auto-focus when API key is present"
+        );
+
+        // Type API key, toggle reveal on -> off -> on, then submit via Enter.
+        app.type_text("label:API key", "sk-live-secret").unwrap();
+        app.wait_for("label:Reveal API key").unwrap();
+        assert!(!app.screen().selected("label:Reveal API key").unwrap());
+        app.press("label:Reveal API key").unwrap();
+        app.wait_for("label:Hide API key").unwrap();
+        assert!(app.screen().selected("label:Hide API key").unwrap());
+        assert!(
+            !input_state(&app, "label:API key").0,
+            "reveal unmasks input"
+        );
+
+        app.press("label:Hide API key").unwrap();
+        app.wait_for("label:Reveal API key").unwrap();
+        assert!(input_state(&app, "label:API key").0, "hide re-masks input");
+
+        app.press("label:Reveal API key").unwrap();
+        app.wait_for("label:Hide API key").unwrap();
+        assert!(!input_state(&app, "label:API key").0);
+
+        // Press Enter in API key to save the new connection; reveal resets and Connection enabled appears.
+        app.submit("label:API key").unwrap();
+        app.wait_for("text:stats:2:0:1").unwrap();
+        app.wait_for("role:switch[Connection enabled]").unwrap();
+        app.wait_for("label:Reveal API key").unwrap();
+        assert!(
+            input_state(&app, "label:API key").0,
+            "reveal toggle must reset to masked after save"
+        );
+    }
 }
 
 #[cfg(test)]
