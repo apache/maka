@@ -32,6 +32,8 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
 const CATALOG_SCHEMA_VERSION: u32 = 1;
+/// Profile storage marks every session that has held the Bot role.
+pub const FORMER_BOT_KEY_PREFIX: &str = "former/";
 
 fn sqlite_integer(value: u64) -> Result<i64, StoreError> {
     i64::try_from(value).map_err(|_| invalid("catalog integer exceeds SQLite range"))

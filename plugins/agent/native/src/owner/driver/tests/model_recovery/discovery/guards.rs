@@ -386,7 +386,7 @@ async fn discovery_double_confirmation_and_lost_receipts_survive_cold_restart() 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn discovery_deadline_rejects_a_late_worker_and_enqueues_one_targeted_followup() {
     let mut model = MockAiBuilder::new().interactive(16).start().await.unwrap();
-    let mut f = Fixture::new(&model).await;
+    let mut f = Fixture::with_tools(&model, &[session_read_tool()]).await;
     let (topic, _) = thread(&f).await;
     let query = json!({"topicId":topic});
     f.query("setDossierMuted", json!({"topicId":topic,"muted":true}))
@@ -422,11 +422,21 @@ async fn discovery_deadline_rejects_a_late_worker_and_enqueues_one_targeted_foll
     let late = json!({"topic_id":topic,"expected_revision":original["revision"],"title":"Old finding","signal":"green","priority_weight":1,"summary_md":"Out of date","notify_intent":{"kind":"quiet"}});
     let (worker, conflict) = worker_upsert(&mut model, worker, late).await;
     assert!(conflict.to_string().contains("revision"), "{conflict}");
+    let (room, posted) = f.quiet_room("Unrelated room").await;
     tool(worker, "RegisterWatch", watch("enqueue_followup"));
     let (worker, resp) = next(&mut model).await;
     assert!(output(&resp)["watch_id"].is_string());
     tool(worker, "FinishNoChange", json!({"note":"Checked"}));
     let (followup, req) = next(&mut model).await;
+    assert!(!req["messages"].to_string().contains(&room));
+    assert!(
+        owner
+            .discovery
+            .session_explored_at(std::slice::from_ref(&room))
+            .await
+            .unwrap()
+            .is_empty()
+    );
     assert!(
         req["messages"]
             .to_string()
@@ -438,6 +448,23 @@ async fn discovery_deadline_rejects_a_late_worker_and_enqueues_one_targeted_foll
         json!({"note":"Reviewed the deadline"}),
     );
     f.settled(&plan, 2).await;
+    f.change(&plan, "trigger_now").await;
+    let (manual, req) = next(&mut model).await;
+    assert!(req["messages"].to_string().contains(&room));
+    assert_eq!(
+        owner
+            .discovery
+            .session_explored_at(std::slice::from_ref(&room))
+            .await
+            .unwrap()[&room],
+        posted.0
+    );
+    tool(
+        manual,
+        "FinishNoChange",
+        json!({"note":"Reviewed the room"}),
+    );
+    f.settled(&plan, 3).await;
     drop(owner);
     f.reopen().await;
     let detail = f.query("dossier", query).await;

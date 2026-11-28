@@ -18,9 +18,10 @@
  */
 
 //! Choose work before allocating a worker, opening a session, or capturing a model.
+use super::sessions::SESSION_QUIET_MS;
 use super::*;
 use maka_agent_state::discovery::activity::DiscoveryActivity;
-use maka_agent_state::discovery::changes::{ChangeQuery, ChangeSnapshot};
+use maka_agent_state::discovery::changes::ChangeQuery;
 use workspace_map::{MapPhase, WorkspaceMap};
 
 impl DiscoveryMode {
@@ -54,13 +55,13 @@ fn manual_mode(map: Option<&WorkspaceMap>) -> DiscoveryMode {
 
 async fn broad_mode(
     map: Option<&WorkspaceMap>,
-    deltas: impl Future<Output = Result<ChangeSnapshot, String>>,
+    has_ready_deltas: impl Future<Output = Result<bool, String>>,
     periodic: impl AsyncFnOnce(&WorkspaceMap) -> Result<Option<String>, String>,
 ) -> Result<Option<DiscoveryMode>, String> {
     if map.is_some_and(|map| map.phase != MapPhase::Ready) {
         return Ok(Some(DiscoveryMode::Onboard));
     }
-    if !deltas.await?.groups.is_empty() {
+    if has_ready_deltas.await? {
         return Ok(Some(DiscoveryMode::FollowUp));
     }
     if let Some(map) = map
@@ -95,7 +96,8 @@ impl Owner {
             fire.effect.selected_discovery_tools(),
         );
         let reads_files = self.discovery_reads_files(&tools);
-        if fire.source != FireSource::Manual && !reads_files {
+        let reads_sessions = self.discovery_reads_sessions(&tools);
+        if fire.source != FireSource::Manual && !reads_files && !reads_sessions {
             return Ok(None);
         }
         let root = std::path::Path::new(&job.approval.target.workspace.path);
@@ -109,7 +111,22 @@ impl Owner {
         }
         broad_mode(
             map.as_ref(),
-            self.discovery_changes(&job.approval, at, ChangeQuery::FirstReady),
+            async {
+                if reads_files
+                    && !self
+                        .discovery_changes(&job.approval, at, ChangeQuery::FirstReady)
+                        .await?
+                        .groups
+                        .is_empty()
+                {
+                    return Ok(true);
+                }
+                Ok(reads_sessions
+                    && !self
+                        .discovery_session_deltas(at, SESSION_QUIET_MS)
+                        .await?
+                        .is_empty())
+            },
             async |map| self.due_wander_source(&job.approval, map, at).await,
         )
         .await
@@ -206,6 +223,7 @@ mod tests {
             discovery
                 .change_snapshot(UnixMillis(at), ChangeQuery::FirstReady, |_, _| true)
                 .await
+                .map(|changes| !changes.groups.is_empty())
                 .map_err(reason)
         };
         let periodic = async |map: &WorkspaceMap, at: i64| {

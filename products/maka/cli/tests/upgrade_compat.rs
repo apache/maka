@@ -1249,9 +1249,22 @@ async fn consume_upgraded_discovery_deltas(
     );
     let deltas = ready.into_deltas();
     assert_eq!(deltas.len(), expected);
-    data.write(discovery.record_opening(OpeningSources::FollowUp(deltas), at))
-        .await
-        .unwrap();
+    let session = String::from("compat-discovery-session");
+    let ids = std::slice::from_ref(&session);
+    assert!(discovery.session_explored_at(ids).await.unwrap().is_empty());
+    data.write(discovery.record_opening(
+        OpeningSources::FollowUp {
+            files: deltas,
+            sessions: vec![(session.clone(), at)],
+        },
+        at,
+    ))
+    .await
+    .unwrap();
+    assert_eq!(
+        discovery.session_explored_at(ids).await.unwrap()[&session],
+        at.0
+    );
     assert!(snapshot().await.unwrap().groups.is_empty());
     let cursor = discovery
         .get_source_cursor(SourceUri("annex.md".into()))

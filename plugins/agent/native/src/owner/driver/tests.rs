@@ -74,6 +74,28 @@ use uuid::Uuid;
 
 type TestResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
 
+struct Sql(&'static str);
+impl maka_event_log::writeback::Statement for Sql {
+    type Value = ();
+    type Output = ();
+    fn execute(
+        self,
+        c: &rusqlite::Connection,
+    ) -> Result<maka_event_log::writeback::Prepared<()>, maka_event_log::StoreError> {
+        use maka_event_log::writeback::{Notification, Prepared};
+        c.execute_batch(self.0)?;
+        Ok(Prepared {
+            value: (),
+            changed: true,
+            notification: Notification::NONE,
+        })
+    }
+    fn committed(_: ()) {}
+    fn isolated_rejection(_: &maka_event_log::StoreError) -> bool {
+        false
+    }
+}
+
 fn at() -> UnixMillis {
     UnixMillis(
         maka_agent_authority::now()

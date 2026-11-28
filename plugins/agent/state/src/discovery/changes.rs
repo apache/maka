@@ -17,8 +17,9 @@
  * under the License.
  */
 
-//! Durable debounce probes, file fingerprints and unconsumed discovery deltas.
+//! Durable file probes, fingerprints and discovery opening watermarks.
 use super::*;
+use maka_agent_facts::{input::RunInput, read::SESSION_RESOURCE_PREFIX};
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
@@ -154,7 +155,10 @@ fn project_for(
 }
 
 pub enum OpeningSources {
-    FollowUp(Vec<Delta>),
+    FollowUp {
+        files: Vec<Delta>,
+        sessions: Vec<(String, UnixMillis)>,
+    },
     Wander(Vec<String>),
     None,
 }
@@ -168,6 +172,59 @@ pub struct IndexedDossier {
 }
 
 impl DiscoveryStore {
+    pub async fn session_explored_at(
+        &self,
+        session_ids: &[String],
+    ) -> Result<BTreeMap<String, i64>, StoreError> {
+        if session_ids.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+        let ids = serde_json::to_string(session_ids)?;
+        self.read(move |c, owner| {
+            let mut rows = c.prepare_cached(
+                "SELECT id.value, cursor.last_explored_at FROM json_each(?2) id
+                 CROSS JOIN discovery_source_cursors cursor
+                 WHERE cursor.owner=?1 AND cursor.source_uri=(?3 || id.value)",
+            )?;
+            Ok(rows
+                .query_map(params![owner, ids, SESSION_RESOURCE_PREFIX], |r| {
+                    Ok((r.get(0)?, r.get(1)?))
+                })?
+                .collect::<Result<_, _>>()?)
+        })
+        .await
+    }
+
+    /// A Bot's own reports and other deliveries can be newer than its last human turn.
+    pub async fn latest_session_user_message_at(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<UnixMillis>, StoreError> {
+        let session_id = session_id.to_owned();
+        self.read(move |c, owner| {
+            let mut stmt = c.prepare_cached(
+                "SELECT f.at, json_extract(b.payload,'$.input')
+                 FROM agent_catalog_runs k INDEXED BY agent_catalog_latest_run
+                 JOIN agent_facts f ON f.sequence=k.admission_sequence
+                 JOIN agent_run_specs s ON s.run=k.run
+                 JOIN contents b ON b.id=s.spec_content_id
+                 WHERE k.owner=?1 AND k.session=?2 ORDER BY k.admission_sequence DESC LIMIT 20",
+            )?;
+            let mut rows = stmt.query(params![owner, session_id])?;
+            while let Some(row) = rows.next()? {
+                if let RunInput::Message {
+                    source_messages, ..
+                } = crate::sql::decode(c, &json(row, 1)?)?
+                    && source_messages.iter().any(|m| m.message.origin.is_none())
+                {
+                    return Ok(Some(UnixMillis(row.get(0)?)));
+                }
+            }
+            Ok(None)
+        })
+        .await
+    }
+
     pub async fn observe_writes(
         &self,
         writes: Vec<FileWrite>,
@@ -323,7 +380,13 @@ impl DiscoveryStore {
         &self,
         deltas: Vec<Delta>,
     ) -> impl Statement<Value = DiscoveryCommit<()>, Output = ()> + use<> {
-        self.record_opening(OpeningSources::FollowUp(deltas), UnixMillis(0))
+        self.record_opening(
+            OpeningSources::FollowUp {
+                files: deltas,
+                sessions: Vec::new(),
+            },
+            UnixMillis(0),
+        )
     }
 
     /// Preserve map priority and look up only those paths whose map deadlines are due.
@@ -362,7 +425,7 @@ impl DiscoveryStore {
             let mut stale = Vec::new();
             while let Some(row) = rows.next()? {
                 let path = row.get_ref(0)?.as_str().map_err(rusqlite::Error::from)?;
-                if should_remove(Path::new(path)) {
+                if !path.starts_with(SESSION_RESOURCE_PREFIX) && should_remove(Path::new(path)) {
                     stale.push((path.to_owned(),row.get::<_,i64>(1)?,row.get::<_,Option<i64>>(2)?));
                 }
             }
@@ -387,15 +450,26 @@ impl DiscoveryStore {
     ) -> impl Statement<Value = DiscoveryCommit<()>, Output = ()> + use<> {
         self.mutation(false, move |c, owner| {
             match sources {
-                OpeningSources::FollowUp(deltas) => {
+                OpeningSources::FollowUp { files, sessions } => {
                     let mut stmt = c.prepare_cached(
                         "UPDATE discovery_source_cursors SET delta_kind=NULL,delta_at=NULL,
                         last_explored_at=max(last_explored_at,?3,?5),
                         updated_at=CASE WHEN probe_at IS NULL THEN max(updated_at+1,?3,?5) ELSE updated_at END
                         WHERE owner=?1 AND source_uri=?2 AND delta_at=?3 AND delta_kind=?4",
                     )?;
-                    for delta in deltas {
+                    for delta in files {
                         stmt.execute(params![owner, delta.path, delta.at.0, delta.kind.as_str(), at.0])?;
+                    }
+                    let mut session = c.prepare_cached(
+                        "INSERT INTO discovery_source_cursors(owner,source_uri,last_explored_at,updated_at)
+                         SELECT ?1,?2 || ?3,?4,?5 WHERE NOT EXISTS(
+                             SELECT 1 FROM session_retirements WHERE session_id=?3 AND remove_session=1)
+                         ON CONFLICT(owner,source_uri) DO UPDATE SET
+                         last_explored_at=max(last_explored_at,excluded.last_explored_at),
+                         updated_at=max(updated_at+1,excluded.updated_at)",
+                    )?;
+                    for (id, activity_at) in sessions {
+                        session.execute(params![owner, SESSION_RESOURCE_PREFIX, id, activity_at.0, at.0])?;
                     }
                 }
                 OpeningSources::Wander(paths) => {

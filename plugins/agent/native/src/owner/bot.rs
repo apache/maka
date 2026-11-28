@@ -132,7 +132,10 @@ pub(super) enum Appended {
 /// Written with the claim of every Bot Session, so a replaced Bot is still known as
 /// one. It confers no authority; only the current registration does.
 fn former_key(session: &str) -> String {
-    format!("former/{session}")
+    format!(
+        "{}{session}",
+        maka_agent_state::session_catalog::FORMER_BOT_KEY_PREFIX
+    )
 }
 fn read_key(session: &str) -> String {
     format!("outbox/{session}/read")

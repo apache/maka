@@ -286,15 +286,36 @@ async fn opening_acknowledges_its_snapshot_and_preserves_concurrent_and_out_of_s
         12,
     )
     .await;
-    let snapshot = store
-        .change_snapshot(
+    let snapshot = || {
+        store.change_snapshot(
             UnixMillis(11),
             ChangeQuery::opening(64, Path::new("/work")),
             |path, _| path.starts_with("/work"),
         )
-        .await
-        .unwrap();
-    let deltas = snapshot.into_deltas();
+    };
+    let writer = root.data_writer().unwrap();
+    let sessions = vec![("chat".into(), UnixMillis(8))];
+    let opening = store.record_opening(
+        OpeningSources::FollowUp {
+            files: snapshot().await.unwrap().into_deltas(),
+            sessions: sessions.clone(),
+        },
+        UnixMillis(11),
+    );
+    // A rejected job write must roll back both acknowledgments in its transaction.
+    let rejected = store.mutation(false, move |c, _| {
+        opening.execute(c)?;
+        Err::<(), _>(crate::store::invalid("opening job rejected"))
+    });
+    assert!(writer.write(rejected).await.is_err());
+    assert!(
+        store
+            .session_explored_at(&["chat".into()])
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    let deltas = snapshot().await.unwrap().into_deltas();
     assert_eq!(deltas.len(), 2);
     assert_eq!(
         store.next_change_deadline(UnixMillis(11)).await.unwrap(),
@@ -306,11 +327,20 @@ async fn opening_acknowledges_its_snapshot_and_preserves_concurrent_and_out_of_s
         .await
         .unwrap();
     publish(vec![write("/work/report", 13)], 13).await;
-    root.data_writer()
-        .unwrap()
-        .write(store.record_opening(OpeningSources::FollowUp(deltas), UnixMillis(14)))
+    writer
+        .write(store.record_opening(
+            OpeningSources::FollowUp {
+                files: deltas,
+                sessions,
+            },
+            UnixMillis(14),
+        ))
         .await
         .unwrap();
+    assert_eq!(
+        store.session_explored_at(&["chat".into()]).await.unwrap()["chat"],
+        8
+    );
     let pending = store
         .change_snapshot(
             UnixMillis(14),
@@ -333,6 +363,168 @@ async fn opening_acknowledges_its_snapshot_and_preserves_concurrent_and_out_of_s
         ]
     );
 }
+#[tokio::test]
+async fn session_watermarks_are_monotonic_and_invisible_to_file_discovery() {
+    use changes::{ChangeQuery, CursorSelection, OpeningSources};
+    use std::collections::BTreeMap;
+    let (_dir, root, store) = fixture().await;
+    let writer = root.data_writer().unwrap();
+    let ids = ["chat".into(), "room".into(), "unseen".into()];
+    assert!(store.session_explored_at(&ids).await.unwrap().is_empty());
+    for (activity, now) in [(12, 20), (14, 25), (10, 21)] {
+        writer
+            .write(store.record_opening(
+                OpeningSources::FollowUp {
+                    files: vec![],
+                    sessions: vec![
+                        (ids[0].clone(), UnixMillis(activity)),
+                        (ids[1].clone(), UnixMillis(13)),
+                    ],
+                },
+                UnixMillis(now),
+            ))
+            .await
+            .unwrap();
+    }
+    let at = UnixMillis(30);
+    assert!(!store.has_ready_changes(at).await.unwrap());
+    assert_eq!(
+        store.next_change_deadline(UnixMillis(0)).await.unwrap(),
+        None
+    );
+    let snapshot = store
+        .change_snapshot(at, ChangeQuery::opening(32, Path::new("/")), |_, _| true)
+        .await
+        .unwrap();
+    assert!(
+        snapshot.groups.is_empty() && snapshot.cooling.is_empty() && snapshot.omitted_deltas == 0
+    );
+    for selection in [CursorSelection::Deltas, CursorSelection::All] {
+        assert_eq!(
+            store
+                .prune_cursors_matching(selection, |_| true)
+                .await
+                .unwrap(),
+            0
+        );
+    }
+    assert_eq!(
+        store.session_explored_at(&ids).await.unwrap(),
+        BTreeMap::from([(ids[0].clone(), 14), (ids[1].clone(), 13)])
+    );
+    let cursor = store
+        .get_source_cursor(SourceUri("maka://session/chat".into()))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(cursor.updated_at, UnixMillis(26));
+    let clean = store.read(|c, owner| Ok(c.query_row(
+        "SELECT count(*) FROM discovery_source_cursors WHERE owner=? AND delta_kind IS NULL AND delta_at IS NULL AND probe_at IS NULL",
+        [owner], |row| row.get::<_, i64>(0),
+    )?)).await.unwrap();
+    assert_eq!(clean, 2);
+}
+
+#[tokio::test]
+async fn latest_user_message_uses_admission_time_and_ignores_system_deliveries() {
+    use crate::{Admission, ContentBlob, DriverDomain, Store};
+    use MessageOrigin::*;
+    use maka_agent_facts::{
+        durable::Trigger,
+        input::{DeliveredMessage, MessageInput, RunInput},
+        message::{MessageDisposition, MessageOrigin, Placement, RootSourceMessage},
+    };
+    let (_dir, root, discovery) = fixture().await;
+    let data = root.data_writer().unwrap();
+    let store = Store::new(data.clone(), DriverDomain::new(data).unwrap()).unwrap();
+    let (mut spec, blobs) = crate::store::stop_tests::spec();
+    spec.owner = serde_json::from_str(&discovery.owner).unwrap();
+    let session = &spec.session_id;
+    let admit = async |at: i64, origins: Vec<Option<MessageOrigin>>| {
+        let mut spec = spec.clone();
+        spec.turn_id = format!("turn-{at}");
+        let message_id = format!("message-{at}");
+        spec.trigger = Trigger::Message {
+            message_id: message_id.clone(),
+        };
+        let content = MessageInput::from("delivery");
+        let sources = origins
+            .into_iter()
+            .enumerate()
+            .map(|(i, origin)| RootSourceMessage {
+                message: DeliveredMessage {
+                    message_id: format!("{message_id}-{i}"),
+                    content: content.clone(),
+                    submitted_content_digest: content.content_digest().unwrap(),
+                    origin,
+                },
+                unprepared_content: content.clone(),
+                submitted_placement: Placement::CurrentTurn,
+                disposition: MessageDisposition::TurnStarted,
+                submitted_intent: None,
+            })
+            .collect();
+        let input = ContentBlob::json(&RunInput::Message {
+            content,
+            request_fingerprint: None,
+            source_messages: sources,
+        })
+        .unwrap();
+        spec.input = input.reference().clone();
+        let mut contents = blobs.clone();
+        contents.push(input);
+        store
+            .admit(Admission::new(spec, UnixMillis(at), contents))
+            .await
+            .unwrap();
+    };
+    let latest = async || {
+        discovery
+            .latest_session_user_message_at(session)
+            .await
+            .unwrap()
+    };
+    assert_eq!(latest().await, None);
+    admit(1, vec![]).await;
+    assert_eq!(latest().await, None);
+    admit(2, vec![None]).await;
+    let report = DiscoveryReport {
+        session_id: "worker".into(),
+    };
+    for (i, origin) in [
+        report.clone(),
+        Automation {
+            automation_id: "task".into(),
+            title: "Check".into(),
+        },
+        SessionCompletion {
+            session_id: "child".into(),
+            message_id: "done".into(),
+        },
+        BotWorker {
+            session_id: "worker".into(),
+        },
+        Goal {
+            goal_id: "goal".into(),
+            objective: "Finish".into(),
+        },
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        admit(3 + i as i64, vec![Some(origin)]).await;
+        assert_eq!(latest().await, Some(UnixMillis(2)));
+    }
+    // One human source in a batch advances the watermark. Exactly 20 newer runs hide it.
+    admit(8, vec![Some(report.clone()), None]).await;
+    for at in 9..28 {
+        admit(at, vec![Some(report.clone())]).await;
+    }
+    assert_eq!(latest().await, Some(UnixMillis(8)));
+    admit(28, vec![Some(report)]).await;
+    assert_eq!(latest().await, None);
+}
+
 #[tokio::test]
 async fn reviews_preserve_material_order_and_stale_writers_cannot_overwrite() {
     use DossierSignal::*;

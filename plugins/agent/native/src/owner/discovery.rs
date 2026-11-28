@@ -89,6 +89,7 @@ mod context;
 mod preferences;
 mod records;
 mod roots;
+mod sessions;
 mod watch_inputs;
 pub(in crate::owner) mod watch_scope;
 pub(in crate::owner) mod watches;
@@ -158,6 +159,35 @@ pub(super) enum Dispatch {
     Worker(Option<Completed>),
     Skip,
     Defer(UnixMillis),
+}
+
+enum WorkerAdmission {
+    Enqueued,
+    SourcesChanged,
+}
+
+pub(super) struct OpeningCommit {
+    active: Mutation,
+    sources: maka_agent_state::discovery::changes::OpeningSources,
+    at: UnixMillis,
+}
+
+impl OpeningCommit {
+    pub(super) async fn enqueue(
+        self,
+        owner: &Owner,
+        enqueue: maka_agent_state::queue::PreparedEnqueue,
+    ) -> Result<(), String> {
+        let acknowledgment = owner.discovery.record_opening(self.sources, self.at);
+        owner
+            .commit_discovery_writes(
+                dossiers::WithStorage(acknowledgment, enqueue),
+                vec![self.active],
+            )
+            .await
+            .map_err(reason)?;
+        Ok(())
+    }
 }
 
 pub(super) fn job_token_budget(
@@ -1144,20 +1174,37 @@ impl Owner {
                         .await
                         .map(Some);
                 }
-                if let Err(error) = self
-                    .enqueue_discovery_worker(&mut job, &mut revision, fire, plan)
+                match self
+                    .enqueue_discovery_worker(&mut job, revision, fire, plan)
                     .await
                 {
-                    return self
-                        .settle_discovery(
-                            fire,
-                            revision,
-                            &job,
-                            Outcome::Blocked,
-                            error.discovery_block()?,
-                        )
-                        .await
-                        .map(Some);
+                    Ok(WorkerAdmission::Enqueued) => {}
+                    Ok(WorkerAdmission::SourcesChanged) => {
+                        // Re-evaluate the same pending timer with its original grant, including any due Wander.
+                        self.scheduler
+                            .storage
+                            .batch(vec![Mutation {
+                                key: ACTIVE.into(),
+                                expected_revision: revision,
+                                data: Data::Deleted,
+                            }])
+                            .await
+                            .map_err(reason)?;
+                        *self.scheduler.investigation.write().unwrap() = None;
+                        self.scheduler.wake.notify_one();
+                    }
+                    Err(error) => {
+                        return self
+                            .settle_discovery(
+                                fire,
+                                revision,
+                                &job,
+                                Outcome::Blocked,
+                                error.discovery_block()?,
+                            )
+                            .await
+                            .map(Some);
+                    }
                 }
                 return Ok(None);
             }
@@ -1309,6 +1356,7 @@ impl Owner {
         timezone: &str,
         mode: &DiscoveryMode,
         allowed_tools: &[String],
+        at: UnixMillis,
     ) -> Result<
         (
             MessageInput,
@@ -1320,9 +1368,9 @@ impl Owner {
             || allowed_tools
                 .iter()
                 .any(|name| self.discovery_tool_group(name) == DiscoveryToolGroup::History);
-        let (mut prompt, sources) = self
-            .discovery_opening(mode, job, fire, allowed_tools)
-            .await?;
+        // Keep the catalog and inventory futures out of the scheduler's dispatch frame.
+        let (mut prompt, sources) =
+            Box::pin(self.discovery_opening(mode, job, fire, allowed_tools, at)).await?;
         let root = std::path::Path::new(&job.approval.target.workspace.path);
         if matches!(mode, DiscoveryMode::Onboard)
             && let Some(survey) =
@@ -1371,16 +1419,39 @@ impl Owner {
     async fn enqueue_discovery_worker(
         &self,
         job: &mut Job,
-        revision: &mut Option<u64>,
+        revision: Option<u64>,
         fire: &Fire<ScheduledEffect, scheduler::Approval>,
         plan: &scheduler::Plan,
-    ) -> Result<(), CaptureError> {
+    ) -> Result<WorkerAdmission, CaptureError> {
         let source = self.session(&job.bot).await?;
         let allowed_tools = self.discovery_worker_tools(
             &job.tools.names,
             source.configuration.tools.as_deref(),
             fire.effect.selected_discovery_tools(),
         );
+        let opening = if !job.input.has_content() || allowed_tools != job.tools.names {
+            use maka_agent_state::discovery::changes::OpeningSources;
+            let at = UnixMillis((now() as i64).max(fire.scheduled_at));
+            let mode = job.mode.as_ref().unwrap_or(&DiscoveryMode::FollowUp);
+            let (input, sources) = self
+                .discovery_input(job, fire, &plan.timezone, mode, &allowed_tools, at)
+                .await?;
+            if fire.source == FireSource::Schedule
+                && matches!(job.mode, Some(DiscoveryMode::FollowUp))
+                && matches!(&sources, OpeningSources::FollowUp { files, sessions } if files.is_empty() && sessions.is_empty())
+            {
+                return Ok(WorkerAdmission::SourcesChanged);
+            }
+            job.input = input;
+            job.tools.names.clone_from(&allowed_tools);
+            Some(OpeningCommit {
+                active: mutation(ACTIVE.into(), revision, job)?,
+                sources,
+                at,
+            })
+        } else {
+            None
+        };
         if self
             .store
             .get_session::<StoredSessionConfiguration>(&job.worker)
@@ -1451,25 +1522,6 @@ impl Owner {
             return Err(CaptureError::RouteChanged);
         }
         basis.model = Some(job.approval.accepted_model.clone());
-        // Freeze the opening and acknowledge its snapshot in the same Root transaction.
-        if !job.input.has_content() || allowed_tools != job.tools.names {
-            let now_ms = UnixMillis((now() as i64).max(fire.scheduled_at));
-            let mode = job.mode.as_ref().unwrap_or(&DiscoveryMode::FollowUp);
-            let (input, sources) = self
-                .discovery_input(job, fire, &plan.timezone, mode, &allowed_tools)
-                .await?;
-            job.input = input;
-            job.tools.names.clone_from(&allowed_tools);
-            let active = mutation(ACTIVE.into(), *revision, job)?;
-            let records = self
-                .commit_discovery_writes(
-                    self.discovery.record_opening(sources, now_ms),
-                    vec![active],
-                )
-                .await
-                .map_err(reason)?;
-            *revision = Some(records[0].revision);
-        }
         let input = job.input.clone();
         basis.allowed_tools = Some(allowed_tools);
         basis.background = Some(job.approval.target.clone());
@@ -1489,16 +1541,9 @@ impl Owner {
             disposition: MessageDisposition::TurnStarted,
             submitted_intent: None,
         };
-        self.enqueue_background(
-            &job.worker,
-            source,
-            &basis,
-            &job.request,
-            Default::default(),
-            false,
-        )
-        .await?;
-        Ok(())
+        self.enqueue_discovery_message(&job.worker, source, &basis, &job.request, opening)
+            .await?;
+        Ok(WorkerAdmission::Enqueued)
     }
     async fn deliver_discovery_report(
         &self,

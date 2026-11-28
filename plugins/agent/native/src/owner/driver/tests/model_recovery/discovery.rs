@@ -308,8 +308,39 @@ impl Fixture {
     async fn send(&self, text: &str, quotes: Value) -> Value {
         self.query("send",json!({"sessionId":self.bot,"message":text,"quotes":quotes,"backend":self.model,"delivery":"queue"})).await
     }
+    async fn conversation(&self, kind: &str, title: &str) -> String {
+        let response = self.query("create", json!({
+            "kind":kind,"title":title,"labels":[],
+            "workspace":{"kind":"directory","path":self.rig.directory.path().join("workspace")}
+        })).await;
+        response["session"]["id"].as_str().unwrap().to_owned()
+    }
     async fn outbox(&self) -> Value {
         self.query("botOutbox", json!({})).await["messages"].clone()
+    }
+    async fn quiet_room(&self, title: &str) -> (String, UnixMillis) {
+        let room = self.conversation("room", title).await;
+        let posted = UnixMillis(at().0 - 300_000);
+        let owner = self.owner();
+        owner
+            .store
+            .data_writer()
+            .unwrap()
+            .write(owner.durable.rooms(owner.run_owner()).post_statement(
+                maka_agent_state::room::Post {
+                    session: room.clone(),
+                    id: "room-note".into(),
+                    at: posted,
+                    author: maka_agent_facts::room::RoomAuthor::Human,
+                    content: "Review the terms".into(),
+                    reply_to: None,
+                    mentions: vec![],
+                    deliveries: vec![],
+                },
+            ))
+            .await
+            .unwrap();
+        (room, posted)
     }
     async fn quiescent(&self, session: &str) {
         let owner = self.owner();
@@ -458,6 +489,318 @@ async fn quiet(f: &Fixture, server: &mut MockAiServer, turn: TurnHandle) {
             .await
             .is_err()
     );
+}
+
+fn session_read_tool() -> Value {
+    json!({"name":"SessionRead","description":"Read a conversation or Room.","input":"json","result":"json",
+        "confirmation":"preapproved","target":{"kind":"export","name":"agent"},"method":"sessionRead"})
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn discovery_schedule_reads_idle_chats_rooms_and_only_human_bot_turns() {
+    use maka_agent_facts::message::MessageOrigin;
+    let mut server = MockAiBuilder::new().interactive(24).start().await.unwrap();
+    let mut f = Fixture::with_tools(&server, &[session_read_tool()]).await;
+    let owner = f.owner();
+    let chat = f.conversation("agent", "Release decisions").await;
+    let room = f.conversation("room", "Release room").await;
+    f.query(
+        "send",
+        json!({"sessionId":chat,"message":"Chat evidence 132","backend":f.model}),
+    )
+    .await;
+    next(&mut server).await.0.reply_text("Recorded.");
+    f.quiescent(&chat).await;
+    f.query(
+        "send",
+        json!({"sessionId":room,"message":"Room evidence 243"}),
+    )
+    .await;
+    f.send("Human Bot evidence 354", json!([])).await;
+    let (bot_turn, _) = next(&mut server).await;
+    let user_run = owner.latest_session_run(&f.bot).await.unwrap().unwrap();
+    let source = ExecutionIdentity {
+        session_id: f.bot.clone(),
+        run_id: user_run.run,
+        turn_id: user_run.spec.turn_id,
+    };
+    let route = owner.return_route(&source).await.unwrap();
+    bot_turn.reply_text("Recorded.");
+    f.quiescent(&f.bot).await;
+    let mut effect = f.effect("read_only").await;
+    effect["selectedTools"] = json!({"SessionRead":"history"});
+    let start = at().0 + 60_000;
+    let task = f
+        .create_effect(
+            "Session changes",
+            "",
+            json!({
+                "kind":"interval","everySeconds":1800,"startAt":start,"cadence":"after_completion"
+            }),
+            effect,
+        )
+        .await;
+    owner.tick_schedules_at(start).await.unwrap();
+    let idle = owner.discovery.plan_activity(&task).await.unwrap();
+    assert_eq!(
+        (idle.skipped, idle.tokens, f.worker_count().await),
+        (1, 0, 0)
+    );
+
+    let due = f.detail(&task).await["task"]["nextFireAt"]
+        .as_i64()
+        .unwrap();
+    owner.tick_schedules_at(due).await.unwrap();
+    let (mut worker, request) = next(&mut server).await;
+    let opening = request["messages"].to_string();
+    assert!(
+        opening.contains("Sessions [kind,session_id,title,ms]")
+            && opening.contains("Check only the named topic"),
+        "{opening}"
+    );
+    let worker_id = f.active_worker();
+    let config = owner.session(&worker_id).await.unwrap().configuration;
+    assert!(config.discovery_worker && config.parent_session_id.as_ref() == Some(&f.bot));
+    let ids = [chat.clone(), room.clone(), f.bot.clone()];
+    let watermarks = owner.discovery.session_explored_at(&ids).await.unwrap();
+    assert_eq!(watermarks.len(), 3);
+    for (id, marker, kind) in [
+        (&chat, "Chat evidence 132", "session"),
+        (&room, "Room evidence 243", "room"),
+        (&f.bot, "Human Bot evidence 354", "bot"),
+    ] {
+        assert!(
+            opening.contains(&format!(r#"[\"{kind}\",\"{id}\""#)),
+            "{opening}"
+        );
+        tool(worker, "SessionRead", json!({"sessionId":id}));
+        let (next_worker, body) = next(&mut server).await;
+        let read = output(&body);
+        assert_eq!(read["session"]["id"], id.as_str(), "{read}");
+        assert!(
+            read["transcript"]["items"].to_string().contains(marker),
+            "{read}"
+        );
+        worker = next_worker;
+    }
+    finish_with_usage(worker, Usage::new(10, 2));
+    f.settled(&task, 1).await;
+
+    let notice = owner
+        .prepare_notification(
+            &source,
+            &route,
+            "discovery-report-test",
+            |_| "Worker finished".into(),
+            MessageOrigin::DiscoveryReport {
+                session_id: worker_id,
+            },
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(owner.admit_notification(&notice).await.unwrap());
+    next(&mut server).await.0.reply_text("Report received.");
+    f.quiescent(&f.bot).await;
+    let next_due = f.detail(&task).await["task"]["nextFireAt"]
+        .as_i64()
+        .unwrap();
+    owner.tick_schedules_at(next_due).await.unwrap();
+    assert_eq!(f.worker_count().await, 1);
+    assert_eq!(
+        owner.discovery.plan_activity(&task).await.unwrap().skipped,
+        2
+    );
+    assert_eq!(
+        owner.discovery.session_explored_at(&ids).await.unwrap(),
+        watermarks
+    );
+
+    f.query(
+        "send",
+        json!({"sessionId":chat,"message":"Change the release date","backend":f.model}),
+    )
+    .await;
+    let (busy_chat, _) = next(&mut server).await;
+    let next_due = f.detail(&task).await["task"]["nextFireAt"]
+        .as_i64()
+        .unwrap();
+    owner.tick_schedules_at(next_due).await.unwrap();
+    assert_eq!(
+        owner.discovery.plan_activity(&task).await.unwrap().skipped,
+        3
+    );
+    f.change(&task, "trigger_now").await;
+    let (manual, request) = next(&mut server).await;
+    assert!(
+        !request["messages"]
+            .to_string()
+            .contains("Sessions [kind,session_id,title,ms]")
+    );
+    finish_with_usage(manual, Usage::new(10, 2));
+    f.settled(&task, 2).await;
+    busy_chat.reply_text("Date changed.");
+    f.quiescent(&chat).await;
+    f.change(&task, "trigger_now").await;
+    let (manual, request) = next(&mut server).await;
+    assert!(
+        request["messages"]
+            .to_string()
+            .contains("Sessions [kind,session_id,title,ms]")
+    );
+    let fresh = owner.discovery.session_explored_at(&ids).await.unwrap();
+    assert!(fresh[&chat] > watermarks[&chat]);
+    assert_eq!(
+        (fresh[&room], fresh[&f.bot]),
+        (watermarks[&room], watermarks[&f.bot])
+    );
+    finish_with_usage(manual, Usage::new(10, 2));
+    f.settled(&task, 3).await;
+    f.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn discovery_failed_enqueue_preserves_watermarks_and_empty_retry_skips_the_model() {
+    use maka_agent_state::discovery::changes::OpeningSources;
+    let mut server = MockAiBuilder::new().interactive(8).start().await.unwrap();
+    let mut f = Fixture::with_tools(&server, &[session_read_tool()]).await;
+    let owner = f.owner();
+    let writer = owner.store.data_writer().unwrap();
+    let (room, posted) = f.quiet_room("Pending review").await;
+    let mut effect = f.effect("read_only").await;
+    effect["selectedTools"] = json!({"SessionRead":"history"});
+    let due = at().0 + 600_000;
+    let plan = f
+        .create_effect(
+            "Room changes",
+            "",
+            json!({"kind":"interval","everySeconds":1800,"startAt":due}),
+            effect,
+        )
+        .await;
+    writer.write(Sql("CREATE TRIGGER reject_discovery_queue BEFORE INSERT ON agent_queue_events
+        WHEN EXISTS(SELECT 1 FROM session_control WHERE id=NEW.session AND json_extract(configuration,'$.discoveryWorker')=1)
+        BEGIN SELECT RAISE(ABORT,'discovery queue unavailable'); END;")).await.unwrap();
+    let failure = owner.tick_schedules_at(due).await.unwrap_err();
+    assert!(failure.contains("discovery queue unavailable"), "{failure}");
+    assert!(
+        owner
+            .discovery
+            .session_explored_at(std::slice::from_ref(&room))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    // Another opening consumes this Room while the failed request is waiting to retry.
+    writer
+        .write(owner.discovery.record_opening(
+            OpeningSources::FollowUp {
+                files: vec![],
+                sessions: vec![(room, posted)],
+            },
+            UnixMillis(due),
+        ))
+        .await
+        .unwrap();
+    writer
+        .write(Sql("DROP TRIGGER reject_discovery_queue"))
+        .await
+        .unwrap();
+    owner.tick_schedules_at(due).await.unwrap();
+    owner.tick_schedules_at(due).await.unwrap();
+    let detail = f.detail(&plan).await;
+    assert!(
+        detail["pendingFire"].is_null() && detail["task"]["runs"].as_array().unwrap().is_empty(),
+        "{detail}"
+    );
+    let activity = owner.discovery.plan_activity(&plan).await.unwrap();
+    assert_eq!(
+        (activity.model_runs, activity.tokens, activity.skipped),
+        (0, 0, 1)
+    );
+    assert!(owner.scheduler.investigation.read().unwrap().is_none());
+    let (fresh, posted) = f.quiet_room("Next review").await;
+    f.change(&plan, "trigger_now").await;
+    let (worker, request) = next(&mut server).await;
+    assert!(request["messages"].to_string().contains(&fresh));
+    assert_eq!(
+        owner
+            .discovery
+            .session_explored_at(std::slice::from_ref(&fresh))
+            .await
+            .unwrap()[&fresh],
+        posted.0
+    );
+    finish_with_usage(worker, Usage::new(10, 2));
+    f.settled(&plan, 1).await;
+    f.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn discovery_without_session_read_skips_session_admission_and_opening() {
+    check_unreadable_sessions(session_read_tool(), json!({"DiscoveryMemory":"history"})).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn discovery_session_list_named_session_read_cannot_consume_conversations() {
+    let mut list = session_read_tool();
+    list["method"] = json!("sessionList");
+    check_unreadable_sessions(list, json!({"SessionRead":"history"})).await;
+}
+
+async fn check_unreadable_sessions(tool: Value, selected: Value) {
+    let mut server = MockAiBuilder::new().interactive(8).start().await.unwrap();
+    let mut f = Fixture::with_tools(&server, &[tool]).await;
+    let room = f.conversation("room", "Release room").await;
+    f.query(
+        "send",
+        json!({"sessionId":room,"message":"Ready for review"}),
+    )
+    .await;
+    let mut effect = f.effect("read_only").await;
+    let named_session_read = selected.get("SessionRead").is_some();
+    effect["selectedTools"] = selected;
+    let start = at().0 + 600_000;
+    let task = f
+        .create_effect(
+            "Memory only",
+            "",
+            json!({
+                "kind":"interval","everySeconds":1800,"startAt":start
+            }),
+            effect,
+        )
+        .await;
+    let owner = f.owner();
+    owner.tick_schedules_at(start).await.unwrap();
+    let idle = owner.discovery.plan_activity(&task).await.unwrap();
+    assert_eq!(
+        (idle.skipped, idle.tokens, f.worker_count().await),
+        (1, 0, 0)
+    );
+    f.change(&task, "trigger_now").await;
+    let (manual, request) = next(&mut server).await;
+    assert_eq!(
+        model_tool_names(&request).contains(&"SessionRead"),
+        named_session_read
+    );
+    assert!(
+        !request["messages"]
+            .to_string()
+            .contains("Sessions [kind,session_id,title,ms]")
+    );
+    assert!(
+        owner
+            .discovery
+            .session_explored_at(&[room])
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    finish_with_usage(manual, Usage::new(10, 2));
+    f.settled(&task, 1).await;
+    f.close().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -2573,9 +2916,11 @@ async fn discovery_greedy_onboard_wraps_up_softly_and_persists_map() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn discovery_file_drop_in_another_authorized_root_wakes_only_an_active_plan() {
     let mut server = MockAiBuilder::new().interactive(16).start().await.unwrap();
-    let mut f = Fixture::new(&server).await;
+    let mut f = Fixture::with_tools(&server, &[session_read_tool()]).await;
     let task = f.create_scheduled("Review new arrivals", "", json!({"kind":"interval","everySeconds":3600,"startAt":maka_agent_authority::now()+3_600_000})).await;
     f.change(&task, "pause").await;
+    let (room, posted) = f.quiet_room("Contract review").await;
+    let owner = f.owner();
     tokio::fs::write(
         f.rig
             .directory
@@ -2586,7 +2931,6 @@ async fn discovery_file_drop_in_another_authorized_root_wakes_only_an_active_pla
     )
     .await
     .unwrap();
-    let owner = f.owner();
     let state = &owner.discovery;
     tokio::time::timeout(Duration::from_secs(30), async {
         let mut poll = tokio::time::interval(Duration::from_millis(100));
@@ -2621,6 +2965,14 @@ async fn discovery_file_drop_in_another_authorized_root_wakes_only_an_active_pla
     assert!(
         messages.contains("terms.pdf") && messages.contains("created"),
         "{messages}"
+    );
+    assert!(messages.contains("Sessions [kind,session_id,title,ms]") && messages.contains(&room));
+    assert_eq!(
+        state
+            .session_explored_at(std::slice::from_ref(&room))
+            .await
+            .unwrap()[&room],
+        posted.0
     );
 
     let until_due = due.saturating_sub(at().0).max(0) as u64;
@@ -2910,7 +3262,7 @@ async fn discovery_staged_receipt_attaches_verbatim_and_preview_checks_the_dossi
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn discovery_due_frontier_targets_wander_and_manual_followups_keep_dossier_context() {
     let mut server = MockAiBuilder::new().interactive(32).start().await.unwrap();
-    let mut f = Fixture::new(&server).await;
+    let mut f = Fixture::with_tools(&server, &[session_read_tool()]).await;
     let query = f
         .query(
             "dropDiscoveryLead",
@@ -3000,7 +3352,8 @@ async fn discovery_due_frontier_targets_wander_and_manual_followups_keep_dossier
     let cold = f.rig.directory.path().join("workspace/cold");
     tokio::fs::create_dir(&cold).await.unwrap();
     let hour = 3_600_000;
-    let due = at().0 + hour;
+    // Exercise the due map frontier after the earlier human Bot turn ages out of discovery.
+    let due = at().0 + 25 * hour;
     let broad = f
         .create_scheduled(
             "Broad discovery",

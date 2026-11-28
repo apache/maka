@@ -17,13 +17,13 @@
  * under the License.
  */
 
+use super::sessions::{SESSION_QUIET_MS, SessionDelta, recent_conversations};
 use super::*;
 use jiff::{Timestamp, tz::TimeZone};
 use maka_agent_state::discovery::changes::{
     ChangeQuery, ChangeSnapshot, Delta, IndexedDossier, OpeningSources,
 };
-use maka_agent_state::session_catalog::{Filter, Position, SessionCatalog, SideQuestions};
-use maka_event_log::sessions::{CatalogFilter, CatalogScope};
+use maka_agent_state::session_catalog::SessionCatalog;
 use std::path::Path;
 
 pub(super) fn timestamp(ms: u64) -> Option<String> {
@@ -54,53 +54,19 @@ pub(super) fn environment(language: Language, workspace: &str, timezone: &str) -
     }
 }
 
-// ~400–500 tokens across mixed English/CJK paths and compact JSON rows.
-const HEADER_BYTES: usize = 1600;
+// Session rows can use spare bytes, but the original file and dossier budget has priority.
+const FILE_HEADER_BYTES: usize = 1600;
+const HEADER_BYTES: usize = 2000;
 const ROW_LIMIT: usize = 15;
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct TopicMetadata {
-    title: String,
-    dossier_seed: Option<serde::de::IgnoredAny>,
-    #[serde(default)]
-    discovery_worker: bool,
-}
 
 async fn recent_conversation_topics(
     catalog: SessionCatalog,
     bot: &bot::Bot,
 ) -> Result<Vec<String>, String> {
-    let page = catalog
-        .page(
-            CatalogScope::Profile,
-            None,
-            Position::Start,
-            Filter {
-                base: CatalogFilter {
-                    roots_only: true,
-                    archived_only: false,
-                    include_archived: false,
-                },
-                needs_you_only: false,
-                room: Some(false),
-                side: SideQuestions::Hidden,
-            },
-            32,
-        )
-        .await
-        .map_err(reason)?;
     let mut topics = Vec::new();
-    for record in page.sessions {
-        let config: TopicMetadata =
-            serde_json::from_value(record.metadata.configuration).map_err(reason)?;
-        let title = config.title.trim();
-        if !title.is_empty()
-            && config.dossier_seed.is_none()
-            && !config.discovery_worker
-            && !record.legacy_discovery_worker
-            && !bot.is_or_was(&record.metadata.id).await?
-        {
+    for (record, title) in recent_conversations(catalog).await? {
+        let title = title.trim();
+        if !title.is_empty() && !bot.is_or_was(&record.metadata.id).await? {
             topics.push(clipped(title, 72, false));
             if topics.len() == 5 {
                 break;
@@ -111,11 +77,18 @@ async fn recent_conversation_topics(
 }
 
 impl Owner {
-    async fn mapped_context(&self, language: Language) -> Result<Vec<String>, String> {
+    async fn mapped_context(
+        &self,
+        language: Language,
+        tools: &[String],
+    ) -> Result<Vec<String>, String> {
         let mut sections = Vec::new();
         let preferences = self.discovery_preferences_excerpt().await?;
         if !preferences.is_empty() {
             sections.push(preferences);
+        }
+        if !self.discovery_reads_sessions(tools) {
+            return Ok(sections);
         }
         let topics = recent_conversation_topics(
             self.canonical_catalog()?
@@ -140,6 +113,7 @@ impl Owner {
         job: &Job,
         fire: &Fire<ScheduledEffect, scheduler::Approval>,
         tools: &[String],
+        at: UnixMillis,
     ) -> Result<(String, OpeningSources), String> {
         if fire.source == FireSource::Watch
             || fire
@@ -148,7 +122,7 @@ impl Owner {
                 .and_then(scheduler::Approval::followup_grant)
                 .is_some()
         {
-            // The frozen intent identifies the watch/topic. Other pending file changes keep their own fire.
+            // The frozen intent names one topic. Broad deltas keep their own opening.
             return Ok((
                 self.discovery_preferences_excerpt().await?,
                 OpeningSources::None,
@@ -180,7 +154,7 @@ impl Owner {
             if !checkpoint.is_empty() {
                 sections.push(checkpoint);
             }
-            sections.extend(self.mapped_context(job.approval.language).await?);
+            sections.extend(self.mapped_context(job.approval.language, tools).await?);
             return Ok((sections.join("\n\n"), OpeningSources::None));
         }
 
@@ -222,14 +196,14 @@ impl Owner {
                 _ => "Cold starting points",
             };
             let mut sections = vec![format!("{label}\n{}", serde_json::json!(displayed))];
-            sections.extend(self.mapped_context(job.approval.language).await?);
+            sections.extend(self.mapped_context(job.approval.language, tools).await?);
             return Ok((sections.join("\n\n"), OpeningSources::Wander(selected)));
         }
 
         let changes = if self.discovery_reads_files(tools) {
             self.discovery_changes(
                 &job.approval,
-                UnixMillis(now() as i64),
+                at,
                 ChangeQuery::Opening {
                     limit: ROW_LIMIT,
                     workspace: root.to_owned(),
@@ -255,7 +229,21 @@ impl Owner {
         } else {
             Vec::new()
         };
-        let (mut prompt, displayed_rows) = header(job.approval.language, root, changes, &dossiers);
+        let sessions = if self.discovery_reads_sessions(tools) {
+            let quiet = if fire.source == FireSource::Manual {
+                0
+            } else {
+                SESSION_QUIET_MS
+            };
+            self.discovery_session_deltas(at, quiet).await?
+        } else {
+            Vec::new()
+        };
+        let OpeningHeader {
+            mut prompt,
+            files: displayed_rows,
+            sessions,
+        } = header(job.approval.language, root, changes, &dossiers, sessions);
         // Annotate matched mapped sources for the displayed deltas so FollowUp can follow recheck_hint.
         if !displayed_rows.is_empty() && !workspace_map.sources.is_empty() {
             let mut hints = Vec::new();
@@ -289,12 +277,65 @@ impl Owner {
         }
         Ok((
             prompt,
-            OpeningSources::FollowUp(displayed_rows.into_iter().flatten().collect()),
+            OpeningSources::FollowUp {
+                files: displayed_rows.into_iter().flatten().collect(),
+                sessions,
+            },
         ))
     }
 }
 
+struct OpeningHeader {
+    prompt: String,
+    files: Vec<Vec<Delta>>,
+    sessions: Vec<(String, UnixMillis)>,
+}
+
 fn header(
+    language: Language,
+    workspace: &Path,
+    changes: ChangeSnapshot,
+    dossiers: &[IndexedDossier],
+    sessions: Vec<SessionDelta>,
+) -> OpeningHeader {
+    let (mut prompt, files) = file_header(language, workspace, changes, dossiers);
+    let label = "\nSessions [kind,session_id,title,ms]";
+    let hint = match language {
+        Language::ZH_CN => "\n有新对话的会话可按需用 SessionRead 查阅。",
+        Language::ZH_TW => "\n有新對話的會話可按需用 SessionRead 查閱。",
+        _ => "\nInspect updated sessions with SessionRead as needed.",
+    };
+    let mut displayed = Vec::new();
+    let mut remaining = HEADER_BYTES - prompt.len() - label.len() - hint.len();
+    for session in sessions {
+        let row = serde_json::json!([
+            session.kind,
+            session.id,
+            clipped(&session.title, 72, false),
+            session.activity_at
+        ])
+        .to_string();
+        if row.len() < remaining {
+            if displayed.is_empty() {
+                prompt.push_str(label);
+            }
+            prompt.push('\n');
+            prompt.push_str(&row);
+            remaining -= row.len() + 1;
+            displayed.push((session.id, session.activity_at));
+        }
+    }
+    if !displayed.is_empty() {
+        prompt.push_str(hint);
+    }
+    OpeningHeader {
+        prompt,
+        files,
+        sessions: displayed,
+    }
+}
+
+fn file_header(
     language: Language,
     workspace: &Path,
     changes: ChangeSnapshot,
@@ -321,7 +362,7 @@ fn header(
         Language::ZH_TW => format!("…（另有 {n} 項）"),
         _ => format!("… (+{n} more)"),
     };
-    let mut remaining = HEADER_BYTES
+    let mut remaining = FILE_HEADER_BYTES
         - labels.iter().map(|s| s.len()).sum::<usize>()
         - guidance.len()
         - 3
@@ -358,7 +399,7 @@ fn header(
             .collect(),
         dossiers
             .iter()
-            .filter(|d| d.topic_id.0.len() < HEADER_BYTES)
+            .filter(|d| d.topic_id.0.len() < FILE_HEADER_BYTES)
             .map(|d| {
                 serde_json::json!([
                     d.topic_id,
@@ -532,6 +573,10 @@ mod tests {
             ("topic-chat", json!({"title":"Shipment timing"})),
             ("topic-bot", json!({"title":"Bot notebook"})),
             (
+                "topic-private",
+                json!({"title":"Private conversation","incognito":true}),
+            ),
+            (
                 "topic-thread",
                 json!({"title":"Dossier","dossierSeed":"Initial summary"}),
             ),
@@ -550,6 +595,87 @@ mod tests {
             recent_conversation_topics(catalog, &bot).await.unwrap(),
             ["Shipment timing"]
         );
+    }
+
+    #[tokio::test]
+    async fn discovery_session_header_preserves_file_rows_and_acknowledges_only_visible_sessions() {
+        use super::sessions::ConversationKind;
+        use maka_agent_state::discovery::{DiscoveryStore, changes::DeltaGroup};
+        let work = Path::new("/work");
+        let files = || ChangeSnapshot {
+            groups: (0..ROW_LIMIT)
+                .map(|i| DeltaGroup {
+                    project: work.join(i.to_string()),
+                    members: vec![Delta {
+                        path: format!("/work/{i}/{}.md", "report".repeat(30)),
+                        kind: DeltaKind::Modified,
+                        at: UnixMillis(8),
+                    }],
+                })
+                .collect(),
+            ..Default::default()
+        };
+        let ids: Vec<_> = (0..5)
+            .map(|i| format!("chat-{i}-{}", "x".repeat(128)))
+            .collect();
+        let sessions = || {
+            ids.iter()
+                .map(|id| SessionDelta {
+                    id: id.clone(),
+                    kind: ConversationKind::Session,
+                    title: "报价\n\"review\"".repeat(10),
+                    activity_at: UnixMillis(12),
+                })
+                .collect()
+        };
+        for (locale, hint) in [
+            (Language::ZH_CN, "有新对话的会话可按需用 SessionRead 查阅。"),
+            (Language::ZH_TW, "有新對話的會話可按需用 SessionRead 查閱。"),
+            (
+                Language::EN,
+                "Inspect updated sessions with SessionRead as needed.",
+            ),
+        ] {
+            let empty = header(locale, work, files(), &[], vec![]);
+            assert!(!empty.prompt.contains("Sessions") && !empty.prompt.contains("SessionRead"));
+            let opening = header(locale, work, files(), &[], sessions());
+            assert!(opening.prompt.starts_with(&empty.prompt));
+            assert!(opening.prompt.len() <= HEADER_BYTES && opening.prompt.ends_with(hint));
+            assert!(!opening.sessions.is_empty() && opening.sessions.len() < ids.len());
+            let rendered: Vec<_> = opening
+                .prompt
+                .split_once("\nSessions [kind,session_id,title,ms]\n")
+                .unwrap()
+                .1
+                .lines()
+                .take_while(|line| line.starts_with('['))
+                .map(|row| {
+                    let (kind, id, _, at): (String, String, String, UnixMillis) =
+                        serde_json::from_str(row).unwrap();
+                    assert_eq!(kind, "session");
+                    (id, at)
+                })
+                .collect();
+            assert_eq!(rendered, opening.sessions);
+            let (_dir, root, owner) = test_store().await;
+            let writer = root.data_writer().unwrap();
+            let store = DiscoveryStore::new(writer.clone(), &owner).unwrap();
+            writer
+                .write(store.record_opening(
+                    OpeningSources::FollowUp {
+                        files: opening.files.into_iter().flatten().collect(),
+                        sessions: opening.sessions,
+                    },
+                    UnixMillis(20),
+                ))
+                .await
+                .unwrap();
+            let watermarks = store.session_explored_at(&ids).await.unwrap();
+            assert_eq!(
+                watermarks,
+                rendered.into_iter().map(|(id, at)| (id, at.0)).collect()
+            );
+        }
     }
 
     #[tokio::test]
@@ -617,9 +743,11 @@ mod tests {
             if remaining.is_empty() {
                 break;
             }
-            let (text, rows) = header(Language::EN, work, snapshot, &[]);
+            let (text, rows) = file_header(Language::EN, work, snapshot, &[]);
             let shown: Vec<_> = rows.into_iter().flatten().collect();
-            assert!(!shown.is_empty() && shown.len() <= ROW_LIMIT && text.len() <= HEADER_BYTES);
+            assert!(
+                !shown.is_empty() && shown.len() <= ROW_LIMIT && text.len() <= FILE_HEADER_BYTES
+            );
             let rendered: Vec<_> = text
                 .lines()
                 .skip(1)
@@ -637,7 +765,13 @@ mod tests {
             }
             root.data_writer()
                 .unwrap()
-                .write(store.record_opening(OpeningSources::FollowUp(shown), at))
+                .write(store.record_opening(
+                    OpeningSources::FollowUp {
+                        files: shown,
+                        sessions: vec![],
+                    },
+                    at,
+                ))
                 .await
                 .unwrap();
         }
@@ -689,7 +823,7 @@ mod tests {
                 |_, _| true,
             )
         };
-        let (opening, covered) = header(
+        let (opening, covered) = file_header(
             Language::EN,
             Path::new("/work"),
             snapshot().await.unwrap(),
@@ -699,7 +833,7 @@ mod tests {
             opening.contains(r#"["project","clients/busy",40,139,["s39/quote","s38/quote"]]"#),
             "{opening}"
         );
-        assert!(opening.contains("quiet/deadline") && opening.len() <= HEADER_BYTES);
+        assert!(opening.contains("quiet/deadline") && opening.len() <= FILE_HEADER_BYTES);
         let covered: Vec<_> = covered.into_iter().flatten().collect();
         assert_eq!(covered.len(), 41);
         store
@@ -719,7 +853,13 @@ mod tests {
             .unwrap();
         root.data_writer()
             .unwrap()
-            .write(store.record_opening(OpeningSources::FollowUp(covered), UnixMillis(300)))
+            .write(store.record_opening(
+                OpeningSources::FollowUp {
+                    files: covered,
+                    sessions: vec![],
+                },
+                UnixMillis(300),
+            ))
             .await
             .unwrap();
         let pending = snapshot().await.unwrap().into_deltas();
@@ -762,8 +902,8 @@ mod tests {
                 revision: 7,
                 window_at: Some(UnixMillis(3000)),
             }];
-            let (text, shown) = header(language, Path::new("/work"), changes(), &topics);
-            assert!(text.len() <= HEADER_BYTES, "{text}");
+            let (text, shown) = file_header(language, Path::new("/work"), changes(), &topics);
+            assert!(text.len() <= FILE_HEADER_BYTES, "{text}");
             assert!(
                 text.contains(r#"["created","p0/合同-0.pdf",2000]"#)
                     && text.contains(r#"["editing",4000]"#),
@@ -785,15 +925,16 @@ mod tests {
             for delta in changes.groups.iter_mut().flat_map(|g| &mut g.members) {
                 delta.path = format!("/work/{}.pdf", "合同".repeat(200));
             }
-            let (text, shown) = header(language, Path::new("/work"), changes, &topics);
+            let (text, shown) = file_header(language, Path::new("/work"), changes, &topics);
             let displayed = text.matches(".pdf").count();
             assert!(
-                text.len() <= HEADER_BYTES && (1..=ROW_LIMIT).contains(&displayed),
+                text.len() <= FILE_HEADER_BYTES && (1..=ROW_LIMIT).contains(&displayed),
                 "{text}"
             );
             assert_eq!(shown.len(), displayed);
             assert!(text.contains(&expected(30 - displayed)), "{text}");
-            let (empty, _) = header(language, Path::new("/work"), ChangeSnapshot::default(), &[]);
+            let (empty, _) =
+                file_header(language, Path::new("/work"), ChangeSnapshot::default(), &[]);
             assert_eq!(empty.matches("\nnone").count(), 3);
         }
     }

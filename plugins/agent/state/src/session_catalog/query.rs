@@ -54,6 +54,7 @@ const BASE: &str = "WITH base AS (
  s.catalog_unpinned AS unpinned,
  source.run AS source_run,COALESCE(source.sequence,0)>COALESCE(k.read_through,0) AS source_unread,
  room.session IS NOT NULL AS is_room,
+ json_extract(source_summary.summary_json,'$.summary.lastMessage.recordedAt') AS historical_message_at,
  (?14=1 AND COALESCE(json_extract(k.lineage,'$.origin.side'),json_extract(k.lineage,'$.branch.side'),0)=1
   AND EXISTS(SELECT 1 FROM session_control p WHERE p.id=COALESCE(json_extract(k.lineage,'$.origin.parent_session_id'),json_extract(k.lineage,'$.branch.parent_session_id'))
    AND NOT EXISTS(SELECT 1 FROM session_retirements d WHERE d.session_id=p.id AND d.remove_session=1))) AS tucked,
@@ -155,6 +156,106 @@ static SINGLE_RECORD_SQL: LazyLock<String> = LazyLock::new(|| {
         *BASE_SQL
     )
 });
+
+// The sidebar orders by pins and turn recency. Discovery needs unconsumed messages,
+// including the historical tail of a fork until the first local message replaces it.
+static DISCOVERY_KEYS: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "{}, activity AS (
+             SELECT id,unpinned,recency,coalesce(message_at,historical_message_at) AS activity_at
+             FROM selected WHERE {FILTER} AND NOT working AND NOT legacy_worker
+               AND configuration->>'discoveryWorker' IS NOT 1 AND configuration->>'incognito' IS NOT 1
+               AND configuration->>'dossierSeed' IS NULL)
+         SELECT unpinned,recency,id FROM activity
+         WHERE id=?16 OR (activity_at>?17 AND activity_at<=?18
+           AND NOT EXISTS(SELECT 1 FROM discovery_source_cursors d WHERE d.owner=?1
+               AND d.source_uri=(?19 || activity.id) AND d.last_explored_at>=activity.activity_at)
+           AND NOT EXISTS(SELECT 1 FROM plugin_data p WHERE p.package_id='maka.bot'
+               AND p.scope_id='profile' AND p.key=(?20 || activity.id)))
+         ORDER BY (id IS ?16) DESC,activity_at DESC,id LIMIT ?21",
+        *BASE_SQL
+    )
+});
+
+impl SessionCatalog {
+    /// Reserve a slot for the current Bot. Its human-input clock is resolved separately.
+    pub async fn discovery_activity_page(
+        &self,
+        bot: Option<String>,
+        since: UnixMillis,
+        through: UnixMillis,
+        limit: u32,
+    ) -> Result<Vec<Record>, StoreError> {
+        crate::session_history::snapshot::run_with_snapshot_rebuild(self.stop.as_ref(), || {
+            self.data.query(DiscoveryActivityPage {
+                catalog: self.clone(),
+                bot: bot.clone(),
+                since,
+                through,
+                limit,
+            })
+        })
+        .await
+    }
+}
+
+struct DiscoveryActivityPage {
+    catalog: SessionCatalog,
+    bot: Option<String>,
+    since: UnixMillis,
+    through: UnixMillis,
+    limit: u32,
+}
+
+impl Query for DiscoveryActivityPage {
+    type Output = IndexedRead<Vec<Record>>;
+
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        if !(1..=256).contains(&self.limit) {
+            return Err(invalid("catalog page size must be 1..=256"));
+        }
+        let selected = Selection::new(
+            &self.catalog,
+            &CatalogScope::Profile,
+            &Filter {
+                base: CatalogFilter {
+                    roots_only: true,
+                    archived_only: false,
+                    include_archived: false,
+                },
+                needs_you_only: false,
+                room: None,
+                side: SideQuestions::Hidden,
+            },
+        )?;
+        let stale = selected.stale_catalog_sources(c)?;
+        if !stale.is_empty() {
+            return Ok(IndexedRead::NeedsRebuild(stale));
+        }
+        let mut values = selected.values.clone();
+        values.extend([
+            self.bot.map_or(SqlValue::Null, Into::into),
+            self.since.0.into(),
+            self.through.0.into(),
+            maka_agent_facts::read::SESSION_RESOURCE_PREFIX
+                .to_owned()
+                .into(),
+            format!("{}{FORMER_BOT_KEY_PREFIX}", self.catalog.id_prefix).into(),
+            i64::from(self.limit).into(),
+        ]);
+        let keys = c
+            .prepare_cached(&DISCOVERY_KEYS)?
+            .query_map(params_from_iter(values), |row| {
+                Ok(Key {
+                    unpinned: row.get(0)?,
+                    recency: row.get(1)?,
+                    id: row.get(2)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        IndexedRead::from_result(selected.records(c, &keys))
+    }
+}
 static RECORD_BUCKET_SQL: LazyLock<[String; 4]> = LazyLock::new(|| {
     RECORD_BUCKETS.map(|bucket| {
         let slots = (1..=bucket)

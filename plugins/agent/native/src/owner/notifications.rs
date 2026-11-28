@@ -315,6 +315,7 @@ impl Owner {
             false,
             boundary,
             at,
+            None,
         )
         .await
         .map(Some)
@@ -372,6 +373,30 @@ impl Owner {
             steer,
             None,
             UnixMillis(now() as i64),
+            None,
+        )
+        .await
+    }
+
+    pub(super) async fn enqueue_discovery_message(
+        &self,
+        session: &str,
+        source: RootSourceMessage,
+        basis: &CapturedRun,
+        key: &str,
+        opening: Option<discovery::OpeningCommit>,
+    ) -> Result<PreparedRequest, String> {
+        self.enqueue_background_checked(
+            session,
+            source,
+            basis,
+            key,
+            BTreeSet::new(),
+            QueuePlacement::Followup,
+            false,
+            None,
+            UnixMillis(now() as i64),
+            opening,
         )
         .await
     }
@@ -387,6 +412,7 @@ impl Owner {
         steer: bool,
         boundary: Option<&ScheduledTarget>,
         at: UnixMillis,
+        opening: Option<discovery::OpeningCommit>,
     ) -> Result<PreparedRequest, String> {
         let _ordered = self.runs.ordered(session).await;
         let queue = self.durable.queue();
@@ -458,22 +484,34 @@ impl Owner {
             digest[..16].try_into().expect("SHA-256 prefix"),
         ))
         .map_err(str::to_owned)?;
-        queue
-            .execute(
-                session.to_owned(),
-                QueueCommand {
-                    id,
-                    at,
-                    expected_revision: current.revision,
-                    edit: QueueEdit::Enqueue {
-                        request: Box::new(request.clone()),
-                        placement,
+        let command = QueueCommand {
+            id,
+            at,
+            expected_revision: current.revision,
+            edit: QueueEdit::Enqueue {
+                request: Box::new(request.clone()),
+                placement,
+            },
+        };
+        if let Some(opening) = opening {
+            opening
+                .enqueue(
+                    self,
+                    maka_agent_state::queue::PreparedEnqueue {
+                        session: session.to_owned(),
+                        command,
+                        contents,
+                        followup: None,
+                        work_fence: None,
                     },
-                },
-                contents,
-            )
-            .await
-            .map_err(|e| e.to_string())?;
+                )
+                .await?;
+        } else {
+            queue
+                .execute(session.to_owned(), command, contents)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
         self.wake_notify.notify_one();
         Ok(request)
     }
