@@ -1262,16 +1262,39 @@ export function Conversation(props: ConversationProps) {
       : null,
   );
   const familyParent = signal<FamilyParent | null>(null);
+  const setFamilyParent = (next: FamilyParent | null) => {
+    const prev = untracked(familyParent);
+    if (
+      prev === next ||
+      (prev &&
+        next &&
+        prev.id === next.id &&
+        prev.title === next.title &&
+        prev.workspacePath === next.workspacePath &&
+        prev.hasGrandparent === next.hasGrandparent &&
+        prev.rootId === next.rootId)
+    ) {
+      return;
+    }
+    familyParent.set(next);
+  };
+  const hasFamilyParent = computed(() => platform.idiom !== 'terminal' && familyParent() !== null);
+  const isBotHeader = computed(
+    () =>
+      bot.identity() === 'bot' && Boolean(props.restartBot) && props.botSession?.() === sessionId,
+  );
   effect(() => {
     const pid = parentSessionId();
     if (props.compact || !pid) {
-      familyParent.set(null);
+      setFamilyParent(null);
       return;
     }
     let cancelled = false;
-    const known = props.knownSession?.(pid);
+    // Read cached sidebar metadata without subscribing to the entire catalog stream,
+    // otherwise every active session update re-runs this effect and re-queries observe.
+    const known = untracked(() => props.knownSession?.(pid));
     if (known) {
-      familyParent.set({
+      setFamilyParent({
         id: known.id,
         title: known.title,
         workspacePath: known.workspace.path,
@@ -1286,7 +1309,7 @@ export function Conversation(props: ConversationProps) {
         const ancestors = obs.session.ancestorIds ?? [];
         const rootId =
           ancestors.at(-1) ?? (obs.session.parentSessionId === null ? obs.session.id : null);
-        familyParent.set({
+        setFamilyParent({
           id: obs.session.id,
           title: obs.session.title,
           workspacePath: obs.session.workspace.path,
@@ -5720,7 +5743,7 @@ export function Conversation(props: ConversationProps) {
       <Header
         title={title() === null ? tr('New conversation') : title() || tr('Untitled conversation')}
         titleSlot={
-          platform.idiom !== 'terminal' && familyParent() ? (
+          hasFamilyParent() ? (
             <SessionFamilyBreadcrumb
               sessionId={sessionId}
               title={() =>
@@ -5762,7 +5785,7 @@ export function Conversation(props: ConversationProps) {
         }
         stage={platform.idiom === 'terminal' || ownHandle.empty() ? undefined : props.stage?.()}
         actions={
-          bot.identity() === 'bot' && props.restartBot && props.botSession?.() === sessionId ? (
+          isBotHeader() && props.restartBot ? (
             <View style={{ flexDirection: 'row', gap: 4, alignItems: 'center' }}>
               <DiscoveryPanel
                 host={host}
