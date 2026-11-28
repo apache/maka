@@ -219,14 +219,17 @@ export function DiscoveryRuns(props: {
               <Each of={rows() ?? []} key={(r) => r.key}>
                 {(r) => {
                   const row = r();
+                  const timestamp = () => (
+                    <If when={row.timestamp != null}>
+                      <Text style={{ ...captionTextStyle, color: C.muted }}>
+                        {props.time(row.timestamp!)}
+                      </Text>
+                    </If>
+                  );
                   if (row.tool?.call) {
                     return (
                       <View style={{ gap: 2, paddingVertical: 4 }}>
-                        <If when={row.timestamp != null}>
-                          <Text style={{ ...captionTextStyle, color: C.muted }}>
-                            {props.time(row.timestamp!)}
-                          </Text>
-                        </If>
+                        {timestamp()}
                         <ToolCard
                           row={r}
                           sessionId={selected()!}
@@ -252,13 +255,7 @@ export function DiscoveryRuns(props: {
                           label={tr('Discovery instructions')}
                           open={expanded()}
                           onPress={() => expanded.set(!expanded())}
-                          trailing={
-                            <If when={row.timestamp != null}>
-                              <Text style={{ ...captionTextStyle, color: C.muted }}>
-                                {props.time(row.timestamp!)}
-                              </Text>
-                            </If>
-                          }
+                          trailing={timestamp()}
                         >
                           <Text style={{ ...captionTextStyle, color: C.secondary }}>
                             {tr('Discovery instructions')}
@@ -276,11 +273,7 @@ export function DiscoveryRuns(props: {
                   }
                   return (
                     <View style={{ gap: 3, paddingVertical: 6 }}>
-                      <If when={row.timestamp != null}>
-                        <Text style={{ ...captionTextStyle, color: C.muted }}>
-                          {props.time(row.timestamp!)}
-                        </Text>
-                      </If>
+                      {timestamp()}
                       <Text style={{ ...secondaryTextStyle, color: C.text, userSelect: 'text' }}>
                         {row.text}
                       </Text>

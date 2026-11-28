@@ -40,27 +40,8 @@ export function discoveryRuns(workers: readonly WorkerSession[]) {
     .slice(0, 32);
 }
 
-export type DossierChoiceItem = {
-  key: string;
-  label: string;
-  detail?: string;
-  recommended?: boolean;
-  resolves?: boolean;
-  instruction: string;
-};
-
-export type DossierRevisionItem = {
-  revision: number;
-  at: number;
-  title: string;
-  signal: DossierSummary['signal'];
-  summaryMd: string;
-  evidenceMd?: string | null;
-  changeNote?: string | null;
-  artifacts?: DossierDetail['artifacts'];
-  choices?: DossierChoiceItem[];
-  chosenKey?: string | null;
-};
+export type DossierRevisionItem = NonNullable<DossierDetail['revisions']>[number];
+export type DossierChoiceItem = NonNullable<DossierRevisionItem['choices']>[number];
 
 export type DossierThreadTurn = {
   id: string;
@@ -75,8 +56,6 @@ export type DossierStreamEntry =
       kind: 'revision';
       key: string;
       revision: DossierRevisionItem;
-      index: number;
-      totalRevisions: number;
       isLatest: boolean;
       isHistorical: boolean;
       choices: DossierChoiceItem[];
@@ -197,7 +176,7 @@ export function formatChoiceDispatch(choice: DossierChoiceItem): string {
 }
 
 export function buildDossierStream(
-  detail: DossierDetail & { revisions?: readonly DossierRevisionItem[] },
+  detail: DossierDetail,
   turns: readonly DossierThreadTurn[],
 ): { entries: DossierStreamEntry[]; latestRevisionIndex: number; hasHistory: boolean } {
   const rawRevisions: readonly DossierRevisionItem[] =
@@ -244,8 +223,6 @@ export function buildDossierStream(
       kind: 'revision',
       key: `rev:${rev.revision}`,
       revision: rev,
-      index: i,
-      totalRevisions: revisions.length,
       isLatest,
       isHistorical: !isLatest,
       choices,

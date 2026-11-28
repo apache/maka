@@ -216,6 +216,31 @@ function MetadataChip(props: { text: string }) {
   );
 }
 
+function DossierMarkdown(props: {
+  rowKey: string;
+  text: string;
+  openLink(target: string, restoreFocus: () => boolean): Promise<void>;
+}) {
+  const row = computed(() => ({
+    key: props.rowKey,
+    field: 'body',
+    role: 'assistant',
+    text: props.text,
+    prefix: true,
+  }));
+  return (
+    <MarkdownBody
+      row={row}
+      text={() => props.text}
+      sourceId={`dossier/${props.rowKey}`}
+      sessionId={null}
+      interactiveBlocks={false}
+      userScroll={() => {}}
+      openLink={props.openLink}
+    />
+  );
+}
+
 function ArtifactPreview(props: { topicId: string; path: string; sha256?: string | null }) {
   const host = useHost();
   const content = signal<string | null>(null);
@@ -907,47 +932,39 @@ function DossierPane(
     props.snapshot();
     void refresh();
   });
-  const mute = async (muted: boolean) => {
+  const save = async (
+    mutate: () => Promise<unknown>,
+    fallback: MessageKey = 'Could not update dossier status.',
+  ) => {
     if (!alive || saving()) return;
     saving.set(true);
     error.set('');
     try {
-      await host.mutateAgent('setDossierMuted', { topicId, muted });
+      await mutate();
       if (alive) await refresh();
     } catch (reason) {
-      if (alive) error.set(errorText(reason, 'Could not update dossier notifications.'));
+      if (alive) error.set(errorText(reason, fallback));
     } finally {
       if (alive) saving.set(false);
     }
   };
-  const resolve = async (resolved: boolean) => {
-    if (!alive || saving()) return;
-    saving.set(true);
-    error.set('');
-    try {
-      await host.mutateAgent('setDossierResolved', { topicId, resolved });
-      if (alive) await refresh();
-    } catch (reason) {
-      if (alive) error.set(errorText(reason, 'Could not update dossier status.'));
-    } finally {
-      if (alive) saving.set(false);
-    }
-  };
-  const unfollow = async (unfollowed: boolean) => {
-    if (!alive || saving()) return;
-    saving.set(true);
-    error.set('');
-    try {
-      await host.mutateAgent('setDossierUnfollowed', { topicId, unfollowed });
-      if (alive) await refresh();
-    } catch (reason) {
-      if (alive) error.set(errorText(reason, 'Could not update dossier status.'));
-    } finally {
-      if (alive) saving.set(false);
-    }
-  };
+  const mute = (muted: boolean) =>
+    void save(
+      () => host.mutateAgent('setDossierMuted', { topicId, muted }),
+      'Could not update dossier notifications.',
+    );
+  const resolve = (resolved: boolean) =>
+    void save(() => host.mutateAgent('setDossierResolved', { topicId, resolved }));
+  const unfollow = (unfollowed: boolean) =>
+    void save(() => host.mutateAgent('setDossierUnfollowed', { topicId, unfollowed }));
   const scope = () => detail()?.threadSessionId ?? props.botSession();
-  const hasMultipleRevisions = () => (detail()?.revisions?.length ?? 0) > 1;
+  const openLink = async (target: string, restoreFocus: () => boolean) => {
+    try {
+      await props.openLink(scope(), target, restoreFocus);
+    } catch (reason) {
+      if (alive) error.set(errorText(reason, 'The link could not be opened'));
+    }
+  };
   const threadSession = signal<string | null>(null);
 
   return (
@@ -961,7 +978,6 @@ function DossierPane(
         <DossierThread
           topicId={topicId}
           ready={detail() !== null}
-          hasHistory={hasMultipleRevisions}
           threadSessionId={() => detail()?.threadSessionId ?? null}
           openSession={props.openSession}
           header={({ scrollToLatest, session }) => {
@@ -974,9 +990,9 @@ function DossierPane(
                   saving={saving()}
                   scrollToLatest={scrollToLatest}
                   toggleDetails={() => detailsOpen.set(!detailsOpen())}
-                  resolve={(next) => void resolve(next)}
-                  unfollow={(next) => void unfollow(next)}
-                  mute={(next) => void mute(next)}
+                  resolve={resolve}
+                  unfollow={unfollow}
+                  mute={mute}
                 />
               </If>
             );
@@ -985,25 +1001,18 @@ function DossierPane(
             const stream = computed(() =>
               detail() ? buildDossierStream(detail()!, turns()) : null,
             );
-            const choose = async (revision: number, choice: DossierChoiceItem) => {
-              if (!alive || saving() || sending()) return;
-              saving.set(true);
-              error.set('');
-              try {
+            const choose = (revision: number, choice: DossierChoiceItem) => {
+              if (sending()) return;
+              void save(async () => {
                 await host.mutateAgent('chooseDossierOption', {
                   topicId,
                   revision,
                   key: choice.key,
                   resolve: Boolean(choice.resolves),
                 });
-                if (!alive) return;
-                await sendMessage(formatChoiceDispatch(choice), { elevate: !choice.resolves });
-                if (alive) await refresh();
-              } catch (reason) {
-                if (alive) error.set(errorText(reason, 'Could not update dossier status.'));
-              } finally {
-                if (alive) saving.set(false);
-              }
+                if (alive)
+                  await sendMessage(formatChoiceDispatch(choice), { elevate: !choice.resolves });
+              });
             };
             return (
               <>
@@ -1067,37 +1076,9 @@ function DossierPane(
                           const hasEvidence = () =>
                             Boolean(split().evidence) || artifacts().length > 0;
                           const isEvidenceOpen = () => evidenceOpen().has(rev().revision);
-                          const bodyText = computed(() => split().body);
-                          const bodyRow = computed(() => ({
-                            key: `${topicId}/${rev().revision}`,
-                            field: 'body',
-                            role: 'assistant',
-                            text: bodyText(),
-                            prefix: true,
-                          }));
-                          const evidenceText = computed(() => split().evidence ?? '');
-                          const evidenceRow = computed(() => ({
-                            key: `${topicId}/${rev().revision}/evidence`,
-                            field: 'body',
-                            role: 'assistant',
-                            text: evidenceText(),
-                            prefix: true,
-                          }));
-                          const openLink = async (target: string, restoreFocus: () => boolean) => {
-                            try {
-                              await props.openLink(scope(), target, restoreFocus);
-                            } catch (reason) {
-                              if (alive)
-                                error.set(errorText(reason, 'The link could not be opened'));
-                            }
-                          };
                           return (
                             <View
-                              onLayout={
-                                revEntry().isLatest
-                                  ? ({ bounds }) => anchorLatest(bounds.origin.y)
-                                  : undefined
-                              }
+                              onLayout={revEntry().isLatest ? anchorLatest : undefined}
                               style={{ width: '100%', minWidth: 0, gap: 10 }}
                             >
                               <Text
@@ -1146,13 +1127,9 @@ function DossierPane(
                                       {rev().title}
                                     </Text>
                                   </If>
-                                  <MarkdownBody
-                                    row={bodyRow}
-                                    text={bodyText}
-                                    sourceId={`dossier/${topicId}/${rev().revision}`}
-                                    sessionId={null}
-                                    interactiveBlocks={false}
-                                    userScroll={() => {}}
+                                  <DossierMarkdown
+                                    rowKey={`${topicId}/${rev().revision}`}
+                                    text={split().body}
                                     openLink={openLink}
                                   />
                                   <If when={hasEvidence()}>
@@ -1185,13 +1162,9 @@ function DossierPane(
                                       <If when={isEvidenceOpen()}>
                                         <View style={{ gap: 8 }}>
                                           <If when={Boolean(split().evidence)}>
-                                            <MarkdownBody
-                                              row={evidenceRow}
-                                              text={evidenceText}
-                                              sourceId={`dossier/${topicId}/${rev().revision}/evidence`}
-                                              sessionId={null}
-                                              interactiveBlocks={false}
-                                              userScroll={() => {}}
+                                            <DossierMarkdown
+                                              rowKey={`${topicId}/${rev().revision}/evidence`}
+                                              text={split().evidence ?? ''}
                                               openLink={openLink}
                                             />
                                           </If>
@@ -1253,7 +1226,7 @@ function DossierPane(
                                   chosenKey={rev().chosenKey}
                                   interactive={revEntry().isLatest && !detail()!.unfollowed}
                                   busy={saving() || sending()}
-                                  onChoose={(choice) => void choose(rev().revision, choice)}
+                                  onChoose={(choice) => choose(rev().revision, choice)}
                                 />
                               </View>
                             </View>
@@ -1283,7 +1256,7 @@ function DossierPane(
                         label={tr('Follow dossier again')}
                         tone="quiet"
                         disabled={saving()}
-                        onPress={() => void unfollow(false)}
+                        onPress={() => unfollow(false)}
                       />
                     </View>
                   </If>
@@ -1304,8 +1277,8 @@ function DossierPane(
           time={props.time}
           close={() => detailsOpen.set(false)}
           openSession={props.openSession}
-          mute={(next) => void mute(next)}
-          unfollow={(next) => void unfollow(next)}
+          mute={mute}
+          unfollow={unfollow}
         />
       </If>
     </View>

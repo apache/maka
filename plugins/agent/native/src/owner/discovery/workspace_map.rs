@@ -29,12 +29,11 @@ use cap_std::fs::Dir;
 use maka_sandbox::filesystem::Compiled;
 use schemars::JsonSchema;
 use std::{
-    collections::BTreeMap,
     io,
     path::{Path, PathBuf},
 };
 
-const PREFIX: &str = "discovery/workspace-map/";
+pub(super) const PREFIX: &str = "discovery/workspace-map/";
 const MAX_SOURCES: usize = 128;
 const MAX_FRONTIER: usize = 64;
 
@@ -478,19 +477,6 @@ impl scheduler::Scheduler {
     ) -> Result<(Option<u64>, WorkspaceMap), String> {
         let (revision, map) = self.discovery_record(map_key(workspace)).await?;
         Ok((revision, map.unwrap_or_default()))
-    }
-
-    pub(super) async fn all_mapped_watch_roots(
-        &self,
-    ) -> Result<BTreeMap<String, MapWatches>, String> {
-        let mut by_key = BTreeMap::new();
-        self.visit_workspace_records(PREFIX, |key, value| {
-            let map: WorkspaceMap = serde_json::from_value(value).map_err(reason)?;
-            by_key.insert(key, map.watch_roots());
-            Ok(())
-        })
-        .await?;
-        Ok(by_key)
     }
 }
 

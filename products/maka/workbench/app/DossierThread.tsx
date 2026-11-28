@@ -120,7 +120,6 @@ export function ThreadBubble(props: {
 export function DossierThread(props: {
   topicId: string;
   ready: boolean;
-  hasHistory(): boolean;
   threadSessionId(): string | null;
   openSession(id: string): void;
   header(actions: { scrollToLatest(): void; session(): string | null }): JSX.Element;
@@ -128,9 +127,8 @@ export function DossierThread(props: {
     turns(): readonly DossierThreadTurn[];
     sendMessage(message: string, options?: { elevate?: boolean }): Promise<boolean>;
     sending(): boolean;
-    anchorLatest(y: number): void;
+    anchorLatest(): void;
     onTurnArrival(): void;
-    session(): string | null;
   }): JSX.Element;
 }) {
   const host = useHost();
@@ -261,7 +259,7 @@ export function DossierThread(props: {
     pinToBottom(animated);
   };
 
-  const anchorLatest = (_y: number) => {
+  const anchorLatest = () => {
     if (scrollState.stickToBottom && !scrollState.userInteracted && !sending()) {
       pinToBottom(false);
     }
@@ -359,7 +357,6 @@ export function DossierThread(props: {
               onTurnArrival: () => {
                 if (scrollState.stickToBottom) pinToBottom(false);
               },
-              session,
             })}
             <If when={activity().active}>
               <View

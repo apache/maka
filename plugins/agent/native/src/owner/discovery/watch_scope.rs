@@ -351,11 +351,12 @@ impl WorkspaceScope {
 }
 
 impl scheduler::Scheduler {
-    pub(super) async fn visit_workspace_records(
+    async fn workspace_records<T: serde::de::DeserializeOwned, V>(
         &self,
         prefix: &str,
-        mut visit: impl FnMut(String, Value) -> Result<(), String>,
-    ) -> Result<(), String> {
+        project: impl Fn(T) -> V,
+    ) -> Result<BTreeMap<String, V>, String> {
+        let mut records = BTreeMap::new();
         let mut after = None;
         loop {
             let page = self
@@ -368,11 +369,14 @@ impl scheduler::Scheduler {
                 .map_err(reason)?;
             for entry in page.entries {
                 if let Data::Present(value) = entry.record.data {
-                    visit(entry.key, value)?;
+                    records.insert(
+                        entry.key,
+                        project(serde_json::from_value(value).map_err(reason)?),
+                    );
                 }
             }
             let Some(next) = page.next_after else {
-                return Ok(());
+                return Ok(records);
             };
             after = Some(next);
         }
@@ -392,15 +396,15 @@ impl WatchScopes {
         &self,
         scheduler: &scheduler::Scheduler,
     ) -> Result<(), String> {
-        let mut saved = SavedScopes::default();
-        scheduler
-            .visit_workspace_records(PREFIX, |key, value| {
-                let scope = serde_json::from_value(value).map_err(reason)?;
-                saved.by_key.insert(key, Arc::new(scope));
-                Ok(())
-            })
-            .await?;
-        saved.mapped_watch_roots = scheduler.all_mapped_watch_roots().await?;
+        let mut saved = SavedScopes {
+            by_key: scheduler.workspace_records(PREFIX, Arc::new).await?,
+            mapped_watch_roots: scheduler
+                .workspace_records(workspace_map::PREFIX, |map: workspace_map::WorkspaceMap| {
+                    map.watch_roots()
+                })
+                .await?,
+            ..SavedScopes::default()
+        };
         saved.index_roots();
         self.changed.send_replace(saved);
         Ok(())
@@ -941,5 +945,14 @@ mod tests {
             .1;
         assert!(reopened.surveyed_at.is_none() && reopened.include_roots.is_empty());
         assert_eq!(reopened.exclude_roots[0].path, home.join("build"));
+
+        let bad_map = mutation(workspace_map::map_key(&home), None, &"malformed map").unwrap();
+        scheduler.storage.batch(vec![bad_map]).await.unwrap();
+        assert!(restored.restore(&scheduler).await.is_err());
+        assert!(
+            restored
+                .survey(&home, &tools, Language::EN, week_later)
+                .is_none()
+        );
     }
 }

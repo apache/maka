@@ -235,8 +235,12 @@ mod tests {
         app.press("role:button[Send]").unwrap();
         app.wait_for("text:Review this").unwrap();
         app.press("role:button[Mute]").unwrap();
+        let failed_mute = "text:Could not update notifications. Temporary write failure";
+        app.wait_for(failed_mute).unwrap();
+        app.press("role:button[Mute]").unwrap();
         app.wait_for("role:button[Release, New findings, Muted]")
             .unwrap();
+        assert!(!app.screen().matches(failed_mute).unwrap());
         app.press("role:button[Drop lead]").unwrap();
         app.type_text("label:Paste text or drop files here", "New lead")
             .unwrap();

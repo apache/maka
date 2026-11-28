@@ -113,6 +113,7 @@ mount(() => {
   ];
   const messages: { text: string; role: 'user' | 'assistant' }[] = [];
   let threadOpens = 0;
+  let failNextMute = true;
   let wake: (() => void) | undefined;
   const update = (topicId: string, edit: Partial<DossierDetail>) =>
     files.set(files().map((d) => (d.topicId === topicId ? { ...d, ...edit } : d)));
@@ -241,6 +242,10 @@ mount(() => {
           enabled.set(input.enabled);
           return null;
         case 'setDossierMuted':
+          if (failNextMute) {
+            failNextMute = false;
+            throw Error('Temporary write failure');
+          }
           update(input.topicId, { muted: input.muted });
           return null;
         case 'setDossierResolved':

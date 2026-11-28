@@ -1125,7 +1125,6 @@ impl Owner {
     ) -> Result<Option<Completed>, String> {
         let retired = self.discovery_worker_retired(&job).await?;
         if retired
-            || matches!(job.phase, Phase::Stopping)
             || !enabled
             || matches!(
                 fire.authorization,
@@ -1173,25 +1172,12 @@ impl Owner {
             return self.deliver_discovery_report(fire, revision, &job).await;
         }
         let queue = self.durable.queue();
-        let message = format!("m_{}", job.request);
         let resolution = queue
-            .resolve_message(job.worker.clone(), message.clone())
+            .resolve_message(job.worker.clone(), format!("m_{}", job.request))
             .await
             .map_err(reason)?;
         match resolution {
-            MessageResolution::Missing => {
-                if matches!(job.phase, Phase::Stopping) {
-                    return self
-                        .settle_discovery(
-                            fire,
-                            revision,
-                            &job,
-                            Outcome::Blocked,
-                            "Investigation cancelled before admission",
-                        )
-                        .await
-                        .map(Some);
-                }
+            MessageResolution::Missing if !matches!(job.phase, Phase::Stopping) => {
                 match self
                     .enqueue_discovery_worker(&mut job, revision, fire, plan)
                     .await
@@ -1233,7 +1219,7 @@ impl Owner {
                 }
                 return Ok(None);
             }
-            MessageResolution::Cancelled => {
+            MessageResolution::Missing | MessageResolution::Cancelled => {
                 return self
                     .settle_discovery(
                         fire,
@@ -1320,29 +1306,13 @@ impl Owner {
                 }
             }
         }
-        match &job.phase {
+        let (outcome, message) = match &job.phase {
+            Phase::Investigating { result: Some(_) } if job.upserted_dossiers => {
+                (Outcome::Ok, "Dossiers updated")
+            }
             Phase::Investigating {
                 result: Some(Report::NoReport { .. }),
-            } => self
-                .settle_discovery(
-                    fire,
-                    revision,
-                    &job,
-                    Outcome::Ok,
-                    if job.upserted_dossiers {
-                        "Dossiers updated"
-                    } else {
-                        "No report"
-                    },
-                )
-                .await
-                .map(Some),
-            Phase::Investigating {
-                result: Some(Report::Report { .. }),
-            } if job.upserted_dossiers => self
-                .settle_discovery(fire, revision, &job, Outcome::Ok, "Dossiers updated")
-                .await
-                .map(Some),
+            } => (Outcome::Ok, "No report"),
             Phase::Investigating {
                 result: Some(Report::Report { .. }),
             } if job.tools.names.iter().any(|name| name == COMPLETE) => {
@@ -1352,20 +1322,18 @@ impl Owner {
                 job.checkpoint = None;
                 writes.insert(0, mutation(ACTIVE.into(), revision, &job)?);
                 let staged = self.scheduler.storage.batch(writes).await.map_err(reason)?;
-                self.deliver_discovery_report(fire, Some(staged[0].revision), &job)
-                    .await
+                return self
+                    .deliver_discovery_report(fire, Some(staged[0].revision), &job)
+                    .await;
             }
-            _ => self
-                .settle_discovery(
-                    fire,
-                    revision,
-                    &job,
-                    Outcome::Failed,
-                    "Investigation ended without a completion tool",
-                )
-                .await
-                .map(Some),
-        }
+            _ => (
+                Outcome::Failed,
+                "Investigation ended without a completion tool",
+            ),
+        };
+        self.settle_discovery(fire, revision, &job, outcome, message)
+            .await
+            .map(Some)
     }
     async fn discovery_input(
         &self,
