@@ -17,6 +17,7 @@
  * under the License.
  */
 
+mod discovery_connector;
 use super::super::driver_cells::RunCells;
 use super::*;
 use maka_agent_facts::{
@@ -230,6 +231,7 @@ struct Rig {
     model_overrides: Value,
     model_idle_timeout: Option<Duration>,
     uncertain_tool: bool,
+    connector_calls: Arc<std::sync::atomic::AtomicUsize>,
     extra_tools: Vec<ToolRegistration>,
     native_grants: Vec<NativeGrant>,
     store: Option<Arc<RootStore>>,
@@ -269,6 +271,7 @@ impl Rig {
             model_overrides: json!({}),
             model_idle_timeout: None,
             uncertain_tool: false,
+            connector_calls: Default::default(),
             extra_tools: vec![],
             native_grants: vec![],
             store: None,
@@ -427,6 +430,7 @@ impl Rig {
         if model_test {
             maka_settings_native::provide(&mut registry, catalog.clone())?;
             maka_files_native::provide(&mut registry)?;
+            discovery_connector::provide(&mut registry, self.connector_calls.clone())?;
             maka_processes_native::provide(&mut registry)?;
             maka_web::provide(&mut registry)?;
         }
@@ -455,6 +459,11 @@ impl Rig {
                 Box::pin(async move {
                     match Owner::open(context, configuration, catalog, state, helper, None).await {
                         Ok(mut owner) => {
+                            let opened = Arc::get_mut(&mut owner).unwrap();
+                            opened.watch_scopes.timing.debounce = Duration::from_secs(10);
+                            opened
+                                .watch_runner
+                                .set_test_interval(Duration::from_secs(1));
                             if let Some(timeout) = model_idle_timeout {
                                 let owner = Arc::get_mut(&mut owner).unwrap();
                                 owner.credentials.executor = maka_model::ModelExecutor::for_source(
@@ -562,6 +571,18 @@ impl Rig {
                 "sessionManage",
                 "schedule",
                 "schedules",
+                "dossiers",
+                "dossier",
+                "readDossierArtifact",
+                "watchDossiers",
+                "setDossierMuted",
+                "setDossierResolved",
+                "chooseDossierOption",
+                "setDiscoveryNotifications",
+                "dropDiscoveryLead",
+                "confirmPendingAction",
+                "dismissPendingAction",
+                "openDossierThread",
                 "metadata",
                 "changeSession",
                 "saveFile",
@@ -970,6 +991,7 @@ impl Rig {
         )?;
         self.cells = Some(cells.clone());
         let model = DriverModel {
+            discovery: None,
             memory: None,
             state: state.clone(),
             history: state.session_history(view.spec.owner.clone(), view.spec.session_id.clone()),
@@ -4342,6 +4364,7 @@ mod model_recovery {
                 .as_array()
                 .is_some_and(|tools| tools.iter().any(|tool| tool["target"]["name"] == name))
         };
+        let with_connector = uses_target("connector");
         let with_processes = uses_target("processes");
         let with_management = uses_target("management");
 
@@ -4375,6 +4398,15 @@ mod model_recovery {
                 ),
             ]
             .into_iter()
+            .chain(with_connector.then(|| {
+                (
+                    "connector".into(),
+                    Import {
+                        contract: discovery_connector::contract(),
+                        cardinality: Cardinality::One,
+                    },
+                )
+            }))
             .chain(with_processes.then(|| {
                 (
                     "processes".into(),
@@ -4491,6 +4523,7 @@ mod model_recovery {
                         configuration,
                         ["files", "web"]
                             .into_iter()
+                            .chain(with_connector.then_some("connector"))
                             .chain(with_processes.then_some("processes"))
                             .map(|name| (name, name))
                             .chain(with_management.then_some(("management", "Management")))
@@ -4568,6 +4601,23 @@ mod model_recovery {
             );
         }
         let mut packages = vec![agent, settings, client, files, web, receipts];
+        if with_connector {
+            let connector = package(
+                "maka.tests.connector",
+                discovery_connector::definition(),
+                BTreeMap::new(),
+            )?;
+            input.instances.insert(
+                "connector".into(),
+                node(
+                    Uuid::new_v4(),
+                    connector.application_ref(),
+                    json!({}),
+                    BTreeMap::new(),
+                ),
+            );
+            packages.push(connector);
+        }
         if with_management {
             let manager = package(
                 "maka.tests.deployment-manager",

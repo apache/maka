@@ -76,7 +76,7 @@ impl CapturedRun {
             && (session.archived
                 || session.configuration.workspace != boundary.workspace
                 || session.configuration.permissions
-                    != if discovery_profile == Some(DiscoveryWorkerTools::ReadOnly) {
+                    != if discovery_profile.is_some() {
                         super::super::discovery::permissions()
                     } else {
                         boundary.permissions.clone()
@@ -573,9 +573,14 @@ impl Owner {
                         plan.task.next_fire_at = None;
                         plan.task.last_error = Some("scheduler_authorization_changed".into());
                     }
+                    let overdue = plan.task.status == Status::Active
+                        && plan.task.next_fire_at.is_some_and(|at| at <= loaded_at);
                     self.scheduler
                         .commit(&mut catalog, &id, Some(plan), None)
                         .await?;
+                    if overdue {
+                        self.scheduler.wake.notify_one();
+                    }
                     retries.remove(&id);
                 }
                 Ok(None) => {
@@ -606,12 +611,7 @@ impl Owner {
         let active = plan.task.status == Status::Active;
         if matches!(fire.effect, ScheduledEffect::Discovery { .. }) {
             return self
-                .dispatch_discovery(
-                    fire,
-                    active && !expired,
-                    &plan.timezone,
-                    plan.task.runs.first(),
-                )
+                .dispatch_discovery(fire, active && !expired, plan)
                 .await;
         }
         let Some(Approval::Execution { approval }) = &fire.authorization else {
@@ -767,6 +767,8 @@ impl Owner {
                         parent_session_id: Some(source_session.clone()),
                         backend: None,
                         compaction_prompt: None,
+                        dossier_seed: None,
+                        dossier_elevated: false,
                         applied_preset: None,
                         collaboration_mode: CollaborationMode::Agent,
                         tools: basis.allowed_tools.clone(),

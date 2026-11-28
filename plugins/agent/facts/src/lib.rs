@@ -29,6 +29,7 @@ pub mod composition;
 pub mod configuration;
 pub mod context;
 pub mod continuation;
+pub mod discovery;
 pub mod durable;
 pub mod event;
 mod event_write;

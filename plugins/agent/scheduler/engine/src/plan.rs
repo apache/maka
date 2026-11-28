@@ -48,12 +48,31 @@ pub enum PauseSource {
     Bot,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FireSource {
+    #[default]
+    Schedule,
+    FileChange,
+    Watch,
+}
+
+impl FireSource {
+    fn is_schedule(&self) -> bool {
+        *self == Self::Schedule
+    }
+}
+
 /// Persist before submitting to Host. A retry uses these frozen bytes and ID,
 /// never the task's potentially edited title, effect or instruction.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[serde(bound(deserialize = "E: Deserialize<'de>, A: Deserialize<'de>"))]
 pub struct Fire<E, A> {
+    #[serde(default, skip_serializing_if = "FireSource::is_schedule")]
+    pub source: FireSource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preserved_next_fire_at: Option<i64>,
     pub id: String,
     pub task_id: String,
     pub scheduled_at: i64,
@@ -229,11 +248,36 @@ impl<E: TaskEffect, A: Clone> TaskPlan<E, A> {
     /// Returns the same intent while settlement is pending. The repository must
     /// commit the changed Plan before the caller may dispatch the Fire.
     pub fn claim(&mut self, now: i64) -> Result<Option<&Fire<E, A>>, Error> {
-        self.claim_with_payload(now, None)
+        self.claim_inner(now, FireSource::Schedule, None)
     }
+
+    /// An overdue schedule has first claim on the single execution slot.
+    pub fn claim_preserving_schedule(
+        &mut self,
+        now: i64,
+        source: FireSource,
+    ) -> Result<Option<&Fire<E, A>>, Error> {
+        if source == FireSource::Schedule {
+            return self.claim(now);
+        }
+        if self.pending.is_some() || self.task.next_fire_at.is_none_or(|at| at <= now) {
+            return Ok(None);
+        }
+        self.claim_inner(now, source, None)
+    }
+
     fn claim_with_payload(
         &mut self,
         now: i64,
+        trigger_payload: Option<ScriptPayload>,
+    ) -> Result<Option<&Fire<E, A>>, Error> {
+        self.claim_inner(now, FireSource::Schedule, trigger_payload)
+    }
+
+    fn claim_inner(
+        &mut self,
+        now: i64,
+        source: FireSource,
         trigger_payload: Option<ScriptPayload>,
     ) -> Result<Option<&Fire<E, A>>, Error> {
         if self.pending.is_some() {
@@ -248,13 +292,22 @@ impl<E: TaskEffect, A: Clone> TaskPlan<E, A> {
             self.task.updated_at = self.task.updated_at.max(now);
             return Ok(None);
         }
-        let Some(at) = self.task.next_fire_at.filter(|at| *at <= now) else {
+        let Some(deadline) = self.task.next_fire_at else {
             return Ok(None);
         };
+        if source == FireSource::Schedule && deadline > now {
+            return Ok(None);
+        }
         self.pending = Some(Fire {
+            source,
+            preserved_next_fire_at: (source != FireSource::Schedule).then_some(deadline),
             id: format!("fire-{}", uuid::Uuid::new_v4()),
             task_id: self.task.id.clone(),
-            scheduled_at: at,
+            scheduled_at: if source == FireSource::Schedule {
+                deadline
+            } else {
+                now
+            },
             title: self.task.title.clone(),
             intent: self.task.intent.clone(),
             effect: self.task.effect.clone(),
@@ -335,6 +388,10 @@ impl<E: TaskEffect, A: Clone> TaskPlan<E, A> {
             return Err(invalid("run does not settle the pending trigger"));
         }
         let paused = self.task.status == Status::Paused;
+        let preserved = match fire.source {
+            FireSource::Schedule => None,
+            FireSource::FileChange | FireSource::Watch => fire.preserved_next_fire_at,
+        };
         self.task.last_fire_at = Some(run.at);
         self.task.updated_at = run.at;
         self.task.fire_count = self
@@ -345,7 +402,11 @@ impl<E: TaskEffect, A: Clone> TaskPlan<E, A> {
         self.task.last_error = (run.outcome != Outcome::Ok).then(|| run.message.clone());
         self.task.runs.insert(0, run);
         self.pending = None;
-        self.advance(self.task.updated_at, self.task.last_fire_at)?;
+        if let Some(at) = preserved {
+            self.set_next(self.task.updated_at, Some(at));
+        } else {
+            self.advance(self.task.updated_at, self.task.last_fire_at)?;
+        }
         if paused && self.task.status == Status::Active {
             self.task.status = Status::Paused;
         }
@@ -366,6 +427,10 @@ impl<E: TaskEffect, A: Clone> TaskPlan<E, A> {
                 .schedule
                 .next_due(after, &TimeZone::get(&self.timezone)?, settled_at)?
         };
+        self.set_next(after, next);
+        Ok(())
+    }
+    fn set_next(&mut self, after: i64, next: Option<i64>) {
         let expired = self
             .task
             .expires_at
@@ -387,6 +452,5 @@ impl<E: TaskEffect, A: Clone> TaskPlan<E, A> {
         self.task.next_fire_at = (self.task.status == Status::Active)
             .then_some(next)
             .flatten();
-        Ok(())
     }
 }

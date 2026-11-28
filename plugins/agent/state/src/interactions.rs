@@ -196,6 +196,18 @@ impl InteractionsStore {
             .query(Grants(execution.clone(), target.cloned(), *basis, source))
             .await
     }
+    /// A background watch outlives its originating Run and may use only a session Web grant.
+    pub async fn session_allows_web(
+        &self,
+        session: String,
+        basis: PermissionBasis,
+        destination: maka_sandbox::Destination,
+    ) -> Result<bool, StoreError> {
+        self.data
+            .query(SessionWeb(session, basis, destination))
+            .await
+    }
+
     pub async fn external_approval(
         &self,
         execution: &ExecutionIdentity,
@@ -355,6 +367,13 @@ impl Query for Grants {
     type Output = Vec<PermissionGrant>;
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
         sql::grants(c, &self.0, self.1.as_ref(), self.2, self.3)
+    }
+}
+struct SessionWeb(String, PermissionBasis, maka_sandbox::Destination);
+impl Query for SessionWeb {
+    type Output = bool;
+    fn execute(self, c: &Connection) -> Result<bool, StoreError> {
+        sql::session_allows_web(c, &self.0, self.1, &self.2)
     }
 }
 struct ExternalApproval(

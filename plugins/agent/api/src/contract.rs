@@ -56,6 +56,8 @@ mod predictions;
 pub use predictions::*;
 mod recap;
 pub use recap::*;
+mod discovery;
+pub use discovery::*;
 mod scheduler;
 pub use scheduler::*;
 mod bot;
@@ -683,7 +685,7 @@ pub struct SelectBackend {
     pub session_id: String,
     pub backend: BackendPreference,
 }
-#[derive(Serialize, JsonSchema, Deserialize)]
+#[derive(Debug, Serialize, JsonSchema, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[schemars(rename = "AgentRejection")]
 pub enum Rejection {
@@ -2467,6 +2469,18 @@ pub fn contract() -> Contract {
                     "watchBotOutbox".into(),
                     method::<BotOutboxRead, BotOutbox>(MethodMode::Subscription),
                 ),
+                ("dossiers".into(), method::<DossiersRead, Dossiers>(MethodMode::Query)),
+                ("dossier".into(), method::<DossierRead, Option<DossierDetail>>(MethodMode::Query)),
+                ("readDossierArtifact".into(), method::<DossierArtifactRead, String>(MethodMode::Query)),
+                ("watchDossiers".into(), method::<DossiersRead, DossiersUpdate>(MethodMode::Subscription)),
+                ("setDossierMuted".into(), method::<DossierMute, ()>(MethodMode::Mutation)),
+                ("setDossierResolved".into(), method::<DossierResolve, ()>(MethodMode::Mutation)),
+                ("chooseDossierOption".into(), method::<DossierChoose, ()>(MethodMode::Mutation)),
+                ("setDiscoveryNotifications".into(), method::<DiscoveryNotifications, ()>(MethodMode::Mutation)),
+                ("dropDiscoveryLead".into(), method::<DiscoveryLead, DossierRead>(MethodMode::Mutation)),
+                ("confirmPendingAction".into(), method::<PendingActionRequest, ConfirmPendingActionResult>(MethodMode::Mutation)),
+                ("dismissPendingAction".into(), method::<PendingActionRequest, ()>(MethodMode::Mutation)),
+                ("openDossierThread".into(), method::<DossierThreadOpen, DossierThread>(MethodMode::Mutation)),
                 (
                     "schedules".into(),
                     method::<ScheduleRead, Schedules>(MethodMode::Query),

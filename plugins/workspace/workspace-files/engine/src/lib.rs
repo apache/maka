@@ -39,7 +39,9 @@ pub use mutation::{
     EDIT_DESCRIPTION, EDIT_NAME, WRITE_DESCRIPTION, WRITE_NAME, edit_schema, write_schema,
 };
 pub use patch::{PATCH_DESCRIPTION, PATCH_NAME, patch_paths, patch_schema};
-pub use write::{MutationExecutor, WriteCoordinator, WriteScope, mutation_paths};
+pub use write::{
+    ConfirmedInputs, MutationExecutor, WriteCoordinator, WriteOutcome, WriteScope, mutation_paths,
+};
 
 use maka_agent_facts::read::ReadInput;
 use maka_agent_facts::read::ReadPage;

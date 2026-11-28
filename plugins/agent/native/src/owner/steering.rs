@@ -113,6 +113,7 @@ impl Owner {
                 }));
             }
         };
+        let dossier_reply = basis.dossier_thread.is_dossier() && origin.is_none();
         let source = RootSourceMessage {
             message: DeliveredMessage {
                 origin,
@@ -186,6 +187,7 @@ impl Owner {
                 .transpose()?,
         };
         Ok(PreparedSend::Ready {
+            dossier_reply,
             value: SendResult::Queued {
                 completion,
                 session_id: session.into(),
