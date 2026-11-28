@@ -39,7 +39,7 @@ import {
   SettingsSwitch,
   settingsInset,
 } from './SettingsPage';
-import { C } from './ui';
+import { C, lineWidth, radius } from './ui';
 
 function widgetLabel(widget: ComposerToolbarWidget): string {
   switch (widget) {
@@ -64,7 +64,7 @@ function FixedAnchor(props: { icon: 'plus' | 'send'; color: string }) {
         width: 28,
         height: 28,
         borderRadius: 14,
-        backgroundColor: C.raised,
+        backgroundColor: C.cardRaised,
         alignItems: 'center',
         justifyContent: 'center',
         flexShrink: 0,
@@ -198,10 +198,10 @@ export function ComposerToolbarSettings() {
         <View
           accessibilityLabel={tr('Composer toolbar layout')}
           style={{
-            backgroundColor: C.background,
-            borderWidth: 1,
+            backgroundColor: C.panel,
+            borderWidth: lineWidth(),
             borderColor: C.line,
-            borderRadius: 14,
+            borderRadius: radius(14),
             padding: 6,
             flexDirection: 'row',
             alignItems: 'center',
@@ -241,11 +241,11 @@ export function ComposerToolbarSettings() {
                         flex: 1,
                         minWidth: 20,
                         height: 28,
-                        borderRadius: 6,
-                        borderWidth: 1,
+                        borderRadius: radius(6),
+                        borderWidth: lineWidth(),
                         borderStyle: 'dashed',
                         borderColor: drag()?.overSpacer ? C.accent : C.line,
-                        backgroundColor: drag()?.overSpacer ? C.raised : 'transparent',
+                        backgroundColor: drag()?.overSpacer ? C.cardRaised : 'transparent',
                         alignItems: 'center',
                         justifyContent: 'center',
                         paddingHorizontal: 4,
@@ -300,9 +300,9 @@ export function ComposerToolbarSettings() {
                       height: 30,
                       paddingLeft: 6,
                       paddingRight: 8,
-                      borderRadius: 8,
-                      backgroundColor: C.surface,
-                      borderWidth: 1,
+                      borderRadius: radius(8),
+                      backgroundColor: C.card,
+                      borderWidth: lineWidth(),
                       borderStyle: isOff(widget) ? 'dashed' : 'solid',
                       borderColor: selected() === widget ? C.accent : C.line,
                       flexDirection: 'row',
@@ -313,8 +313,8 @@ export function ComposerToolbarSettings() {
                       cursor: drag()?.widget === widget ? 'grabbing' : 'grab',
                       opacity: drag()?.widget === widget ? 0.35 : 1,
                     }}
-                    hoverStyle={{ backgroundColor: C.raised }}
-                    focusStyle={{ borderColor: C.accent, backgroundColor: C.raised }}
+                    hoverStyle={{ backgroundColor: C.cardRaised }}
+                    focusStyle={{ borderColor: C.accent, backgroundColor: C.cardRaised }}
                   >
                     <GripDots color={C.muted} />
                     <Text

@@ -466,15 +466,18 @@ impl Query for AddressRun {
     type Output = RunId;
     fn execute(self, c: &Connection) -> Result<RunId, StoreError> {
         let run: String = match self {
-            Self::Live(history, sequence) => c.query_row(
-                "SELECT run FROM agent_session_history WHERE owner=? AND session=? AND sequence=?",
-                params![
-                    serde_json::to_string(&history.owner)?,
-                    history.session,
-                    bind_u64(sequence)?
-                ],
-                |row| row.get(0),
-            )?,
+            Self::Live(history, sequence) => {
+                let Some(namespace_id) =
+                    crate::namespace::find_owner_id(c, &history.owner, &history.session)?
+                else {
+                    return Err(rusqlite::Error::QueryReturnedNoRows.into());
+                };
+                c.query_row(
+                    "SELECT run FROM agent_session_history WHERE namespace_id=? AND sequence=?",
+                    params![namespace_id, bind_u64(sequence)?],
+                    |row| row.get(0),
+                )?
+            }
             Self::Snapshot(parent, sequence) => {
                 read::authorize(c, &parent)?;
                 c.query_row("SELECT run FROM agent_history_snapshot_entries WHERE snapshot=? AND kind='fact' AND sequence=?",params![parent.id.to_string(),bind_u64(sequence)?],|row|row.get(0))?
@@ -560,8 +563,17 @@ impl Query for LiveCut {
         } else {
             self.1
         };
-        let through = c.query_row("SELECT sequence FROM agent_session_history WHERE owner=? AND session=? AND sequence<=? ORDER BY sequence DESC LIMIT 1",
-            params![serde_json::to_string(&self.0.owner)?,self.0.session,bind_u64(limit)?],|row|read_u64(row,0)).optional()?.unwrap_or(0);
+        let through = match crate::namespace::find_owner_id(c, &self.0.owner, &self.0.session)? {
+            Some(namespace_id) => c
+                .query_row(
+                    "SELECT sequence FROM agent_session_history WHERE namespace_id=? AND sequence<=? ORDER BY sequence DESC LIMIT 1",
+                    params![namespace_id, bind_u64(limit)?],
+                    |row| read_u64(row, 0),
+                )
+                .optional()?
+                .unwrap_or(0),
+            None => 0,
+        };
         super::super::sql::capture_at(c, &self.0.owner, &self.0.session, Some(through))
     }
 }
@@ -569,14 +581,15 @@ struct MarkerCut(HistoryNamespace, RunId);
 impl Query for MarkerCut {
     type Output = HistoryCut;
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        let Some(namespace_id) =
+            crate::namespace::find_owner_id(c, &self.0.owner, &self.0.session)?
+        else {
+            return Err(rusqlite::Error::QueryReturnedNoRows.into());
+        };
         let through = c.query_row(
             "SELECT sequence FROM agent_session_history INDEXED BY agent_session_history_run
-             WHERE owner=? AND session=? AND run=? ORDER BY sequence DESC LIMIT 1",
-            params![
-                serde_json::to_string(&self.0.owner)?,
-                self.0.session,
-                self.1.to_string()
-            ],
+             WHERE run=? AND namespace_id=? ORDER BY sequence DESC LIMIT 1",
+            params![self.1.to_string(), namespace_id],
             |row| read_u64(row, 0),
         )?;
         let cut = super::super::sql::capture_at(c, &self.0.owner, &self.0.session, Some(through))?;
@@ -767,7 +780,7 @@ fn copy(
 ) -> Result<ContentRef, StoreError> {
     let mut builder = capture::Builder::new(c, id);
     let mut statement = c.prepare_cached(
-        "SELECT b.payload FROM agent_history_snapshot_inventory_pages p JOIN contents b ON b.id=p.content_id WHERE p.snapshot=? ORDER BY p.first_ordinal",
+        "SELECT maka_content_bytes(b.payload,b.encoding) FROM agent_history_snapshot_inventory_pages p JOIN contents b ON b.id=p.content_id WHERE p.snapshot=? ORDER BY p.first_ordinal",
     )?;
     let mut rows = statement.query([parent.id.to_string()])?;
     while let Some(row) = rows.next()? {
@@ -790,6 +803,7 @@ fn copy(
                 } => *sequence <= cut.through_sequence,
                 Entry::Position {
                     row: SnapshotPosition::Canonical { sequence, .. },
+                    ..
                 } => *sequence <= cut.through_sequence,
                 _ => false,
             };

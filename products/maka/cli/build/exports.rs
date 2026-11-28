@@ -294,16 +294,14 @@ pub(crate) fn configure() {
             println!("cargo:rustc-link-arg-bin=maka=-Wl,--export-dynamic");
             println!("cargo:rustc-link-arg-bin=maka=-Wl,-T,{}", path.display());
         }
-        "windows" => {
-            if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
-                let mut def = String::from("LIBRARY\nEXPORTS\n");
-                for sym in NAPI_HOST_SYMBOLS {
-                    writeln!(&mut def, "  {sym}").expect("format Windows export symbol");
-                }
-                let path = out_dir.join("napi_exports_windows.def");
-                fs::write(&path, def).expect("write Windows N-API export list");
-                println!("cargo:rustc-link-arg-bin=maka=/DEF:{}", path.display());
+        "windows" if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") => {
+            let mut def = String::from("LIBRARY\nEXPORTS\n");
+            for sym in NAPI_HOST_SYMBOLS {
+                writeln!(&mut def, "  {sym}").expect("format Windows export symbol");
             }
+            let path = out_dir.join("napi_exports_windows.def");
+            fs::write(&path, def).expect("write Windows N-API export list");
+            println!("cargo:rustc-link-arg-bin=maka=/DEF:{}", path.display());
         }
         _ => {}
     }

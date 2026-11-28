@@ -16,7 +16,7 @@ The web view and the video player embed the platform's own web engine and media 
 
 The frameworks behind them (WebKit, AVFoundation) are loaded the first time an app uses one, so apps that never show a web page or a video do not pay for them at launch.
 
-A video a page plays plays inside the web view on every target, an iPhone included, where WebKit otherwise hands the first frame to the system's full-screen player (`playsinline` on the page does not stop it). A page whose own control asks for the whole screen still gets it.
+A video a page plays plays inside the web view on every target, an iPhone included, where WebKit otherwise hands the first frame to the system's full-screen player (`playsinline` on the page does not stop it). A page whose own control asks for the whole screen still gets it: on the Apple web views `element.requestFullscreen()` takes the display, as it does in the browser. Android's web view has no full screen of its own yet, so a page's control does nothing there.
 
 On [macOS](./macos.md) the web view has no scroll view of its own: with `scrollable={false}` the mouse wheel and the
 trackpad scroll the app's scroll views around it instead of the page, which still scrolls with its keyboard and its
@@ -34,7 +34,7 @@ its parents and rounded corners, but NSH content drawn over it (a dialog, a shee
 WebView2 Runtime (part of Windows 11; installed with Edge on Windows 10), else it shows a placeholder;
 `baseUrl` for HTML, `scrollable` and `allowsBackForwardNavigationGestures` are not supported. Videos are
 ordinary content (clipped, transformed and covered like any view) and play the formats the installed Media Foundation
-codecs decode; `rate` works, there is no poster, and the control bar always shows while `controls` is on.
+codecs decode; `rate` works, and the control bar always shows while `controls` is on.
 
 ## WebView
 
@@ -87,7 +87,7 @@ In Rust each prop is a builder method in snake case (`injected_java_script`, `ja
 | `injectedJavaScript` | `string` | | Runs after each page loads. |
 | `injectedJavaScriptBeforeContentLoaded` | `string` | | Runs before each page's own scripts. |
 | `javaScriptEnabled` | `boolean` | `true` | Pages run scripts. |
-| `scrollable` | `boolean` | `true` | The user can scroll the page. |
+| `scrollable` | `boolean` | `true` | The user can scroll the page. Off, the page still receives its touches, so its own drag handlers (sliders, sortable lists) work, and its scripts still scroll it. |
 | `userAgent` | `string` | | The browser's user agent string. |
 | `incognito` | `boolean` | `false` | The pages' website data lives only as long as the web view, as each platform keeps it ([below](#website-data)). Read when the web view is made. |
 | `zoomable` | `boolean` | `false` | The person can pinch to zoom the page, also past its viewport's scale limits: built-in zoom without on-screen buttons on Android, the viewport's limits ignored on iOS, magnification on macOS. Off keeps each platform's own behavior (Android and macOS do not zoom, iOS zooms as far as the viewport allows, Windows zooms). Read when the web view is made. |
@@ -620,6 +620,7 @@ In Rust, `video(url)` makes the player (the URL a value, a signal or a closure) 
 | Prop | Type | Default | Description |
 |---|---|---|---|
 | `src` | `string` | | The video's URL. |
+| `poster` | `string` | | An image shown while the video loads, until its first frame is ready. |
 | `paused` | `boolean` | `false` | Playback is paused. |
 | `muted` | `boolean` | `false` | No sound. |
 | `volume` | `number` | `1` | 0..1. |

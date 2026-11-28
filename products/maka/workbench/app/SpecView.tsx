@@ -23,13 +23,14 @@ import { Button, TextView } from 'nsh/base';
 import { tr } from './locale';
 import { CodeBlockAction, codeBlockActions, codeBlockStyles } from './codeBlockLook';
 import { mermaidExtensions } from './MermaidView';
+import { themeExtensions } from './ThemeCard';
 import { specComponentRegistry } from './spec/components.tsx';
 import { SpecRenderer } from './spec/runtime.tsx';
 import { SpecSession, type SpecFrame } from './spec/session.ts';
 import { C, captionTextStyle, controlFocusStyle, controlHoverStyle } from './ui';
 
 export const specExtensions = [{ name: 'spec', language: 'spec' }];
-export const markdownExtensions = [...mermaidExtensions, ...specExtensions];
+export const markdownExtensions = [...mermaidExtensions, ...specExtensions, ...themeExtensions];
 
 export function SpecView(props: {
   source(): string;

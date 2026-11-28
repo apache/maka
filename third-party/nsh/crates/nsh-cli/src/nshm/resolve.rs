@@ -376,6 +376,7 @@ impl Search<'_> {
                         origin: Origin::Registry,
                         req: Some(format!("={VERSION}")),
                         features: Vec::new(),
+                        targets: Vec::new(),
                     },
                 });
             }
@@ -750,6 +751,7 @@ mod tests {
             origin: Origin::Registry,
             req: Some(req.into()),
             features: Vec::new(),
+            targets: Vec::new(),
         }
     }
 
@@ -868,6 +870,7 @@ mod tests {
             origin: Origin::Path("../icons-local".into()),
             req: None,
             features: Vec::new(),
+            targets: Vec::new(),
         };
         let r = resolve(
             &app,

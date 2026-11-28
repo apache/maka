@@ -139,7 +139,9 @@ pub(super) async fn prepare(root_id: &RootId) -> Result<(Deployment, Arc<FileLea
         return Err("Host deployment is not installed".into());
     }
     let lease = Arc::new(FileLease::acquire(&directory.join("executor.lock"))?);
-    let store::Installation::Installed(deployment) = store::read(&directory).await? else {
+    let store::Installation::Installed(deployment) =
+        store::read_for_update(&directory, &lease).await?
+    else {
         return Err("Host deployment is absent or incomplete".into());
     };
     deployment.validate_record(&directory)?;

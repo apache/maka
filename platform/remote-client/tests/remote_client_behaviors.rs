@@ -36,7 +36,7 @@ use maka_remote_client::{
     Attachments, DeviceIdentity, PendingPairing, ReadResource, RelayAuthorization,
     RemoteHostConnection, SavedHosts,
 };
-use maka_remote_pairing::{RelayEndpoint, SignedPairingTicket};
+use maka_remote_pairing::{HostPlatform, RelayEndpoint, SignedPairingTicket};
 use maka_remote_transport::{
     Relay,
     host::HostPeerTransport,
@@ -257,7 +257,9 @@ async fn confirmed_sas_redeems_once_and_admits_concurrent_calls_until_revoked() 
         let (relay, route) = https_relay().await;
         let (dir, host) = logs_host().await;
         let relay_config = Relay::new(&route, None, Some(TOKEN.into())).unwrap();
-        let transport = HostPeerTransport::bind(&host, &[relay_config], false)
+        // This fixture asserts a relay path. The metadata round trip can take
+        // long enough for a direct path to win if the Host also advertises UDP.
+        let transport = HostPeerTransport::bind(&host, &[relay_config], true)
             .await
             .unwrap();
         transport.wait_for_relay().await.unwrap();
@@ -313,6 +315,7 @@ async fn confirmed_sas_redeems_once_and_admits_concurrent_calls_until_revoked() 
         let (observed_id, sas) = accepted.recv().await.unwrap();
         assert_eq!(observed_id, peer_id);
         assert_eq!(pending.sas(), sas);
+        assert_eq!(pending.platform(), HostPlatform::current());
         assert_eq!(sas.len(), 6);
         assert!(!pending.path_summary().unwrap().direct);
 
@@ -396,17 +399,20 @@ async fn confirmed_sas_redeems_once_and_admits_concurrent_calls_until_revoked() 
         read_logs(&reconnected).await;
         assert!(host.revoke_peer_access(peer_id).await.unwrap());
         let reason = reconnected.disconnected().await.unwrap_err();
-        assert!(
-            reason.to_string().contains("peer access revoked"),
-            "{reason}"
-        );
+        assert!(matches!(
+            reason,
+            maka_remote_client::RemoteClientError::PeerAccessRevoked
+        ));
         assert!(
             reconnected
                 .query("hostLogs", "read", json!({"position":{"kind":"tail"}}))
                 .await
                 .is_err()
         );
-        assert!(profile.reconnect(&identity, auth()).await.is_err());
+        assert!(matches!(
+            profile.reconnect(&identity, auth()).await,
+            Err(maka_remote_client::RemoteClientError::PeerAccessRevoked)
+        ));
 
         cancel.cancel();
         peer_server.await.unwrap().unwrap();

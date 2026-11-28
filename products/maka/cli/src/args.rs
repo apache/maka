@@ -90,7 +90,7 @@ enum HostCommand {
     Update(crate::deployment::Update),
     /// Download a verified native release and update at a safe boundary.
     Upgrade(crate::deployment::Upgrade),
-    /// Observe or configure unattended native preview updates.
+    /// Observe or configure unattended native nightly updates.
     UpdatePolicy(crate::deployment::UpdatePolicy),
     #[command(hide = true)]
     AutoUpdate(crate::deployment::AutoUpdate),
@@ -323,7 +323,7 @@ fn command_exit(work: impl Future<Output = Result<(), HostError>> + 'static) -> 
 #[cfg(target_os = "macos")]
 impl crate::terminal_args::Args {
     async fn run(self) -> Result<(), String> {
-        self.validate()?;
+        let _ = self.validate()?;
         crate::desktop::exec_shell(
             "__maka-terminal-shell",
             &[
@@ -333,6 +333,7 @@ impl crate::terminal_args::Args {
                     self.session.as_deref().map(std::ffi::OsStr::new),
                 ),
             ],
+            &[("--no-pixels", self.no_pixels)],
         )
         .map_err(|error| error.to_string())
     }

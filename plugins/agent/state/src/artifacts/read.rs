@@ -31,18 +31,35 @@ pub(super) fn lookup(
     scope: &ArtifactReadScope,
     id: &str,
 ) -> Result<Option<Material>, StoreError> {
+    lookup_with_encoding(c, scope, id, true)
+}
+pub(super) fn lookup_with_encoding(
+    c: &Connection,
+    scope: &ArtifactReadScope,
+    id: &str,
+    encoded: bool,
+) -> Result<Option<Material>, StoreError> {
     identity(scope.session())?;
     identity(id)?;
     let owner = serde_json::to_string(scope.owner())?;
     let (body, proof, retained_content_id, provenance) = match scope {
         ArtifactReadScope::Session { scope } => {
-            let row:Option<(Vec<u8>,String,i64,i64)>=c.query_row("SELECT b.payload,b.content_sha256,length(b.payload),r.content_id FROM agent_session_artifact_registrations r JOIN contents b ON b.id=r.body_content_id WHERE r.session=? AND r.artifact=? AND r.owner=?",params![scope.session,id,owner],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?;
+            let sql = if encoded {
+                "SELECT maka_content_bytes(b.payload,b.encoding),b.content_sha256,COALESCE(b.logical_bytes,length(b.payload)),r.content_id FROM agent_session_artifact_registrations r JOIN contents b ON b.id=r.body_content_id WHERE r.session=? AND r.artifact=? AND r.owner=?"
+            } else {
+                "SELECT b.payload,b.content_sha256,length(b.payload),r.content_id FROM agent_session_artifact_registrations r JOIN contents b ON b.id=r.body_content_id WHERE r.session=? AND r.artifact=? AND r.owner=?"
+            };
+            let row: Option<(Vec<u8>, String, i64, i64)> = c
+                .query_row(sql, params![scope.session, id, owner], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+                })
+                .optional()?;
             let Some((bytes, digest, length, raw_content_id)) = row else {
                 return Ok(None);
             };
             let registration: session::Registration = serde_json::from_slice(&bytes)?;
             registration.validate(scope)?;
-            let provenance = registration.provenance(c)?;
+            let provenance = registration.provenance_with_encoding(c, encoded)?;
             if registration.record.artifact.id != id {
                 return Err(invalid("session artifact canonical identity differs"));
             }
@@ -84,7 +101,7 @@ pub(super) fn lookup(
                 digest,
                 bytes: from_sql_integer(bytes)?,
             };
-            let retained:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM agent_run_content p JOIN contents x ON x.id=p.content_id WHERE p.run=? AND x.content_sha256=? AND length(x.payload)=?)",params![scope.run.to_string(),reference.digest,to_sql_integer(reference.bytes)?],|r|r.get(0))?;
+            let retained:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM agent_run_content p JOIN contents x ON x.id=p.content_id WHERE p.run=? AND x.content_sha256=? AND COALESCE(x.logical_bytes,length(x.payload))=?)",params![scope.run.to_string(),reference.digest,to_sql_integer(reference.bytes)?],|r|r.get(0))?;
             if !retained {
                 return Err(invalid(
                     "artifact source evidence is not retained by its original Run",
@@ -106,7 +123,7 @@ pub(super) fn lookup(
     if body.artifact.session_id != scope.session() || body.artifact.id != id {
         return Err(invalid("artifact identity differs from scoped lookup"));
     }
-    let rowid = tool::content_id(c, &body.payload)?;
+    let rowid = tool::content_id_with_encoding(c, &body.payload, encoded)?;
     if rowid != retained_content_id {
         return Err(invalid(
             "artifact payload reference differs from original ownership pin",
@@ -275,14 +292,9 @@ impl Query for Chunk {
                 "artifact offset is outside immutable payload or SQLite index range",
             ));
         }
-        let start = to_sql_integer(self.offset)?.checked_add(1).ok_or(invalid(
-            "artifact offset is outside immutable payload or SQLite index range",
-        ))?;
-        let bytes: Vec<u8> = c.query_row(
-            "SELECT substr(payload,?,?) FROM contents WHERE id=?",
-            params![start, self.limit, material.rowid],
-            |r| r.get(0),
-        )?;
+        let want = (total - self.offset).min(self.limit as u64);
+        let bytes =
+            maka_event_log::content::read_range_by_id(c, material.rowid, self.offset, want)?;
         if bytes.len() as u64 != (total - self.offset).min(self.limit as u64) {
             return Err(invalid(
                 "artifact chunk length differs from immutable descriptor",
@@ -308,8 +320,8 @@ impl<T: Send + 'static, F: FnOnce(&Artifact, &mut dyn Read) -> T + Send + 'stati
         let Some(material) = lookup(c, &self.scope, &self.id)? else {
             return Ok(None);
         };
-        let mut blob = c.blob_open("main", "contents", "payload", material.rowid, true)?;
-        if blob.len() as u64 != material.record.payload.bytes {
+        let mut blob = maka_event_log::content::open_by_id(c, material.rowid)?;
+        if blob.len() != material.record.payload.bytes {
             return Err(invalid(
                 "artifact blob size differs from immutable descriptor",
             ));
@@ -336,8 +348,8 @@ impl<T: Send + 'static, F: FnOnce(&Artifact, &mut dyn Read) -> T + Send + 'stati
         let Some((reference, rowid)) = material.provenance else {
             return Ok(None);
         };
-        let mut blob = c.blob_open("main", "contents", "payload", rowid, true)?;
-        if blob.len() as u64 != reference.bytes {
+        let mut blob = maka_event_log::content::open_by_id(c, rowid)?;
+        if blob.len() != reference.bytes {
             return Err(invalid(
                 "Produced provenance blob size differs from original descriptor",
             ));

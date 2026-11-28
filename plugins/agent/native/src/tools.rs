@@ -84,6 +84,8 @@ pub(crate) enum HistoryReader {
     Other,
     File,
     Session,
+    // Distinguishes a verified unrelated service from an old unclassified recap binding.
+    NonAgent,
 }
 
 impl HistoryReader {
@@ -139,23 +141,29 @@ impl SelectedTool {
 }
 
 fn reads_agent_history(method: &str) -> bool {
-    matches!(
-        method,
-        "memory"
-            | "memories"
-            | "execution"
-            | "continuationAvailability"
-            | "work"
-            | "sessionRead"
-            | "history"
-            | "historyLandmarks"
-            | "historyPrompt"
-            | "historyRequests"
-            | "source"
-            | "search"
-            | "toolImage"
-            | "attachmentImage"
-    )
+    is_recap(method)
+        || matches!(
+            method,
+            "memory"
+                | "memories"
+                | "execution"
+                | "continuationAvailability"
+                | "work"
+                | "sessionRead"
+                | "history"
+                | "historyLandmarks"
+                | "historyPrompt"
+                | "historyRequests"
+                | "historyImages"
+                | "source"
+                | "search"
+                | "toolImage"
+                | "attachmentImage"
+        )
+}
+
+fn is_recap(method: &str) -> bool {
+    matches!(method, "recap" | "generateRecap")
 }
 
 impl ServiceSelection {
@@ -164,7 +172,19 @@ impl ServiceSelection {
     }
 
     pub(crate) fn history_alias(self) -> Option<(String, HistoryReader)> {
-        self.history_reader.map(|kind| (self.selection.name, kind))
+        let reader = match self.history_reader {
+            None | Some(HistoryReader::Other)
+                if is_recap(&self.selection.method)
+                    && match &self.selection.target {
+                        ServiceTarget::Export { name } => name == maka_agent_api::EXPORT,
+                        ServiceTarget::Import { .. } => true,
+                    } =>
+            {
+                Some(HistoryReader::Session)
+            }
+            reader => reader,
+        };
+        reader.map(|kind| (self.selection.name, kind))
     }
     fn matches(&self, live: &SelectedTool) -> bool {
         let admitted = &self.selection;
@@ -340,6 +360,7 @@ struct PreparedServiceTool {
 /// re-inlining schemas or recompiling JSON Schema validators.
 pub(crate) struct PreparedCatalog {
     run_base: ToolCatalog,
+    request_bound: std::collections::BTreeSet<String>,
     services: Vec<PreparedServiceTool>,
     tool_names: ToolNames,
 }
@@ -353,6 +374,38 @@ pub(crate) struct Catalog {
 }
 
 impl PreparedCatalog {
+    pub(crate) fn fixed_schema_tokens<'a>(
+        &self,
+        model: &crate::model::AcceptedModel,
+        discovery: bool,
+        definitions: impl Iterator<Item = &'a ToolDefinition>,
+    ) -> u64 {
+        if model.tool_mode == maka_agent_facts::execution::ToolMode::CodeMode {
+            return maka_tools::CodeCells::fixed_schema_tokens(model.code_language);
+        }
+        // The wire can gain loaded or dynamically bound tools at the step.
+        // Only charge the part of its initial surface already known here.
+        let mut direct = Vec::new();
+        let mut deferred = Vec::new();
+        for tool in definitions {
+            if !self.run_base.contains(&tool.name) || self.request_bound.contains(&tool.name) {
+                continue;
+            }
+            if discovery && !self.run_base.visible_before_search(&tool.name) {
+                deferred.push(tool.name.as_str());
+            } else {
+                direct.push(tool);
+            }
+        }
+        let search;
+        if !deferred.is_empty() {
+            deferred.retain(|name| !name.starts_with("mcp__"));
+            search = maka_tools::availability::Availability::search_definition(&deferred);
+            direct.push(&search);
+        }
+        maka_agent_facts::context::measure::json_tokens(&direct)
+    }
+
     pub(crate) fn for_run(
         &self,
         configuration: Arc<maka_config::ConfigurationStore>,
@@ -446,6 +499,7 @@ pub(crate) fn catalog(
     services: NativeServices,
     selected: &[ServiceTool],
     additional: Vec<ToolRegistration>,
+    always_visible: &[&str],
 ) -> Result<Catalog, String> {
     let mut basis = Vec::new();
     let mut prepared_services = Vec::with_capacity(selected.len());
@@ -615,6 +669,8 @@ pub(crate) fn catalog(
                     Some(HistoryReader::File)
                 } else if contract == &agent_contract && reads_agent_history(&selection.method) {
                     Some(HistoryReader::Session)
+                } else if is_recap(&selection.method) {
+                    Some(HistoryReader::NonAgent)
                 } else if HistoryReader::builtin(&selection.name).is_some() {
                     Some(HistoryReader::Other)
                 } else {
@@ -708,6 +764,12 @@ pub(crate) fn catalog(
             &editing
                 .iter()
                 .map(|(name, _)| name.as_str())
+                .chain(
+                    always_visible
+                        .iter()
+                        .copied()
+                        .filter(|name| compiled.contains(name)),
+                )
                 .collect::<Vec<_>>(),
         )
         .map_err(|_| "agent_tool_catalog_invalid")?;
@@ -715,6 +777,11 @@ pub(crate) fn catalog(
         tools: Declarations(compiled),
         prepared: PreparedCatalog {
             run_base,
+            request_bound: prepared_services
+                .iter()
+                .filter(|tool| tool.selected.selection.input != ToolInput::Json)
+                .map(|tool| tool.selected.name().to_owned())
+                .collect(),
             services: prepared_services,
             tool_names,
         },

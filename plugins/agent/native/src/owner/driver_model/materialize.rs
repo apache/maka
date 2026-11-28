@@ -21,6 +21,19 @@ use super::*;
 use maka_agent_engine::prepared_prompt::PreparedPrompt;
 use maka_agent_state::session_history::{HistoryCut, SessionHistory};
 
+#[derive(Clone)]
+pub(super) enum Denial {
+    Memory(String),
+    Other(String),
+}
+
+impl Denial {
+    fn model_error(&self) -> maka_model::ModelError {
+        let (Self::Memory(message) | Self::Other(message)) = self;
+        maka_model::ModelError::LocalAuthorization(message.clone())
+    }
+}
+
 pub(super) struct FrozenMaterializer {
     pub io: preparation::PreparationIo,
     pub resources: ModelPreparationResources,
@@ -35,9 +48,10 @@ pub(super) struct FrozenMaterializer {
     pub executor: ModelExecutor,
     pub provenance: Value,
     pub recovery: FrozenRecovery,
-    pub authorization_failure: std::sync::Mutex<Option<maka_model::ModelError>>,
+    pub authorization_failure: Arc<std::sync::Mutex<Option<Denial>>>,
     pub provider: maka_model::ProviderConfig,
     pub budget: maka_agent_facts::context::PreparedContextBreakdown,
+    pub memory: Option<Arc<maka_agent_facts::memory::MemoryProjection>>,
 }
 impl FrozenMaterializer {
     pub async fn authorize_current(
@@ -45,7 +59,7 @@ impl FrozenMaterializer {
         cancellation: &CancellationToken,
     ) -> Result<(), RunError> {
         if let Some(failure) = self.authorization_failure.lock().unwrap().clone() {
-            return Err(RunError::Model(failure));
+            return Err(RunError::Model(failure.model_error()));
         }
         let result = tokio::select! {
             biased;
@@ -53,7 +67,7 @@ impl FrozenMaterializer {
             result=async{
                 maka_agent_authority::permissions::Access::live_configuration(self.access.as_ref()).await?;
                 let model=self.model_source.capture().await?;
-                self.access.authorize_model_request(&self.request,&model,cancellation).await?;
+                self.access.authorize_request_tools(&self.request,&model,cancellation).await?;
                 let model=self.model_source.capture().await?;
                 validate_model_input_policy(&self.provenance,&model)?;
                 let recovery=&self.recovery;
@@ -65,7 +79,7 @@ impl FrozenMaterializer {
                     ||recovery.contract!=original_recovery_contract(&binding,&model.provider,&self.surface.tools,self.frozen.operation){
                     return Err(unsupported("current-frozen-model-dispatch-contract"));
                 }
-                Ok(())
+                self.access.authorize_request_memory(&self.request,&model,&self.budget, self.memory.as_deref()).await
             }=>result,
         };
         match result {
@@ -75,8 +89,9 @@ impl FrozenMaterializer {
                 self.authorization_failure
                     .lock()
                     .unwrap()
-                    .get_or_insert_with(|| {
-                        maka_model::ModelError::LocalAuthorization(error.to_string())
+                    .get_or_insert_with(|| match &error {
+                        RunError::FrozenMemoryDenied(message) => Denial::Memory(message.clone()),
+                        _ => Denial::Other(error.to_string()),
                     });
                 Err(RunError::Preparation(std::io::Error::new(
                     std::io::ErrorKind::PermissionDenied,
@@ -91,22 +106,23 @@ impl FrozenMaterializer {
         cancellation: &CancellationToken,
     ) -> Result<(PreparedPrompt, ModelRequest), RunError> {
         self.authorize_current(cancellation).await?;
-        let mut prompt = preparation::restore_prompt(
-            self.io.clone(),
-            self.resources.clone(),
-            &self.history,
-            &self.cut,
-            self.run,
-            &self.frozen.prompt,
-            &self.frozen.prompt_chunks,
-            &self.frozen.layout,
-            cancellation,
-        )
-        .await?
-        .with_frozen_transport(
-            self.frozen.instructions.as_deref(),
-            self.frozen.normalization.clone(),
-        );
+        let mut prompt = self
+            .frozen
+            .restore_prompt(
+                self.io.clone(),
+                self.resources.clone(),
+                preparation::ContentSource::Live {
+                    history: &self.history,
+                    cut: &self.cut,
+                },
+                self.run,
+                cancellation,
+            )
+            .await?
+            .with_frozen_transport(
+                self.frozen.instructions.as_deref(),
+                self.frozen.normalization.clone(),
+            );
         let result = async {
             let options = self
                 .request
@@ -175,7 +191,8 @@ impl maka_agent_ports::model::FrozenPrompt for FrozenMaterializer {
                     self.authorization_failure
                         .lock()
                         .unwrap()
-                        .clone()
+                        .as_ref()
+                        .map(Denial::model_error)
                         .unwrap_or_else(|| {
                             if error.is_cleanup_unconfirmed() {
                                 maka_model::ModelError::CleanupUnconfirmed
@@ -187,7 +204,11 @@ impl maka_agent_ports::model::FrozenPrompt for FrozenMaterializer {
         })
     }
     fn authorization_failure(&self) -> Option<maka_model::ModelError> {
-        self.authorization_failure.lock().unwrap().clone()
+        self.authorization_failure
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(Denial::model_error)
     }
     fn open(
         &self,
@@ -206,7 +227,8 @@ impl maka_agent_ports::model::FrozenPrompt for FrozenMaterializer {
                     self.authorization_failure
                         .lock()
                         .unwrap()
-                        .clone()
+                        .as_ref()
+                        .map(Denial::model_error)
                         .unwrap_or_else(|| maka_model::ModelError::Adapter(error.to_string()))
                 }
             })?;

@@ -32,6 +32,7 @@ import {
   floatingStyle,
   menuRowStyle,
   menuSeparatorStyle,
+  radius,
   textTooltip,
 } from './ui';
 
@@ -94,9 +95,9 @@ export function RecentWorkspaces(props: {
           tooltip={textTooltip(() => props.path() || tr('Choose workspace'))}
           style={
             iconOnly()
-              ? { ...composerIconSlot, borderRadius: 8 }
+              ? { ...composerIconSlot, borderRadius: radius(8) }
               : {
-                  ...composerToolbarControlStyle,
+                  ...composerToolbarControlStyle(),
                   flexDirection: 'row',
                   alignItems: 'center',
                   gap: 4,

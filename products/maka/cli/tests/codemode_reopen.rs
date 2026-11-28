@@ -1206,9 +1206,11 @@ async fn case(
                     database,
                     rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
                 )?;
+                maka_event_log::content::register_sql_functions(&connection)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
                 connection.query_row(
                     "WITH facts AS (
-                         SELECT CAST(c.payload AS TEXT) AS body
+                         SELECT maka_content_text(c.payload, c.encoding) AS body
                          FROM agent_facts f JOIN contents c ON c.id = f.body_content_id
                          WHERE f.run = ?1
                      ), prepared AS (

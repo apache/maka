@@ -17,6 +17,104 @@ pub struct CellTextEngine {
     cells: CellSize,
 }
 
+/// Whether a row may break between `before` and `after` without a space:
+/// either is an ideograph (or kana, hangul, a full-width form), `after` is
+/// no closing mark and `before` no opening one.
+fn breaks_between(before: &Glyph, after: &Glyph) -> bool {
+    let (Some(b), Some(a)) = (before.text.chars().next_back(), after.text.chars().next()) else {
+        return false;
+    };
+    if before.attachment.is_some() || after.attachment.is_some() {
+        return false;
+    }
+    (ideographic(b) || ideographic(a))
+        && !closing(a)
+        && !opening(b)
+        && !a.is_whitespace()
+        && !b.is_whitespace()
+}
+
+/// A character text breaks around (UAX #14's ID class, roughly).
+fn ideographic(c: char) -> bool {
+    matches!(c as u32,
+        0x1100..=0x115F       // Hangul Jamo
+        | 0x2E80..=0x303E     // CJK radicals, punctuation
+        | 0x3041..=0x33FF     // kana, CJK compatibility
+        | 0x3400..=0x4DBF     // CJK extension A
+        | 0x4E00..=0x9FFF     // CJK unified ideographs
+        | 0xA960..=0xA97F
+        | 0xAC00..=0xD7A3     // Hangul syllables
+        | 0xF900..=0xFAFF     // CJK compatibility ideographs
+        | 0xFE30..=0xFE4F     // CJK compatibility forms
+        | 0xFF00..=0xFFEF     // full-width forms
+        | 0x20000..=0x3FFFD)
+}
+
+/// A mark that never starts a row (kinsoku's 行頭禁則).
+fn closing(c: char) -> bool {
+    matches!(
+        c,
+        '，' | '。'
+            | '、'
+            | '；'
+            | '：'
+            | '！'
+            | '？'
+            | '）'
+            | '」'
+            | '』'
+            | '】'
+            | '》'
+            | '〉'
+            | '〕'
+            | '］'
+            | '｝'
+            | '…'
+            | '‥'
+            | '・'
+            | 'ー'
+            | '々'
+            | '〜'
+            | '％'
+            | ','
+            | '.'
+            | ';'
+            | ':'
+            | '!'
+            | '?'
+            | ')'
+            | ']'
+            | '}'
+            | '%'
+            | 'ぁ'
+            | 'ぃ'
+            | 'ぅ'
+            | 'ぇ'
+            | 'ぉ'
+            | 'っ'
+            | 'ゃ'
+            | 'ゅ'
+            | 'ょ'
+            | 'ァ'
+            | 'ィ'
+            | 'ゥ'
+            | 'ェ'
+            | 'ォ'
+            | 'ッ'
+            | 'ャ'
+            | 'ュ'
+            | 'ョ'
+    )
+}
+
+/// A mark that never ends a row (行末禁則).
+fn opening(c: char) -> bool {
+    matches!(
+        c,
+        '（' | '「' | '『' | '【' | '《' | '〈' | '〔' | '［' | '｛' | '(' | '[' | '{'
+    )
+}
+
 impl CellTextEngine {
     /// Uses the same Cell dimensions as the surface that draws the text.
     pub fn new(cells: CellSize) -> Self {
@@ -200,16 +298,26 @@ fn wrap(glyphs: &[Glyph], columns: usize) -> Vec<Vec<Glyph>> {
     while start < glyphs.len() {
         let mut end = start;
         let mut width = 0;
-        let mut space = None;
+        // The last place the row may break: `(end, next)`, the row ending
+        // at `end` and the next starting at `next` (a space between them is
+        // dropped).
+        let mut space: Option<(usize, usize)> = None;
         let mut has_content = false;
         while end < glyphs.len() && !glyphs[end].text.contains('\n') {
             if width + glyphs[end].width > columns && end > start {
                 break;
             }
+            // Ideographic text (Chinese, Japanese, Korean) breaks between
+            // any two of its characters, as UAX #14 has it, but a closing
+            // mark (`，`、`。`、`）`) never starts a row, nor does an
+            // opening one (`（`、`「`) end one.
+            if has_content && end > start && breaks_between(&glyphs[end - 1], &glyphs[end]) {
+                space = Some((end, end));
+            }
             width += glyphs[end].width;
             if glyphs[end].attachment.is_none() && glyphs[end].text.as_ref() == " " {
                 if has_content {
-                    space = Some(end);
+                    space = Some((end, end + 1));
                 }
             } else {
                 has_content = true;
@@ -230,10 +338,15 @@ fn wrap(glyphs: &[Glyph], columns: usize) -> Vec<Vec<Glyph>> {
                 next += 1;
             }
         } else if end < glyphs.len()
-            && let Some(space) = space.filter(|&s| s > start)
+            && end > start
+            && breaks_between(&glyphs[end - 1], &glyphs[end])
         {
-            end = space;
-            next = space + 1;
+            // The row is full right at a break between two ideographs.
+        } else if end < glyphs.len()
+            && let Some((at, after)) = space.filter(|&(s, _)| s > start)
+        {
+            end = at;
+            next = after;
         }
         rows.push(glyphs[start..end].to_vec());
         start = next;
@@ -255,6 +368,15 @@ impl CellTextEngine {
             })
         };
         let glyphs = &prepared.glyphs;
+        // A short label of one word (a name, a time, a field's value) a
+        // box too narrow for it squeezes stays one row, cut with `…` where
+        // the box ends: `ja` / `so` / `n` down a column reads as three
+        // words. A longer run (a URL, a path) still breaks to show it all.
+        let columns = if one_short_word(glyphs) {
+            usize::MAX
+        } else {
+            columns
+        };
         let mut rows = wrap(glyphs, columns);
         if text.max_lines > 0 {
             let limit = text.max_lines as usize;
@@ -298,6 +420,25 @@ impl CellTextEngine {
         }
         rows
     }
+}
+
+/// The longest word kept on one row when its box is narrower than it.
+const SHORT_WORD: usize = 12;
+
+/// Whether `glyphs` are one short word: no space, line break, ideograph
+/// or attachment to break at, and at most [`SHORT_WORD`] Cells wide.
+fn one_short_word(glyphs: &[Glyph]) -> bool {
+    let mut width = 0;
+    for (index, glyph) in glyphs.iter().enumerate() {
+        if glyph.attachment.is_some()
+            || glyph.text.chars().any(char::is_whitespace)
+            || (index > 0 && breaks_between(&glyphs[index - 1], glyph))
+        {
+            return false;
+        }
+        width += glyph.width;
+    }
+    width > 0 && width <= SHORT_WORD
 }
 
 fn row_extent(row: &[Glyph]) -> (usize, usize) {
@@ -598,5 +739,65 @@ mod tests {
                 Size::new(Points(16.0), Points(16.0)),
             )]
         );
+    }
+}
+
+#[cfg(test)]
+mod wrap_tests {
+    use super::*;
+
+    fn glyphs(text: &str) -> Vec<Glyph> {
+        text.chars()
+            .enumerate()
+            .map(|(i, c)| Glyph {
+                text: Arc::from(c.to_string()),
+                start: i as u32,
+                end: i as u32 + 1,
+                width: unicode_width::UnicodeWidthChar::width(c).unwrap_or(0),
+                style: Style::default(),
+                color: None,
+                background: None,
+                decoration: None,
+                attachment: None,
+            })
+            .collect()
+    }
+
+    fn rows(text: &str, columns: usize) -> Vec<String> {
+        wrap(&glyphs(text), columns)
+            .iter()
+            .map(|row| row.iter().map(|g| g.text.as_ref()).collect())
+            .collect()
+    }
+
+    #[test]
+    fn ideographs_break_between_any_two_characters() {
+        assert_eq!(
+            rows("看看 NSH TUI 实现到底怎么样", 10),
+            ["看看 NSH", "TUI 实现到", "底怎么样"]
+        );
+    }
+
+    #[test]
+    fn closing_marks_never_start_a_row_nor_opening_ones_end_one() {
+        assert_eq!(rows("一二三四，五六", 8), ["一二三", "四，五六"]);
+        assert_eq!(rows("一二三（四五）", 8), ["一二三", "（四五）"]);
+    }
+
+    #[test]
+    fn latin_words_still_break_only_at_spaces() {
+        assert_eq!(rows("hello world", 8), ["hello", "world"]);
+    }
+
+    #[test]
+    fn a_short_word_is_one_word_but_a_long_run_or_a_phrase_is_not() {
+        assert!(one_short_word(&glyphs("jason")));
+        assert!(one_short_word(&glyphs("4:35")));
+        assert!(!one_short_word(&glyphs(
+            "https://github.com/longbridge/nsh"
+        )));
+        assert!(!one_short_word(&glyphs("ja son")));
+        assert!(!one_short_word(&glyphs("中文")));
+        assert!(!one_short_word(&glyphs("")));
     }
 }

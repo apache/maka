@@ -51,6 +51,8 @@ pub(crate) struct InputIvars {
     max_length: Cell<Option<u32>>,
     /// No caret is drawn (`caret={false}`).
     caret_hidden: Cell<bool>,
+    /// The input is another view's sink ([`is_sink`]).
+    sink: Cell<bool>,
     /// What return does (`InputConfig::submit`).
     submit: Cell<SubmitBehavior>,
     /// A line break typed with a modifier (Shift / Option+Return) is being
@@ -100,6 +102,7 @@ impl Default for InputIvars {
             }),
             max_length: Cell::new(None),
             caret_hidden: Cell::new(false),
+            sink: Cell::new(false),
             submit: Cell::new(SubmitBehavior::Newline),
             line_break: Cell::new(false),
             caret: Cell::new(Bounds::default()),
@@ -153,6 +156,18 @@ define_class!(
         fn shown_caret_rect(&self, position: Option<&objc2::runtime::AnyObject>) -> CGRect {
             // SAFETY: calling the superclass implementation.
             unsafe { msg_send![super(self), caretRectForPosition: position] }
+        }
+
+        /// A sink ([`is_sink`]: an editor's, which holds the text itself)
+        /// is often empty: it says it has text, as UIKit repeats a held
+        /// Delete only while the input has text.
+        #[unsafe(method(hasText))]
+        fn has_text(&self) -> Bool {
+            if self.ivars().sink.get() {
+                return Bool::YES;
+            }
+            // SAFETY: calling the superclass implementation.
+            unsafe { msg_send![super(self), hasText] }
         }
 
         /// A paste (the edit menu, Command+V): reported, and its text
@@ -362,6 +377,18 @@ define_class!(
         fn shown_caret_rect(&self, position: Option<&objc2::runtime::AnyObject>) -> CGRect {
             // SAFETY: calling the superclass implementation.
             unsafe { msg_send![super(self), caretRectForPosition: position] }
+        }
+
+        /// A sink ([`is_sink`]: an editor's, which holds the text itself)
+        /// is often empty: it says it has text, as UIKit repeats a held
+        /// Delete only while the input has text.
+        #[unsafe(method(hasText))]
+        fn has_text(&self) -> Bool {
+            if self.ivars().sink.get() {
+                return Bool::YES;
+            }
+            // SAFETY: calling the superclass implementation.
+            unsafe { msg_send![super(self), hasText] }
         }
 
         /// A paste (the edit menu, Command+V): reported, and its text
@@ -1316,8 +1343,14 @@ impl Input {
             TextAlign::Center => NSTextAlignment::Center,
             TextAlign::Right => NSTextAlignment::Right,
         };
-        // UIKit tints the caret and the selection with one color.
-        let tint = config.caret_color.or(config.selection_color).map(ui_color);
+        // UIKit tints the caret and the selection with one color. It also
+        // draws an input method's marked range and a caret of its own in
+        // the tint while composing, whatever `caretRectForPosition:` says:
+        // on a sink they would show over the editor's own drawing.
+        let tint = match is_sink(&config) {
+            true => Some(UIColor::clearColor()),
+            false => config.caret_color.or(config.selection_color).map(ui_color),
+        };
         match &self.editor {
             Editor::Line(field) => {
                 field.setFont(Some(&font));
@@ -1330,6 +1363,7 @@ impl Input {
                 traits(field.as_ref(), &config);
                 field.ivars().max_length.set(config.max_length);
                 field.ivars().caret_hidden.set(config.caret_hidden);
+                field.ivars().sink.set(is_sink(&config));
             }
             Editor::Area { view, placeholder } => {
                 view.setFont(Some(&font));
@@ -1353,6 +1387,7 @@ impl Input {
                 traits(view.as_ref(), &config);
                 view.ivars().max_length.set(config.max_length);
                 view.ivars().caret_hidden.set(config.caret_hidden);
+                view.ivars().sink.set(is_sink(&config));
                 view.ivars().submit.set(config.submit());
                 // A built-in bar of the app's takes the indicator's place;
                 // the text still scrolls.
@@ -1709,6 +1744,12 @@ fn ui_color(color: Color) -> Retained<UIColor> {
     UIColor::colorWithRed_green_blue_alpha(r, g, b, a)
 }
 
+/// Whether an input draws no caret and no text: another view's sink for
+/// typed text and input methods (an editor's), which draws them itself.
+fn is_sink(config: &InputConfig) -> bool {
+    config.caret_hidden && config.style.color.is_transparent()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1747,5 +1788,22 @@ mod tests {
     #[test]
     fn a_missing_content_type_is_none() {
         assert!(ios17_content_type(c"UITextContentTypeThatDoesNotExist").is_none());
+    }
+
+    /// Only an input without a caret and with transparent text is a sink:
+    /// an app's `caret={false}` input keeps its selection's tint.
+    #[test]
+    // InputConfig is non-exhaustive outside nsh-core.
+    #[allow(clippy::field_reassign_with_default)]
+    fn only_an_input_without_caret_or_text_is_a_sink() {
+        let mut c = InputConfig::default();
+        c.caret_hidden = true;
+        c.style.color = Color::TRANSPARENT;
+        assert!(is_sink(&c));
+        c.style.color = Color::BLACK;
+        assert!(!is_sink(&c));
+        c.style.color = Color::TRANSPARENT;
+        c.caret_hidden = false;
+        assert!(!is_sink(&c));
     }
 }

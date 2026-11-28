@@ -178,14 +178,21 @@ fn records(
     };
     match source {
         HistoryDataSource::Live { history, .. } => {
+            let Some(namespace_id) = crate::namespace::find_owner_id(
+                c,
+                &history.namespace.owner,
+                &history.namespace.session,
+            )?
+            else {
+                return Ok(Vec::new());
+            };
             let mut statement = c.prepare_cached(
                 "SELECT sequence,fact_id FROM agent_session_history INDEXED BY agent_session_history_run
-                 WHERE owner=? AND session=? AND run=? AND step IS ? AND attempt IS ?
+                 WHERE namespace_id=? AND run=? AND step IS ? AND attempt IS ?
                    AND kind IN (?,?,?) AND sequence<=? ORDER BY sequence",
             )?;
             let mut rows = statement.query(params![
-                serde_json::to_string(&history.namespace.owner)?,
-                history.namespace.session,
+                namespace_id,
                 run_key,
                 step,
                 attempt,
@@ -241,13 +248,16 @@ fn successor_started(
     let step = step.to_string();
     let after = sql::bind_u64(after)?;
     Ok(match source {
-        HistoryDataSource::Live { history, .. } => c.query_row(
-            "SELECT EXISTS(SELECT 1 FROM agent_session_history INDEXED BY agent_session_history_run
-             WHERE owner=? AND session=? AND run=? AND step=? AND kind='model_attempt_admitted'
-               AND sequence>? AND sequence<=?)",
-            params![serde_json::to_string(&history.namespace.owner)?, history.namespace.session, run, step, after, sql::bind_u64(through)?],
-            |row| row.get(0),
-        )?,
+        HistoryDataSource::Live { history, .. } => match crate::namespace::find_owner_id(c, &history.namespace.owner, &history.namespace.session)? {
+            Some(namespace_id) => c.query_row(
+                "SELECT EXISTS(SELECT 1 FROM agent_session_history INDEXED BY agent_session_history_run
+                 WHERE namespace_id=? AND run=? AND step=? AND kind='model_attempt_admitted'
+                   AND sequence>? AND sequence<=?)",
+                params![namespace_id, run, step, after, sql::bind_u64(through)?],
+                |row| row.get(0),
+            )?,
+            None => false,
+        },
         HistoryDataSource::Snapshot(snapshot) => c.query_row(
             "SELECT EXISTS(SELECT 1 FROM agent_history_snapshot_entries INDEXED BY agent_history_snapshot_step
              WHERE snapshot=? AND kind='fact' AND run=? AND json_extract(entry_json,'$.step')=?

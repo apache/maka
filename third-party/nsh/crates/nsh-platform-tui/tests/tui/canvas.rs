@@ -100,7 +100,7 @@ fn icon_sized_canvases_draw_nothing() {
 }
 
 #[test]
-fn canvas_fills_strokes_dashes_and_text_draw_in_braille_cells() {
+fn canvas_fills_draw_as_cell_backgrounds_and_strokes_in_braille() {
     let (mut view, rx) = surface();
     let mut terminal = Terminal::new(TestBackend::new(24, 6)).unwrap();
     view.load(App::Rust(Root::new::<Shapes>(|| ()))).unwrap();
@@ -109,10 +109,14 @@ fn canvas_fills_strokes_dashes_and_text_draw_in_braille_cells() {
     for y in 0..3 {
         assert_eq!(
             row(buffer, y, 0..5),
-            "⣿⣿⣿⣿⣿",
-            "the filled rectangle, row {y}"
+            "     ",
+            "the filled rectangle, row {y}: no braille"
         );
-        assert_eq!(buffer[(0, y)].fg, Color::Rgb(255, 0, 0));
+        assert_eq!(
+            buffer[(0, y)].bg,
+            Color::Rgb(255, 0, 0),
+            "a Cell background"
+        );
     }
     assert_eq!(
         row(buffer, 0, 6..20),
@@ -131,13 +135,12 @@ fn canvas_fills_strokes_dashes_and_text_draw_in_braille_cells() {
         "text centered on its x, its top at y"
     );
     assert_eq!(buffer[(9, 2)].fg, Color::Rgb(0, 255, 0));
-    assert_eq!(buffer[(0, 3)].symbol(), "⣿");
+    assert_eq!(buffer[(0, 3)].symbol(), " ");
     assert_eq!(
-        buffer[(0, 3)].fg,
+        buffer[(0, 3)].bg,
         Color::Rgb(128, 128, 128),
         "globalAlpha blends the paint over the color under it"
     );
-    assert_eq!(buffer[(0, 3)].bg, Color::Reset, "fills draw nothing");
     let contents: String = buffer.content.iter().map(|c| c.symbol()).collect();
     assert!(!contents.contains("Canvas"), "no placeholder is drawn");
 }
@@ -187,7 +190,12 @@ fn a_clip_keeps_fills_and_strokes_inside_and_fill_rules_pick_the_dots() {
     view.load(App::Rust(Root::new::<Clipped>(|| ()))).unwrap();
     draw_until(&mut view, &mut terminal, &rx, "clipped");
     let buffer = terminal.backend().buffer();
-    assert_eq!(row(buffer, 0, 0..10), "⣿⣿⣿⣿⣿     ");
+    assert_eq!(row(buffer, 0, 0..10), "          ");
+    assert_ne!(
+        buffer[(0, 0)].bg,
+        buffer[(5, 0)].bg,
+        "the clip stops the fill"
+    );
     assert_eq!(
         row(buffer, 1, 5..10),
         "     ",
@@ -198,9 +206,17 @@ fn a_clip_keeps_fills_and_strokes_inside_and_fill_rules_pick_the_dots() {
         Color::Rgb(0, 255, 0),
         "the stroke inside it is drawn"
     );
+    let filled: String = (0..10)
+        .map(|x| {
+            if buffer[(x, 2)].bg == Color::Reset {
+                '.'
+            } else {
+                '#'
+            }
+        })
+        .collect();
     assert_eq!(
-        row(buffer, 2, 0..10),
-        "⣿⣿      ⣿⣿",
+        filled, "##......##",
         "even-odd leaves the inner rectangle out"
     );
 }
@@ -246,7 +262,10 @@ fn a_press_at_a_canvas_nodes_center_reaches_the_canvas() {
     let (x, y, width, height) = RIGHT_HALF;
     let column = ((x + width / 2.0) / 8.0).floor() as u16;
     let row = ((y + height / 2.0) / 16.0).floor() as u16;
-    assert_eq!(terminal.backend().buffer()[(column, row)].symbol(), "⣿");
+    assert_ne!(
+        terminal.backend().buffer()[(column, row)].bg,
+        ratatui_core::style::Color::Reset
+    );
     view.handle(mouse(MouseKind::Down(MouseButton::Left), column, row));
     view.handle(mouse(MouseKind::Up(MouseButton::Left), column, row));
     draw_until(&mut view, &mut terminal, &rx, "Pressed 1");
@@ -515,8 +534,8 @@ fn a_canvas_over_a_text_leaves_it_and_a_cell_each_side_clear() {
     let buffer = terminal.backend().buffer();
     let line = row(buffer, 0, 0..20);
     assert_eq!(row(buffer, 0, 7..11), " 49 ", "{line}");
-    assert_eq!(row(buffer, 0, 5..7), "⣿⣿", "the fill goes on: {line}");
-    assert_eq!(row(buffer, 0, 11..13), "⣿⣿", "the fill goes on: {line}");
+    assert_eq!(row(buffer, 0, 5..7), "  ", "the fill goes on: {line}");
+    assert_eq!(row(buffer, 0, 11..13), "  ", "the fill goes on: {line}");
 }
 
 /// A filled card over a canvas, as a photo card over a stage's dots.
@@ -563,7 +582,10 @@ fn an_opaque_box_over_a_canvas_hides_its_dots() {
     view.load(App::Rust(Root::new::<Covered>(|| ()))).unwrap();
     draw_until(&mut view, &mut terminal, &rx, "drawn");
     let buffer = terminal.backend().buffer();
-    assert_eq!(row(buffer, 0, 0..4), "⣿⣿⣿⣿", "the dots beside it");
+    assert!(
+        (0..4).all(|x| buffer[(x, 0)].bg != ratatui_core::style::Color::Reset),
+        "the fill beside it"
+    );
     assert!(
         row(buffer, 0, 4..8)
             .chars()
@@ -571,7 +593,10 @@ fn an_opaque_box_over_a_canvas_hides_its_dots() {
         "no dots under the box: {:?}",
         row(buffer, 0, 0..12)
     );
-    assert_eq!(row(buffer, 0, 8..12), "⣿⣿⣿⣿", "the dots past it");
+    assert!(
+        (8..12).all(|x| buffer[(x, 0)].bg != Color::Reset),
+        "the fill past it"
+    );
 }
 
 /// A plot's rising line in a box with a Cell of padding each side, and a

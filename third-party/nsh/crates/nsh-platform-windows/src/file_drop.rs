@@ -7,10 +7,10 @@ use std::{
     rc::{Rc, Weak},
 };
 
-use nsh_core::{EventKind, EventPayload, NodeId};
+use nsh_core::{EventKind, EventPayload, NodeId, Points, ROOT_ID};
 use windows::{
     Win32::{
-        Foundation::{POINT, POINTL},
+        Foundation::{HWND, POINT, POINTL},
         Graphics::Gdi::ScreenToClient,
         System::{
             Com::{DVASPECT_CONTENT, FORMATETC, IDataObject, TYMED_HGLOBAL},
@@ -31,7 +31,10 @@ use crate::{input, surface::Surface, view::NshView};
 pub(crate) struct State {
     target: RefCell<Option<NshView>>,
     destinations: RefCell<Destinations>,
-    registered: Cell<bool>,
+    /// The windows a destination is registered on: the main window's and
+    /// those of the app's own (`<Window>`), each taking drops for the
+    /// views it shows.
+    registered: RefCell<Vec<HWND>>,
     offered: Cell<bool>,
     uris: RefCell<Vec<String>>,
 }
@@ -69,20 +72,57 @@ pub(crate) fn events_changed(surface: &Rc<Surface>, view: &NshView) {
             .destinations
             .borrow_mut()
             .set(view.id(), true);
-        if !surface.file_drop.registered.get() {
-            let destination: IDropTarget = Destination {
-                surface: Rc::downgrade(surface),
-            }
-            .into();
-            // SAFETY: mounted views and OLE destinations belong to the window's
-            // UI thread. OLE retains the interface until RevokeDragDrop.
-            match unsafe { RegisterDragDrop(surface.hwnd(), &destination) } {
-                Ok(()) => surface.file_drop.registered.set(true),
-                Err(error) => log::warn!("Could not register file drop destination: {error}"),
+        register(surface, ROOT_ID, surface.hwnd());
+        for id in crate::app_window::ids(surface) {
+            if let Some(hwnd) = crate::app_window::hwnd_of(surface, id) {
+                register(surface, id, hwnd);
             }
         }
     } else {
         deleted(surface, view.id());
+    }
+}
+
+/// A window of the app's own opened: it takes drops too while views listen.
+pub(crate) fn window_opened(surface: &Rc<Surface>, id: NodeId, hwnd: HWND) {
+    if surface.file_drop.destinations.borrow().count() > 0 {
+        register(surface, id, hwnd);
+    }
+}
+
+/// A window of the app's own is about to be destroyed.
+pub(crate) fn window_closing(surface: &Surface, hwnd: HWND) {
+    let mut registered = surface.file_drop.registered.borrow_mut();
+    if let Some(index) = registered.iter().position(|h| *h == hwnd) {
+        registered.swap_remove(index);
+        revoke(hwnd);
+    }
+}
+
+/// Registers a destination on `hwnd`, the window showing `window`'s tree
+/// (`ROOT_ID`: the main window's), unless it has one.
+fn register(surface: &Rc<Surface>, window: NodeId, hwnd: HWND) {
+    if hwnd.is_invalid() || surface.file_drop.registered.borrow().contains(&hwnd) {
+        return;
+    }
+    let destination: IDropTarget = Destination {
+        surface: Rc::downgrade(surface),
+        window,
+        hwnd,
+    }
+    .into();
+    // SAFETY: mounted views and OLE destinations belong to the window's
+    // UI thread. OLE retains the interface until RevokeDragDrop.
+    match unsafe { RegisterDragDrop(hwnd, &destination) } {
+        Ok(()) => surface.file_drop.registered.borrow_mut().push(hwnd),
+        Err(error) => log::warn!("Could not register file drop destination: {error}"),
+    }
+}
+
+fn revoke(hwnd: HWND) {
+    // SAFETY: the registration belongs to this live HWND on this thread.
+    if let Err(error) = unsafe { RevokeDragDrop(hwnd) } {
+        log::warn!("Could not revoke file drop destination: {error}");
     }
 }
 
@@ -108,11 +148,8 @@ pub(crate) fn invalidate(surface: &Surface, id: NodeId) {
 }
 
 pub(crate) fn reset(surface: &Surface) {
-    if surface.file_drop.registered.replace(false) {
-        // SAFETY: the registration belongs to this live HWND on this thread.
-        if let Err(error) = unsafe { RevokeDragDrop(surface.hwnd()) } {
-            log::warn!("Could not revoke file drop destination: {error}");
-        }
+    for hwnd in std::mem::take(&mut *surface.file_drop.registered.borrow_mut()) {
+        revoke(hwnd);
     }
     *surface.file_drop.destinations.borrow_mut() = Destinations::default();
     surface.file_drop.offered.set(false);
@@ -144,27 +181,22 @@ fn set_target(surface: &Surface, next: Option<NshView>) {
     }
 }
 
-fn update(surface: &Surface, point: &POINTL, effect: *mut DROPEFFECT) {
+fn update(surface: &Surface, place: Place, point: &POINTL, effect: *mut DROPEFFECT) {
     if effect.is_null() {
         set_target(surface, None);
         return;
     }
     // SAFETY: OLE supplies an in/out effect pointer for this callback.
     let copy_allowed = unsafe { (*effect).0 & DROPEFFECT_COPY.0 != 0 };
-    let mut client = POINT {
-        x: point.x,
-        y: point.y,
-    };
-    // SAFETY: the surface owns the destination HWND; client is writable.
     let target = if copy_allowed
         && surface.file_drop.offered.get()
-        && unsafe { ScreenToClient(surface.hwnd(), &mut client) }.as_bool()
+        && let Some((x, y)) = client_points(surface, place, point)
     {
-        input::file_drop_target(
-            surface,
-            client.x as f32 / surface.scale(),
-            client.y as f32 / surface.scale(),
-        )
+        // A window of the app's own picks views in its own tree.
+        let _root = (place.window != ROOT_ID)
+            .then(|| crate::app_window::enter(surface, place.window))
+            .flatten();
+        input::file_drop_target(surface, x, y)
     } else {
         None
     };
@@ -177,6 +209,27 @@ fn update(surface: &Surface, point: &POINTL, effect: *mut DROPEFFECT) {
         }
     };
     set_target(surface, target);
+}
+
+/// OLE's drag point (`point`, screen pixels) in the window's client area,
+/// in points: the root coordinates pointer input and hit testing use.
+fn client_points(surface: &Surface, place: Place, point: &POINTL) -> Option<(f32, f32)> {
+    let mut client = POINT {
+        x: point.x,
+        y: point.y,
+    };
+    // SAFETY: the surface owns the destination HWND; client is writable.
+    unsafe { ScreenToClient(place.hwnd, &mut client) }
+        .as_bool()
+        .then(|| {
+            // As the window's pointer input scales ([`crate::window`]).
+            let scale = if place.window == ROOT_ID {
+                surface.scale()
+            } else {
+                crate::window::dpi(place.hwnd) as f32 / 96.0
+            };
+            (client.x as f32 / scale, client.y as f32 / scale)
+        })
 }
 
 fn format() -> FORMATETC {
@@ -229,9 +282,55 @@ fn files(data: &IDataObject) -> Vec<String> {
     uris
 }
 
+#[cfg(feature = "dev")]
+/// Drops `uris` at `x`, `y` (points, root coordinates) as a file
+/// manager's drag ends there, for the test agent: false when no view there
+/// takes file drops.
+pub(crate) fn drop_uris(surface: &Surface, x: f32, y: f32, uris: Vec<String>) -> bool {
+    let Some(destination) = input::file_drop_target(surface, x, y) else {
+        return false;
+    };
+    if uris.is_empty() {
+        return false;
+    }
+    *surface.file_drop.uris.borrow_mut() = uris.clone();
+    set_target(surface, Some(destination.clone()));
+    surface.event(
+        destination.id(),
+        EventKind::FileDrop,
+        EventPayload::FileDropAt {
+            uris,
+            page_position: nsh_core::prelude::point(nsh_core::Points(x), nsh_core::Points(y)),
+        },
+    );
+    surface.file_drop.uris.borrow_mut().clear();
+    set_target(surface, None);
+    true
+}
+
+/// The window a destination takes drops for.
+#[derive(Clone, Copy)]
+struct Place {
+    /// Its tree's root: `ROOT_ID` for the main window, else the dialog
+    /// root of a window of the app's own.
+    window: NodeId,
+    hwnd: HWND,
+}
+
 #[implement(IDropTarget)]
 struct Destination {
     surface: Weak<Surface>,
+    window: NodeId,
+    hwnd: HWND,
+}
+
+impl Destination {
+    fn place(&self) -> Place {
+        Place {
+            window: self.window,
+            hwnd: self.hwnd,
+        }
+    }
 }
 
 impl IDropTarget_Impl for Destination_Impl {
@@ -257,7 +356,7 @@ impl IDropTarget_Impl for Destination_Impl {
             } else {
                 Vec::new()
             };
-            update(&surface, point, effect);
+            update(&surface, self.place(), point, effect);
         } else if !effect.is_null() {
             // SAFETY: OLE's callback output pointer.
             unsafe { *effect = DROPEFFECT_NONE };
@@ -272,7 +371,7 @@ impl IDropTarget_Impl for Destination_Impl {
         effect: *mut DROPEFFECT,
     ) -> Result<()> {
         if let Some(surface) = self.surface.upgrade() {
-            update(&surface, point, effect);
+            update(&surface, self.place(), point, effect);
         } else if !effect.is_null() {
             // SAFETY: OLE's callback output pointer.
             unsafe { *effect = DROPEFFECT_NONE };
@@ -297,7 +396,7 @@ impl IDropTarget_Impl for Destination_Impl {
         effect: *mut DROPEFFECT,
     ) -> Result<()> {
         if let Some(surface) = self.surface.upgrade() {
-            update(&surface, point, effect);
+            update(&surface, self.place(), point, effect);
             let target = surface.file_drop.target.borrow().clone();
             let uris = if target.is_some() {
                 data.as_ref().map(files).unwrap_or_default()
@@ -306,12 +405,13 @@ impl IDropTarget_Impl for Destination_Impl {
             };
             if let Some(target) = target
                 && !uris.is_empty()
+                && let Some((x, y)) = client_points(&surface, self.place(), point)
             {
-                surface.event(
-                    target.id(),
-                    EventKind::FileDrop,
-                    EventPayload::FileDrop(uris),
-                );
+                let payload = EventPayload::FileDropAt {
+                    uris,
+                    page_position: nsh_core::prelude::point(Points(x), Points(y)),
+                };
+                surface.event(target.id(), EventKind::FileDrop, payload);
             } else if !effect.is_null() {
                 // SAFETY: OLE's callback output pointer.
                 unsafe { *effect = DROPEFFECT_NONE };

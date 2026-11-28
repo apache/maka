@@ -185,7 +185,24 @@ impl Todo {
                             }
                         })?),
                     };
+                    let progress = access.worker_progress().map(|run| {
+                        let current = document
+                            .items
+                            .iter()
+                            .find(|i| i.status == Status::InProgress)
+                            .map(|i| super::worker_progress::short(&i.content));
+                        (Arc::downgrade(&run), current)
+                    });
+                    let changed = owner.todo.repository.changed.clone();
                     let business = TodoStatement {
+                        notify: Arc::new(move || {
+                            if let Some((run, current)) = &progress
+                                && let Some(run) = run.upgrade()
+                            {
+                                run.todo(current.clone());
+                            }
+                            changed.send_replace(());
+                        }),
                         inner: owner
                             .todo
                             .storage
@@ -193,7 +210,6 @@ impl Todo {
                             .map_err(|error| ToolRejection::PreparationFailed {
                                 message: error.to_string(),
                             })?,
-                        changed: owner.todo.repository.changed.clone(),
                     };
                     Ok(Replacement::new(
                         state,
@@ -324,10 +340,10 @@ impl Replacement {
 #[derive(Clone)]
 struct TodoStatement<S> {
     inner: S,
-    changed: tokio::sync::watch::Sender<()>,
+    notify: Arc<dyn Fn() + std::marker::Send + Sync>,
 }
 impl<S: Statement> Statement for TodoStatement<S> {
-    type Value = (S::Value, tokio::sync::watch::Sender<()>);
+    type Value = (S::Value, Arc<dyn Fn() + std::marker::Send + Sync>);
     type Output = S::Output;
     const PREPARE_OFF_THREAD: bool = S::PREPARE_OFF_THREAD;
     fn retain(&self) -> Vec<Arc<dyn std::marker::Send + Sync>> {
@@ -336,7 +352,7 @@ impl<S: Statement> Statement for TodoStatement<S> {
     fn prepare(self) -> Result<Self, maka_event_log::StoreError> {
         Ok(Self {
             inner: self.inner.prepare()?,
-            changed: self.changed,
+            notify: self.notify,
         })
     }
     fn execute(
@@ -356,14 +372,14 @@ impl<S: Statement> Statement for TodoStatement<S> {
                 error => error,
             })?;
         Ok(Prepared {
-            value: (value.value, self.changed),
+            value: (value.value, self.notify),
             changed: value.changed,
             notification: value.notification,
         })
     }
-    fn committed((value, changed): Self::Value) -> Self::Output {
+    fn committed((value, notify): Self::Value) -> Self::Output {
         let output = S::committed(value);
-        changed.send_replace(());
+        notify();
         output
     }
     fn isolated_rejection(error: &maka_event_log::StoreError) -> bool {

@@ -3,7 +3,13 @@
 //! AVKit are loaded on first use (`dlopen`), so apps without videos do not
 //! pay for them at launch.
 
-use std::{cell::Cell, ffi::CStr, ptr::NonNull, rc::Rc, sync::OnceLock};
+use std::{
+    cell::Cell,
+    ffi::CStr,
+    ptr::NonNull,
+    rc::Rc,
+    sync::{Arc, OnceLock},
+};
 
 use block2::RcBlock;
 use nsh_core::{
@@ -19,7 +25,7 @@ use objc2_core_foundation::CGSize;
 use objc2_foundation::{
     NSNotification, NSNotificationCenter, NSObjectProtocol, NSOperationQueue, NSString, NSURL,
 };
-use objc2_ui_kit::{UIView, UIViewAutoresizing};
+use objc2_ui_kit::{UIImage, UIView, UIViewAutoresizing};
 
 use crate::{image::AssetBase, native_view::NshView};
 
@@ -217,6 +223,8 @@ struct Status {
     loaded: Cell<bool>,
     failed: Cell<bool>,
     buffering: Cell<bool>,
+    /// The poster layer, until the video's first frame is ready.
+    poster: std::cell::RefCell<Option<Retained<objc2_quartz_core::CALayer>>>,
 }
 
 /// One video.
@@ -228,6 +236,10 @@ pub(crate) struct VideoHost {
     player: Option<Retained<AnyObject>>,
     layer: Option<Retained<AnyObject>>,
     controller: Option<Retained<AnyObject>>,
+    /// The image shown until the first frame loads.
+    poster: Option<Retained<objc2_quartz_core::CALayer>>,
+    /// The poster's URL, when it is to be loaded.
+    poster_request: Option<Arc<str>>,
     time_observer: Option<Retained<AnyObject>>,
     end_observer: Option<Retained<ProtocolObject<dyn NSObjectProtocol>>>,
     status: Rc<Status>,
@@ -256,6 +268,8 @@ impl VideoHost {
             player: None,
             layer: None,
             controller: None,
+            poster: None,
+            poster_request: None,
             time_observer: None,
             end_observer: None,
             status: Rc::default(),
@@ -287,6 +301,16 @@ impl VideoHost {
         let reopened = p.source != self.props.source || self.player.is_none();
         if reopened {
             self.open(p.source.as_deref());
+        }
+        if reopened || p.poster != self.props.poster {
+            self.clear_poster();
+            self.poster_request = p.poster.clone();
+        }
+        if p.resize_mode != self.props.resize_mode
+            && let Some(poster) = &self.poster
+        {
+            // SAFETY: a Core Animation setter.
+            poster.setContentsGravity(gravity(p.resize_mode));
         }
         if p.controls != self.props.controls || self.layer.is_none() && self.controller.is_none() {
             self.attach(p.controls);
@@ -367,6 +391,54 @@ impl VideoHost {
         self.props = p;
     }
 
+    /// The poster URL to load, once (`configure` found a new one).
+    pub(crate) fn take_poster_request(&mut self) -> Option<Arc<str>> {
+        self.poster_request.take()
+    }
+
+    /// How the poster fits the video's box.
+    pub(crate) fn poster_mode(&self) -> ResizeMode {
+        self.props.resize_mode
+    }
+
+    /// Shows `image` under the player until its first frame is ready.
+    pub(crate) fn show_poster(&mut self, image: Retained<UIImage>, mode: ResizeMode) {
+        // The first frame is there: it replaces the poster.
+        if self.status.loaded.get() {
+            return;
+        }
+        // SAFETY: a plain getter on a valid image.
+        let Some(contents) = (unsafe { image.CGImage() }) else {
+            return;
+        };
+        self.clear_poster();
+        let layer = objc2_quartz_core::CALayer::new();
+        // SAFETY: Core Animation setters on a fresh layer.
+        unsafe {
+            layer.setContentsGravity(gravity(mode));
+            layer.setContents(Some(
+                &*(&*contents as *const objc2_core_graphics::CGImage as *const AnyObject),
+            ));
+        }
+        let bounds = self.view.bounds();
+        layer.setFrame(bounds);
+        layer.setAutoresizingMask(
+            objc2_quartz_core::CAAutoresizingMask::LayerWidthSizable
+                | objc2_quartz_core::CAAutoresizingMask::LayerHeightSizable,
+        );
+        self.view.layer().insertSublayer_atIndex(&layer, 0);
+        self.poster = Some(layer.clone());
+        *self.status.poster.borrow_mut() = Some(layer);
+    }
+
+    /// Removes the poster, if one shows.
+    fn clear_poster(&mut self) {
+        self.status.poster.take();
+        if let Some(layer) = self.poster.take() {
+            layer.removeFromSuperlayer();
+        }
+    }
+
     /// Starts playing `source` (or nothing).
     fn open(&mut self, source: Option<&str>) {
         self.close();
@@ -427,6 +499,7 @@ impl VideoHost {
 
     fn close(&mut self) {
         audio_playing(self.audio_key, None);
+        self.clear_poster();
         if let (Some(player), Some(token)) = (&self.player, self.time_observer.take()) {
             // SAFETY: removes the observer this host added.
             let _: () = unsafe { msg_send![player, removeTimeObserver: &*token] };
@@ -570,6 +643,15 @@ impl VideoHost {
     }
 }
 
+/// How a poster fits its box, as the video's own gravity does.
+fn gravity(mode: ResizeMode) -> &'static objc2_quartz_core::CALayerContentsGravity {
+    match mode {
+        ResizeMode::Cover => unsafe { objc2_quartz_core::kCAGravityResizeAspectFill },
+        ResizeMode::Stretch => unsafe { objc2_quartz_core::kCAGravityResize },
+        _ => unsafe { objc2_quartz_core::kCAGravityResizeAspect },
+    }
+}
+
 /// Seeks `player` to `seconds`, to the frame.
 fn seek_exactly(player: &AnyObject, seconds: f64) {
     let zero = CMTime::from_seconds(0.0);
@@ -629,6 +711,9 @@ fn report(player: &AnyObject, control: &EngineControl, id: NodeId, status: &Stat
         let Some(item) = item else { return };
         let state: isize = msg_send![&item, status];
         if state == 1 && !status.loaded.replace(true) {
+            if let Some(poster) = status.poster.take() {
+                poster.removeFromSuperlayer();
+            }
             let size: CGSize = msg_send![&item, presentationSize];
             control.dispatch_event(
                 id,

@@ -65,6 +65,55 @@ fn rows_made_in_rust_show_their_cells() {
     }
 }
 
+/// [`Quotes`] in a page that `id:toggle` hides with `display: none` and
+/// shows again, as an app keeps a visited page alive.
+#[component]
+fn HiddenPage() -> impl IntoElement {
+    let shown = signal(true);
+    view()
+        .child(
+            view()
+                .test_id("toggle")
+                .h(px(20.0))
+                .on_press(move || shown.update(|s| *s = !*s))
+                .child(text("Toggle")),
+        )
+        .child(
+            view()
+                .style_when(move || !shown.get(), |s| s.hidden())
+                .child(quotes()),
+        )
+}
+
+#[test]
+fn a_hidden_table_keeps_its_rows() {
+    let mut app = start::<HiddenPage>();
+    app.wait_for("AAPL").unwrap();
+    let seen: Arc<Mutex<Vec<MountItem>>> = Arc::default();
+    let into = seen.clone();
+    app.observe(move |_, batch| into.lock().unwrap().extend(batch.items.iter().cloned()));
+    // Hidden, its rows have no room; shown, they are where they were. Their
+    // texts are never let go of nor made again.
+    for _ in 0..2 {
+        app.press("id:toggle").unwrap();
+        app.settle();
+        let items = std::mem::take(&mut *seen.lock().unwrap());
+        let texts: Vec<_> = items
+            .iter()
+            .filter_map(|i| match i {
+                MountItem::Text { text, .. } => Some(text.text.to_string()),
+                _ => None,
+            })
+            .collect();
+        assert!(texts.iter().all(|t| !t.is_empty()), "{texts:?}");
+        assert!(
+            !items.iter().any(|i| matches!(i, MountItem::Create { .. })),
+            "a view was made"
+        );
+    }
+    app.wait_for("AAPL").unwrap();
+}
+
 /// The table of [`Quotes`] beside a lone resize handle (`id:lone` inside),
 /// in a terminal.
 #[component]
@@ -250,14 +299,21 @@ fn tab_out_on(idiom: Idiom) -> Headless {
 }
 
 #[test]
-fn a_terminals_tab_leaves_the_table_and_the_arrows_move_between_columns() {
+fn a_terminals_tab_moves_between_cells_and_escape_lets_it_leave() {
     let mut app = tab_out_on(Idiom::Terminal);
+    // The arrows and Tab move the chosen cell, as on the desktops.
     app.press_key("right").unwrap();
     app.wait_for("Chosen Some(0):Some(1) next false").unwrap();
     app.press_key("left").unwrap();
     app.wait_for("Chosen Some(0):Some(0) next false").unwrap();
     app.press_key("tab").unwrap();
-    app.wait_for("Chosen Some(0):Some(0) next true").unwrap();
+    app.wait_for("Chosen Some(0):Some(1) next false").unwrap();
+    // Escape clears the selection, then gives up the keyboard: Tab moves
+    // the focus on, out of the table.
+    app.press_key("escape").unwrap();
+    app.press_key("escape").unwrap();
+    app.press_key("tab").unwrap();
+    app.wait_for("Chosen Some(0):Some(1) next true").unwrap();
 }
 
 #[test]
@@ -721,6 +777,48 @@ fn a_wheel_over_the_empty_state_scrolls_the_columns() {
     app.wait_for("First column 1").unwrap();
 }
 
+/// A table that reports both visible axes after one diagonal wheel event.
+#[component]
+fn DiagonalWheelTable() -> impl IntoElement {
+    let row = signal(0);
+    let col = signal(0);
+    view()
+        .child(
+            wide(80)
+                .data(DataTableRows::new(1).texts("a", ["Wheel target"]))
+                .on_visible_rows_change(move |range: &nsh_base::DataTableRange| {
+                    row.set(range.start)
+                })
+                .on_visible_columns_change(move |range: &nsh_base::DataTableRange| {
+                    col.set(range.start)
+                }),
+        )
+        .child(text(move || {
+            format!("First visible {}:{}", row.get(), col.get())
+        }))
+}
+
+#[test]
+fn a_diagonal_wheel_moves_both_data_table_axes() {
+    let viewport = Size::new(px(600.0), px(300.0));
+    let mut app = Headless::start(EngineConfig {
+        viewport,
+        environment: Environment {
+            os: Os::MacOs,
+            idiom: Idiom::Desktop,
+            window: viewport,
+            ..Default::default()
+        },
+        ..EngineConfig::new(nsh_testing::windowed_root::<DiagonalWheelTable>())
+    })
+    .unwrap();
+    app.first_render().unwrap();
+    app.wait_for("First visible 0:0").unwrap();
+    app.wheel("text:Wheel target", point(px(400.0), px(240.0)))
+        .unwrap();
+    app.wait_for("First visible 8:1").unwrap();
+}
+
 /// Wide columns between one fixed at each side.
 #[component]
 fn WideFixed() -> impl IntoElement {
@@ -771,4 +869,75 @@ fn the_horizontal_bar_spans_the_scrolling_columns_only() {
         .expect("the bar");
     assert_eq!(bar.bounds.origin.x.0, 100.0);
     assert_eq!(bar.bounds.size.width.0, 400.0);
+}
+
+/// Quotes sorted by symbol whose parts have typed styles
+/// (`StyleRefinement`, as a Rust app types them): the root's bold weight
+/// for all the text, titles red but the sorted one blue (its part comes
+/// after), cells green.
+#[component]
+fn TypedStyles() -> impl IntoElement {
+    use nsh_base::{DataTableStyles, text_view::PartStyle};
+    use nsh_core::element::StyleRefinement;
+
+    let color = |c: u32| PartStyle(StyleRefinement::default().text_color(rgb(c)).into());
+    let mut styles = DataTableStyles::default();
+    styles.root = Some(PartStyle(
+        StyleRefinement::default()
+            .font_weight(FontWeight::BOLD)
+            .into(),
+    ));
+    styles.header_cell = Some(color(0xff0000));
+    styles.header_cell_sorted = Some(color(0x0000ff));
+    styles.cell = Some(color(0x00ff00));
+    let mut sort = DataTableSort::default();
+    sort.key = "symbol".into();
+    data_table()
+        .h(px(200.0))
+        .columns(vec![column("symbol"), column("last")])
+        .data(
+            DataTableRows::new(1)
+                .texts("symbol", ["AAPL"])
+                .numbers("last", [231.5]),
+        )
+        .sort(Some(sort))
+        .styles(styles)
+}
+
+#[test]
+fn typed_part_styles_reach_their_parts_the_later_winning() {
+    let app = start::<TypedStyles>();
+    let style = |selector: &str| app.screen().span_style(selector).unwrap();
+    assert_eq!(style("text:symbol").color, nsh_core::Color(0x0000_ffff));
+    assert_eq!(style("text:last").color, nsh_core::Color(0xff00_00ff));
+    assert_eq!(style("text:AAPL").color, nsh_core::Color(0x00ff_00ff));
+    assert_eq!(style("text:AAPL").font_weight, 700);
+}
+
+/// Striped rows whose parts have typed styles: every row red, the rows
+/// of odd position blue (`rowOdd` comes after `row`), which their cells'
+/// text takes.
+#[component]
+fn TypedRows() -> impl IntoElement {
+    use nsh_base::{DataTableStyles, text_view::PartStyle};
+    use nsh_core::element::StyleRefinement;
+
+    let color = |c: u32| PartStyle(StyleRefinement::default().text_color(rgb(c)).into());
+    let mut styles = DataTableStyles::default();
+    styles.row = Some(color(0xff0000));
+    styles.row_odd = Some(color(0x0000ff));
+    data_table()
+        .h(px(200.0))
+        .columns(vec![column("symbol")])
+        .data(DataTableRows::new(2).texts("symbol", ["AAPL", "MSFT"]))
+        .stripe(true)
+        .styles(styles)
+}
+
+#[test]
+fn typed_row_styles_merge_in_order_the_later_winning() {
+    let app = start::<TypedRows>();
+    let color = |selector: &str| app.screen().span_style(selector).unwrap().color;
+    assert_eq!(color("text:AAPL"), nsh_core::Color(0xff00_00ff));
+    assert_eq!(color("text:MSFT"), nsh_core::Color(0x0000_ffff));
 }

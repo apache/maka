@@ -14,15 +14,97 @@ use crate::{
     element::JsEvent,
     geometry::{Points, Size},
     mount::MountItem,
-    ops::{EventKind, EventPayload, NodeId},
+    ops::{EventKind, EventPayload, NodeId, ResizeMode},
     platform::{Appearance, ColorScheme, InputModality},
     props::PointerEvents,
-    style::{Color, Style, StylePatch, ViewStyle},
+    style::{Color, PaintStyle, Style, StylePatch, TextStyle, VerticalAlign, ViewStyle},
     tailwind::{
-        ClassEnvironment, ClassList, ClassProps, Context, Rule, Theme, deps, position, rank, state,
+        ClassEnvironment, ClassList, ClassProps, Context, Pointer, Rule, Theme, deps, position,
+        rank, state,
     },
     text::TextEngine,
 };
+
+/// Maximum entries kept in [`Core::resolved_styles`] before clearing.
+pub(super) const RESOLVED_STYLE_CACHE: usize = 4096;
+
+/// Cache key for [`Core::resolved_styles`], normalized to the dependency bits of `ClassList`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) struct ResolvedKey {
+    classes: usize,
+    states: u16,
+    position: u8,
+    flags: u8,
+    width: u32,
+    height: u32,
+    inherited_color: u32,
+}
+
+impl ResolvedKey {
+    fn new(
+        classes: &ClassList,
+        env: &ClassEnvironment,
+        viewport: Size<Points>,
+        rtl: bool,
+        states: u16,
+        position: u8,
+        inherited_color: Option<Color>,
+    ) -> Self {
+        let deps = classes.deps();
+        let has_current = deps & deps::CURRENT_COLOR != 0;
+        let flags = u8::from(rtl)
+            | (u8::from(deps & deps::DARK != 0 && env.dark) << 1)
+            | (u8::from(deps & deps::MOTION != 0 && env.reduce_motion) << 2)
+            | (u8::from(deps & deps::DEVICE != 0 && env.pointer == Pointer::Fine) << 3)
+            | (u8::from(deps & deps::DEVICE != 0 && env.terminal) << 4)
+            | (u8::from(has_current && inherited_color.is_some()) << 5);
+        Self {
+            classes: std::ptr::from_ref(classes) as usize,
+            states: if deps & deps::STATE != 0 { states } else { 0 },
+            position: if deps & deps::POSITION != 0 {
+                position
+            } else {
+                0
+            },
+            flags,
+            width: if deps & deps::WIDTH != 0 {
+                viewport.width.0.to_bits()
+            } else {
+                0
+            },
+            height: if deps & deps::HEIGHT != 0 {
+                viewport.height.0.to_bits()
+            } else {
+                0
+            },
+            inherited_color: if has_current {
+                inherited_color.map_or(0, |c| c.0)
+            } else {
+                0
+            },
+        }
+    }
+}
+
+/// Cached resolved style fields ready to apply via [`Core::apply_resolved_style`].
+pub(super) struct ResolvedClassStyle {
+    /// The classes resolved: kept so that [`ResolvedKey::classes`], their
+    /// address, names no other list while the entry is cached.
+    pub(super) classes: std::rc::Rc<ClassList>,
+    pub(super) layout: std::rc::Rc<taffy::Style>,
+    pub(super) view: Option<std::rc::Rc<ViewStyle>>,
+    pub(super) text: Option<std::rc::Rc<TextStyle>>,
+    pub(super) paint: Option<std::rc::Rc<PaintStyle>>,
+    pub(super) props: Option<std::rc::Rc<ClassProps>>,
+    pub(super) sticky: Option<taffy::Rect<taffy::LengthPercentageAuto>>,
+    pub(super) object_fit: Option<ResizeMode>,
+    pub(super) perspective: Option<Points>,
+    pub(super) z_index: i32,
+    pub(super) vertical_align: VerticalAlign,
+    pub(super) wants_fixed: bool,
+    pub(super) rtl: bool,
+    pub(super) has_logical: bool,
+}
 
 /// The text color an inline style sets (`color`).
 fn inline_color(patch: &StylePatch) -> Option<Color> {
@@ -233,7 +315,10 @@ impl<M: TextEngine> Core<M> {
             })
             // `ios:` / `android:` never change at run time, but a new
             // platform must reach classes resolved before it was known.
-            | (if env.platform != self.class_env.platform { u16::MAX } else { 0 });
+            | (if env.platform != self.class_env.platform { deps::PLATFORM } else { 0 });
+        if env.platform != self.class_env.platform {
+            self.resolved_styles.clear();
+        }
         self.class_env = env;
         if env.reduce_motion {
             self.clear_pressed_impulses();
@@ -413,6 +498,10 @@ impl<M: TextEngine> Core<M> {
             self.focus = (key != self.root).then_some((key, id));
             self.focus_visible = self.focus_shows(key);
             self.focus_by_keyboard = self.keyboard_moves_focus() && !self.restoring_modal_focus;
+            // A popup a pointer opened gave it back (`pointer_focus_back`):
+            // still the pointer's, whatever closed the popup.
+            let given_back = self.pointer_focus_back.take() == Some(id);
+            self.focus_by_pointer = given_back || self.modality == Some(InputModality::Pointer);
             self.blur_held = false;
         } else if self.focus == Some((key, id)) {
             self.focus = None;
@@ -1085,48 +1174,68 @@ impl<M: TextEngine> Core<M> {
         if let Some(l) = list {
             current.list = l;
         }
-        let mut combined = String::with_capacity(current.class.len() + 16 * current.list.len());
-        combined.push_str(&current.class);
-        for name in &current.list {
-            combined.push(' ');
-            combined.push_str(name);
-        }
-        let classes = if combined.trim().is_empty() {
-            None
-        } else {
-            let (classes, fresh) = self.tailwind.get(&combined);
-            if fresh && !classes.unknown().is_empty() {
-                log::warn!(
-                    "unknown classes: {}",
-                    classes
-                        .unknown()
-                        .iter()
-                        .map(|s| &**s)
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                );
+        let (classes, fresh) = if current.list.is_empty() {
+            if current.class.trim().is_empty() {
+                (None, false)
+            } else {
+                let (classes, fresh) = self.tailwind.get(&current.class);
+                (Some(classes), fresh)
             }
-            Some(classes)
+        } else {
+            let mut combined = String::with_capacity(current.class.len() + 16 * current.list.len());
+            combined.push_str(&current.class);
+            for name in &current.list {
+                combined.push(' ');
+                combined.push_str(name);
+            }
+            if combined.trim().is_empty() {
+                (None, false)
+            } else {
+                let (classes, fresh) = self.tailwind.get(&combined);
+                (Some(classes), fresh)
+            }
         };
+        if fresh
+            && let Some(c) = &classes
+            && !c.unknown().is_empty()
+        {
+            log::warn!(
+                "unknown classes: {}",
+                c.unknown()
+                    .iter()
+                    .map(|s| &**s)
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            );
+        }
         self.set_class_list(key, classes);
     }
 
     /// Sets the resolved classes of `key` (a Rust component's styles go
     /// straight here).
     pub(super) fn set_class_list(&mut self, key: Key, classes: Option<std::rc::Rc<ClassList>>) {
-        let node = &mut self.nodes[key as usize];
-        // The state styles go over the classes.
-        let classes = match node.parts.as_deref_mut() {
-            Some(parts) => {
+        let state_rules = self.nodes[key as usize]
+            .parts
+            .as_deref_mut()
+            .and_then(|parts| {
                 parts.base = classes.clone();
-                match (classes, &parts.state_rules) {
-                    (Some(c), Some(s)) => Some(std::rc::Rc::new(c.merged(s))),
-                    (None, Some(s)) => Some(s.clone()),
-                    (c, None) => c,
-                }
-            }
-            None => classes,
+                parts.state_rules.clone()
+            });
+        // The state styles go over the classes.
+        let classes = if let Some(state_rules) = state_rules {
+            self.merge_user(classes, Some(state_rules))
+        } else {
+            classes
         };
+        let node = &mut self.nodes[key as usize];
+        let unchanged = match (&node.classes, &classes) {
+            (None, None) => true,
+            (Some(a), Some(b)) => std::rc::Rc::ptr_eq(a, b),
+            _ => false,
+        };
+        if unchanged {
+            return;
+        }
         let had_groups = node
             .classes
             .as_ref()
@@ -1177,6 +1286,8 @@ impl<M: TextEngine> Core<M> {
             }
         };
         self.tailwind.set_theme(theme);
+        self.resolved_styles.clear();
+        self.components.merges.clear();
         let keys: Vec<Key> = self
             .nodes
             .iter()
@@ -1197,6 +1308,16 @@ impl<M: TextEngine> Core<M> {
         let Some(changed) = self.tailwind.set_tokens(&tokens) else {
             return;
         };
+        if changed == u16::MAX {
+            self.resolved_styles.clear();
+            self.components.merges.clear();
+        } else {
+            self.resolved_styles
+                .retain(|_, entry| entry.classes.deps() & changed == 0);
+            self.components
+                .merges
+                .retain(|_, [a, b, merged]| (a.deps() | b.deps() | merged.deps()) & changed == 0);
+        }
         let reads = |c: &Option<std::rc::Rc<ClassList>>| {
             c.as_ref().is_some_and(|c| c.deps() & changed != 0)
         };
@@ -1233,10 +1354,7 @@ impl<M: TextEngine> Core<M> {
         for (id, (own, class, outer)) in nodes {
             let app = self.app_class_list(&class);
             let user = self.merge_user(Some(app), outer);
-            let list = match (own, user) {
-                (Some(a), Some(b)) => Some(std::rc::Rc::new(a.merged(&b))),
-                (a, b) => a.or(b),
-            };
+            let list = self.merge_user(own, user);
             if let Ok(key) = self.key(id) {
                 self.set_class_list(key, list);
             }
@@ -1415,6 +1533,13 @@ impl<M: TextEngine> Core<M> {
 
     /// Restyles the children of `parent` that depend on their position.
     pub(super) fn positions_changed(&mut self, parent: Key) {
+        if self.passes_position(parent) {
+            // Its children take its own position, which theirs among
+            // them do not change.
+            let bits = self.known_position(parent);
+            self.pass_to_children(parent, bits);
+            return;
+        }
         let children = self.nodes[parent as usize].children.clone();
         self.positioning(children.len());
         let count = children
@@ -1431,19 +1556,93 @@ impl<M: TextEngine> Core<M> {
                 // Keep position_bits' fallback for a child that does not count.
                 0
             };
-            let node = &self.nodes[c as usize];
-            if node
-                .classes
-                .as_ref()
-                .is_some_and(|c| c.deps() & deps::POSITION != 0)
+            self.position_moved(c, Self::position_at(index, count));
+        }
+    }
+
+    /// Restyles `key`, now at position `bits`, if its classes read its
+    /// position and it moved; a view passing its position on passes it.
+    fn position_moved(&mut self, key: Key, bits: u8) {
+        let node = &self.nodes[key as usize];
+        // Only the children whose bits moved: an append restyles the old
+        // last row and the new one, not every sibling.
+        if node.position_used == bits {
+            return;
+        }
+        if node.positional.has(Positional::PASS) {
+            self.nodes[key as usize].position_used = bits;
+            if self.nodes[key as usize]
+                .positional
+                .has(Positional::CHILDREN)
             {
-                // Only the children whose bits moved: an append restyles the
-                // old last row and the new one, not every sibling.
-                let bits = Self::position_at(index, count);
-                if node.position_used != bits {
-                    self.restyle_at(c, Some(bits));
-                }
+                self.pass_to_children(key, bits);
             }
+        }
+        if self.nodes[key as usize]
+            .classes
+            .as_ref()
+            .is_some_and(|c| c.deps() & deps::POSITION != 0)
+        {
+            self.restyle_at(key, Some(bits));
+        }
+    }
+
+    /// Gives `key`'s element children the position `bits`, its own.
+    fn pass_to_children(&mut self, key: Key, bits: u8) {
+        let children = self.nodes[key as usize].children.clone();
+        self.positioning(children.len());
+        for c in children {
+            if self.is_element_child(c) {
+                self.position_moved(c, bits);
+            }
+        }
+    }
+
+    /// Whether `key`'s children take its position ([`Prop::PassPosition`]).
+    ///
+    /// [`Prop::PassPosition`]: crate::ops::Prop::PassPosition
+    fn passes_position(&self, key: Key) -> bool {
+        self.nodes[key as usize].positional.has(Positional::PASS)
+    }
+
+    /// A child of `parent` reads its position: `parent` looks at its
+    /// children's when they move, and so does each view whose position
+    /// it passes on.
+    pub(super) fn reads_positions(&mut self, parent: Key) {
+        let mut k = parent;
+        while k != NO_KEY {
+            let node = &mut self.nodes[k as usize];
+            node.positional |= Positional::CHILDREN;
+            if !node.positional.has(Positional::PASS) {
+                break;
+            }
+            k = node.parent;
+        }
+    }
+
+    /// Sets whether `key`'s children take its position among its
+    /// siblings ([`Prop::PassPosition`]); those that read theirs are
+    /// styled again.
+    ///
+    /// [`Prop::PassPosition`]: crate::ops::Prop::PassPosition
+    pub(super) fn set_pass_position(&mut self, key: Key, pass: bool) {
+        if self.passes_position(key) == pass {
+            return;
+        }
+        let node = &mut self.nodes[key as usize];
+        if pass {
+            node.positional |= Positional::PASS;
+        } else {
+            node.positional.remove(Positional::PASS);
+        }
+        // Not yet known: counted again when asked for (`known_position`).
+        node.position_used = 0;
+        if node.positional.has(Positional::CHILDREN) {
+            let parent = node.parent;
+            if pass && parent != NO_KEY {
+                self.reads_positions(parent);
+            }
+            self.queue_positions(key);
         }
     }
 
@@ -1473,11 +1672,15 @@ impl<M: TextEngine> Core<M> {
         self.position_bits(key)
     }
 
-    /// [`position`] bits of `key` among its parent's element children.
+    /// [`position`] bits of `key` among its parent's element children, or
+    /// its parent's own when the parent passes its position on.
     fn position_bits(&self, key: Key) -> u8 {
         let parent = self.nodes[key as usize].parent;
         if parent == NO_KEY {
             return position::FIRST | position::LAST | position::ONLY | position::ODD;
+        }
+        if self.passes_position(parent) {
+            return self.known_position(parent);
         }
         self.positioning(self.nodes[parent as usize].children.len());
         let siblings: Vec<Key> = self.nodes[parent as usize]
@@ -1608,8 +1811,177 @@ impl<M: TextEngine> Core<M> {
         self.restyle_at(key, None);
     }
 
+    fn finish_restyle_metadata(&mut self, key: Key, pos: u8, positional: bool) {
+        let node = &mut self.nodes[key as usize];
+        node.spaced = false;
+        node.color_used = node.inherited_color;
+        let cleared_ch = node.reads_ch;
+        node.reads_ch = false;
+        node.resting_fill = None;
+        node.position_used = if positional { pos } else { 0 };
+        let parent = node.parent;
+        if cleared_ch {
+            self.ch_readers -= 1;
+        }
+        if positional {
+            self.reads_positions(parent);
+        }
+    }
+
+    /// Resolves `key`'s classes through [`Core::resolved_styles`]. Returns
+    /// `false` when more than the inputs of [`ResolvedKey`] decide its style
+    /// (the root, an inline style, `direction`, insets, an input, `group-*`,
+    /// `data-*`, `ch`, a `space-*` parent, a terminal box's resting fill under
+    /// interaction): [`Self::restyle_at`] resolves it alone.
+    fn try_resolve_cached(&mut self, key: Key, position: Option<u8>) -> bool {
+        #[cfg(test)]
+        if self.resolve_uncached {
+            return false;
+        }
+        let node = &self.nodes[key as usize];
+        if key == self.root
+            || !node.inline_style.is_empty()
+            || node.direction.is_some()
+            || node.insets.is_some()
+            || node.kind == Kind::Input
+        {
+            return false;
+        }
+        let Some(classes) = node.classes.clone() else {
+            return false;
+        };
+        let d = classes.deps();
+        if d & (deps::GROUP | deps::DATA | deps::CH) != 0 {
+            return false;
+        }
+        if self.space_of(key).is_some() {
+            return false;
+        }
+        let states = if d & deps::STATE != 0 {
+            self.styled_states(key)
+        } else {
+            0
+        };
+        if self.layout.grid().is_some() && d & deps::STATE != 0 && states & INTERACTION != 0 {
+            return false;
+        }
+        let pos = if d & deps::POSITION != 0 {
+            position.unwrap_or_else(|| self.known_position(key))
+        } else {
+            0
+        };
+        let node = &self.nodes[key as usize];
+        let positional = pos != 0 && node.parent != NO_KEY;
+        let inherited_color = node.inherited_color;
+        let rtl = self.resolved_rtl(key);
+        let cache_key = ResolvedKey::new(
+            &classes,
+            &self.class_env,
+            self.viewport,
+            rtl,
+            states,
+            pos,
+            inherited_color,
+        );
+        let resolved = if let Some(cached) = self.resolved_styles.get(&cache_key) {
+            cached.clone()
+        } else {
+            let group = |_: &str| 0;
+            let cx = Context {
+                env: self.class_env,
+                window: self.viewport,
+                rtl,
+                states,
+                position: pos,
+                group: &group,
+            };
+            let mut style = Style::default();
+            let mut props = ClassProps::default();
+            classes.apply_with_current(
+                &cx,
+                &crate::tailwind::no_data,
+                self.tailwind.theme(),
+                crate::tailwind::CurrentColor {
+                    inherited: inherited_color,
+                    inline: None,
+                },
+                None,
+                crate::tailwind::DEFAULT_CH,
+                &mut style,
+                &mut props,
+                |_| {},
+            );
+            style.node_props(&mut props);
+            if !style.animated.is_empty()
+                || style.direction.is_some()
+                || !style.pending.env.is_empty()
+            {
+                self.finish_restyle_metadata(key, pos, positional);
+                self.set_class_props(key, props);
+                let id = self.nodes[key as usize].id;
+                let _ = self.set_style(id, style);
+                return true;
+            }
+            let Style {
+                mut layout,
+                mut view,
+                text,
+                paint,
+                animated: _,
+                z_index,
+                vertical_align,
+                direction: _,
+                logical,
+                pending,
+                perspective,
+            } = style;
+            let has_logical = !logical.is_empty();
+            let sticky = super::prepare_layout(
+                &mut layout,
+                &mut view,
+                &logical,
+                rtl,
+                pending.sticky_position,
+            );
+            // An input clips whatever it sets; inputs never reach here.
+            super::clip_overflow(&mut layout, view.overflow_hidden);
+            let layout = self.layout.share(layout);
+            let view = (view != ViewStyle::DEFAULT).then(|| std::rc::Rc::new(view));
+            let text = (text != TextStyle::DEFAULT).then(|| std::rc::Rc::new(text));
+            let paint = (paint != PaintStyle::default()).then(|| std::rc::Rc::new(paint));
+            let props = (props != ClassProps::default()).then(|| std::rc::Rc::new(props));
+            let entry = std::rc::Rc::new(ResolvedClassStyle {
+                classes,
+                layout,
+                view,
+                text,
+                paint,
+                props,
+                sticky,
+                object_fit: pending.object_fit,
+                perspective,
+                z_index,
+                vertical_align,
+                wants_fixed: pending.fixed_position,
+                rtl,
+                has_logical,
+            });
+            if self.resolved_styles.len() >= RESOLVED_STYLE_CACHE {
+                self.resolved_styles.clear();
+            }
+            self.resolved_styles.insert(cache_key, entry.clone());
+            entry
+        };
+        self.finish_restyle_metadata(key, pos, positional);
+        self.apply_resolved_style(key, &resolved);
+        true
+    }
+
     /// [`Self::restyle`] with `position` already known (`None`: query it).
     fn restyle_at(&mut self, key: Key, position: Option<u8>) {
+        if self.try_resolve_cached(key, position) {
+            return;
+        }
         let mut base = Style::default();
         // The synthetic root stays sized to the host's viewport when restyled.
         if key == self.root {
@@ -1645,7 +2017,15 @@ impl<M: TextEngine> Core<M> {
             Some(font) => self.zero_advance(font),
             None => crate::tailwind::DEFAULT_CH,
         };
-        let base_for_rest = base.clone();
+        // In a terminal, a box's fill decides its layout (a band or a
+        // line, [`terminal_layout::Surface`]): only needed under active interaction.
+        let need_rest = self.layout.grid().is_some()
+            && self.styled_states(key) & INTERACTION != 0
+            && self.nodes[key as usize]
+                .classes
+                .as_ref()
+                .is_some_and(|c| c.deps() & deps::STATE != 0);
+        let base_for_rest = need_rest.then(|| base.clone());
         let mut style;
         let mut props;
         match inherited_font {
@@ -1672,22 +2052,13 @@ impl<M: TextEngine> Core<M> {
             let id = node.id;
             self.ch_styled.push((key, id));
         }
-        // In a terminal, a box's fill decides its layout (a band or a
-        // line, [`terminal_layout::Surface`]): the fill it rests with does,
-        // never one a hover or a press gives it for a moment.
-        let resting = (self.layout.grid().is_some()
-            && self.styled_states(key) & INTERACTION != 0
-            && self.nodes[key as usize]
-                .classes
-                .as_ref()
-                .is_some_and(|c| c.deps() & deps::STATE != 0))
-        .then(|| {
-            let mut rest = base_for_rest;
-            let mut rest_props = ClassProps::default();
-            self.resolve_classes_in(key, ch, position, INTERACTION, &mut rest, &mut rest_props);
-            rest.view.background_color
-        })
-        .filter(|&fill| fill != style.view.background_color);
+        let resting = base_for_rest
+            .map(|mut rest| {
+                let mut rest_props = ClassProps::default();
+                self.resolve_classes_in(key, ch, position, INTERACTION, &mut rest, &mut rest_props);
+                rest.view.background_color
+            })
+            .filter(|&fill| fill != style.view.background_color);
         self.nodes[key as usize].resting_fill = resting;
         style.node_props(&mut props);
         self.set_class_props(key, props);
@@ -1829,33 +2200,56 @@ impl<M: TextEngine> Core<M> {
                 group: &group,
             };
             let inline = &node.inline_style;
+            let has_inline = !inline.is_empty();
             let current = crate::tailwind::CurrentColor {
                 inherited: node.inherited_color,
-                inline: inline_color(inline),
-            };
-            let text_color = classes.current_color(&cx, &data, current);
-            inline.apply_defaults(style, text_color);
-            let rtl = cx.rtl;
-            classes.apply_with(
-                &cx,
-                &data,
-                self.tailwind.theme(),
-                current,
-                ch,
-                style,
-                props,
-                |s| {
-                    inline.apply(s);
-                    s.apply_current_color(text_color);
-                    if let Some(space) = self.space_of(key) {
-                        space.apply(s, true, rtl);
-                    }
+                inline: if has_inline {
+                    inline_color(inline)
+                } else {
+                    None
                 },
-            );
+            };
+            let rtl = cx.rtl;
+            if has_inline {
+                let text_color = classes.current_color(&cx, &data, current);
+                inline.apply_defaults(style, text_color);
+                classes.apply_with_current(
+                    &cx,
+                    &data,
+                    self.tailwind.theme(),
+                    current,
+                    Some(text_color),
+                    ch,
+                    style,
+                    props,
+                    |s| {
+                        inline.apply(s);
+                        s.apply_current_color(text_color);
+                        if let Some(space) = self.space_of(key) {
+                            space.apply(s, true, rtl);
+                        }
+                    },
+                );
+            } else {
+                classes.apply_with_current(
+                    &cx,
+                    &data,
+                    self.tailwind.theme(),
+                    current,
+                    None,
+                    ch,
+                    style,
+                    props,
+                    |s| {
+                        if let Some(space) = self.space_of(key) {
+                            space.apply(s, true, rtl);
+                        }
+                    },
+                );
+            }
             self.nodes[key as usize].position_used = if positional { pos } else { 0 };
             if positional {
-                let parent = self.nodes[key as usize].parent;
-                self.nodes[parent as usize].positional |= Positional::CHILDREN;
+                self.reads_positions(self.nodes[key as usize].parent);
             }
         } else {
             // Without classes it reads no position: the bits it was styled
@@ -2056,12 +2450,51 @@ impl<M: TextEngine> Core<M> {
 
     /// Applies the node props classes and styles set.
     pub(super) fn set_class_props(&mut self, key: Key, props: ClassProps) {
-        let node = &mut self.nodes[key as usize];
-        let old = node.class_props.take().map(|b| *b).unwrap_or_default();
-        if old == props {
-            node.class_props = (props != ClassProps::default()).then(|| Box::new(props));
-            return;
+        let is_default = props == ClassProps::default();
+        match (&self.nodes[key as usize].class_props, is_default) {
+            (None, true) => return,
+            (Some(old), false) if **old == props => return,
+            (Some(old), true) if **old == ClassProps::default() => {
+                self.nodes[key as usize].class_props = None;
+                return;
+            }
+            _ => {}
         }
+        let old = self.nodes[key as usize].class_props.take();
+        let next = (!is_default).then(|| std::rc::Rc::new(props));
+        self.nodes[key as usize].class_props = next.clone();
+        self.diff_class_props(key, old.as_deref(), next.as_deref());
+    }
+
+    /// Applies a shared `Rc<ClassProps>` from a cached resolved style,
+    /// skipping comparison when the same pointer is already installed.
+    pub(super) fn set_class_props_shared(
+        &mut self,
+        key: Key,
+        props: Option<&std::rc::Rc<ClassProps>>,
+    ) {
+        match (&self.nodes[key as usize].class_props, props) {
+            (None, None) => return,
+            (Some(a), Some(b)) if std::rc::Rc::ptr_eq(a, b) => return,
+            (Some(old), None) if **old == ClassProps::default() => {
+                self.nodes[key as usize].class_props = None;
+                return;
+            }
+            (Some(old), Some(new)) if **old == **new => {
+                self.nodes[key as usize].class_props = Some(new.clone());
+                return;
+            }
+            _ => {}
+        }
+        let old = self.nodes[key as usize].class_props.take();
+        self.nodes[key as usize].class_props = props.cloned();
+        self.diff_class_props(key, old.as_deref(), props.map(|p| &**p));
+    }
+
+    fn diff_class_props(&mut self, key: Key, old: Option<&ClassProps>, new: Option<&ClassProps>) {
+        let def = ClassProps::default();
+        let old = old.unwrap_or(&def);
+        let props = new.unwrap_or(&def);
         let paragraph = old.number_of_lines != props.number_of_lines
             || old.selectable != props.selectable
             || old.ellipsize != props.ellipsize
@@ -2074,23 +2507,19 @@ impl<M: TextEngine> Core<M> {
             (true, false) => self.pointer_none_classes -= 1,
             _ => {}
         }
-        let node = &mut self.nodes[key as usize];
         let space = old.space != props.space;
         let input = old.placeholder_color != props.placeholder_color
             || old.caret_color != props.caret_color
             || old.selection_color != props.selection_color;
         let selection = old.selection_color != props.selection_color;
-        let (props_no_wrap, props_selectable) = (props.no_wrap, props.selectable);
-        let pretty = old.pretty != props.pretty;
-        node.class_props = (props != ClassProps::default()).then(|| Box::new(props));
-        let kind = node.kind;
+        let kind = self.nodes[key as usize].kind;
         if paragraph && kind == Kind::Text {
             self.mark_text_block(key);
         }
-        if (old.no_wrap != props_no_wrap
-            || old.selectable != props_selectable
+        if (old.no_wrap != props.no_wrap
+            || old.selectable != props.selectable
             || selection
-            || pretty)
+            || old.pretty != props.pretty)
             && kind != Kind::Text
         {
             // The texts inside inherit them.

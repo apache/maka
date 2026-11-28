@@ -225,7 +225,7 @@ export function ComposerDetails(props: {
       tooltip={textTooltip(panels[key].dismissLabel)}
       onPress={inputAction(dismiss, key)}
       style={{
-        ...controlStyle,
+        ...controlStyle(),
         paddingHorizontal: 8,
         flexShrink: 0,
         backgroundColor: 'transparent',
@@ -249,7 +249,7 @@ export function ComposerDetails(props: {
             ...(single() ? { flex: 1, minWidth: 0, gap: 4 } : { flexShrink: 0 }),
             flexDirection: 'row',
             alignItems: 'center',
-            borderRadius: controlStyle.borderRadius,
+            borderRadius: controlStyle().borderRadius,
             backgroundColor: !single() && selected() === key ? C.cardRaised : 'transparent',
           }}
         >
@@ -259,7 +259,7 @@ export function ComposerDetails(props: {
             selected={selected() === key}
             onPress={inputAction(toggle, key)}
             style={{
-              ...controlStyle,
+              ...controlStyle(),
               flexDirection: 'row',
               gap: 8,
               alignItems: 'center',
@@ -295,7 +295,7 @@ export function ComposerDetails(props: {
           flexDirection: 'row',
           alignItems: 'center',
           gap: single() && hasDismiss() ? 4 : 0,
-          borderRadius: controlStyle.borderRadius,
+          borderRadius: controlStyle().borderRadius,
           backgroundColor: !single() && selected() === key ? C.cardRaised : 'transparent',
         }}
       >
@@ -305,7 +305,7 @@ export function ComposerDetails(props: {
           selected={selected() === key}
           onPress={inputAction(toggle, key)}
           style={{
-            ...controlStyle,
+            ...controlStyle(),
             ...(stretch() ? { flex: 1, minWidth: 0 } : { flexShrink: 0 }),
             flexDirection: 'row',
             gap: 8,

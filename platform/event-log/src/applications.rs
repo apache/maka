@@ -19,6 +19,7 @@
 
 //! Atomic durable application sources; no legacy composition translation.
 mod changes;
+pub(crate) mod migrate_v65;
 mod source;
 pub use source::SourceSnapshot;
 pub mod intents;
@@ -613,11 +614,16 @@ fn read_package_files(
     connection: &Connection,
     reference: &PackageRef,
 ) -> Result<BTreeMap<String, Vec<u8>>, StoreError> {
-    let mut statement = connection.prepare_cached(
+    let sql = if crate::content::has_encoding_column(connection)? {
+        "SELECT path, CASE WHEN typeof(c.payload) = 'blob' THEN maka_content_bytes(c.payload, c.encoding) END AS payload
+        FROM application_package_files f JOIN contents c ON c.id=f.content_id
+        WHERE f.id = ? AND f.revision = ? ORDER BY f.path"
+    } else {
         "SELECT path, CASE WHEN typeof(c.payload) = 'blob' THEN c.payload END AS payload
         FROM application_package_files f JOIN contents c ON c.id=f.content_id
-        WHERE f.id = ? AND f.revision = ? ORDER BY f.path",
-    )?;
+        WHERE f.id = ? AND f.revision = ? ORDER BY f.path"
+    };
+    let mut statement = connection.prepare_cached(sql)?;
     let rows = statement.query_map(params![&reference.id, &reference.revision], |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, Option<Vec<u8>>>(1)?))
     })?;

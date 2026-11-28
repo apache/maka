@@ -181,20 +181,39 @@ and input methods. The sink is the editor's one stop of Tab; the content box tak
 that scrolls a field into view as it focuses it (a browser) finds it, and scrolling the selection into view
 (`scroll_into_view`) brings the node in whole, as ProseMirror scrolls a node selection's DOM node. The sink's changes are replayed at the caret as the code `Editor`'s are (`sink_text.rs`), and a caret the
 platform moves in the sink without a key (an input method that puts its caret between the brackets it typed) moves
-the editor's by as much, within the textblock and over text the document shows the same way. Typed text goes to plugins' `handle_text_input` (input rules), else is inserted with the stored
+the editor's by as much, within the textblock and over text the document shows the same way. The sink is emptied
+when the caret moves and once it holds 256 bytes; on iOS it is set to the text of the caret's textblock before it
+instead (`sink_context`, 128 bytes at most), as UIKit's keyboard repeats a held Delete (and speeds up to words) only
+over text it sees before the input's caret; on macOS to the last 8 bytes of it (whole characters), what input methods
+that put a space between Chinese and Latin text read before the caret, and no more: the sink is a point wide, so each
+character it holds is a line of it, and the candidates open where its text ends. The platform's text stays while it still ends with that text: setting it
+again would stop the held Delete. Typed text goes to plugins' `handle_text_input` (input rules), else is inserted with the stored
 marks (origin `Input`). While an input method composes, its text shows in the line at the caret with the block's
-typography, and the document waits; the commit is one transaction tagged with the composition's id (`composition`
+typography, and the document waits; the caret is drawn after it, as a native text view draws it after its marked
+text, while the sink (where the candidates open) stays at its start. The commit is one transaction tagged with the composition's id (`composition`
 meta, which the history groups). `RichEditorEvent::CompositionChange(bool)` (Rust
 `.on_composition_change`, JS `onCompositionChange({ composing })`) reports each view's start/end transitions,
 including cancellation, after its session flag, held input and composition signal are updated. Updates within an
 active composition keep the same state and emit no further transition. Starting and canceling composition leave
 the document and transaction revision unchanged; a text commit remains a normal transaction. Observers can retain
-the view while composing and release it on the end notification. Keys: the view binds, while focused, every keystroke a keymap could use (`keys.rs`)
+the view while composing and release it on the end notification. While the editor cannot be edited (`editable` false,
+the session's `editable` / `setEditable(false)`, or a plugin's `editable`), the sink still takes text and the document keeps it out: each sink change that inserts
+text reports `RichEditorEvent::ReadonlyInput` (Rust
+`.on_readonly_input`, JS `onReadonlyInput()`), with no payload,, so an app can offer editing to a soft keyboard's
+typing, which arrives as no key. It is sent from `sink_edited`, once per change of the sink (a composition's commit
+once, before the end's `CompositionChange(false)`), not from `text_input`, which the ref's
+`insertText` also calls. A change that only deletes (a soft keyboard's Backspace) and pastes report nothing: the
+event is for typed text, a hardware keyboard's Backspace and Mod+V arrive as keys an app can bind, and the touch
+menu of a read-only editor offers no Paste. A hardware Return is a bound key too, so only a software keyboard's return
+reports. A change that replaces sink text (autocorrect, a picked suggestion) reports again. Keys: the view binds, while focused, every keystroke a keymap could use (`keys.rs`)
 and offers each as a `KeyEvent` to the selected node's view, the plugins' `handle_key_down`, the base keymap, then
 copy / cut / select all and the caret movement (graphemes, words, line ends, lines and pages by geometry, keeping the
-goal x, the document's ends). An Escape none of them takes collapses a selection to its head; with nothing selected,
-in a terminal, it blurs the editor, so the focus can leave it (Escape stays bound for the plugins' own, a
-suggestion's).
+goal x, the document's ends). Left or Right onto a selectable inline atom a node view draws selects it as a node
+first and the next press moves past it (`inline_node_beside`, prosemirror-view's `selectHorizontally`): the node view
+shows it as `selected`, the caret being hidden. An atom drawn without a node view (a built-in image), or whose spec
+turns `selectable` off (a mention, a hard break), is stepped over as one character. An Escape none of them takes collapses
+a selection to its head; with nothing selected, in a terminal, it blurs the editor, so the focus can leave it (Escape
+stays bound for the plugins' own, a suggestion's).
 Presses: a node view's `handle_event`, the plugins' click hooks (`handle_click_on` per ancestor, then
 `handle_click`, double and triple likewise), then a caret (Shift extends), a word, the textblock or a node selection (a press inside an inline node view's box
 selects its node without Shift or Mod: `inline_view_at`, after prosemirror-view's `selectClickedLeaf`; an inline
@@ -276,6 +295,13 @@ the new size in the grid's tracks and commits `setColumnWidth` / `setRowHeight` 
 on its left border (bars of the `tableGrip` part, the theme's `muted-foreground`). The hovered cell takes precedence
 over the selection. In a scrolling table the viewport clips the column grip and its left edge anchors the row grip. A press selects the column or row (a cell selection). A drag on desktops shows the drop line
 (`tableDropIndicator`, `primary`) and moves the column or row with `moveTableColumn` / `moveTableRow` on release.
+A grip let go before the pointer moved `DRAG_SLOP` (4 points, in any direction) is a press, reported after its
+selection as `RichEditorEvent::TableMenu` (`onTableMenu`, `RichEditorTableMenu`: the table's position, the `row`
+or the `column`, and the grip's box in the root view as `bounds`, where an app's menu is placed);
+a drag, a gesture the platform takes away (`cancel_table_press` on the responder's termination) and a grip the
+document lost before the release (its table or line gone) report none.
+On touch screens a tap on a grip reports at once (a finger never drags a grip). As in common web editors, the
+row or column ends up selected either way: NSH selects it at the press, so a drag shows what it carries.
 Table gestures come before the content box's selecting (`Rv::table_target` at the press).
 
 Each table's handles and grips are a region of their own (`table_controls`), placed from that table's layout alone
@@ -307,6 +333,12 @@ editor.dispatchTransaction = (tr) => editor.applyTransaction(tr);
   `toggleMark(..)`, `history(..)`, `markRule(..)`, ...), resolved against the editor's schema when they run or the
   editor is made (`commands.rs`, `plugins.rs`). `chain` runs commands on the states each leaves and dispatches their
   steps as one transaction; `first` is ProseMirror's `chainCommands`.
+- `insertContent(content, format?)` (the command object and the session method) is not the registry's
+  `insertContentAt`: plain text is read by `slice_from_text`, Markdown and JSON become a `Slice::max_open`, and all
+  of them go through `Selection::replace`, so a paragraph produced by a document format splices into the text around
+  the caret while structure that cannot fit stays in blocks. An HTML string is the exception: it is parsed by
+  `DomParser::parse_insert_fragment` and inserted with Tiptap's `insertContent` algorithm, since HTML can represent
+  bare inline content and Tiptap's string input is HTML. `pasteHTML` / `pasteText` remain the paste algorithms.
 - `RichEditorPlugin` (`#[class]`) is a plugin whose behavior is the app's. Its callbacks live in a thread-local table
   of the engine thread (`HookRef`), since the kernel's plugins and the session are `Send + Sync`. Captured keys are a
   native keymap consumed while `capturing` is set, reported to JS with `post`; decorations are data a transaction

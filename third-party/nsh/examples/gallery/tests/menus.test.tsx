@@ -84,6 +84,14 @@ test("a row's context menu has a checkable item that closes it", async () => {
   expect(app.texts()).not.toContain("Duplicate");
 });
 
+test("a hold on the star inside a row opens the star's menu alone", async () => {
+  await app.longPress("label:Star on Holiday.jpg");
+  await app.waitFor("Unstar");
+  expect(app.texts()).not.toContain("Duplicate");
+  await app.press("Unstar");
+  expect(app.count("label:Star on Holiday.jpg")).toBe(0);
+});
+
 test("a row's menu changes the list", async () => {
   await app.press("label:Actions for Notes.txt");
   await app.press("Duplicate");

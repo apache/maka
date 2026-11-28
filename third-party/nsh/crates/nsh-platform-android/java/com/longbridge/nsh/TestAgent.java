@@ -250,6 +250,69 @@ final class TestAgent {
         });
     }
 
+    /**
+     * The focused input a paste goes to: its node id, whether it listens to
+     * `onPaste` (1 or 0) and whether a paste inserts its text
+     * (`pasteBehavior`, 1 or 0); null when no input has the focus.
+     */
+    static int[] pasteTarget(NshView host) {
+        return onMain(() -> {
+            InputBox input = host.mounter().focusedInput();
+            if (input == null) return null;
+            return new int[] {
+                input.id,
+                host.mounter().wants(input.id, Native.PASTE) ? 1 : 0,
+                input.pasteInserts ? 1 : 0,
+            };
+        });
+    }
+
+    /**
+     * Inserts a paste's {@code text} into input {@code id} in place of its
+     * selection, as the field's paste does; false when it is no input.
+     */
+    static boolean insertPaste(NshView host, int id, String text) {
+        Boolean done = onMain(() -> {
+            View v = host.mounter().views.get(id);
+            if (!(v instanceof InputBox)) return false;
+            EditText edit = ((InputBox) v).edit;
+            android.text.Editable content = edit.getText();
+            int start = Math.max(0, Math.min(edit.getSelectionStart(), edit.getSelectionEnd()));
+            int end = Math.max(0, Math.max(edit.getSelectionStart(), edit.getSelectionEnd()));
+            int before = content.length();
+            content.replace(start, end, text);
+            // The caret after the pasted text, as the field's own paste leaves it.
+            edit.setSelection(Math.max(start, Math.min(content.length(), end + content.length() - before)));
+            return true;
+        });
+        return done != null && done;
+    }
+
+    /**
+     * Drops local files ({@code file:} URLs) at ({@code x}, {@code y}) of the
+     * window, as another app's drag does: the destination there (one that
+     * listens to `onFileDrop`) hears the drag enter, the drop and the leave.
+     * False when no view there takes a drop.
+     */
+    static boolean dropFiles(NshView host, float x, float y, String[] uris) {
+        Boolean done = onMain(() -> {
+            Mounter mounter = host.mounter();
+            // The window's pixels, as the agent's; the drop's in the view's.
+            int[] origin = new int[2];
+            host.getLocationInWindow(origin);
+            float vx = x - origin[0], vy = y - origin[1];
+            int id = FileDrops.targetAt(mounter, host, vx, vy);
+            if (id == 0) return false;
+            if (mounter.wants(id, Native.FILE_DRAG_ENTER)) {
+                mounter.fileDrop(id, Native.FILE_DRAG_ENTER, new String[0], 0, 0);
+            }
+            mounter.fileDrop(id, Native.FILE_DROP, uris, vx, vy);
+            if (mounter.wants(id, Native.FILE_DRAG_LEAVE)) mounter.event(id, Native.FILE_DRAG_LEAVE);
+            return true;
+        });
+        return done != null && done;
+    }
+
     /** The text input `id` holds; null when it is no input. */
     static String inputText(NshView host, int id) {
         return onMain(() -> {

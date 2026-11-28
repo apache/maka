@@ -36,14 +36,16 @@ import type { MessageMenu } from './messageMenu';
 import { forkTitle, type SessionAction } from './sessionLifecycle';
 import { Icon } from './Icon';
 import {
-  C,
   bodyTextStyle,
+  C,
   captionTextStyle,
   controlDisabledStyle,
   controlFocusStyle,
   controlHoverStyle,
   controlStyle,
   IconButton,
+  lineWidth,
+  radius,
 } from './ui';
 
 type Target = OriginalMessage & { turnId?: string };
@@ -324,9 +326,9 @@ export function MessageEditor(props: EditProps & { state: Signal<InlineEdit | nu
             style={{
               paddingHorizontal: 16,
               paddingVertical: 12,
-              borderRadius: 20,
+              borderRadius: radius(20),
               backgroundColor: C.card,
-              borderWidth: 1,
+              borderWidth: lineWidth(),
               borderColor: C.accent,
             }}
           >
@@ -389,7 +391,7 @@ export function MessageEditor(props: EditProps & { state: Signal<InlineEdit | nu
               accessibilityLabel={tr('Cancel')}
               disabled={current().sending}
               onPress={inputAction(cancel, null)}
-              style={controlStyle}
+              style={controlStyle()}
               hoverStyle={controlHoverStyle()}
               focusStyle={controlFocusStyle()}
               disabledStyle={controlDisabledStyle}
@@ -400,7 +402,7 @@ export function MessageEditor(props: EditProps & { state: Signal<InlineEdit | nu
               accessibilityLabel={tr('Send edited message in a fork')}
               disabled={!sendable()}
               onPress={inputAction(send, target())}
-              style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 4 }}
+              style={{ ...controlStyle(), flexDirection: 'row', alignItems: 'center', gap: 4 }}
               hoverStyle={controlHoverStyle()}
               focusStyle={controlFocusStyle()}
               disabledStyle={controlDisabledStyle}
@@ -493,14 +495,14 @@ export function TurnRetry(props: {
           gap: 8,
           minWidth: 0,
           // The glyph starts where the failure above it does.
-          marginLeft: -controlStyle.paddingHorizontal,
+          marginLeft: -controlStyle().paddingHorizontal,
         }}
       >
         <Button
           accessibilityLabel={tr('Retry')}
           disabled={pending()}
           onPress={inputAction(retry, target())}
-          style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 4 }}
+          style={{ ...controlStyle(), flexDirection: 'row', alignItems: 'center', gap: 4 }}
           hoverStyle={controlHoverStyle()}
           focusStyle={controlFocusStyle()}
           disabledStyle={controlDisabledStyle}

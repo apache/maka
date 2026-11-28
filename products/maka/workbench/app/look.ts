@@ -17,16 +17,34 @@
  * under the License.
  */
 
-// The desktop window's look (Settings › General › Look): the colors a person
-// picks for each appearance and the font, kept in the shape of an NSH theme
-// file (`cssVars`, shadcn's names) so it can later be exported as one. The
-// colors picked are used as they are; the ones derived from them (steps of
+// The desktop window's look (Settings › General › Theme): the colors a person
+// picks for each appearance, the font and the shape (corners, lines, shadow,
+// letter spacing), kept in the shape of an NSH theme file (`cssVars`, shadcn's
+// and tweakcn's names, lengths in points) so it can later be exported as one.
+// The colors picked are used as they are; the ones derived from them (steps of
 // the surfaces, the accent as text and the text on the accent) are made to
 // stay readable.
 import { paletteTokens, parseHex, toHex, type PaletteRecipe } from './colorPalette';
 
-export type LookId = 'default' | 'mono' | 'paper' | 'morandi' | 'terminal' | 'blueprint';
-export const lookIds: LookId[] = ['default', 'mono', 'paper', 'morandi', 'terminal', 'blueprint'];
+export type LookId =
+  | 'default'
+  | 'mono'
+  | 'paper'
+  | 'morandi'
+  | 'terminal'
+  | 'blueprint'
+  | 'bauhaus'
+  | 'brutalist';
+export const lookIds: LookId[] = [
+  'default',
+  'mono',
+  'paper',
+  'morandi',
+  'terminal',
+  'blueprint',
+  'bauhaus',
+  'brutalist',
+];
 
 /** The colors picked for one appearance; the last three are derived while left out. */
 export type LookColors = {
@@ -36,10 +54,54 @@ export type LookColors = {
   card?: string;
   border?: string;
   'muted-foreground'?: string;
+  /** The shadow's color in this appearance, black while left out. */
+  'shadow-color'?: string;
 };
-export type LookColor = keyof LookColors;
+export type LookColor = Exclude<keyof LookColors, 'shadow-color'>;
 export const pickedColors: LookColor[] = ['background', 'foreground', 'primary'];
 export const derivedColors: LookColor[] = ['card', 'border', 'muted-foreground'];
+
+/** The shape a look gives the window; each left out is the default's (`defaultShape`). */
+export type LookShape = {
+  /** A control's corner radius; the window's other corners scale with it. */
+  radius?: number;
+  /** The width of the line around a control, a field or a card. */
+  'border-width'?: number;
+  /** Space added between the letters of a conversation's text. */
+  'letter-spacing'?: number;
+  'shadow-x'?: number;
+  'shadow-y'?: number;
+  'shadow-blur'?: number;
+  'shadow-spread'?: number;
+  /** 0: no shadow. */
+  'shadow-opacity'?: number;
+};
+export type ShapeKey = keyof LookShape;
+export const defaultShape: Required<LookShape> = {
+  radius: 8,
+  'border-width': 1,
+  'letter-spacing': 0,
+  'shadow-x': 0,
+  'shadow-y': 0,
+  'shadow-blur': 0,
+  'shadow-spread': 0,
+  'shadow-opacity': 0,
+};
+const shapeKeys = Object.keys(defaultShape) as ShapeKey[];
+/** The range of each shape value a look may hold. */
+export const shapeLimits: Record<ShapeKey, [min: number, max: number]> = {
+  radius: [0, 20],
+  'border-width': [1, 3],
+  'letter-spacing': [-0.5, 1.5],
+  'shadow-x': [-12, 12],
+  'shadow-y': [-12, 12],
+  'shadow-blur': [0, 32],
+  'shadow-spread': [-8, 8],
+  'shadow-opacity': [0, 1],
+};
+/** A look's value of `key`, the default's where it has none. */
+export const shapeValue = (look: Look, key: ShapeKey) =>
+  look.cssVars.theme[key] ?? defaultShape[key];
 
 export type Look = {
   /** The preset it started from. */
@@ -47,7 +109,7 @@ export type Look = {
   cssVars: {
     light: LookColors;
     dark: LookColors;
-    theme: { 'font-sans'?: string };
+    theme: { 'font-sans'?: string } & LookShape;
   };
 };
 
@@ -71,10 +133,20 @@ const look = (
   light: LookColors,
   dark: LookColors,
   font?: Exclude<FontChoice, 'system'>,
+  shape: LookShape = {},
 ): Look => ({
   base,
-  cssVars: { light, dark, theme: font ? { 'font-sans': fontFamilies[font] } : {} },
+  cssVars: {
+    light,
+    dark,
+    theme: { ...(font ? { 'font-sans': fontFamilies[font] } : {}), ...shape },
+  },
 });
+/** The shadow starting points the editor offers, by name. */
+export const shadowPresets = {
+  soft: { 'shadow-y': 2, 'shadow-blur': 12, 'shadow-opacity': 0.08 },
+  hard: { 'shadow-x': 4, 'shadow-y': 4, 'shadow-opacity': 1 },
+} satisfies Record<string, LookShape>;
 
 /** Each preset's look; the default is the window's own colors, which `defaultLook` names. */
 export const presetLooks: Record<LookId, Look> = {
@@ -101,39 +173,93 @@ export const presetLooks: Record<LookId, Look> = {
     'mono',
     { background: '#ffffff', foreground: '#0a0a0a', primary: '#0a0a0a', border: '#e5e5e5' },
     { background: '#0a0a0a', foreground: '#ededed', primary: '#ededed', border: '#2a2a2a' },
+    undefined,
+    { radius: 6 },
   ),
   paper: look(
     'paper',
     { background: '#f6f1e5', foreground: '#23201c', primary: '#b5392a', border: '#d9d0bc' },
     { background: '#1d1b18', foreground: '#e9e2d2', primary: '#d4574a', border: '#3a362f' },
     'serif',
+    { radius: 2, 'letter-spacing': 0.5 },
   ),
   morandi: look(
     'morandi',
     { background: '#f1efec', foreground: '#3f3d3b', primary: '#7d8f8a', border: '#ddd9d4' },
     { background: '#2b2a2c', foreground: '#e4e0dc', primary: '#a9bab5', border: '#454347' },
+    undefined,
+    { radius: 12, ...shadowPresets.soft },
   ),
   terminal: look(
     'terminal',
-    { background: '#efebdd', foreground: '#1f3a22', primary: '#a85a00', border: '#c9c3ae' },
-    { background: '#0c0f0a', foreground: '#b8f5b0', primary: '#ffb000', border: '#1f3a22' },
+    {
+      background: '#efebdd',
+      foreground: '#1f3a22',
+      primary: '#a85a00',
+      border: '#c9c3ae',
+      'shadow-color': '#7ce38b',
+    },
+    {
+      background: '#0c0f0a',
+      foreground: '#b8f5b0',
+      primary: '#ffb000',
+      border: '#1f3a22',
+      'shadow-color': '#7ce38b',
+    },
     'mono',
+    { radius: 0, 'shadow-blur': 8, 'shadow-opacity': 0.25 },
   ),
   blueprint: look(
     'blueprint',
     { background: '#f7fafd', foreground: '#123a6b', primary: '#1f5fa8', border: '#9db7d6' },
     { background: '#123a6b', foreground: '#eaf2fb', primary: '#9fd3ff', border: '#5c86b8' },
     'mono',
+    { radius: 2, 'letter-spacing': 0.5 },
+  ),
+  bauhaus: look(
+    'bauhaus',
+    { background: '#f4f1ea', foreground: '#111111', primary: '#d62b1f', border: '#111111' },
+    { background: '#141414', foreground: '#f2efe8', primary: '#f2c12e', border: '#5a5a5a' },
+    'geometric',
+    { radius: 0, 'border-width': 2, 'letter-spacing': 0.3 },
+  ),
+  brutalist: look(
+    'brutalist',
+    {
+      background: '#fff8e7',
+      foreground: '#000000',
+      primary: '#ffd60a',
+      border: '#000000',
+      'shadow-color': '#000000',
+    },
+    // On a dark background a light shadow reads as a glow: the lines are a light gray and
+    // the shadow a dark one, only a little lighter than the background.
+    {
+      background: '#16161a',
+      foreground: '#ffffff',
+      primary: '#ffd60a',
+      border: '#b9b9c0',
+      'shadow-color': '#55555e',
+    },
+    undefined,
+    { radius: 6, 'border-width': 2, ...shadowPresets.hard },
   ),
 };
 
-const sameColors = (a: LookColors, b: LookColors) =>
-  pickedColors.concat(derivedColors).every((key) => a[key] === b[key]);
-/** Whether two looks draw alike: the same colors and font, from whichever preset. */
+const colorKeys: LookColor[] = [...pickedColors, ...derivedColors];
+const optionalColors = [...derivedColors, 'shadow-color'] as const;
+const blockColorKeys = [...pickedColors, ...optionalColors];
+const sameColors = (a: LookColors, b: LookColors) => colorKeys.every((key) => a[key] === b[key]);
+const outlineKeys = shapeKeys.filter((key) => !key.startsWith('shadow-'));
+/** Whether two looks draw alike: the same colors, font, corners, lines and shadow, from whichever
+ * preset. Shadows compare as drawn, so one at no opacity is none. */
 export const sameAppearance = (a: Look, b: Look) =>
   sameColors(a.cssVars.light, b.cssVars.light) &&
   sameColors(a.cssVars.dark, b.cssVars.dark) &&
-  a.cssVars.theme['font-sans'] === b.cssVars.theme['font-sans'];
+  a.cssVars.theme['font-sans'] === b.cssVars.theme['font-sans'] &&
+  outlineKeys.every((key) => shapeValue(a, key) === shapeValue(b, key)) &&
+  lookShadow(a, false) === lookShadow(b, false) &&
+  lookShadow(a, true) === lookShadow(b, true);
 /** Whether two looks, or the absence of one, are the same. */
 export const sameLook = (a: Look | null, b: Look | null) =>
   a === b || (!!a && !!b && a.base === b.base && sameAppearance(a, b));
@@ -148,9 +274,18 @@ const validColors = (value: unknown): value is LookColors => {
     !!colors &&
     typeof colors === 'object' &&
     pickedColors.every((key) => hex(colors[key])) &&
-    derivedColors.every((key) => colors[key] === undefined || hex(colors[key]))
+    optionalColors.every((key) => colors[key] === undefined || hex(colors[key]))
   );
 };
+/** The shape values among `theme` that are numbers in their range. */
+const readShape = (theme: Record<string, unknown> | undefined): LookShape =>
+  Object.fromEntries(
+    shapeKeys.flatMap((key) => {
+      const value = theme?.[key];
+      const [min, max] = shapeLimits[key];
+      return typeof value === 'number' && value >= min && value <= max ? [[key, value]] : [];
+    }),
+  );
 /** A saved look, or null when it is not one. */
 export function readLook(value: unknown): Look | null {
   const saved = value as Look | null;
@@ -168,9 +303,118 @@ export function readLook(value: unknown): Look | null {
     cssVars: {
       light: { ...saved.cssVars.light },
       dark: { ...saved.cssVars.dark },
-      theme: typeof font === 'string' && font.trim() ? { 'font-sans': font } : {},
+      theme: {
+        ...(typeof font === 'string' && font.trim() ? { 'font-sans': font } : {}),
+        ...readShape(saved.cssVars.theme),
+      },
     },
   };
+}
+
+/** What a theme block, written by Maka in a reply or pasted, describes: its preset with the
+ * block's values over it, the values that are not valid left out and counted. */
+export type ThemeBlock = { look: Look; name: string | null; ignored: number };
+const blockName = 40;
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === 'object' && !Array.isArray(value);
+
+/** Reads a block with a known preset and a cssVars object. */
+export function readThemeBlock(value: unknown): ThemeBlock | null {
+  if (!isRecord(value) || !isRecord(value.cssVars) || !lookIds.includes(value.base as LookId))
+    return null;
+  const preset = presetLooks[value.base as LookId];
+  const { light, dark, theme: fields } = value.cssVars;
+  if (
+    (light !== undefined && !isRecord(light)) ||
+    (dark !== undefined && !isRecord(dark)) ||
+    (fields !== undefined && !isRecord(fields))
+  )
+    return null;
+
+  let ignored = 0;
+  const colors = (base: LookColors, fields: Record<string, unknown> = {}): LookColors => {
+    const overrides: Partial<Record<keyof LookColors, string | null>> = {};
+    for (const [name, color] of Object.entries(fields)) {
+      const key = name as keyof LookColors;
+      const normalized = typeof color === 'string' ? color.toLowerCase() : color;
+      if (blockColorKeys.includes(key) && hex(normalized)) overrides[key] = normalized;
+      else if (optionalColors.includes(key) && color === null) overrides[key] = null;
+      else ignored++;
+    }
+    const out = { ...base, ...overrides };
+    const changed = pickedColors.some((key) => out[key] !== base[key]);
+    for (const key of optionalColors) {
+      if (overrides[key] === null || (changed && overrides[key] === undefined)) delete out[key];
+    }
+    return out as LookColors;
+  };
+  const theme: Record<string, unknown> = { ...preset.cssVars.theme };
+  for (const [key, field] of Object.entries(fields ?? {})) {
+    const limits = Object.hasOwn(shapeLimits, key) ? shapeLimits[key as ShapeKey] : undefined;
+    if (field === null && (key === 'font-sans' || limits)) delete theme[key];
+    else if (key === 'font-sans' && typeof field === 'string' && field.trim()) theme[key] = field;
+    else if (limits && typeof field === 'number' && field >= limits[0] && field <= limits[1])
+      theme[key] = field;
+    else ignored++;
+  }
+  const name = typeof value.name === 'string' ? value.name.trim().slice(0, blockName) : '';
+  return {
+    look: {
+      base: preset.base,
+      cssVars: {
+        light: colors(preset.cssVars.light, light),
+        dark: colors(preset.cssVars.dark, dark),
+        theme: theme as Look['cssVars']['theme'],
+      },
+    },
+    name: name || null,
+    ignored,
+  };
+}
+
+/** A block that copies the look, including optional values cleared from its preset. */
+export function writeThemeBlock(look: Look): string {
+  const preset = presetLooks[look.base].cssVars;
+  const part = (key: keyof Look['cssVars']) => ({
+    ...Object.fromEntries(Object.keys(preset[key]).map((name) => [name, null])),
+    ...look.cssVars[key],
+  });
+  return JSON.stringify(
+    {
+      base: look.base,
+      cssVars: { light: part('light'), dark: part('dark'), theme: part('theme') },
+    },
+    null,
+    2,
+  );
+}
+
+/** Whether a color picked in `look` reads below its minimum against the background, in either
+ * appearance: what the editor warns of. */
+export const hardToRead = (look: Look) =>
+  (['light', 'dark'] as const).some((mode) => {
+    const colors = look.cssVars[mode];
+    return Object.entries(minimumContrast).some(([key, minimum]) => {
+      const color = colors[key as LookColor];
+      return color !== undefined && contrast(color, colors.background) < minimum!;
+    });
+  });
+
+/** A corner of radius `n` at the default radius (8), as a look of radius `r` draws it: every
+ * corner scales alike, a panel's no rounder than 24. */
+export const scaledRadius = (n: number, r: number) =>
+  Math.min(Math.round((n * r) / defaultShape.radius), Math.max(n, 24));
+
+/** The look's shadow in one appearance as CSS, its offsets and blur times `scale`; null for none. */
+export function lookShadow(value: Look, dark: boolean, scale = 1): string | null {
+  const opacity = shapeValue(value, 'shadow-opacity');
+  if (opacity <= 0) return null;
+  const color = value.cssVars[dark ? 'dark' : 'light']['shadow-color'] ?? '#000000';
+  const alpha = Math.round(opacity * 255)
+    .toString(16)
+    .padStart(2, '0');
+  const at = (key: ShapeKey) => shapeValue(value, key) * scale;
+  return `${at('shadow-x')}px ${at('shadow-y')}px ${at('shadow-blur')}px ${shapeValue(value, 'shadow-spread')}px ${color}${alpha}`;
 }
 
 /** The look a palette of the earlier Settings made, with the colors it showed. */
@@ -268,10 +512,18 @@ export type LookTokens = {
   onAccent: string;
 };
 
+// A look's colors are never changed in place, so each set is derived once however many views
+// read it: the window, the theme preview and the editor's rows during a drag.
+const derived = new WeakMap<LookColors, LookTokens>();
 /** The tokens of one appearance's colors. Regions follow whether its background is dark: the
  * content sits on `background` in a light window, on `surface` in a dark one. The sidebar is
  * the picked `card`, else the step below the content. */
 export function lookTokens(colors: LookColors): LookTokens {
+  let tokens = derived.get(colors);
+  if (!tokens) derived.set(colors, (tokens = deriveTokens(colors)));
+  return tokens;
+}
+function deriveTokens(colors: LookColors): LookTokens {
   const { background: content, foreground: text, primary: accent } = colors;
   const dark = darkBackground(content);
   const muted =

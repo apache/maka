@@ -31,5 +31,5 @@ pub use client::{
 pub use pairing::{PendingPairing, RedeemedPairing, RelayAuthorization};
 pub use store::{HostProfile, SavedHosts};
 
-pub use maka_remote_pairing::DeviceIdentity;
+pub use maka_remote_pairing::{DeviceIdentity, PairingNameError, validate_pairing_name};
 pub use maka_remote_transport::{PathSummary, TlsTrust};

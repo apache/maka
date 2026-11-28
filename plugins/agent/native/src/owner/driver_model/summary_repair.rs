@@ -183,6 +183,9 @@ impl DriverModel {
                     {
                         continue;
                     }
+                    if recipe.is_pinned_memory() {
+                        continue;
+                    }
                     if let Some(recipe) = ReplayTarget::new(&model, operation).recipe(recipe).await? {
                         builder.append_recipe(&recipe).await?;
                     }
@@ -300,7 +303,7 @@ impl DriverModel {
                 &self.cancellation,
             )
             .await?;
-            let (prompt, chunks, layout, cleanup) = snapshot.into_parts();
+            let (prompt, chunks, media, layout, cleanup) = snapshot.into_parts();
             let evidence = self.cleanup.clone();
             self.workers.spawn(async move {
                 if let Err(error) = cleanup.await {
@@ -312,8 +315,10 @@ impl DriverModel {
                 .iter()
                 .map(|chunk| chunk.reference().clone())
                 .collect();
+            frozen.prompt_media = media.iter().map(|blob| blob.reference().clone()).collect();
             frozen.layout = layout;
             contents.extend(chunks);
+            contents.extend(media);
             if !repair {
                 let mut provenance: Value = reader.decode(view.run, &request.provenance).await?;
                 current_context(&mut provenance, &model, settings.operation)?;

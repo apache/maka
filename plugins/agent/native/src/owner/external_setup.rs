@@ -52,6 +52,7 @@ impl Owner {
     pub(crate) async fn external_usage_limits(
         &self,
         runtime: NativeRuntime,
+        refresh: bool,
         scope: &maka_capabilities::call::Scope,
     ) -> Result<serde_json::Value, String> {
         let encode = |result| serde_json::to_value(result).map_err(|error| error.to_string());
@@ -76,7 +77,7 @@ impl Owner {
         match self
             .inspect_external(
                 cwd,
-                serde_json::json!({"kind":"usage_limits", "runtime":runtime}),
+                serde_json::json!({"kind":"usage_limits", "runtime":runtime, "refresh":refresh}),
                 scope,
             )
             .await
@@ -93,6 +94,7 @@ impl Owner {
     pub(crate) async fn external_agents(
         &self,
         inspect: bool,
+        refresh: bool,
         scope: &maka_capabilities::call::Scope,
     ) -> Result<maka_agent_api::external::ExternalAgents, String> {
         use maka_agent_api::external::{ConfigurationTarget, ExternalAgents, ExternalAgentsState};
@@ -110,7 +112,11 @@ impl Owner {
                 Err(message) => ExternalAgentsState::Unavailable { message },
                 Ok(Some(cwd)) => {
                     let result = self
-                        .inspect_external(cwd, serde_json::json!({"kind":"status"}), scope)
+                        .inspect_external(
+                            cwd,
+                            serde_json::json!({"kind":"status", "refresh":refresh}),
+                            scope,
+                        )
                         .await;
                     match result {
                         Ok(Some(value)) => match serde_json::from_value(value) {

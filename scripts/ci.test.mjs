@@ -132,6 +132,7 @@ test('an embedded product Markdown change selects its actual runtime consumers',
   for (const path of [
     'skills/maka-generative-ui/SKILL.md',
     'skills/maka-plugin-authoring/SKILL.md',
+    'skills/maka-theme/SKILL.md',
     'platform/computer-use/skills/computer.md',
   ]) {
     assert.equal(documentation(path), false);
@@ -278,6 +279,7 @@ test('skill and product inputs still select the native Windows skills consumer',
   for (const path of [
     'skills/maka-generative-ui/SKILL.md',
     'skills/maka-plugin-authoring/SKILL.md',
+    'skills/maka-theme/SKILL.md',
   ]) {
     const plan = createPlan({
       root,
@@ -534,6 +536,28 @@ test('non-archived native regressions fail empty selections and GTK runs under X
   assert(hostBuild.args.includes('nsh-cli'));
   assert(hostBuild.args.includes('nsh-macos-host'));
   assert(hostBuild.args.includes('--bins'));
+});
+
+test('macOS host permits the CUA runtime but rejects shell dependencies and other QuickJS callers', async () => {
+  const tree = [
+    '0 maka-cli v1',
+    '1 nsh-updater v1',
+    '1 cua-driver-core v1',
+    '2 quickjs-jit v1',
+    '3 quickjs-jit-core v1',
+    '4 quickjs-jit-sys v1',
+  ];
+  const verify = (...extra) =>
+    executor(
+      root,
+      {},
+      {
+        run: async (_exe, args) => (args[0] === 'tree' ? [...tree, ...extra].join('\n') : ''),
+      },
+    ).verify('macos-host');
+  await verify();
+  await assert.rejects(verify('1 quickjs-jit v1 (*)'), /maka-cli -> quickjs-jit/);
+  await assert.rejects(verify('2 nsh-js v1'), /cua-driver-core -> nsh-js/);
 });
 
 test('NSH native failures do not mask browser compilation or independent checks', async () => {

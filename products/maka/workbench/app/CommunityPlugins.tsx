@@ -31,7 +31,7 @@ import {
   settingsInset,
 } from './SettingsPage';
 import { Button } from 'nsh/base';
-import { C, captionTextStyle, controlFocusStyle, controlHoverStyle } from './ui';
+import { C, captionTextStyle, controlFocusStyle, controlHoverStyle, radius } from './ui';
 import { currentLocale, tr } from './locale';
 
 import type { PluginSettingsOwner } from './pluginSettingsState';
@@ -69,7 +69,14 @@ function SearchPlaceholder() {
               <View style={{ ...bar, width: '32%', maxWidth: 140 }} />
               <View style={{ ...bar, width: '72%', maxWidth: 320 }} />
             </View>
-            <View style={{ width: 52, height: 24, borderRadius: 8, backgroundColor: C.raised }} />
+            <View
+              style={{
+                width: 52,
+                height: 24,
+                borderRadius: radius(8),
+                backgroundColor: C.cardRaised,
+              }}
+            />
           </View>
         }
       >

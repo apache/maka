@@ -35,7 +35,7 @@ impl maka_event_log::connection::Query for MissingReturns {
              FROM agent_external_effects e INDEXED BY agent_external_missing_returns
              CROSS JOIN agent_run_specs r ON r.run=e.run JOIN contents s ON s.id=r.spec_content_id
              WHERE e.pending=1 AND json_extract(e.body,'$.missingReturn') IS NOT NULL
-             AND r.owner=? AND r.session=? AND json_extract(s.payload,'$.permissionBasis.binding.id')=?
+             AND r.owner=? AND r.session=? AND json_extract(maka_content_text(s.payload,s.encoding),'$.permissionBasis.binding.id')=?
              ORDER BY e.run,e.operation")?;
         let mut rows = statement.query(params![
             serde_json::to_string(&self.owner)?,
@@ -57,12 +57,37 @@ impl maka_event_log::connection::Query for MissingReturns {
     }
 }
 
+pub(crate) enum PersistedExternalEffect {
+    Prepared {
+        extra_refs: Vec<ContentRef>,
+    },
+    Returned {
+        returned: Box<maka_agent_facts::external_effects::StoredExternalReturn>,
+    },
+    Other,
+}
+
 pub(crate) struct ReadDescriptor(pub RunId, pub ExternalEffectKey);
 impl maka_event_log::connection::Query for ReadDescriptor {
     type Output = ExternalEffectDescriptor;
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
         let original = read_original(c, self.0, &self.1)?;
         read_descriptor(c, self.0, &self.1, &original.descriptor)
+    }
+}
+
+pub(crate) struct ReadReturn(pub RunId, pub ContentRef);
+impl maka_event_log::connection::Query for ReadReturn {
+    type Output = maka_agent_facts::external_effects::ExternalReturn;
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        let bytes = crate::sql::owned_content(c, self.0, &self.1)?;
+        let stored: maka_agent_facts::external_effects::StoredExternalReturn =
+            serde_json::from_slice(&bytes)?;
+        let cell_observation = match stored.completed_cell_result() {
+            Some(result_ref) => Some(crate::sql::owned_content(c, self.0, result_ref)?),
+            None => None,
+        };
+        stored.resolve(cell_observation.as_deref()).map_err(invalid)
     }
 }
 
@@ -109,14 +134,25 @@ fn read(
     .transpose()
 }
 
-pub(crate) fn read_descriptor(
+pub(crate) fn read_stored_descriptor(
+    c: &Connection,
+    run: RunId,
+    reference: &ContentRef,
+) -> Result<StoredExternalEffectDescriptor, StoreError> {
+    let bytes = crate::sql::owned_content(c, run, reference)?;
+    Ok(serde_json::from_slice(&bytes)?)
+}
+
+fn validate_and_resolve_descriptor(
     c: &Connection,
     run: RunId,
     key: &ExternalEffectKey,
-    reference: &ContentRef,
+    stored: StoredExternalEffectDescriptor,
 ) -> Result<ExternalEffectDescriptor, StoreError> {
-    let bytes = crate::sql::owned_content(c, run, reference)?;
-    let descriptor: ExternalEffectDescriptor = serde_json::from_slice(&bytes)?;
+    let descriptor = stored.resolve(|definition_ref| {
+        let bytes = crate::sql::owned_content(c, run, definition_ref)?;
+        Ok::<_, StoreError>(serde_json::from_slice(&bytes)?)
+    })?;
     let session: String = c.query_row(
         "SELECT session FROM agent_run_specs WHERE run=?",
         [run.to_string()],
@@ -152,6 +188,27 @@ pub(crate) fn read_descriptor(
         }
     }
     Ok(descriptor)
+}
+
+pub(crate) fn read_descriptor_with_definition_ref(
+    c: &Connection,
+    run: RunId,
+    key: &ExternalEffectKey,
+    reference: &ContentRef,
+) -> Result<(ExternalEffectDescriptor, Option<ContentRef>), StoreError> {
+    let stored = read_stored_descriptor(c, run, reference)?;
+    let definition_ref = stored.definition.content_ref().cloned();
+    let descriptor = validate_and_resolve_descriptor(c, run, key, stored)?;
+    Ok((descriptor, definition_ref))
+}
+
+pub(crate) fn read_descriptor(
+    c: &Connection,
+    run: RunId,
+    key: &ExternalEffectKey,
+    reference: &ContentRef,
+) -> Result<ExternalEffectDescriptor, StoreError> {
+    read_descriptor_with_definition_ref(c, run, key, reference).map(|(descriptor, _)| descriptor)
 }
 
 pub(crate) fn load_run(
@@ -197,21 +254,25 @@ pub(crate) fn persist(
     run: RunId,
     revision: u64,
     event: &ExternalEffectEvent,
-) -> Result<(), StoreError> {
+) -> Result<PersistedExternalEffect, StoreError> {
     let key = event.key();
-    match event {
+    let persisted = match event {
         ExternalEffectEvent::Prepared { descriptor, .. } => {
-            let original = read_descriptor(c, run, &key, descriptor)?;
-            for resource in &original.resources {
+            let stored = read_stored_descriptor(c, run, descriptor)?;
+            let definition_ref = stored.definition.content_ref().cloned();
+            if let Some(ref definition_ref) = definition_ref {
+                crate::sql::pin(c, run, definition_ref)?;
+            }
+            let original = validate_and_resolve_descriptor(c, run, &key, stored)?;
+            let mut extra_refs = Vec::new();
+            extra_refs.extend(definition_ref);
+            for resource in original.resources {
                 if let ResourceRecovery::Reference { descriptor } = resource {
-                    let content: i64 = c.query_row(
-                        "SELECT id FROM contents WHERE content_sha256=? AND length(payload)=?",
-                        params![descriptor.digest, signed(descriptor.bytes)?],
-                        |r| r.get(0),
-                    )?;
-                    c.execute("INSERT INTO agent_content_pins(run,content_id) VALUES(?,?) ON CONFLICT DO NOTHING", params![run.to_string(),content])?;
+                    crate::sql::pin(c, run, &descriptor)?;
+                    extra_refs.push(descriptor);
                 }
             }
+            PersistedExternalEffect::Prepared { extra_refs }
         }
         ExternalEffectEvent::Admitted {
             approval: Some(approval),
@@ -228,12 +289,19 @@ pub(crate) fn persist(
                 *approval,
                 &original.descriptor,
             )?;
+            PersistedExternalEffect::Other
         }
         ExternalEffectEvent::Returned { output, .. } => {
             let original = read_original(c, run, &key)?;
-            let returned: ExternalReturn =
+            let returned: maka_agent_facts::external_effects::StoredExternalReturn =
                 serde_json::from_slice(&crate::sql::owned_content(c, run, output)?)?;
-            if let ExternalReturn::Failure { settlement, .. } = &returned
+            if let Some(result_ref) = returned.completed_cell_result() {
+                crate::sql::pin(c, run, result_ref)?;
+            }
+            if let maka_agent_facts::external_effects::StoredExternalReturn::Failure {
+                settlement,
+                ..
+            } = &returned
                 && !matches!(
                     settlement,
                     maka_agent_facts::tool_call::ToolSettlement::Failed
@@ -244,10 +312,10 @@ pub(crate) fn persist(
                     "external failure requires a definite failed or rejected settlement",
                 ));
             }
-            match (&original.reference, returned) {
+            match (&original.reference, &returned) {
                 (
                     Some(reference),
-                    ExternalReturn::Output {
+                    maka_agent_facts::external_effects::StoredExternalReturn::Output {
                         output: ToolOutput::Operation(reply),
                         ..
                     },
@@ -260,7 +328,7 @@ pub(crate) fn persist(
                 }
                 (
                     None,
-                    ExternalReturn::Output {
+                    maka_agent_facts::external_effects::StoredExternalReturn::Output {
                         output: ToolOutput::Operation(_),
                         ..
                     },
@@ -271,15 +339,18 @@ pub(crate) fn persist(
                 }
                 (None, _) => {}
             }
+            PersistedExternalEffect::Returned {
+                returned: Box::new(returned),
+            }
         }
-        _ => {}
-    }
+        _ => PersistedExternalEffect::Other,
+    };
     replay(c, run, revision, event)?;
     if let ExternalEffectEvent::Bound { reference, .. } = event {
         let pin = format!("external:{}:{}", key.task, key.operation);
         c.execute("INSERT INTO agent_operation_pins(run,tool,reference_json) VALUES(?,?,?) ON CONFLICT DO NOTHING", params![run.to_string(),pin,serde_json::to_string(reference)?])?;
     }
-    Ok(())
+    Ok(persisted)
 }
 
 pub(crate) fn replay(
@@ -320,7 +391,7 @@ pub(crate) fn native_source_pending(
     reference: &RecoveryRef,
 ) -> Result<bool, StoreError> {
     let (version,bytes,task,stopped,terminal):(u32,Vec<u8>,Option<String>,bool,Option<String>)=c.query_row(
-        "SELECT s.schema_version,c.payload,r.external,r.stopped,r.terminal FROM agent_run_specs s JOIN contents c ON c.id=s.spec_content_id JOIN agent_runs r ON r.run=s.run WHERE s.run=?",
+        "SELECT s.schema_version,maka_content_bytes(c.payload,c.encoding),r.external,r.stopped,r.terminal FROM agent_run_specs s JOIN contents c ON c.id=s.spec_content_id JOIN agent_runs r ON r.run=s.run WHERE s.run=?",
         [execution.run_id.to_string()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))
     )?;
     let spec: RunSpec = serde_json::from_slice(&bytes)?;
@@ -381,7 +452,7 @@ fn read_task_source(
     key: &ExternalEffectKey,
 ) -> Result<maka_agent_facts::executor::Binding, StoreError> {
     let (task,spec_bytes):(Option<String>,Vec<u8>)=c.query_row(
-        "SELECT r.external,c.payload FROM agent_runs r JOIN agent_run_specs s ON s.run=r.run JOIN contents c ON c.id=s.spec_content_id WHERE r.run=?",
+        "SELECT r.external,maka_content_bytes(c.payload,c.encoding) FROM agent_runs r JOIN agent_run_specs s ON s.run=r.run JOIN contents c ON c.id=s.spec_content_id WHERE r.run=?",
         [run.to_string()],|r|Ok((r.get(0)?,r.get(1)?))
     )?;
     let task: crate::fold::ExternalTask = serde_json::from_str(

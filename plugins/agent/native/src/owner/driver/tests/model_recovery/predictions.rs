@@ -65,7 +65,7 @@ async fn predictions_extend_the_original_provider_request() {
                 "provider":{"packageId":"maka.providers","entryId":"maka.providers","scope":"profile","name":"ollama"},
                 "configuration":{"baseUrl":boot.base_url},"enabled":true,"enabledModelIds":["llama3.2"],
                 "modelOverrides":{"llama3.2":{"apiProtocol":"openai-chat-completions","codeMode":false,
-                    "vision":true,"imageInput":{"maxWidth":16,"requestBytes":1000000}}}
+                    "contextWindow":128000,"vision":true,"imageInput":{"maxWidth":16,"requestBytes":1000000}}}
             }
         })).await?;
         assert_eq!(connection["kind"], "committed", "{connection}");
@@ -132,6 +132,26 @@ async fn predictions_extend_the_original_provider_request() {
         let after = call(client, "agent", "observe", json!({"sessionId":session})).await?;
         assert_eq!(after["through"], before["through"]);
         assert_eq!(after["lastCompletedTurnId"], turn);
+
+        let marker = "Apricot pinned prediction fixture";
+        let pin = super::preset_acceptance::pinned_memory::enable_and_pin(client, session, marker).await?;
+        let sent = call(client,"agent","send",json!({"sessionId":session,"message":"Another description",
+            "backend":{"kind":"model","connectionId":connection["connection"]["connectionId"],"modelId":"llama3.2"}
+        })).await?;
+        let run = quiescent_message(client,session,&sent["messageId"]).await?;
+        let original = upstream.recv().await.ok_or("pinned main request missing")?;
+        super::preset_acceptance::pinned_memory::assert_wire(&original,marker);
+        let work = call(client,"agent","work",json!({"sessionId":session,"target":{"kind":"run","runId":run}})).await?;
+        let removed = call(client,"agent","changeMemory",json!({"scope":{"kind":"project","sessionId":session},
+            "edit":{"kind":"delete","id":pin["id"],"expectedRevision":pin["revision"]}})).await?;
+        assert_eq!(removed["kind"], "deleted");
+        for trigger in ["live","catch_up"] {
+            let prediction = call(client,"agent","predictNextMessage",json!({
+                "sessionId":session,"expectedTurnId":work["execution"]["turnId"],"trigger":trigger
+            })).await?;
+            assert!(prediction["suggestion"].is_null());
+            assert!(upstream.try_recv().is_err());
+        }
         Ok::<_, Box<dyn Error + Send + Sync>>(())
     })).catch_unwind().await;
     server.shutdown().await;

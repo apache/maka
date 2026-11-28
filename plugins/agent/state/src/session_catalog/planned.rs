@@ -153,6 +153,9 @@ impl PlannedCatalog {
         let mut record = Record {
             metadata,
             is_room: false,
+            has_active_children: false,
+            ancestor_ids: Vec::new(),
+            parent_title: None,
             control_revision,
             status: Status {
                 latest: None,

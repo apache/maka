@@ -708,6 +708,40 @@ pub enum When {
     NotEditing,
 }
 
+/// What a binding takes from the control with the keyboard focus
+/// ([`KeyBinding::over_focused`]; TS: `keymap.bind`'s `overFocused`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum OverFocused {
+    /// Nothing: Return and Space press a focused control, and the
+    /// focus' own bindings take its keys first (default).
+    #[default]
+    Never,
+    /// A key a focused component binds itself (a query editor's mod+enter
+    /// over the editor's own), for as long as the app keeps the binding:
+    /// the binding comes before the views' bindings of its keystroke, not
+    /// after them. The root's table puts such bindings after the others
+    /// (`Core::keymap`), where the newest that may fire wins.
+    Always,
+    /// Return and Space, from a focused control that a pointer gave the
+    /// focus (`Keymap::pointer_focus`): a press, or a popup a press used
+    /// giving the focus back to its trigger. A control the keyboard
+    /// focused (Tab, the arrows) keeps them. A media player's Space plays
+    /// after a click on Mute.
+    Pointer,
+}
+
+impl From<bool> for OverFocused {
+    /// `true` is [`OverFocused::Always`], `false` [`OverFocused::Never`].
+    fn from(over: bool) -> OverFocused {
+        if over {
+            OverFocused::Always
+        } else {
+            OverFocused::Never
+        }
+    }
+}
+
 /// One binding of a [`Keymap`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KeyBinding {
@@ -741,12 +775,9 @@ pub struct KeyBinding {
     /// ([`Keymap::find_at`]). Other bindings of those keys give way to the
     /// focused control.
     pub for_focus: bool,
-    /// It comes before the views' bindings of its keystroke, not after
-    /// them: an app takes a key a focused component binds (a query editor's
-    /// mod+enter over the editor's own), for as long as it keeps the
-    /// binding. The root's table puts such bindings after the others
-    /// (`Core::keymap`), where the newest that may fire wins.
-    pub over_focused: bool,
+    /// What it takes from the control with the keyboard focus
+    /// ([`OverFocused`]).
+    pub over_focused: OverFocused,
 }
 
 impl KeyBinding {
@@ -768,7 +799,7 @@ impl KeyBinding {
             within: None,
             window: None,
             for_focus: false,
-            over_focused: false,
+            over_focused: OverFocused::Never,
         }
     }
 
@@ -793,11 +824,24 @@ impl KeyBinding {
         self
     }
 
-    /// The binding coming before the views' bindings of its keystroke when
-    /// `over_focused` ([`Self::over_focused`]).
-    pub fn over_focused(mut self, over_focused: bool) -> KeyBinding {
-        self.over_focused = over_focused;
+    /// The binding taking from the control with the keyboard focus what
+    /// `over` says ([`Self::over_focused`]; `true` is
+    /// [`OverFocused::Always`], `false` [`OverFocused::Never`]).
+    pub fn over_focused(mut self, over: impl Into<OverFocused>) -> KeyBinding {
+        self.over_focused = over.into();
         self
+    }
+
+    /// It comes after the views' bindings in the root's table
+    /// ([`OverFocused::Always`]).
+    pub(crate) fn comes_after_views(&self) -> bool {
+        self.over_focused == OverFocused::Always
+    }
+
+    /// It takes Return and Space from a control a pointer gave the focus
+    /// ([`OverFocused::Pointer`]).
+    fn over_pointer_focus(&self) -> bool {
+        self.over_focused == OverFocused::Pointer
     }
 }
 
@@ -857,12 +901,67 @@ impl KeyMatch {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Keymap {
     bindings: Vec<KeyBinding>,
+    pointer_focus: bool,
 }
 
 impl Keymap {
     /// A table of `bindings`, oldest first.
     pub fn new(bindings: Vec<KeyBinding>) -> Keymap {
-        Keymap { bindings }
+        Keymap {
+            bindings,
+            pointer_focus: false,
+        }
+    }
+
+    /// The table with the keyboard focus given by a pointer when
+    /// `pointer_focus` (`Keymap::pointer_focus`).
+    pub(crate) fn with_pointer_focus(mut self, pointer_focus: bool) -> Keymap {
+        self.pointer_focus = pointer_focus;
+        self
+    }
+
+    /// Whether a pointer gave the keyboard focus where it is: a press, or
+    /// a popup a press used giving it back to its trigger. The core keeps
+    /// it as the focus moves, in the table it mounts, while a binding
+    /// asks for it ([`OverFocused::Pointer`]); the keys that
+    /// follow are matched with it on the spot.
+    #[cfg(test)]
+    pub(crate) fn pointer_focus(&self) -> bool {
+        self.pointer_focus
+    }
+
+    /// Whether a binding asks how the focus came
+    /// ([`OverFocused::Pointer`]): the core keeps
+    /// `Keymap::pointer_focus` in the table only then.
+    pub(crate) fn takes_over_pointer_focus(&self) -> bool {
+        self.bindings.iter().any(KeyBinding::over_pointer_focus)
+    }
+
+    /// Whether `binding` gives way while the keyboard focus is on a
+    /// control its key presses (Return, Space;
+    /// [`crate::input::presses_focused_control`]). The focus' own bindings
+    /// ([`KeyBinding::for_focus`]) take such a key, the others give way to
+    /// the control. When a pointer gave the focus
+    /// (`Keymap::pointer_focus`) and a binding of the key takes it over
+    /// such a focus ([`OverFocused::Pointer`]), only those take
+    /// it: the focus' own give way to them too (a `Select` trigger's Space
+    /// opening its list). A platform that matches the bindings itself
+    /// (GTK's shortcuts) asks it as [`Self::find_with`] does.
+    pub fn gives_way(&self, binding: &KeyBinding) -> bool {
+        let key = binding.keystroke;
+        if !crate::input::presses_focused_control(key.key, key.modifiers) {
+            return false;
+        }
+        let over = self.pointer_focus
+            && self
+                .bindings
+                .iter()
+                .any(|b| b.over_pointer_focus() && b.keystroke == key);
+        if over {
+            !binding.over_pointer_focus()
+        } else {
+            !binding.for_focus
+        }
     }
 
     /// No bindings: the platform need not look at keys.
@@ -900,9 +999,17 @@ impl Keymap {
         self.find_at(window, keystroke, editing, false, repeat)
     }
 
-    /// [`Self::find_in`] with the control that has the keyboard focus.
-    /// Return and Space press that control before shortcuts elsewhere;
-    /// only its own bindings ([`KeyBinding::for_focus`]) take those keys first.
+    /// [`Self::find_in`] where the keyboard focus may be on a control
+    /// (`control`: a view that takes presses, not a text input). The keys
+    /// that press it ([`crate::input::presses_focused_control`]: Return
+    /// and Space) are its own: only the bindings of the focus
+    /// ([`KeyBinding::for_focus`], a menu button's Return opening its
+    /// menu) take them first; with none, the key goes on and the platform
+    /// presses the control. A binding of Return elsewhere (a dialog's main
+    /// action) does not act instead of the control the user moved the
+    /// focus to; one that takes them over a pointer's focus
+    /// ([`OverFocused::Pointer`]) does when a pointer gave it
+    /// (`Keymap::pointer_focus`).
     pub fn find_at(
         &self,
         window: NodeId,
@@ -994,14 +1101,14 @@ impl Keymap {
             control,
             covered,
         } = focus;
-        let pressing = control
-            && !editing
-            && crate::input::presses_focused_control(keystroke.key, keystroke.modifiers);
+        // A focused control's Return and Space: only the bindings that do
+        // not give way to it take them (`Self::gives_way`).
+        let pressing = control && !editing;
         let found = self.bindings.iter().rev().find(|b| {
             b.keystroke == keystroke
                 && (b.in_text || !editing)
                 && b.window.is_none_or(|w| w == window)
-                && (b.for_focus || !pressing)
+                && !(pressing && self.gives_way(b))
                 && eligible(b)
                 && !(b.for_focus && covered)
         });
@@ -1127,6 +1234,46 @@ mod tests {
         assert_eq!(
             table.find_at(crate::ROOT_ID, cmd_enter, true, true, false),
             KeyMatch::Fire(3)
+        );
+    }
+
+    #[test]
+    fn a_binding_over_a_pointers_focus_takes_space_from_a_control_a_pointer_focused() {
+        let key = |s| Keystroke::parse_with(s, false).unwrap();
+        let (space, enter) = (key("space"), key("enter"));
+        // A media player's Space and Return, then a Select trigger's own
+        // Space (newer), bound while it has the focus.
+        let table = Keymap::new(vec![
+            KeyBinding::new(1, space, When::NotEditing, false).over_focused(OverFocused::Pointer),
+            KeyBinding::new(2, enter, When::NotEditing, false),
+            KeyBinding::new(3, space, When::NotEditing, false).focus_keys(true),
+        ]);
+        assert!(table.takes_over_pointer_focus());
+        let at =
+            |t: &Keymap, k, editing, control| t.find_at(crate::ROOT_ID, k, editing, control, false);
+        // The keyboard focused the control: its own Space opens it, and
+        // Return presses it, as without the option.
+        assert_eq!(at(&table, space, false, true), KeyMatch::Fire(3));
+        assert_eq!(at(&table, enter, false, true), KeyMatch::None);
+        // A pointer focused it: the app's Space takes the key, over the
+        // focus' own; Return, which does not ask, still presses it.
+        let pointer = table.clone().with_pointer_focus(true);
+        assert!(pointer.pointer_focus());
+        assert_eq!(at(&pointer, space, false, true), KeyMatch::Fire(1));
+        assert_eq!(at(&pointer, enter, false, true), KeyMatch::None);
+        // No control focused, or a text field: as before.
+        assert_eq!(at(&pointer, space, false, false), KeyMatch::Fire(3));
+        assert_eq!(at(&pointer, space, true, true), KeyMatch::None);
+        // `true` is the binding that comes after the views', which does
+        // not ask how the focus came.
+        let always = KeyBinding::new(4, space, When::NotEditing, false).over_focused(true);
+        assert_eq!(always.over_focused, OverFocused::Always);
+        assert!(always.comes_after_views());
+        assert!(!Keymap::new(vec![always]).takes_over_pointer_focus());
+        // A table where no binding asks.
+        assert!(
+            !Keymap::new(vec![KeyBinding::new(1, space, When::NotEditing, false)])
+                .takes_over_pointer_focus()
         );
     }
 

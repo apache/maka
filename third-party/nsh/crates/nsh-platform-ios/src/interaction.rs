@@ -226,6 +226,41 @@ pub(crate) fn transition(view: &UIView, t: &Transition, apply: impl FnOnce()) {
     }
 }
 
+#[derive(PartialEq, Eq)]
+pub(crate) enum CoverageAnimation {
+    Finite,
+    Persistent,
+}
+
+/// Animations that can expose the backdrop even though the model layer fills it.
+pub(crate) fn coverage_animation(layer: &CALayer) -> Option<CoverageAnimation> {
+    let mut finite = None;
+    for key in [ns_string!("opacity"), ns_string!("transform")] {
+        // SAFETY: both are keys used for layer animations.
+        if let Some(animation) = unsafe { layer.animationForKey(key) } {
+            let (speed, repeat_count, repeat_duration) = (
+                animation.speed(),
+                animation.repeatCount(),
+                animation.repeatDuration(),
+            );
+            // UIKit uses FLT_MAX for UIViewAnimationOptionRepeat.
+            if !animation.isRemovedOnCompletion()
+                || speed <= 0.0
+                || !speed.is_finite()
+                || !repeat_count.is_finite()
+                || repeat_count == f32::MAX
+                || !repeat_duration.is_finite()
+                || repeat_duration == f64::MAX
+                || !animation.duration().is_finite()
+            {
+                return Some(CoverageAnimation::Persistent);
+            }
+            finite = Some(CoverageAnimation::Finite);
+        }
+    }
+    finite
+}
+
 /// The texts whose color transitions (`transition-colors`), stepped on a
 /// display link that runs only while one does.
 pub(crate) struct TextColors {

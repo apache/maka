@@ -18,7 +18,6 @@
  */
 
 import { effect, keymap, platform, signal, View, type JSX } from 'nsh';
-import { Dialog } from 'nsh/base';
 import type { RoomWorkspaceInput } from '../../../../packages/plugin-sdk/src/workbench-views.js';
 import { createRoomWorkspace } from '../../../../products/maka/workbench/app/RoomWorkspace';
 import {
@@ -31,6 +30,7 @@ import {
 } from '../../../../products/maka/workbench/app/Workbench';
 import { HostProvider, type Host } from '../../../../products/maka/workbench/app/host';
 import { ImageViewer } from '../../../../products/maka/workbench/app/ImageViewer';
+import { WindowDialog } from '../../../../products/maka/workbench/app/ModalDialog';
 import { C, Header } from '../../../../products/maka/workbench/app/ui';
 import { PANEL_INSET } from '../../../../products/maka/workbench/app/chrome';
 import { tr } from '../../../../products/maka/workbench/app/locale';
@@ -197,7 +197,7 @@ export function RoomView(props: {
   };
   const previewDialog = createPreviewDialog({
     shown: resources.shown,
-    suppressed: () => resources.imageViewer() !== null,
+    suppressed: () => !input.visible() || resources.imageViewer() !== null,
     focused: () => {
       const root = resources.root();
       return root !== undefined && keymap.focusedWithin(root);
@@ -232,7 +232,7 @@ export function RoomView(props: {
         {rooms.content()}
       </Workbench>
       <If when={input.visible() && !navigationFits() && floatingNavigation()}>
-        <Dialog
+        <WindowDialog
           animation="none"
           onOpenChange={closeNavigation}
           style={{ flex: 1, backgroundColor: C.scrim }}
@@ -253,10 +253,10 @@ export function RoomView(props: {
             </View>
             {rooms.navigation(input.modeSwitch())}
           </View>
-        </Dialog>
+        </WindowDialog>
       </If>
       <Each of={resources.imageViewer() ? [resources.imageViewer()!] : []} key={(viewer) => viewer}>
-        {(viewer) => <ImageViewer image={viewer().image} close={viewer().close} />}
+        {(viewer) => <ImageViewer images={[viewer().image]} close={viewer().close} />}
       </Each>
     </HostProvider>
   );

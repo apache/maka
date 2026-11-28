@@ -981,16 +981,17 @@ async fn prepare_local_result(
                     }
                 })
                 .collect();
-            let cell_observation = match &mut normalized.output {
+            let (cell_observation, pre_strip_cell_observation) = match &mut normalized.output {
                 ToolOutput::Cell(reply) => match &reply.state {
                     maka_agent_facts::cells::CellReplyState::Completed { result }
                     | maka_agent_facts::cells::CellReplyState::Interrupted { report: result } => {
-                        reply.observation = serde_json::Value::Null;
-                        Some(result.clone())
+                        let prev =
+                            std::mem::replace(&mut reply.observation, serde_json::Value::Null);
+                        (Some(result.clone()), Some(prev))
                     }
-                    _ => None,
+                    _ => (None, None),
                 },
-                _ => None,
+                _ => (None, None),
             };
             use maka_agent_facts::tool_output::{
                 OperationProjection, StoredOperationReturn, StoredToolResult,
@@ -1009,13 +1010,14 @@ async fn prepare_local_result(
                     (body, Some(*reply), Some(stored), content)
                 }
                 output => (
-                    StoredToolResult::Inline(Box::new(ReturnedToolResult {
+                    StoredToolResult::from_local(
                         output,
-                        projection: normalized.projection,
-                        is_error: normalized.is_error,
-                        loaded_tools: normalized.loaded_tools,
-                        display_budget_chars: normalized.display_budget_chars,
-                    })),
+                        pre_strip_cell_observation.as_ref(),
+                        normalized.projection,
+                        normalized.is_error,
+                        normalized.loaded_tools,
+                        normalized.display_budget_chars,
+                    ),
                     None,
                     None,
                     None,

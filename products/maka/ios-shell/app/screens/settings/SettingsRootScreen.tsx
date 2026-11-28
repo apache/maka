@@ -19,7 +19,6 @@
 
 import { cleanup, computed, effect, safeAreaInsets, Scroll, signal, View, token } from 'nsh';
 import { MenuButton, NavPage, type MenuButtonItem } from 'nsh/base';
-import { Switch } from 'nsh/mobile';
 import { pathLabel } from '../../bridge';
 import { languagePreferenceBusy, languagePreferenceError, tr } from '../../locale';
 import {
@@ -38,8 +37,15 @@ import {
   saveHapticsEnabled,
   type AppearancePreference,
 } from '../../state/preferences';
+import {
+  connectionCatalog,
+  modelConnectionLabels,
+  modelLabel,
+  resolveDefaultModel,
+} from '../../state/settings/models';
 import { settingsRpc } from '../../state/settings/rpc';
 import { spacing } from '../../theme/tokens';
+import { SettingSwitchControl } from './SettingsForm';
 import {
   BannerNotice,
   GroupRow,
@@ -79,6 +85,7 @@ const DOMAIN_ORDER = [
 ] as const;
 
 export function SettingsRootScreen(props: {
+  modelSettingsRevision: number;
   onOpenComputer: (rootId: string) => void;
   onOpenDevice: (rootId: string) => void;
   onOpenHostSetting: (domain: HostSettingDomain, rootId: string) => void;
@@ -95,6 +102,7 @@ export function SettingsRootScreen(props: {
     ),
   );
   effect(() => {
+    props.modelSettingsRevision;
     const targets = JSON.parse(connectionKey()) as Array<[string, number]>;
     if (savedHosts().length < 2) return;
     let alive = true;
@@ -104,13 +112,18 @@ export function SettingsRootScreen(props: {
     defaultModels.set({});
     for (const [rootId] of targets) {
       const rpc = settingsRpc(rootId);
-      void rpc
-        .query('settings', 'connections', { kind: 'start' })
-        .then(async (page) => {
-          if (!alive || page.kind !== 'ready' || !page.defaultTarget) return;
-          const model = await rpc.query('settings', 'resolveModel', page.defaultTarget);
-          if (alive && model.kind === 'ready')
-            defaultModels.update((prev) => ({ ...prev, [rootId]: model.choice.label }));
+      void connectionCatalog(rpc)
+        .then(async (catalog) => {
+          if (!alive) return;
+          const model = await resolveDefaultModel(rpc, catalog.defaultTarget);
+          if (alive && model) {
+            const label = modelLabel(
+              model.label,
+              model.selection.connectionId,
+              modelConnectionLabels(catalog),
+            );
+            defaultModels.update((prev) => ({ ...prev, [rootId]: label }));
+          }
         })
         .catch((cause) => {
           if (alive) console.warn('Default model unavailable', cause);
@@ -171,7 +184,9 @@ export function SettingsRootScreen(props: {
                     />
                   }
                   title={host().hostName}
-                  subtitle={hostSubtitle(host().rootId)}
+                  subtitle={[host().platform, hostSubtitle(host().rootId)]
+                    .filter(Boolean)
+                    .join(' · ')}
                   trailing={<StatusDot kind={hostStatusKind(host().rootId)} size={8} />}
                   chevron
                   divider={savedHosts().length > 1}
@@ -249,12 +264,12 @@ export function SettingsRootScreen(props: {
                 <IconBadge name="haptics" background={token('teal')} size={28} iconSize={16} />
               }
               title={tr('Haptic Feedback')}
+              accessible={false}
               trailing={
-                <Switch
+                <SettingSwitchControl
                   accessibilityLabel={tr('Haptic Feedback')}
                   checked={hapticsEnabled()}
-                  onChange={({ checked }) => void saveHapticsEnabled(checked)}
-                  style={{ accentColor: token('success') }}
+                  onChange={(checked) => void saveHapticsEnabled(checked)}
                 />
               }
             />

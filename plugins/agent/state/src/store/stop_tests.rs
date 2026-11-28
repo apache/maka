@@ -112,6 +112,8 @@ pub(crate) fn spec() -> (RunSpec, Vec<ContentBlob>) {
         allowed_tools: None,
         mcp_revision: None,
         compaction_prompt: None,
+        memory_admission: Default::default(),
+        memory_projection: None,
         system_prompt: reference.clone(),
         tool_selection: reference.clone(),
         input: reference,
@@ -320,7 +322,7 @@ where
     store.data.write(Raw(f)).await.unwrap();
 }
 
-fn external_spec() -> (RunSpec, Vec<ContentBlob>) {
+pub(crate) fn external_spec() -> (RunSpec, Vec<ContentBlob>) {
     let (mut spec, contents) = spec();
     spec.backend = BackendSpec::Executor {
         selection: maka_agent_facts::executor::Selection {
@@ -607,17 +609,163 @@ async fn reorder_preserves_interrupt_handoffs_and_enqueue_times() {
 }
 
 #[tokio::test]
+async fn upgrade_and_rebuild_preserve_the_original_senders_of_pending_requests() {
+    use maka_agent_facts::memory::MemoryAdmission;
+    use rusqlite::params;
+    use serde_json::json;
+
+    let dir = tempfile::tempdir().unwrap();
+    let (root, store) = open_through(dir.path(), true, 56).await;
+    // Seed canonical v56 rows with the current writer, then restore genuine v56 raw contents
+    // before reopening so migrations 57..=latest run end-to-end against a real v56 schema.
+    exec_sql(&store, |db| {
+        db.execute_batch(
+            "ALTER TABLE contents ADD COLUMN encoding INTEGER NOT NULL DEFAULT 0;
+             ALTER TABLE contents ADD COLUMN logical_bytes INTEGER;",
+        )?;
+        Ok(())
+    })
+    .await;
+    let (mut spec, contents) = spec();
+    spec.session_id = "chat".into();
+    let owner = serde_json::to_value(&spec.owner).unwrap();
+    exec_sql(&store, move |db| {
+        for blob in contents {
+            blob.store(db)?;
+        }
+        db.execute_batch(
+            "INSERT INTO session_control(id,fingerprint,revision,created_at,updated_at,archived,configuration)
+             VALUES('chat','test',1,0,0,0,'{}');
+             INSERT INTO application_operation_contracts VALUES('agent','{}');",
+        )?;
+        // Include a compressible body (> 256 B) so v65 must compress request_json AFTER v57 reads it.
+        let compressible = "pending-send-body ".repeat(32);
+        for (message, actor, session) in [("user","remote","chat"), ("worker","agent","chat"),
+                                         ("cancelled","native","chat"), ("other","native","another")] {
+            let request = json!({"method":"send","export":"agent","origin":{"kind":actor},"input":{"text":compressible}});
+            let outcome = ContentBlob::json(&json!({"kind":"success","value":{"kind":"queued","sessionId":session,"messageId":message}}))?.store(db)?;
+            db.execute("INSERT INTO application_operations(deployment,namespace,operation,source_revision,request_json,
+                outcome_content_id,outcome_json,cleanup_json,contract_digest) VALUES(?1,?2,?3,1,?4,?5,'{}','{}','agent')",
+                params![owner["deployment"].as_str(),owner["namespace"].to_string(),message,request.to_string(),outcome])?;
+        }
+        Ok(())
+    }).await;
+    for message in ["user", "worker", "other", "cancelled"] {
+        enqueue_at(&store, &spec, message, 1).await;
+    }
+    let (request, blobs) = prepare_message(&spec, "user", None);
+    let edit = QueueCommand {
+        id: FactId::new(),
+        at: UnixMillis(2),
+        expected_revision: store.queue().read("chat".into()).await.unwrap().revision,
+        edit: QueueEdit::Update {
+            request: Box::new(request),
+        },
+    };
+    let commit = store
+        .queue()
+        .execute("chat".into(), edit.clone(), blobs)
+        .await
+        .unwrap();
+    write_queue(
+        &store,
+        "chat",
+        3,
+        None,
+        QueueEdit::Retract {
+            request: RequestId("request-cancelled".into()),
+        },
+        vec![],
+    )
+    .await
+    .unwrap();
+    exec_sql(&store, |db| {
+        db.execute_batch(
+            r#"DELETE FROM agent_history_queue_requests WHERE session='chat';
+             INSERT INTO contents(content_sha256,payload) VALUES
+             ('message-spec',CAST('{"origin":{"kind":"local"},"trigger":{"kind":"message","message_id":"user"},"input":{"digest":"user-input"}}' AS BLOB)),
+             ('user-input',CAST('{"kind":"message","source_messages":[]}' AS BLOB)),
+             ('handoff-spec',CAST('{"origin":{"kind":"local"},"trigger":{"kind":"checkpoint_handoff","source":"original"}}' AS BLOB));
+             INSERT INTO agent_run_specs SELECT 'original',1,'owner','chat',id FROM contents WHERE content_sha256='message-spec'
+              UNION ALL SELECT 'handoff',1,'owner','chat',id FROM contents WHERE content_sha256='handoff-spec';
+             INSERT INTO agent_runs(run,schema_version,owner,session,admission_sequence,local,revision,control_version,
+              stopped,tokens,retries,retry_pending,cancelled_by_risk,replans,terminal)
+              SELECT run,1,owner,session,1,1,1,0,0,0,0,0,0,'[]',CASE WHEN run='original' THEN 'completed' END FROM agent_run_specs;"#
+        )?;
+        Ok(())
+    }).await;
+    let original_revision = store.queue().read("chat".into()).await.unwrap().revision;
+    exec_sql(&store, |db| {
+        db.execute_batch(
+            "DROP TRIGGER content_immutable;
+             UPDATE contents SET payload = maka_content_bytes(payload, encoding) WHERE encoding != 0;
+             ALTER TABLE contents DROP COLUMN logical_bytes;
+             ALTER TABLE contents DROP COLUMN encoding;
+             CREATE TRIGGER content_immutable BEFORE UPDATE ON contents BEGIN SELECT RAISE(ABORT,'content is immutable'); END;",
+        )?;
+        Ok(())
+    })
+    .await;
+    drop(store);
+    root.close().await.unwrap();
+
+    let (root, store) = open(dir.path(), false).await;
+    let retry = store
+        .queue()
+        .execute("chat".into(), edit, vec![])
+        .await
+        .unwrap();
+    assert_eq!(retry, commit);
+    let before = store.queue().read("chat".into()).await.unwrap();
+    assert_eq!(before.revision, original_revision);
+    let admissions: Vec<_> = before
+        .entries
+        .iter()
+        .map(|e| {
+            (
+                e.request.message_id.as_str(),
+                e.request.spec.memory_admission,
+            )
+        })
+        .collect();
+    assert_eq!(
+        admissions,
+        [
+            ("user", MemoryAdmission::Disabled),
+            ("worker", MemoryAdmission::Excluded),
+            ("other", MemoryAdmission::Unknown)
+        ]
+    );
+    store.queue().rebuild("chat".into()).await.unwrap();
+    assert_eq!(store.queue().read("chat".into()).await.unwrap(), before);
+    exec_sql(&store, |db| {
+        assert!(db.query_row(
+            "SELECT original_user_run FROM agent_run_specs WHERE run='handoff'",
+            [],
+            |row| row.get::<_, bool>(0)
+        )?);
+        let compressed_requests: i64 = db.query_row(
+            "SELECT COUNT(*) FROM application_operations WHERE request_encoding != 0",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(
+            compressed_requests, 4,
+            "v65 must compress long pending send requests after v57 finishes"
+        );
+        Ok(())
+    })
+    .await;
+    drop(store);
+    root.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn upgrade_repairs_old_reorder_handoff_before_queue_is_used() {
     use crate::queue::Followup;
 
     let dir = tempfile::tempdir().unwrap();
-    let (root, store) = open_through(dir.path(), true, 53).await;
-    // Seed canonical events with the current writer, then drop the v54 columns
-    // to leave a genuine v53 schema before reopening.
-    exec_sql(&store, |c| {
-        c.execute_batch("ALTER TABLE agent_queue_items ADD COLUMN enqueued_at INTEGER NOT NULL DEFAULT 0; ALTER TABLE agent_queue_items ADD COLUMN interrupted_run TEXT;")?;
-        Ok(())
-    }).await;
+    let (root, store) = open(dir.path(), true).await;
 
     let (spec, contents) = external_spec();
     let sid = spec.session_id.clone();
@@ -649,7 +797,7 @@ async fn upgrade_repairs_old_reorder_handoff_before_queue_is_used() {
     let sid_copy = sid.clone();
     exec_sql(&store, move |c| {
         let body: Vec<u8> = c.query_row(
-            "SELECT b.payload FROM agent_queue_events e JOIN contents b ON b.id=e.body_content_id WHERE e.session=? AND e.revision=4",
+            "SELECT maka_content_bytes(b.payload,b.encoding) FROM agent_queue_events e JOIN contents b ON b.id=e.body_content_id WHERE e.session=? AND e.revision=4",
             [&sid_copy], |row| row.get(0),
         )?;
         let mut event: serde_json::Value = serde_json::from_slice(&body)?;
@@ -673,8 +821,10 @@ async fn upgrade_repairs_old_reorder_handoff_before_queue_is_used() {
         .await
         .unwrap();
 
+    // Revert only migration 54's schema columns and ledger entry so reopening replays
+    // queue reorder handoff repair against the seeded historical events.
     exec_sql(&store, |c| {
-        c.execute_batch("ALTER TABLE agent_queue_items DROP COLUMN enqueued_at; ALTER TABLE agent_queue_items DROP COLUMN interrupted_run;")?;
+        c.execute_batch("ALTER TABLE agent_queue_items DROP COLUMN enqueued_at; ALTER TABLE agent_queue_items DROP COLUMN interrupted_run; DELETE FROM _sqlx_migrations WHERE version = 54;")?;
         Ok(())
     }).await;
     drop(store);
@@ -708,6 +858,222 @@ async fn upgrade_repairs_old_reorder_handoff_before_queue_is_used() {
     );
     q.rebuild(sid.clone()).await.unwrap();
     assert_eq!(q.read(sid).await.unwrap(), before);
+    drop(q);
+    drop(store);
+    root.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn cold_v53_upgrade_rebuilds_queue_projections_before_contents_encoding() {
+    use maka_agent_facts::{
+        artifact::{Artifact, ArtifactKind, ArtifactSource, PublishedArtifact},
+        attachment::{AttachmentKind, AttachmentRef, StorageRef},
+    };
+
+    let dir = tempfile::tempdir().unwrap();
+    let (root, store) = open_through(dir.path(), true, 53).await;
+    drop(store);
+    root.close().await.unwrap();
+
+    let (mut basis, basis_blobs) = self::spec();
+    basis.session_id = "cold-v53-queue".into();
+    let caller = RunId::new();
+    let caller_spec_blob = ContentBlob::json(&basis).unwrap();
+
+    let art_bytes = b"pre-v63-session-artifact-payload".to_vec();
+    let art_blob = ContentBlob::new(art_bytes.clone());
+    let art_id = maka_agent_facts::artifact::upload_artifact_id(&basis.session_id, "doc-1");
+    let art_record = PublishedArtifact {
+        artifact: Artifact {
+            id: art_id.clone(),
+            session_id: basis.session_id.clone(),
+            turn_id: basis.turn_id.clone(),
+            created_at: 10,
+            name: "doc.txt".into(),
+            kind: ArtifactKind::File,
+            size_bytes: art_bytes.len() as u64,
+            mime_type: Some("text/plain".into()),
+            source: ArtifactSource::UserUpload,
+            summary: Some(art_blob.reference().digest.clone()),
+        },
+        payload: art_blob.reference().clone(),
+    };
+    let registration_blob = ContentBlob::json(&serde_json::json!({
+        "schemaVersion": SCHEMA_VERSION,
+        "owner": basis.owner,
+        "operation": "upload-doc-1",
+        "record": art_record,
+        "origin": { "kind": "upload", "logical_id": "doc-1" },
+    }))
+    .unwrap();
+
+    let attachment = AttachmentRef {
+        kind: AttachmentKind::Other,
+        name: "doc.txt".into(),
+        mime_type: "text/plain".into(),
+        bytes: art_bytes.len() as u64,
+        storage_ref: StorageRef::SessionFile {
+            session_id: basis.session_id.clone(),
+            relative_path: art_id.clone(),
+        },
+    };
+    let mut msg_with_att = MessageInput::from("with attachment");
+    msg_with_att.attachments = Some(vec![attachment]);
+    let src_att = ContentBlob::json(&RootSourceMessage {
+        message: DeliveredMessage {
+            message_id: "msg-att".into(),
+            submitted_content_digest: msg_with_att.content_digest().unwrap(),
+            content: msg_with_att.clone(),
+            origin: None,
+        },
+        unprepared_content: msg_with_att,
+        submitted_placement: maka_agent_facts::message::Placement::NextTurn,
+        disposition: MessageDisposition::Followup,
+        submitted_intent: None,
+    })
+    .unwrap();
+    let empty_resources = ContentBlob::json(&Vec::<serde_json::Value>::new()).unwrap();
+    let mut att_spec = basis.clone();
+    att_spec.turn_id = "turn-att".into();
+    att_spec.trigger = Trigger::Message {
+        message_id: "msg-att".into(),
+    };
+    let req_att = PreparedRequest {
+        id: RequestId("req-att".into()),
+        message_id: "msg-att".into(),
+        spec: att_spec,
+        source: src_att.reference().clone(),
+        resources: empty_resources.reference().clone(),
+        required_tools: Default::default(),
+    };
+    let ev1_blob = ContentBlob::json(&crate::queue::Event::Command {
+        expected_revision: 0,
+        edit: QueueEdit::Enqueue {
+            request: Box::new(req_att.clone()),
+            placement: Placement::Followup,
+        },
+        resume_after_interrupt: None,
+    })
+    .unwrap();
+
+    let (req_comp, comp_blobs) = prepare_message(
+        &basis,
+        "msg-comp",
+        Some(MessageOrigin::SessionCompletion {
+            session_id: basis.session_id.clone(),
+            message_id: "msg-comp".into(),
+        }),
+    );
+    let ev2_blob = ContentBlob::json(&crate::queue::Event::Command {
+        expected_revision: 1,
+        edit: QueueEdit::Enqueue {
+            request: Box::new(req_comp.clone()),
+            placement: Placement::Completion { caller },
+        },
+        resume_after_interrupt: None,
+    })
+    .unwrap();
+
+    let db_path = dir
+        .path()
+        .join("root")
+        .join(maka_event_log::root::ROOT_DATABASE);
+    let db = rusqlite::Connection::open(&db_path).unwrap();
+    assert!(
+        !maka_event_log::content::has_encoding_column(&db).unwrap(),
+        "v53 database must not have contents.encoding before cold upgrade"
+    );
+    for blob in basis_blobs
+        .iter()
+        .chain([
+            &caller_spec_blob,
+            &art_blob,
+            &registration_blob,
+            &src_att,
+            &empty_resources,
+            &ev1_blob,
+            &ev2_blob,
+        ])
+        .chain(comp_blobs.iter())
+    {
+        blob.store_legacy(&db).unwrap();
+    }
+    let owner_json = serde_json::to_string(&basis.owner).unwrap();
+    let caller_spec_id = caller_spec_blob.store_legacy(&db).unwrap();
+    db.execute(
+        "INSERT INTO agent_run_specs(run,schema_version,owner,session,spec_content_id) VALUES(?1,?2,?3,?4,?5)",
+        rusqlite::params![
+            caller.to_string(),
+            crate::sql::HEADER_SCHEMA_VERSION,
+            owner_json,
+            basis.session_id,
+            caller_spec_id
+        ],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO agent_runs(run,schema_version,owner,session,admission_sequence,local,revision,control_version,stopped,tokens,retries,retry_pending,cancelled_by_risk,replans,terminal)
+         VALUES(?1,?2,?3,?4,1,1,1,0,0,0,0,0,0,'[]','completed')",
+        rusqlite::params![
+            caller.to_string(),
+            crate::sql::HEADER_SCHEMA_VERSION,
+            owner_json,
+            basis.session_id
+        ],
+    )
+    .unwrap();
+    let art_cid = art_blob.store_legacy(&db).unwrap();
+    let reg_cid = registration_blob.store_legacy(&db).unwrap();
+    db.execute(
+        "INSERT INTO agent_session_artifact_registrations(session,artifact,owner,operation,body_content_id,content_id,provenance_content_id)
+         VALUES(?1,?2,?3,'upload-doc-1',?4,?5,NULL)",
+        rusqlite::params![basis.session_id, art_id, owner_json, reg_cid, art_cid],
+    )
+    .unwrap();
+    let ev1_cid = ev1_blob.store_legacy(&db).unwrap();
+    let ev2_cid = ev2_blob.store_legacy(&db).unwrap();
+    db.execute(
+        "INSERT INTO agent_queue_events(session,revision,id,at,body_content_id) VALUES(?1,1,?2,111,?3),(?1,2,?4,222,?5)",
+        rusqlite::params![
+            basis.session_id,
+            FactId::new().to_string(),
+            ev1_cid,
+            FactId::new().to_string(),
+            ev2_cid
+        ],
+    )
+    .unwrap();
+    drop(db);
+
+    // Cold upgrade from v53 -> latest: migration 54 must replay queue events, artifact pins,
+    // and completion caller run_head cleanly before migration 63 adds contents.encoding.
+    let (root, store) = open(dir.path(), false).await;
+    let q = store.queue();
+    assert_eq!(
+        q.entry_enqueued_at(basis.session_id.clone(), req_att.id.clone())
+            .await
+            .unwrap(),
+        Some(UnixMillis(111))
+    );
+    assert_eq!(
+        q.entry_enqueued_at(basis.session_id.clone(), req_comp.id.clone())
+            .await
+            .unwrap(),
+        Some(UnixMillis(222))
+    );
+    let read = q.read(basis.session_id.clone()).await.unwrap();
+    let ids: Vec<_> = read.entries.iter().map(|e| &e.request.id).collect();
+    assert_eq!(ids, vec![&req_att.id, &req_comp.id]);
+    exec_sql(&store, move |c| {
+        let pinned: bool = c.query_row(
+            "SELECT EXISTS(SELECT 1 FROM agent_queue_content_pins WHERE session=?1 AND request=?2 AND content_id=?3)",
+            rusqlite::params![basis.session_id, req_att.id.0, art_cid],
+            |r| r.get(0),
+        )?;
+        assert!(pinned, "v54 replay must retain session artifact content pin");
+        Ok(())
+    })
+    .await;
     drop(q);
     drop(store);
     root.close().await.unwrap();
@@ -1848,5 +2214,252 @@ async fn cancelled_contested_takeover_preserves_prior_claim() {
             .is_err()
     );
     drop((claim1, claim2, store));
+    root.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn rejected_memory_reads_do_not_roll_back_peer_writes() {
+    use crate::memory::{Scope, reads::RecordFacts};
+    use maka_agent_facts::memory::{LoadedMemory, MemoryId, MemoryRevision};
+    use maka_plugin_core::storage::{Data, Mutation, Namespace};
+    use tokio::sync::oneshot;
+
+    struct WriterBarrier(oneshot::Sender<()>, std::sync::mpsc::Receiver<()>);
+    impl Query for WriterBarrier {
+        type Output = ();
+        fn execute(self, _: &Connection) -> Result<(), StoreError> {
+            self.0.send(()).unwrap();
+            self.1
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .unwrap();
+            Ok(())
+        }
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let (root, _) = open(dir.path(), true).await;
+    let data = root.data_writer().unwrap();
+    let namespace = Namespace::new("test.memory", maka_plugin_core::scope::Scope::Profile).unwrap();
+    let peer = root
+        .prepare_plugin_data_statement(
+            &namespace,
+            vec![Mutation {
+                key: "peer".into(),
+                expected_revision: None,
+                data: Data::Present(serde_json::json!("committed")),
+            }],
+            &data,
+        )
+        .unwrap();
+    let (admission, _) = spec();
+    let run = RunId::new();
+    let stale = RecordFacts {
+        run,
+        scope: Scope {
+            namespace: serde_json::to_string(&admission.owner).unwrap(),
+            location: "personal".into(),
+            binding: None,
+        },
+        facts: vec![LoadedMemory {
+            scope: "personal".into(),
+            id: MemoryId(Uuid::new_v4()),
+            revision: MemoryRevision(1),
+            assertion: MemoryRevision(1),
+        }],
+    };
+
+    let (ready, entered) = oneshot::channel();
+    let (release, wait) = std::sync::mpsc::channel();
+    let lane = data.clone();
+    let barrier = tokio::spawn(async move { lane.query_barrier(WriterBarrier(ready, wait)).await });
+    entered.await.unwrap();
+    // Poll both FIFO writes while the writer is held so they share a commit.
+    let (peer, stale, ()) = tokio::join!(biased;
+        data.write(peer),data.write(stale),async {release.send(()).unwrap()}
+    );
+    barrier.await.unwrap().unwrap();
+    assert!(
+        matches!(stale,Err(StoreError::InvalidTransition(reason)) if reason.contains("memory changed"))
+    );
+    peer.unwrap();
+    assert_eq!(
+        root.plugin_data(&namespace, "peer")
+            .await
+            .unwrap()
+            .unwrap()
+            .data
+            .value(),
+        Some(&serde_json::json!("committed"))
+    );
+    root.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn replay_permits_clean_producers_and_checks_consumed_memory_validity() {
+    use crate::memory::{Scope, reads::RecordFacts};
+    use crate::session_history::permits_memory_replay;
+    use maka_agent_facts::memory::{
+        LoadedMemory, MemoryAdmission, MemoryId,
+        MemoryReplay::{Run, Shared, Unrecorded},
+        MemoryRevision,
+    };
+
+    let dir = tempfile::tempdir().unwrap();
+    let (root, store) = open(dir.path(), true).await;
+    let (base_spec, contents) = spec();
+    let owner_ns = serde_json::to_string(&base_spec.owner).unwrap();
+    let live = store.session_history(base_spec.owner.clone(), base_spec.session_id.clone());
+
+    let mut producer_spec = base_spec.clone();
+    producer_spec.memory_admission = MemoryAdmission::Enabled;
+    let producer_adm = Admission::new(producer_spec, UnixMillis(1), contents.clone());
+    let producer = producer_adm.run();
+    store.admit(producer_adm).await.unwrap();
+
+    let mut enabled_spec = base_spec.clone();
+    enabled_spec.turn_id = "turn-enabled".into();
+    enabled_spec.trigger = maka_agent_facts::durable::Trigger::Message {
+        message_id: "msg-enabled".into(),
+    };
+    enabled_spec.memory_admission = MemoryAdmission::Enabled;
+    let enabled_adm = Admission::new(enabled_spec, UnixMillis(2), contents.clone());
+    let enabled_target = enabled_adm.run();
+    store.admit(enabled_adm).await.unwrap();
+
+    let mut disabled_spec = base_spec.clone();
+    disabled_spec.turn_id = "turn-disabled".into();
+    disabled_spec.trigger = maka_agent_facts::durable::Trigger::Message {
+        message_id: "msg-disabled".into(),
+    };
+    disabled_spec.memory_admission = MemoryAdmission::Disabled;
+    let disabled_adm = Admission::new(disabled_spec, UnixMillis(3), contents);
+    let disabled_target = disabled_adm.run();
+    store.admit(disabled_adm).await.unwrap();
+
+    // Producer consumed no memory facts: even legacy Run(producer) or Unrecorded checkpoints stay reusable.
+    for (history, recorded, target, allowed) in [
+        (Some(&live), Unrecorded, Some(disabled_target), true),
+        (Some(&live), Run(producer), Some(disabled_target), true),
+        (Some(&live), Run(producer), None, true),
+        (None, Unrecorded, Some(producer), false),
+        (None, Shared, Some(disabled_target), true),
+        (None, Run(producer), Some(producer), true),
+    ] {
+        assert_eq!(
+            permits_memory_replay(history, recorded, producer, target)
+                .await
+                .unwrap(),
+            allowed
+        );
+    }
+
+    // Record an active memory fact consumed by producer.
+    let mem_id = MemoryId(Uuid::new_v4());
+    let ns = owner_ns.clone();
+    let id_str = mem_id.0.to_string();
+    exec_sql(&store, move |db| {
+        db.execute(
+            "INSERT INTO agent_memories VALUES(?1,'personal',?2,1,1,'user_recall','active',0,0)",
+            rusqlite::params![ns, id_str],
+        )?;
+        db.execute(
+            "INSERT INTO agent_memory_versions(namespace,scope,id,revision,body,source,digest,disposition)
+             VALUES(?1,'personal',?2,1,'Remembered note','{}','digest','current')",
+            rusqlite::params![ns, id_str],
+        )?;
+        Ok(())
+    })
+    .await;
+    store
+        .data
+        .write(RecordFacts {
+            run: producer,
+            scope: Scope {
+                namespace: owner_ns.clone(),
+                location: "personal".into(),
+                binding: None,
+            },
+            facts: vec![LoadedMemory {
+                scope: "personal".into(),
+                id: mem_id.clone(),
+                revision: MemoryRevision(1),
+                assertion: MemoryRevision(1),
+            }],
+        })
+        .await
+        .unwrap();
+
+    assert!(
+        permits_memory_replay(Some(&live), Run(producer), producer, Some(producer))
+            .await
+            .unwrap()
+    );
+    assert!(
+        permits_memory_replay(Some(&live), Run(producer), producer, Some(enabled_target))
+            .await
+            .unwrap()
+    );
+    assert!(
+        !permits_memory_replay(Some(&live), Run(producer), producer, Some(disabled_target))
+            .await
+            .unwrap()
+    );
+    assert!(
+        !permits_memory_replay(Some(&live), Run(producer), producer, None)
+            .await
+            .unwrap()
+    );
+
+    // Suppressing the consumed memory invalidates cross-run replay immediately.
+    let id_str = mem_id.0.to_string();
+    exec_sql(&store, move |db| {
+        db.execute(
+            "UPDATE agent_memory_versions SET disposition='suppressed' WHERE id=?1",
+            [id_str],
+        )?;
+        Ok(())
+    })
+    .await;
+    assert!(
+        !permits_memory_replay(Some(&live), Run(producer), producer, Some(enabled_target))
+            .await
+            .unwrap()
+    );
+
+    drop(store);
+    root.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn admission_records_the_original_receiver_without_changing_the_frozen_spec() {
+    use crate::memory::reads::OriginalUserRun;
+    use maka_agent_facts::memory::MemoryAdmission::{Disabled, Enabled, Excluded, Unknown};
+
+    let dir = tempfile::tempdir().unwrap();
+    let (root, store) = open(dir.path(), true).await;
+    for (kind, expected) in [
+        (Enabled, Some(true)),
+        (Disabled, Some(true)),
+        (Excluded, Some(false)),
+        (Unknown, None),
+    ] {
+        let (mut spec, contents) = spec();
+        spec.session_id = format!("receiver-{kind:?}");
+        spec.memory_admission = kind;
+        let frozen = ContentBlob::json(&spec).unwrap();
+        let admission = Admission::new(spec, UnixMillis(1), contents);
+        let run = admission.run();
+        store.admit(admission).await.unwrap();
+        store.rebuild(run).await.unwrap();
+        assert_eq!(
+            store.data.query(OriginalUserRun(run)).await.unwrap(),
+            expected
+        );
+        assert_eq!(
+            store.frontier(run).await.unwrap().spec_ref.as_ref(),
+            Some(frozen.reference())
+        );
+    }
+    drop(store);
     root.close().await.unwrap();
 }

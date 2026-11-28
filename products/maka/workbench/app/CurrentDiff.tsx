@@ -76,6 +76,7 @@ import {
   quietActiveStyle,
   quietFocusStyle,
   quietHoverStyle,
+  radius,
   textTooltip,
 } from './ui';
 
@@ -526,7 +527,7 @@ export function CurrentDiff(props: { model: CurrentDiffModel; review?: DiffRevie
           style={{
             paddingHorizontal: 6,
             paddingVertical: 2,
-            borderRadius: 4,
+            borderRadius: radius(4),
             backgroundColor: C.card,
           }}
         >
@@ -555,7 +556,7 @@ export function CurrentDiff(props: { model: CurrentDiffModel; review?: DiffRevie
               alignItems: 'center',
               gap: 2,
               backgroundColor: C.card,
-              borderRadius: 6,
+              borderRadius: radius(6),
               padding: 2,
             }}
           >
@@ -568,12 +569,12 @@ export function CurrentDiff(props: { model: CurrentDiffModel; review?: DiffRevie
                 if (prev) props.review?.openDiff?.(prev.target);
               }}
               style={{
-                ...controlStyle,
+                ...controlStyle(),
                 width: 24,
                 minHeight: 24,
                 paddingHorizontal: 4,
                 paddingVertical: 2,
-                borderRadius: 4,
+                borderRadius: radius(4),
                 alignItems: 'center',
               }}
               hoverStyle={quietHoverStyle()}
@@ -601,12 +602,12 @@ export function CurrentDiff(props: { model: CurrentDiffModel; review?: DiffRevie
                 if (next) props.review?.openDiff?.(next.target);
               }}
               style={{
-                ...controlStyle,
+                ...controlStyle(),
                 width: 24,
                 minHeight: 24,
                 paddingHorizontal: 4,
                 paddingVertical: 2,
-                borderRadius: 4,
+                borderRadius: radius(4),
                 alignItems: 'center',
               }}
               hoverStyle={quietHoverStyle()}
@@ -624,11 +625,11 @@ export function CurrentDiff(props: { model: CurrentDiffModel; review?: DiffRevie
             selected={isViewed()}
             onPress={toggleViewed}
             style={{
-              ...controlStyle,
+              ...controlStyle(),
               minHeight: 26,
               height: 26,
               paddingHorizontal: 8,
-              borderRadius: 6,
+              borderRadius: radius(6),
               flexDirection: 'row',
               alignItems: 'center',
               gap: 4,
@@ -667,7 +668,7 @@ export function CurrentDiff(props: { model: CurrentDiffModel; review?: DiffRevie
               flexDirection: 'row',
               backgroundColor: C.card,
               padding: 2,
-              borderRadius: 6,
+              borderRadius: radius(6),
               gap: 2,
             }}
           >
@@ -678,7 +679,7 @@ export function CurrentDiff(props: { model: CurrentDiffModel; review?: DiffRevie
               style={{
                 height: 24,
                 paddingHorizontal: 8,
-                borderRadius: 4,
+                borderRadius: radius(4),
                 justifyContent: 'center',
                 backgroundColor: layout() === 'split' ? C.cardRaised : 'transparent',
               }}
@@ -701,7 +702,7 @@ export function CurrentDiff(props: { model: CurrentDiffModel; review?: DiffRevie
               style={{
                 height: 24,
                 paddingHorizontal: 8,
-                borderRadius: 4,
+                borderRadius: radius(4),
                 justifyContent: 'center',
                 backgroundColor: layout() === 'unified' ? C.cardRaised : 'transparent',
               }}
@@ -725,7 +726,7 @@ export function CurrentDiff(props: { model: CurrentDiffModel; review?: DiffRevie
             disabled={stats().hunks === 0}
             onPress={() => diffRef?.previousHunk()}
             style={{
-              ...controlStyle,
+              ...controlStyle(),
               width: 28,
               minHeight: 28,
               paddingHorizontal: 6,
@@ -743,7 +744,7 @@ export function CurrentDiff(props: { model: CurrentDiffModel; review?: DiffRevie
             disabled={stats().hunks === 0}
             onPress={() => diffRef?.nextHunk()}
             style={{
-              ...controlStyle,
+              ...controlStyle(),
               width: 28,
               minHeight: 28,
               paddingHorizontal: 6,
@@ -767,7 +768,7 @@ export function CurrentDiff(props: { model: CurrentDiffModel; review?: DiffRevie
               selected={expandedAll()}
               onPress={toggleExpandAll}
               style={{
-                ...controlStyle,
+                ...controlStyle(),
                 width: 28,
                 minHeight: 28,
                 paddingHorizontal: 6,
@@ -787,7 +788,7 @@ export function CurrentDiff(props: { model: CurrentDiffModel; review?: DiffRevie
             selected={softWrap()}
             onPress={() => softWrap.set(!softWrap())}
             style={{
-              ...controlStyle,
+              ...controlStyle(),
               width: 28,
               minHeight: 28,
               paddingHorizontal: 6,
@@ -829,7 +830,7 @@ export function CurrentDiff(props: { model: CurrentDiffModel; review?: DiffRevie
                 })();
               }}
               style={{
-                ...controlStyle,
+                ...controlStyle(),
                 width: 28,
                 minHeight: 28,
                 paddingHorizontal: 6,
@@ -849,7 +850,7 @@ export function CurrentDiff(props: { model: CurrentDiffModel; review?: DiffRevie
               tooltip={textTooltip(() => tr('Open source file'))}
               onPress={() => void openSourceAtSelection()}
               style={{
-                ...controlStyle,
+                ...controlStyle(),
                 minHeight: 28,
                 height: 28,
                 paddingHorizontal: 8,
@@ -875,7 +876,7 @@ export function CurrentDiff(props: { model: CurrentDiffModel; review?: DiffRevie
                 : tr('Refresh current diff'),
             )}
             style={{
-              ...controlStyle,
+              ...controlStyle(),
               width: 28,
               minHeight: 28,
               paddingHorizontal: 6,
@@ -892,7 +893,7 @@ export function CurrentDiff(props: { model: CurrentDiffModel; review?: DiffRevie
       <If when={mappedPrThreads().unmapped.length > 0 && props.review !== undefined}>
         <View
           style={{
-            borderRadius: 8,
+            borderRadius: radius(8),
             backgroundColor: C.card,
             padding: 8,
             gap: 6,
@@ -979,7 +980,7 @@ export function CurrentDiff(props: { model: CurrentDiffModel; review?: DiffRevie
           style={{
             flex: 1,
             minHeight: 0,
-            borderRadius: 8,
+            borderRadius: radius(8),
             overflow: 'hidden',
             backgroundColor: C.card,
           }}

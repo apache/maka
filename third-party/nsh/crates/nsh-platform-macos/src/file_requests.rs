@@ -150,12 +150,25 @@ pub(crate) unsafe fn begin(
     handler: impl Fn(isize) + 'static,
 ) {
     let shown = panel.retain();
-    let handler = RcBlock::new(move |response: isize| {
-        // Closed with the app: no one is left to answer.
-        if crate::panels::finished(&shown) {
-            handler(response);
-        }
-    });
+    // SAFETY: as the caller promises.
+    unsafe {
+        present(surface, panel, move |response| {
+            // Closed with the app: no one is left to answer.
+            if crate::panels::finished(&shown) {
+                handler(response);
+            }
+        });
+    }
+}
+
+/// Shows `panel` as [`begin`] does; `handler` gets every response, the one
+/// [`crate::panels::close`] ends it with included.
+///
+/// # Safety
+///
+/// `panel` is an `NSSavePanel` (or an `NSOpenPanel`), on the main thread.
+unsafe fn present(surface: &Surface, panel: &AnyObject, handler: impl Fn(isize) + 'static) {
+    let handler = RcBlock::new(handler);
     crate::panels::track(surface, panel);
     // SAFETY: AppKit's documented NSSavePanel API, as the caller promises.
     unsafe {
@@ -330,6 +343,52 @@ fn pick_save_path(surface: &Rc<Surface>, id: u32, request: &SaveDialog) {
                 EventKind::FileRequest,
                 EventPayload::file_answer(id, path.into_iter().collect()),
             );
+        });
+    }
+}
+
+/// A web page's `<input type="file">` (WKUIDelegate
+/// `webView:runOpenPanelWithParameters:initiatedByFrame:completionHandler:`):
+/// the open panel, as a sheet of the web view's window. WebKit gets the
+/// files the user chose (nil when cancelled) and hands them to the page
+/// that asked, as a `FileList`: the page reads only those.
+///
+/// WebKit wants `complete` called exactly once: a panel the app's stop
+/// closes ([`crate::panels::close`]) or that has no surface to show for
+/// answers nil.
+pub(crate) fn web_open_panel(
+    surface: Option<Rc<Surface>>,
+    multiple: bool,
+    folders: bool,
+    complete: RcBlock<dyn Fn(*mut NSArray<NSURL>)>,
+) {
+    let class = AnyClass::get(c"NSOpenPanel");
+    let (Some(surface), Some(class)) = (surface, class) else {
+        complete.call((std::ptr::null_mut(),));
+        return;
+    };
+    // SAFETY: AppKit's documented NSOpenPanel API, on the main thread (the
+    // web view's UI delegate runs there).
+    unsafe {
+        let panel: Retained<AnyObject> = msg_send![class, openPanel];
+        let _: () = msg_send![&panel, setCanChooseFiles: true];
+        let _: () = msg_send![&panel, setCanChooseDirectories: folders];
+        let _: () = msg_send![&panel, setCanCreateDirectories: false];
+        let _: () = msg_send![&panel, setAllowsMultipleSelection: multiple];
+        let chosen = panel.clone();
+        present(&surface, &panel, move |response| {
+            // Closed with the app (no longer tracked): nil, the page gets
+            // nothing. NSModalResponseOK = 1.
+            let ours = crate::panels::finished(&chosen);
+            let urls: Option<Retained<NSArray<NSURL>>> = if ours && response == 1 {
+                msg_send![&chosen, URLs]
+            } else {
+                None
+            };
+            let urls = urls
+                .as_ref()
+                .map_or(std::ptr::null_mut(), |u| Retained::as_ptr(u).cast_mut());
+            complete.call((urls,));
         });
     }
 }

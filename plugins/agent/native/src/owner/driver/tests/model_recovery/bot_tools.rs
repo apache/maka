@@ -101,6 +101,7 @@ async fn bot_delegation_preserves_preset_models_and_ordinary_inheritance() -> Te
     let mut provider = MockAiBuilder::new().interactive(1).start().await?;
     let boot = bootstrap_with(&base, provider.base_url(), |config| {
         config["bot"] = json!(true);
+        config["todo"] = json!(true);
         config["scheduledTasks"] = json!(true);
         config["toolDiscovery"] = json!(true);
     })
@@ -116,7 +117,7 @@ async fn bot_delegation_preserves_preset_models_and_ordinary_inheritance() -> Te
                 "provider":{"packageId":"maka.providers","entryId":"maka.providers","scope":"profile","name":"ollama"},
                 "configuration":{"baseUrl":boot.base_url},"enabled":true,"enabledModelIds":["llama3.2","preset","switched","override"],
                 "modelOverrides": (["llama3.2","preset","switched","override"].into_iter().map(|id|
-                    (id.to_owned(), json!({"codeMode":false,"apiProtocol":"openai-chat-completions","thinkingLevels":["high"]})))
+                    (id.to_owned(), json!({"codeMode":id == "preset","apiProtocol":"openai-chat-completions","thinkingLevels":["high"]})))
                     .collect::<serde_json::Map<String,Value>>())}
         })).await?;
         assert_eq!(connection["kind"], "committed", "{connection}");
@@ -162,7 +163,57 @@ async fn bot_delegation_preserves_preset_models_and_ordinary_inheritance() -> Te
             if round == 2 { input["backend"] = selected("override"); }
             let sent = agent_call(&owner, bot_id, "send", input).await?;
             assert_eq!(sent["kind"], "queued", "{sent}");
-            let reply = observed.recv().await.ok_or("delegated request missing")?;
+            let mut reply = observed.recv().await.ok_or("delegated request missing")?;
+            if round == 0 {
+                let mut progress = client.call("agent","watchWorkerProgress".into(),json!({"parentSessionId":bot_id}),Attachments::new()).await?;
+                progress.start().await?;
+                assert!(matches!(progress.receive().await?,Reply::Subscribed));
+                let Reply::Item {value:frame} = progress.pull().await? else {return Err("missing active worker snapshot".into());};
+                assert_eq!(frame["snapshot"],true);
+                assert_eq!(frame["upsert"].as_array().unwrap().len(),1);
+                assert_eq!(frame["upsert"][0]["sessionId"],*session);
+                let id = session.as_str().unwrap();
+                let access = owner.runs.state().await.controls[id].access.upgrade().unwrap();
+                reply.send_plan(tool_response("exec", json!({
+                    "code":"await yield_control(); await tools.todo_write({todos:[{status:'in_progress',content:'Inspecting results'}]}); await new Promise(resolve => setTimeout(resolve, 2000));",
+                    "yield_time_ms":10000
+                })));
+                let yielded = observed.recv().await.ok_or("missing yielded cell")?;
+                let result = yielded.body()["messages"].as_array().unwrap().iter().rev()
+                    .find(|message| message["role"] == "tool").and_then(|message| message["content"].as_str())
+                    .ok_or("missing cell result")?;
+                let status: Value = serde_json::from_str(result.lines().next().ok_or("empty cell result")?)?;
+                yielded.send_plan(tool_response("wait", json!({"cell_id":status["cell_id"], "yield_time_ms":10000})));
+                let mut saw_todo = false;
+                reply = loop {
+                    tokio::select! {
+                        biased;
+                        frame = progress.pull() => {
+                            let Reply::Item {value} = frame? else {return Err("missing worker progress".into());};
+                            for row in value["upsert"].as_array().unwrap() {
+                                assert!(!matches!(row["detail"].as_str(), Some("exec" | "wait")), "{row}");
+                                saw_todo |= row["detail"] == "Inspecting results";
+                            }
+                        }
+                        next = observed.recv() => break next.ok_or("missing tool follow-up")?,
+                    }
+                };
+                assert!(saw_todo, "worker did not project its committed checklist");
+                let target = ServiceTarget::Export {name:"agent".into()};
+                let services = owner.services.select_method(&target,"watchWorkerProgress")?;
+                let request = services.request_with_work(
+                    maka_capabilities::call::Identity::Agent {execution:access.execution().clone(),operation_id:None},
+                    CancellationToken::new(), access.custody().clone()
+                )?;
+                let mut denied = request.subscribe_target(&target,"watchWorkerProgress".into(),json!({"parentSessionId":bot_id}),Attachments::new())?.await?;
+                assert!(denied.recv().await.is_none());
+                let completion = denied.completion().await;
+                assert!(completion.result.is_err());
+                completion.cleanup?;
+                request.finish().await?;
+                progress.cancel().await?;
+                progress.close().await?;
+            }
             let request = reply.body();
             assert_eq!(request["model"], expected, "{request}");
             if round != 4 {

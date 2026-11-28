@@ -51,16 +51,34 @@ const ALWAYS: &[(&str, &str)] = &[
     ("svg", "an image's format depends on data, not imports"),
 ];
 
+/// `nsh`'s exports that play sound: Linux's `sound` (GStreamer) decodes
+/// and plays a `Sound`; `AudioPlayer` and `Video` play through GTK there.
+const SOUND_EXPORTS: &[&str] = &["Sound"];
+
+/// `nsh`'s exports that need Windows' `media` (Media Foundation and
+/// XAudio2): sounds, players and videos all play through it.
+const MEDIA_EXPORTS: &[&str] = &["Sound", "AudioPlayer", "Video"];
+
+/// What the app's own Rust code may use that no bundle import tells
+/// about ([`crate::rust_app::rust_code_use`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct RustCodeUse {
+    /// It may make a web view (#2377).
+    pub web_view: bool,
+    /// It may load a sound.
+    pub sound: bool,
+    /// It may load a sound, or make an audio player or a video.
+    pub media: bool,
+}
+
 /// The runner features for an app whose bundle uses `uses` (`None`: not
 /// analyzed, keep everything), plus `keep`, features the app names
-/// itself (dynamic access, or what its own Rust code needs).
-///
-/// `rust_web_view`: the app's own Rust code may make a web view
-/// ([`crate::rust_app::may_make_web_view`]).
+/// itself (dynamic access, or what its own Rust code needs), and those
+/// `rust`, the app's own Rust code, may need.
 pub(crate) fn choose(
     uses: Option<&nsh_bundler::NativeUse>,
     keep: &[String],
-    rust_web_view: bool,
+    rust: RustCodeUse,
 ) -> Vec<Choice> {
     let gates = linked_gates(uses);
     let named = |f: &str| keep.iter().any(|k| k == f);
@@ -127,21 +145,65 @@ pub(crate) fn choose(
             }
         });
     }
-    // A web view (Linux: WebKitGTK, a large system library) only when the
-    // app may make one (#2377).
-    let why = match uses {
+    // The system libraries below: kept by what the bundle cannot tell
+    // apart, else by what the bundle (`found`) or the app's Rust code
+    // (`by_rust`) may use, or by `nsh.json`.
+    let unknown = match uses {
         None => Some("the bundle was not analyzed"),
         Some(u) if u.computed_import => Some("the app loads modules by computed names"),
-        Some(u) if u.web_view => Some("the app makes a `WebView`"),
-        _ if rust_web_view => Some("the app's Rust code may make a web view"),
-        _ if named("webview") => Some("the app keeps it"),
-        _ => None,
+        Some(_) => None,
     };
-    out.push(Choice {
-        feature: "webview",
-        keep: why.is_some(),
-        why: why.unwrap_or("nothing makes a `WebView`").into(),
-    });
+    let why = |feature: &str, found: Option<String>, by_rust: Option<&str>| {
+        unknown
+            .map(str::to_owned)
+            .or(found)
+            .or(by_rust.map(str::to_owned))
+            .or_else(|| named(feature).then(|| "the app keeps it".to_owned()))
+    };
+    let imports = |names: &[&str]| {
+        let imported = uses.and_then(|u| u.imports.get("nsh"))?;
+        let name = names.iter().find(|n| imported.has(n))?;
+        Some(format!("the app imports `{name}`"))
+    };
+    let made = |made: bool, what: &str| made.then(|| format!("the app makes a `{what}`"));
+    // A web view (Linux: WebKitGTK, a large system library) only when the
+    // app may make one (#2377).
+    let web_view = why(
+        "webview",
+        made(uses.is_some_and(|u| u.web_view), "WebView"),
+        rust.web_view
+            .then_some("the app's Rust code may make a web view"),
+    );
+    // Linux's GStreamer only when the app may load a `Sound`; GTK plays
+    // `AudioPlayer` and `Video` without it.
+    let sound = why(
+        "sound",
+        imports(SOUND_EXPORTS),
+        rust.sound.then_some("the app's Rust code may load a sound"),
+    );
+    // Windows' Media Foundation and XAudio2 only when the app may play a
+    // sound, an audio player or a video.
+    let media = why(
+        "media",
+        imports(MEDIA_EXPORTS).or_else(|| made(uses.is_some_and(|u| u.video), "Video")),
+        rust.media
+            .then_some("the app's Rust code may play a sound or a video"),
+    );
+    for (feature, why, unused) in [
+        ("webview", web_view, "nothing makes a `WebView`"),
+        ("sound", sound, "nothing imports `Sound`"),
+        (
+            "media",
+            media,
+            "nothing imports `Sound` or `AudioPlayer`, or makes a `Video`",
+        ),
+    ] {
+        out.push(Choice {
+            feature,
+            keep: why.is_some(),
+            why: why.unwrap_or_else(|| unused.into()),
+        });
+    }
     out
 }
 
@@ -157,6 +219,13 @@ mod tests {
         uses
     }
 
+    fn web_view() -> RustCodeUse {
+        RustCodeUse {
+            web_view: true,
+            ..Default::default()
+        }
+    }
+
     fn kept(choices: &[Choice]) -> Vec<&'static str> {
         choices
             .iter()
@@ -168,18 +237,21 @@ mod tests {
     #[test]
     fn a_button_app_leaves_the_large_parts_out() {
         let uses = bundle("import { Button } from 'nsh/base'; Button;");
-        assert_eq!(kept(&choose(Some(&uses), &[], false)), ["js", "net", "svg"]);
+        assert_eq!(
+            kept(&choose(Some(&uses), &[], RustCodeUse::default())),
+            ["js", "net", "svg"]
+        );
     }
 
     #[test]
     fn an_import_keeps_its_feature_and_dropping_it_leaves_it_out() {
         let with = bundle("import { Editor } from 'nsh/base'; Editor;");
-        let k = kept(&choose(Some(&with), &[], false));
+        let k = kept(&choose(Some(&with), &[], RustCodeUse::default()));
         assert!(k.contains(&"editor") && k.contains(&"highlight"), "{k:?}");
         let k = kept(&choose(
             Some(&bundle("import { Button } from 'nsh/base'; Button;")),
             &[],
-            false,
+            RustCodeUse::default(),
         ));
         assert!(!k.contains(&"editor"), "{k:?}");
     }
@@ -189,18 +261,22 @@ mod tests {
         let k = kept(&choose(
             Some(&bundle("import { TextView } from 'nsh/base'; TextView;")),
             &[],
-            false,
+            RustCodeUse::default(),
         ));
         assert!(k.contains(&"highlight") && k.contains(&"math"), "{k:?}");
     }
 
     #[test]
     fn what_cannot_be_told_keeps_everything() {
-        assert!(choose(None, &[], false).iter().all(|c| c.keep));
+        assert!(
+            choose(None, &[], RustCodeUse::default())
+                .iter()
+                .all(|c| c.keep)
+        );
         let k = choose(
             Some(&bundle("const m = 'nsh/' + x; import(m);")),
             &[],
-            false,
+            RustCodeUse::default(),
         );
         assert!(k.iter().all(|c| c.keep), "{k:?}");
     }
@@ -209,15 +285,19 @@ mod tests {
     fn the_global_websocket_keeps_websocket() {
         let uses = bundle("const ws = new WebSocket('wss://example.com'); ws;");
         assert!(uses.global_websocket);
-        assert!(kept(&choose(Some(&uses), &[], false)).contains(&"websocket"));
+        assert!(kept(&choose(Some(&uses), &[], RustCodeUse::default())).contains(&"websocket"));
         let uses = bundle("import { Button } from 'nsh/base'; Button;");
-        assert!(!kept(&choose(Some(&uses), &[], false)).contains(&"websocket"));
+        assert!(!kept(&choose(Some(&uses), &[], RustCodeUse::default())).contains(&"websocket"));
     }
 
     #[test]
     fn modules_and_named_features_are_kept() {
         let uses = bundle("import { connect } from 'websocket'; connect;");
-        let k = kept(&choose(Some(&uses), &["plot".into()], false));
+        let k = kept(&choose(
+            Some(&uses),
+            &["plot".into()],
+            RustCodeUse::default(),
+        ));
         assert!(
             k.contains(&"websocket") && k.contains(&"plot") && !k.contains(&"updater"),
             "{k:?}"
@@ -228,14 +308,78 @@ mod tests {
     fn web_view_only_when_something_makes_one() {
         let has = |c: &[Choice]| c.iter().any(|c| c.feature == "webview" && c.keep);
         let plain = bundle("import { Text } from 'nsh'; element('text');");
-        assert!(!has(&choose(Some(&plain), &[], false)));
-        assert!(has(&choose(Some(&plain), &[], true)));
-        assert!(has(&choose(Some(&plain), &["webview".into()], false)));
+        assert!(!has(&choose(Some(&plain), &[], RustCodeUse::default())));
+        assert!(has(&choose(Some(&plain), &[], web_view())));
+        assert!(has(&choose(
+            Some(&plain),
+            &["webview".into()],
+            RustCodeUse::default()
+        )));
         assert!(has(&choose(
             Some(&bundle("element('webview', {});")),
             &[],
-            false
+            RustCodeUse::default()
         )));
-        assert!(has(&choose(None, &[], false)));
+        assert!(has(&choose(None, &[], RustCodeUse::default())));
+    }
+
+    #[test]
+    fn sound_and_media_only_when_the_app_plays_them() {
+        let has = |c: &[Choice], f: &str| c.iter().any(|c| c.feature == f && c.keep);
+        let none = RustCodeUse::default();
+        // A button app, as sysmon's: neither GStreamer nor Media Foundation.
+        let plain =
+            bundle("import { Button } from 'nsh/base'; import { View } from 'nsh'; Button; View;");
+        let c = choose(Some(&plain), &[], none);
+        assert!(!has(&c, "sound") && !has(&c, "media"), "{c:?}");
+        // `Sound` needs both.
+        let c = choose(
+            Some(&bundle("import { Sound } from 'nsh'; Sound.load('a.wav');")),
+            &[],
+            none,
+        );
+        assert!(has(&c, "sound") && has(&c, "media"), "{c:?}");
+        // GTK plays `AudioPlayer` and `Video` on Linux: only Windows' `media`.
+        for code in [
+            "import { AudioPlayer } from 'nsh'; new AudioPlayer('a.mp3');",
+            "import { Video } from 'nsh'; f(Video);",
+            "_$element('video', { src: 'a.mp4' });",
+        ] {
+            let c = choose(Some(&bundle(code)), &[], none);
+            assert!(!has(&c, "sound") && has(&c, "media"), "{code}: {c:?}");
+        }
+        // A namespace used whole may load a sound.
+        let c = choose(
+            Some(&bundle("import * as n from 'nsh'; use(n);")),
+            &[],
+            none,
+        );
+        assert!(has(&c, "sound") && has(&c, "media"), "{c:?}");
+        // What cannot be told, the app's Rust code and `nsh.json` keep them.
+        for c in [
+            choose(None, &[], none),
+            choose(Some(&bundle("import(name);")), &[], none),
+            choose(
+                Some(&plain),
+                &[],
+                RustCodeUse {
+                    sound: true,
+                    media: true,
+                    ..Default::default()
+                },
+            ),
+            choose(Some(&plain), &["sound".into(), "media".into()], none),
+        ] {
+            assert!(has(&c, "sound") && has(&c, "media"), "{c:?}");
+        }
+        let c = choose(
+            Some(&plain),
+            &[],
+            RustCodeUse {
+                media: true,
+                ..Default::default()
+            },
+        );
+        assert!(!has(&c, "sound") && has(&c, "media"), "{c:?}");
     }
 }

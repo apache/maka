@@ -171,11 +171,11 @@ async fn await_closed_task(
 }
 
 pub(crate) struct External {
-    agy_fronts: agy_front::Fronts,
     commands: BTreeMap<NativeRuntime, NativeCommand>,
     queries: Arc<maka_plugin_core::work::resources::Resources>,
     catalog: tokio::sync::Mutex<Catalog>,
     catalog_changes: tokio::sync::watch::Sender<()>,
+    usage_limits: tokio::sync::Mutex<UsageLimitsCache>,
     stop: CancellationToken,
     endpoints: tokio::sync::Mutex<BTreeMap<(String, NativeRuntime), Arc<mcp::Endpoint>>>,
     root: Arc<RootStore>,
@@ -244,12 +244,12 @@ impl External {
             .map_err(|error| error.to_string())?,
         );
         Ok(Arc::new(Self {
-            agy_fronts: Default::default(),
             commands,
             sessions,
             queries: Arc::default(),
             catalog: tokio::sync::Mutex::new(Catalog::default()),
             catalog_changes: tokio::sync::watch::channel(()).0,
+            usage_limits: tokio::sync::Mutex::new(UsageLimitsCache::default()),
             stop: CancellationToken::new(),
             endpoints: tokio::sync::Mutex::new(BTreeMap::new()),
             root: persistence.store().clone(),
@@ -444,43 +444,55 @@ impl External {
             .get("kind")
             .and_then(Value::as_str)
             .ok_or_else(|| Error::Invalid("Missing external query kind".into()))?;
-        if !matches!(kind, "status" | "models" | "usage_limits") {
-            return Err(Error::Invalid("Unsupported external query kind".into()));
-        }
         let selected = request
             .get("runtime")
             .map(|id| self.require_runtime(id.as_str()))
             .transpose()?;
-        if selected.is_none() && kind == "models" {
-            return Err(Error::Invalid("Models require a runtime selection".into()));
+        match kind {
+            "status" => {
+                let refresh = request
+                    .get("refresh")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                self.status(cwd, selected, refresh, cancellation).await
+            }
+            "usage_limits" => {
+                let Some(runtime) = selected.filter(|runtime| runtime.reports_usage_limits())
+                else {
+                    return Err(Error::Invalid(
+                        "Usage limits require a supported runtime".into(),
+                    ));
+                };
+                let refresh = request
+                    .get("refresh")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                self.usage_limits(cwd, runtime, refresh, cancellation).await
+            }
+            _ => Err(Error::Invalid("Unsupported external query kind".into())),
         }
-        if kind == "usage_limits" && !selected.is_some_and(NativeRuntime::reports_usage_limits) {
-            return Err(Error::Invalid(
-                "Usage limits require a supported runtime".into(),
-            ));
-        }
-        if kind == "status" {
-            self.catalog.lock().await.invalidate();
-        }
-        self.discover(cwd, kind.to_owned(), selected, cancellation)
-            .await
     }
     pub(super) fn catalog_changes(&self) -> tokio::sync::watch::Receiver<()> {
         self.catalog_changes.subscribe()
     }
 
-    pub(super) async fn catalog(
+    async fn read_catalog<T>(
         self: &Arc<Self>,
         cwd: String,
         selected: Option<NativeRuntime>,
         read: catalog::Read,
+        force_refresh: bool,
         cancellation: CancellationToken,
-    ) -> Result<(Vec<Value>, bool, bool), Error> {
+        extract: impl Fn(&Catalog) -> (T, bool),
+    ) -> Result<T, Error> {
         let mut changes = self.catalog_changes();
         let mut cache = self.catalog.lock().await;
         cache.failure()?;
         if cancellation.is_cancelled() || self.stop.is_cancelled() {
             return Err(Error::Cancelled);
+        }
+        if force_refresh {
+            cache.invalidate();
         }
         let (generation, work) = cache.prepare(
             &cwd,
@@ -497,8 +509,7 @@ impl External {
                 let result = owner
                     .discover(
                         cwd,
-                        "catalog".into(),
-                        Some(runtime),
+                        DiscoverWork::Runtime(runtime),
                         owner.stop.child_token(),
                     )
                     .await;
@@ -518,9 +529,9 @@ impl External {
                     "Native catalog workspace changed; retry the read".into(),
                 ));
             }
-            let snapshot = cache.snapshot(selected);
-            if read != catalog::Read::Resolve || !snapshot.1 {
-                return Ok(snapshot);
+            let (output, refreshing) = extract(&cache);
+            if read != catalog::Read::Resolve || !refreshing {
+                return Ok(output);
             }
             drop(cache);
             tokio::select! { biased;
@@ -532,11 +543,111 @@ impl External {
         }
     }
 
+    pub(super) async fn catalog(
+        self: &Arc<Self>,
+        cwd: String,
+        selected: Option<NativeRuntime>,
+        read: catalog::Read,
+        cancellation: CancellationToken,
+    ) -> Result<(Vec<Value>, bool, bool), Error> {
+        self.read_catalog(cwd, selected, read, false, cancellation, |cache| {
+            let snapshot = cache.snapshot(selected);
+            let refreshing = snapshot.1;
+            (snapshot, refreshing)
+        })
+        .await
+    }
+
+    async fn status(
+        self: &Arc<Self>,
+        cwd: String,
+        selected: Option<NativeRuntime>,
+        refresh: bool,
+        cancellation: CancellationToken,
+    ) -> Result<Value, Error> {
+        let records = self
+            .read_catalog(
+                cwd,
+                selected,
+                catalog::Read::Resolve,
+                refresh,
+                cancellation,
+                |cache| {
+                    let (_, refreshing, _) = cache.snapshot(selected);
+                    let records =
+                        if refreshing {
+                            Vec::new()
+                        } else {
+                            cache.status_records(self.commands.keys().copied().filter(|runtime| {
+                                selected.is_none_or(|selected| selected == *runtime)
+                            }))
+                        };
+                    (records, refreshing)
+                },
+            )
+            .await?;
+        Ok(Value::Array(records))
+    }
+
+    async fn usage_limits(
+        self: &Arc<Self>,
+        cwd: String,
+        runtime: NativeRuntime,
+        force_refresh: bool,
+        cancellation: CancellationToken,
+    ) -> Result<Value, Error> {
+        self.catalog.lock().await.failure()?;
+        let mut completion = {
+            let mut cache = self.usage_limits.lock().await;
+            if cancellation.is_cancelled() || self.stop.is_cancelled() {
+                return Err(Error::Cancelled);
+            }
+            match cache.prepare(&cwd, runtime, force_refresh, Instant::now()) {
+                UsagePlan::Cached(value) => return Ok(value),
+                UsagePlan::Wait(rx) => rx,
+                UsagePlan::Fetch { tx, rx } => {
+                    let owner = self.clone();
+                    let fetch_cwd = cwd.clone();
+                    tokio::spawn(async move {
+                        let result = owner
+                            .discover(
+                                fetch_cwd.clone(),
+                                DiscoverWork::UsageLimits(runtime),
+                                owner.stop.child_token(),
+                            )
+                            .await;
+                        owner.usage_limits.lock().await.complete(
+                            &fetch_cwd,
+                            runtime,
+                            tx,
+                            result,
+                            Instant::now(),
+                        );
+                    });
+                    rx
+                }
+            }
+        };
+        loop {
+            if let Some(result) = completion.borrow_and_update().clone() {
+                return result;
+            }
+            tokio::select! { biased;
+                () = cancellation.cancelled() => return Err(Error::Cancelled),
+                () = self.stop.cancelled() => return Err(Error::Retired),
+                changed = completion.changed() => {
+                    if changed.is_err() {
+                        return Err(Error::Retired);
+                    }
+                }
+            }
+        }
+    }
+
     async fn discover(
         self: &Arc<Self>,
         cwd: String,
-        kind: String,
-        selected: Option<NativeRuntime>,
+        work_kind: DiscoverWork,
         cancellation: CancellationToken,
     ) -> Result<Value, Error> {
         let mut ticket = self.catalog.lock().await.admit(&self.queries)?;
@@ -545,7 +656,18 @@ impl External {
         tokio::spawn(async move {
             ticket.start();
             let cancel = cancellation.child_token();
-            let work = discovery::query(&owner.commands, &cwd, &kind, selected, cancel.clone());
+            let work = async {
+                match work_kind {
+                    DiscoverWork::Runtime(runtime) => {
+                        discovery::discover_runtime(&owner.commands, &cwd, runtime, cancel.clone())
+                            .await
+                    }
+                    DiscoverWork::UsageLimits(runtime) => {
+                        discovery::usage_limits(&owner.commands, &cwd, runtime, cancel.clone())
+                            .await
+                    }
+                }
+            };
             tokio::pin!(work);
             let result = tokio::select! {
                 result = &mut work => result,
@@ -652,10 +774,8 @@ impl External {
             .map(|(key, endpoint)| (key.clone(), endpoint.clone()))
             .collect();
         let endpoints = self.finish_endpoints(selected).await;
-        let fronts = self.agy_fronts.finish().await;
         let queries = self.queries.finish().await.map_err(|e| e.to_string());
         let sessions = self.sessions.finish().await;
-        fronts?;
         queries?;
         endpoints?;
         sessions
@@ -1008,5 +1128,191 @@ impl Call {
             isolated,
         )
         .await
+    }
+}
+
+enum DiscoverWork {
+    Runtime(NativeRuntime),
+    UsageLimits(NativeRuntime),
+}
+
+const USAGE_LIMITS_TTL: Duration = Duration::from_secs(30);
+const USAGE_LIMITS_MAX_ENTRIES: usize = 16;
+
+type UsageOutcome = Option<Result<Value, Error>>;
+
+#[derive(Default)]
+struct UsageLimitsCache {
+    entries: BTreeMap<(String, NativeRuntime), UsageState>,
+}
+
+enum UsageState {
+    Ready {
+        value: Value,
+        checked: Instant,
+    },
+    Fetching {
+        result: tokio::sync::watch::Receiver<UsageOutcome>,
+    },
+}
+
+enum UsagePlan {
+    Cached(Value),
+    Wait(tokio::sync::watch::Receiver<UsageOutcome>),
+    Fetch {
+        tx: tokio::sync::watch::Sender<UsageOutcome>,
+        rx: tokio::sync::watch::Receiver<UsageOutcome>,
+    },
+}
+
+impl UsageLimitsCache {
+    fn prepare(
+        &mut self,
+        cwd: &str,
+        runtime: NativeRuntime,
+        force_refresh: bool,
+        now: Instant,
+    ) -> UsagePlan {
+        let key = (cwd.to_owned(), runtime);
+        if let Some(state) = self.entries.get(&key) {
+            match state {
+                UsageState::Fetching { result } => return UsagePlan::Wait(result.clone()),
+                UsageState::Ready { value, checked }
+                    if !force_refresh
+                        && now.saturating_duration_since(*checked) < USAGE_LIMITS_TTL =>
+                {
+                    return UsagePlan::Cached(value.clone());
+                }
+                UsageState::Ready { .. } => {}
+            }
+        }
+        if self.entries.len() >= USAGE_LIMITS_MAX_ENTRIES {
+            self.entries.retain(|_, state| match state {
+                UsageState::Fetching { .. } => true,
+                UsageState::Ready { checked, .. } => {
+                    now.saturating_duration_since(*checked) < USAGE_LIMITS_TTL
+                }
+            });
+        }
+        let (tx, rx) = tokio::sync::watch::channel(None);
+        self.entries
+            .insert(key, UsageState::Fetching { result: rx.clone() });
+        UsagePlan::Fetch { tx, rx }
+    }
+
+    fn complete(
+        &mut self,
+        cwd: &str,
+        runtime: NativeRuntime,
+        tx: tokio::sync::watch::Sender<UsageOutcome>,
+        result: Result<Value, Error>,
+        now: Instant,
+    ) {
+        let key = (cwd.to_owned(), runtime);
+        let is_current = matches!(
+            self.entries.get(&key),
+            Some(UsageState::Fetching { result: rx }) if rx.same_channel(&tx.subscribe())
+        );
+        if is_current {
+            if let Ok(value) = &result
+                && value.get("kind").and_then(Value::as_str) == Some("ready")
+            {
+                self.entries.insert(
+                    key,
+                    UsageState::Ready {
+                        value: value.clone(),
+                        checked: now,
+                    },
+                );
+            } else {
+                self.entries.remove(&key);
+            }
+        }
+        let _ = tx.send(Some(result));
+    }
+}
+
+#[cfg(test)]
+mod usage_cache_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn coalesced_readers_all_receive_same_failure_even_after_a_newer_fetch_starts() {
+        let mut cache = UsageLimitsCache::default();
+        let t0 = Instant::now();
+        let ready_v1 = json!({"kind": "ready", "limits": [{"usedPercent": 30}]});
+
+        // Seed a ready entry, then let its TTL expire.
+        let UsagePlan::Fetch { tx: tx1, rx: rx1 } =
+            cache.prepare("/repo", NativeRuntime::Antigravity, false, t0)
+        else {
+            panic!("initial read must fetch");
+        };
+        cache.complete(
+            "/repo",
+            NativeRuntime::Antigravity,
+            tx1,
+            Ok(ready_v1.clone()),
+            t0,
+        );
+        assert_eq!(rx1.borrow().as_ref().unwrap().as_ref().unwrap(), &ready_v1);
+
+        let t_expired = t0 + USAGE_LIMITS_TTL + Duration::from_secs(1);
+        let UsagePlan::Fetch { tx: tx2, rx: rx2_a } =
+            cache.prepare("/repo", NativeRuntime::Antigravity, false, t_expired)
+        else {
+            panic!("expired entry must refetch");
+        };
+        let UsagePlan::Wait(rx2_b) =
+            cache.prepare("/repo", NativeRuntime::Antigravity, true, t_expired)
+        else {
+            panic!("concurrent reader (even with force_refresh) must join in-flight fetch");
+        };
+
+        // The coalesced fetch fails; a third reader immediately starts a newer fetch.
+        cache.complete(
+            "/repo",
+            NativeRuntime::Antigravity,
+            tx2,
+            Err(Error::Provider("cli offline".into())),
+            t_expired,
+        );
+        let UsagePlan::Fetch { tx: tx3, rx: rx3 } =
+            cache.prepare("/repo", NativeRuntime::Antigravity, false, t_expired)
+        else {
+            panic!("failed fetch must not be cached");
+        };
+
+        // Both callers from the failed batch observe the same failure, never stale ready_v1.
+        for reader in [&rx2_a, &rx2_b] {
+            let outcome = reader.borrow().clone().expect("batch outcome settled");
+            assert!(
+                matches!(outcome, Err(Error::Provider(ref msg)) if msg == "cli offline"),
+                "every coalesced reader must observe the failed batch error, got {outcome:?}"
+            );
+        }
+
+        // Newer fetch succeeds; subsequent normal read hits TTL, while force_refresh bypasses it.
+        let ready_v2 = json!({"kind": "ready", "limits": [{"usedPercent": 80}]});
+        cache.complete(
+            "/repo",
+            NativeRuntime::Antigravity,
+            tx3,
+            Ok(ready_v2.clone()),
+            t_expired,
+        );
+        assert_eq!(rx3.borrow().as_ref().unwrap().as_ref().unwrap(), &ready_v2);
+        match cache.prepare("/repo", NativeRuntime::Antigravity, false, t_expired) {
+            UsagePlan::Cached(value) => assert_eq!(value, ready_v2),
+            _ => panic!("fresh ready response must hit cache"),
+        }
+        assert!(
+            matches!(
+                cache.prepare("/repo", NativeRuntime::Antigravity, true, t_expired),
+                UsagePlan::Fetch { .. }
+            ),
+            "force_refresh must bypass a settled TTL entry"
+        );
     }
 }

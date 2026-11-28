@@ -146,7 +146,9 @@ virtual_list(move || posts.with(Vec::len), move |at| {
 
 在 TSX 中，传入新数组即可改变条目：`posts.set([...posts(), ...more])`。列表会**按条目标识**（`===`）比较新旧数组，或者按 `keyExtractor` 返回的键比较。
 
-两种方式下，留下的行无论挪到哪里，都保留自己的单元格、内容和测量结果（例如条目更新后排到最前），它经过的那些行也一样：其中获得焦点的输入框、打开的菜单都保持原样。只有新条目才会新建行。在屏幕上可见的行之上插入行时，可见行保持原位，不会跳动。顶部只露出一部分的行算作在它们之上，所以紧接在它后面插入行时，正在阅读的行同样保持原位。
+两种方式下，留下的行无论挪到哪里，都保留自己的单元格、内容和测量结果（例如条目更新后排到最前），它经过的那些行也一样：其中获得焦点的输入框、打开的菜单都保持原样。只有新条目才会新建行。在屏幕上可见的行之上插入行时，可见行保持原位，不会跳动。顶部只露出一部分的行算作在它们之上，所以紧接在它后面插入行时，即使这些行随后量出的高度与估计不同，正在阅读的行同样保持原位。
+
+用 `display: none` 隐藏的列表（例如在另一个标签页下保活的页面）会保留它的行；再次显示时直接放回这些行，不重新渲染任何一行。`DataTable` 也是如此。
 
 - 在 TSX 中用不可变的方式更新：新数组，未改变的条目对象原样复用。原地修改数组（`push`）不会被察觉。
 - 改动过的条目应是一个新对象（`{ ...post, title }`），这样它的行才会显示变化。
@@ -167,7 +169,7 @@ virtual_list(move || posts.with(Vec::len), move |at| {
 | `viewport` | `.viewport(ListViewport::..)` | `"own" \| "parent"` | `"own"` | `"own"`：列表在自己的滚动视图中滚动。`"parent"`：列表以完整长度排在外层滚动视图中，随页面其他内容一起滚动（见[页面中的列表](#页面中的列表viewportparent)）。在列表创建时确定。 |
 | `numColumns` | `.columns(n)` | `number` | `1` | 每行的条目数（纵向列表）。 |
 | `inverted` | `.inverted()` | `boolean` | `false` | 第 0 项在底部（聊天）；初始滚动到末尾，并保持与末尾的距离。 |
-| `maintainVisibleContentPosition` | `.follow_end(px(..))` | `{ autoscrollToBottomThreshold?: number }` | | 非倒置列表在距离末尾不超过该点数时，随内容增长停留在末尾（见下文）。 |
+| `maintainVisibleContentPosition` | `.follow_end(px(..))`、`.follow_end_animated(..)` | `{ autoscrollToBottomThreshold?: number; animated?: boolean }` | | 非倒置列表在距离末尾不超过该点数时，随内容增长停留在末尾；设置 `animated` 后，末尾一次大幅后移时平滑滚动过去（见下文）。 |
 | `alignment` | `.alignment(ListAlignment::..)` | `"top" \| "bottom"` | `"top"` | 列表停靠的位置。`"bottom"`：打开时位于末尾，内容增长时保持在末尾，行按阅读顺序排列（见下文）。 |
 | `stickyHeaderIndices` | `.sticky_header_indices(..)` | `number[]` | | 滚过时吸附在顶部的条目（单列且非倒置）。 |
 | `stickyHeaderOffset` | `.sticky_header_offset(px(..))`、`.bind_sticky_header_offset(&node)` | `number \| AnimatedNode` | `0` | 吸顶条目吸附在距顶部多远的位置，同 CSS `position: sticky` 的 `top`；内容继续在其上方的空间下滚动。动画值让它们逐帧移动。 |
@@ -500,6 +502,8 @@ virtual_list(move || messages.with(Vec::len), move |at| bubble(messages, at))
 ### 让非倒置列表跟随末尾
 
 按阅读顺序排列（最早的在前）的列表也可以跟随末尾：在 Rust 中用 `.follow_end(px(40.0))`，在 TSX 中用 `maintainVisibleContentPosition={{ autoscrollToBottomThreshold: 40 }}`，当用户停在末尾（或距离末尾不超过 40 点）时，列表会随内容增长停留在末尾：流式写入最后一项的回复、追加的新消息、键盘让列表变矮。用户往上滚得更远时，可见内容保持不动，新内容在其下方增长。在可见条目之上插入的条目从不会移动它们，无论是否设置该选项。
+
+设置 `animated: true`（Rust 中为 `.follow_end_animated(true)`）后，当末尾一次后移很多（达到列表高度的四分之一或更多，例如回复中出现一张图表或卡片），列表会以动画滚动到末尾而不是直接跳过去，内容继续增长时动画也会跟上。较小的增长（例如逐字写入的文字）仍立即跟随。用户把列表拖离末尾后，跟随停止，与不设置时相同。
 
 ```tsx tabs
 <List each={messages()} keyExtractor={(m) => m.id} maintainVisibleContentPosition={{ autoscrollToBottomThreshold: 40 }} style={{ flex: 1 }}>

@@ -515,6 +515,16 @@ impl WebHost {
             // other engines NSH embeds all play inline, so the iPhone does
             // too; a page whose own control asks for the whole screen gets it.
             let _: () = msg_send![&config, setAllowsInlineMediaPlayback: true];
+            // A page's own full-screen control (`element.requestFullscreen`)
+            // is off unless the configuration turns it on, and Safari has it
+            // on: without it bilibili's player and every other page that asks
+            // for the screen does nothing when its button is tapped. The
+            // runtime runs on iOS 15.0, where the property is not there yet.
+            let preferences: Retained<AnyObject> = msg_send![&config, preferences];
+            let has_fullscreen: Bool = msg_send![&preferences, respondsToSelector: objc2::sel!(setElementFullscreenEnabled:)];
+            if has_fullscreen.as_bool() {
+                let _: () = msg_send![&preferences, setElementFullscreenEnabled: true];
+            }
             if p.incognito {
                 let store: Retained<AnyObject> =
                     msg_send![class(c"WKWebsiteDataStore"), nonPersistentDataStore];

@@ -84,6 +84,8 @@ pub trait Interactions: Send + Sync {
         'a,
         Result<Option<maka_agent_facts::interaction::InteractionRecord>, String>,
     >;
+    /// A waiting producer observed the committed outcome.
+    fn settled(&self, _record: &maka_agent_facts::interaction::InteractionRecord) {}
     /// Exact repetition returns the canonical record; conflicting requests fail.
     fn establish<'a>(
         &'a self,

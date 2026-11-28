@@ -89,6 +89,9 @@ impl UiAnimation {
                 if !canvas.is_empty() {
                     crate::shader::set_args(view, canvas);
                     let damage = crate::canvas::set_args(view, canvas);
+                    // A panned canvas's layer moves with the pan, before
+                    // any of it is drawn again.
+                    view.shift_canvas();
                     if damage != Damage::None {
                         mounter.draw_when_shown(view, damage);
                     }

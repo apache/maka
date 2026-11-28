@@ -133,7 +133,7 @@ pub(super) fn rebuild(c: &Connection, scope: &Scope) -> Result<(), StoreError> {
         params![owner, scope.session],
     )?;
     c.execute("DELETE FROM agent_diagnostic_coverage WHERE run IN (SELECT run FROM agent_run_specs INDEXED BY agent_run_specs_diagnostics_cover WHERE owner=? AND session=?)", params![owner,scope.session])?;
-    let mut statement=c.prepare_cached("SELECT s.run,s.schema_version,b.payload,b.content_sha256,length(b.payload) FROM agent_run_specs s INDEXED BY agent_run_specs_diagnostics_cover LEFT JOIN contents b ON b.id=s.spec_content_id WHERE s.owner=? AND s.session=? ORDER BY s.run")?;
+    let mut statement=c.prepare_cached("SELECT s.run,s.schema_version,maka_content_bytes(b.payload,b.encoding),b.content_sha256,COALESCE(b.logical_bytes,length(b.payload)) FROM agent_run_specs s INDEXED BY agent_run_specs_diagnostics_cover LEFT JOIN contents b ON b.id=s.spec_content_id WHERE s.owner=? AND s.session=? ORDER BY s.run")?;
     let mut runs = statement.query(params![owner, scope.session])?;
     while let Some(row) = runs.next()? {
         let run: RunId = identity(row.get(0)?)?;
@@ -158,7 +158,7 @@ pub(super) fn rebuild(c: &Connection, scope: &Scope) -> Result<(), StoreError> {
         spec_ref.validate().map_err(invalid)?;
         let mut after = 0;
         loop {
-            let mut page=c.prepare_cached("SELECT f.sequence,f.id,f.revision,f.schema_version,f.at,b.content_sha256,b.payload FROM agent_facts f LEFT JOIN contents b ON b.id=f.body_content_id WHERE f.run=? AND f.revision>? ORDER BY f.revision LIMIT 128")?;
+            let mut page=c.prepare_cached("SELECT f.sequence,f.id,f.revision,f.schema_version,f.at,b.content_sha256,maka_content_bytes(b.payload,b.encoding) FROM agent_facts f LEFT JOIN contents b ON b.id=f.body_content_id WHERE f.run=? AND f.revision>? ORDER BY f.revision LIMIT 128")?;
             let mut rows = page.query(params![run.to_string(), signed(after)?])?;
             let mut count = 0;
             while let Some(row) = rows.next()? {

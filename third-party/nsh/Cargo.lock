@@ -256,12 +256,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
-name = "atomic_refcell"
-version = "0.1.14"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "21e4227379beff4205943696e6c3e0cd809bacdf3f0edd6e3dd153e2269571a4"
-
-[[package]]
 name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1987,7 +1981,7 @@ dependencies = [
 
 [[package]]
 name = "gallery-native"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "env_logger",
  "log",
@@ -2407,128 +2401,6 @@ dependencies = [
  "graphene-sys",
  "libc",
  "pango-sys",
- "system-deps 9.0.0",
-]
-
-[[package]]
-name = "gstreamer"
-version = "0.25.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f4237e2066a25ecb7e54be6c066409e30615920265b9799b8d560ef8ac9857c6"
-dependencies = [
- "cfg-if",
- "futures-channel",
- "futures-core",
- "futures-util",
- "glib",
- "gstreamer-sys",
- "itertools 0.15.0",
- "kstring",
- "libc",
- "muldiv",
- "num-integer",
- "num-rational",
- "option-operations",
- "pastey",
- "pin-project-lite",
- "smallvec",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "gstreamer-app"
-version = "0.25.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "97f8ae9238c2352398dcc084de28df3f7099af216ac6c160b52318d23f25c010"
-dependencies = [
- "futures-core",
- "futures-sink",
- "glib",
- "gstreamer",
- "gstreamer-app-sys",
- "gstreamer-base",
- "libc",
-]
-
-[[package]]
-name = "gstreamer-app-sys"
-version = "0.25.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0798b8aef6694341d40bb81edc759f8979b896b59f9f0f45d8cfa3bb7bf2e743"
-dependencies = [
- "glib-sys",
- "gstreamer-base-sys",
- "gstreamer-sys",
- "libc",
- "system-deps 9.0.0",
-]
-
-[[package]]
-name = "gstreamer-audio"
-version = "0.25.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "544f14e19e3b7221845be0e5c2f2cf284576b7baa16835ac16def6e734bfa866"
-dependencies = [
- "cfg-if",
- "glib",
- "gstreamer",
- "gstreamer-audio-sys",
- "gstreamer-base",
- "libc",
- "smallvec",
-]
-
-[[package]]
-name = "gstreamer-audio-sys"
-version = "0.25.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "09a010deb715bc29953a07c6714249132e736b3daf3a529e70586b58a7063888"
-dependencies = [
- "glib-sys",
- "gobject-sys",
- "gstreamer-base-sys",
- "gstreamer-sys",
- "libc",
- "system-deps 9.0.0",
-]
-
-[[package]]
-name = "gstreamer-base"
-version = "0.25.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "17cbd8f59586a369c40d4b0d2f3a61cf9e9287b3cf5503cdcd8e7c5faa99265e"
-dependencies = [
- "atomic_refcell",
- "cfg-if",
- "glib",
- "gstreamer",
- "gstreamer-base-sys",
- "libc",
-]
-
-[[package]]
-name = "gstreamer-base-sys"
-version = "0.25.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3b05f77bfd76b5afee6b29c27dae19eaf5018b5cf8d0d17520f3de44c6385c32"
-dependencies = [
- "glib-sys",
- "gobject-sys",
- "gstreamer-sys",
- "libc",
- "system-deps 9.0.0",
-]
-
-[[package]]
-name = "gstreamer-sys"
-version = "0.25.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "436d9532847489a8285d57b8c3670762c12a18f777fdc2ab159b52e0e6f521b9"
-dependencies = [
- "cfg-if",
- "glib-sys",
- "gobject-sys",
- "libc",
  "system-deps 9.0.0",
 ]
 
@@ -3444,15 +3316,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "kstring"
-version = "2.0.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7a09b82a7f771ed02dc0dd9b27130a0fa5499fa15ed3027116c1e5e4e591bd9e"
-dependencies = [
- "static_assertions",
-]
-
-[[package]]
 name = "kurbo"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3718,12 +3581,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "muldiv"
-version = "1.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "956787520e75e9bd233246045d19f42fb73242759cc57fba9611d940ae96d4b0"
-
-[[package]]
 name = "multiversion_no_op"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3872,7 +3729,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-base"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "chrono",
  "html5ever",
@@ -3896,6 +3753,7 @@ dependencies = [
  "tokio",
  "ttf-parser",
  "two-face",
+ "unicode-linebreak",
  "unicode-segmentation",
  "unicode-width",
  "vte",
@@ -3904,7 +3762,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-bundler"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "anyhow",
  "dunce",
@@ -3929,7 +3787,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-cli"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -3974,7 +3832,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-core"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "cap-std",
  "chrono",
@@ -4018,7 +3876,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-dev"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -4034,7 +3892,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-engine"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "block2",
  "crossbeam-channel",
@@ -4044,6 +3902,7 @@ dependencies = [
  "nsh-base",
  "nsh-bundler",
  "nsh-core",
+ "nsh-gpu",
  "nsh-i18n",
  "nsh-js",
  "nsh-package",
@@ -4067,7 +3926,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-extra"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "block2",
  "dispatch2",
@@ -4094,8 +3953,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "nsh-gpu"
+version = "0.7.2"
+dependencies = [
+ "nsh-core",
+ "serde_json",
+ "wgpu",
+]
+
+[[package]]
 name = "nsh-i18n"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "jiff-tzdb",
  "rust-i18n-support",
@@ -4104,7 +3972,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-ios-app"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "log",
  "nsh-base",
@@ -4115,7 +3983,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-ios-host"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "log",
  "nsh-base",
@@ -4126,7 +3994,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-js"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "brotli",
  "flate2",
@@ -4155,7 +4023,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-linux-app"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "log",
  "nsh-base",
@@ -4166,7 +4034,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-linux-host"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "log",
  "nsh-base",
@@ -4177,7 +4045,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-macos-app"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "log",
  "nsh-base",
@@ -4189,7 +4057,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-macos-host"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "log",
  "nsh-base",
@@ -4200,7 +4068,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-macros"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "imagesize",
  "nsh-core",
@@ -4213,7 +4081,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-package"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "base64 0.22.1",
  "ed25519-dalek 2.2.0",
@@ -4226,7 +4094,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-platform-android"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "jni 0.21.1",
  "jni 0.22.4",
@@ -4247,7 +4115,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-platform-apple"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "block2",
  "cc",
@@ -4264,13 +4132,14 @@ dependencies = [
  "objc2-foundation",
  "objc2-image-io",
  "objc2-ui-kit",
+ "rustc-hash 2.1.3",
  "serde_json",
  "unicode-bidi",
 ]
 
 [[package]]
 name = "nsh-platform-ios"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "block2",
  "dispatch2",
@@ -4280,6 +4149,7 @@ dependencies = [
  "nsh-core",
  "nsh-dev",
  "nsh-engine",
+ "nsh-gpu",
  "nsh-platform-apple",
  "nsh-testing",
  "objc2",
@@ -4299,20 +4169,19 @@ dependencies = [
 
 [[package]]
 name = "nsh-platform-linux"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "crossbeam-channel",
  "gdk4-x11",
- "gstreamer",
- "gstreamer-app",
- "gstreamer-audio",
  "gtk4",
  "image",
+ "libloading",
  "log",
  "nsh-base",
  "nsh-core",
  "nsh-dev",
  "nsh-engine",
+ "nsh-gpu",
  "nsh-testing",
  "pango",
  "pangocairo",
@@ -4325,7 +4194,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-platform-macos"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "block2",
  "crossbeam-channel",
@@ -4337,6 +4206,7 @@ dependencies = [
  "nsh-core",
  "nsh-dev",
  "nsh-engine",
+ "nsh-gpu",
  "nsh-platform-apple",
  "nsh-terminal",
  "nsh-testing",
@@ -4357,7 +4227,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-platform-tui"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "base64 0.22.1",
  "crossbeam-channel",
@@ -4380,7 +4250,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-platform-web"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "brotli",
  "crc32c",
@@ -4408,7 +4278,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-platform-windows"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "crossbeam-channel",
  "image",
@@ -4432,7 +4302,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-terminal"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -4444,7 +4314,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-testing"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "base64 0.22.1",
  "crossbeam-channel",
@@ -4467,7 +4337,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-tui-host"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "base64 0.22.1",
  "clap",
@@ -4487,7 +4357,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-updater"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "base64 0.22.1",
  "ed25519-dalek 2.2.0",
@@ -4504,7 +4374,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-windows-app"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "log",
  "nsh-base",
@@ -4515,7 +4385,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-windows-host"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "log",
  "nsh-base",
@@ -4555,16 +4425,6 @@ version = "0.1.47"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7ce2d95d4b3734dc35aa2f45e1aa22cd416814592a4f9d9205e11affd5b8e10b"
 dependencies = [
- "num-traits",
-]
-
-[[package]]
-name = "num-rational"
-version = "0.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f83d14da390562dca69fc84082e73e548e1ad308d24accdedd2720017cb37824"
-dependencies = [
- "num-integer",
  "num-traits",
 ]
 
@@ -4799,15 +4659,6 @@ name = "openssl-probe"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7e036b411754132fd6b74e94b74e9a13c5cf606fa93d1885c35860d3060820b1"
-
-[[package]]
-name = "option-operations"
-version = "0.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aca39cf52b03268400c16eeb9b56382ea3c3353409309b63f5c8f0b1faf42754"
-dependencies = [
- "pastey",
-]
 
 [[package]]
 name = "ordered-float"
@@ -5459,12 +5310,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "pastey"
-version = "0.2.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2ee67f1008b1ba2321834326597b8e186293b049a023cdef258527550b9935b4"
-
-[[package]]
 name = "pathdiff"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5768,7 +5613,7 @@ dependencies = [
 
 [[package]]
 name = "post-editor-native"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "nsh-base",
  "nsh-core",
@@ -6929,7 +6774,7 @@ dependencies = [
 
 [[package]]
 name = "rust-exports-native"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "nsh-base",
  "nsh-core",
@@ -7855,7 +7700,7 @@ checksum = "adb6935a6f5c20170eeceb1a3835a49e12e19d792f6dd344ccc76a985ca5a6ca"
 
 [[package]]
 name = "tasks-rs"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "env_logger",
  "nsh-base",
@@ -9520,7 +9365,7 @@ checksum = "ec7a2a501ed189703dba8b08142f057e887dfc4b2cc4db2d343ac6376ba3e0b9"
 
 [[package]]
 name = "xtask"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "anyhow",
  "clap",

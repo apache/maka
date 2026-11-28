@@ -25,11 +25,13 @@ mod tests;
 use futures_util::{FutureExt, future::BoxFuture};
 use maka_agent_authority::permissions::Access;
 use maka_agent_engine::{PreparedModel, RunError, cleanup::Evidence, ports::*};
+#[cfg(test)]
+use maka_agent_facts::tool_output::ReturnedToolResult;
 use maka_agent_facts::{
     artifact::{PublishedArtifact, ToolReturn},
     durable::*,
     tool_call::{ToolCallIdentity, ToolRejection},
-    tool_output::{ReturnedToolResult, ToolOutput, ToolSuccess},
+    tool_output::{ToolOutput, ToolSuccess},
     tools::{PreparedEffect, ToolCallContext, ToolError, ToolSemantics},
 };
 use maka_agent_state::{
@@ -1276,6 +1278,22 @@ impl DriverPorts for NativeDriver {
             };
             let effects = self.original_effects.clone();
             let (custody, future) = running.execute();
+            let progress = self
+                .access
+                .worker_progress()
+                .filter(|_| !matches!(tool.call.name.as_str(), "exec" | "wait"))
+                .map(|run| {
+                    run.track(
+                        format!("native/{sequence}"),
+                        super::worker_progress::tool(
+                            &tool.call.name,
+                            tool.call
+                                .input
+                                .as_json()
+                                .unwrap_or(&serde_json::Value::Null),
+                        ),
+                    )
+                });
             let original = effects.own(custody, tool.key, selected, source);
             let cleanup = self.cleanup.clone();
             let (reply, observation) = oneshot::channel();
@@ -1289,6 +1307,7 @@ impl DriverPorts for NativeDriver {
                     cleanup.observe_tool(error);
                 }
                 let result = effects.complete(original, result, local).await;
+                drop(progress);
                 let _ = reply.send(result);
             });
             observation

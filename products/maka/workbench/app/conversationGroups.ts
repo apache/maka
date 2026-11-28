@@ -21,7 +21,7 @@ import type {
   AgentProject,
   AgentWorkspaceSelection,
 } from '../../../../packages/plugin-sdk/src/index.js';
-import { nestCreated } from './sessionNesting.ts';
+import { descendsFrom, visibleAncestor } from './sessionNesting.ts';
 
 type Groupable = {
   id: string;
@@ -32,6 +32,15 @@ type Groupable = {
 };
 type Listable = { reference: { id: string }; archived: boolean };
 
+/** A child conversation eligible to bubble temporarily under its visible parent row. */
+export type BubbledChild = {
+  id: string;
+  parentSessionId: string | null;
+  ancestorIds?: readonly string[];
+  pinned: boolean;
+  archived: boolean;
+};
+
 /** Conversations listed together in the desktop's session browser. */
 export type ConversationGroup<Project> = {
   key: string;
@@ -40,7 +49,7 @@ export type ConversationGroup<Project> = {
   /** The workspace of a group outside any project. */
   path: string | null;
   sessions: string[];
-  /** The conversations shown under the one that created them. */
+  /** Ephemeral bubbled child rows shown one level under their visible parent. */
   nested: ReadonlySet<string>;
 };
 
@@ -53,16 +62,15 @@ export function groupConversations<Project extends Listable>(
   withEmpty: boolean,
 ): ConversationGroup<Project>[] {
   const byProject = new Map(projects.map((project) => [project.reference.id, project]));
-  const groups = new Map<string, ConversationGroup<Project> & { members: Groupable[] }>();
+  const groups = new Map<string, ConversationGroup<Project>>();
   const add = (key: string, pinned: boolean, project: Project | null, path: string | null) => {
-    const group = {
+    const group: ConversationGroup<Project> = {
       key,
       pinned,
       project,
       path,
       sessions: [],
       nested: new Set<string>(),
-      members: [],
     };
     groups.set(key, group);
     return group;
@@ -78,13 +86,13 @@ export function groupConversations<Project extends Listable>(
     const group =
       groups.get(key) ??
       add(key, session.pinned, project, session.pinned || project ? null : session.workspace.path);
-    group.members.push(session);
+    group.sessions.push(session.id);
   }
   if (withEmpty)
     for (const project of byProject.values())
       if (!project.archived && !groups.has(`project:${project.reference.id}`))
         add(`project:${project.reference.id}`, false, project, null);
-  const ordered = [];
+  const ordered: ConversationGroup<Project>[] = [];
   const pinned = groups.get('pinned');
   if (pinned) ordered.push(pinned);
   for (const project of byProject.values()) {
@@ -94,10 +102,102 @@ export function groupConversations<Project extends Listable>(
   for (const group of groups.values()) {
     if (!group.pinned && !group.project) ordered.push(group);
   }
-  return ordered.map(({ members, ...group }) => {
-    const { order, nested } = nestCreated(members);
-    return { ...group, sessions: order, nested };
+  return ordered;
+}
+
+/**
+ * Attach waiting (or currently viewed sticky) child conversations one level under
+ * their nearest visible ancestor row. Already-listed or pinned children are never
+ * duplicated, and orphans whose ancestor is not visible are omitted.
+ */
+export function attachBubbledChildren<Project>(
+  groups: readonly ConversationGroup<Project>[],
+  bubbles: readonly BubbledChild[],
+): ConversationGroup<Project>[] {
+  if (!bubbles.length) return [...groups];
+  const visible = new Set<string>();
+  for (const group of groups) for (const id of group.sessions) visible.add(id);
+  const parents = new Map<string, string | null>();
+  for (const bubble of bubbles) parents.set(bubble.id, bubble.parentSessionId);
+
+  const byParent = new Map<string, string[]>();
+  const added = new Set<string>();
+  for (const bubble of bubbles) {
+    if (bubble.archived || bubble.pinned || visible.has(bubble.id) || added.has(bubble.id))
+      continue;
+    const ancestor = visibleAncestor(bubble.id, visible, parents, bubble.ancestorIds);
+    if (ancestor === null) continue;
+    added.add(bubble.id);
+    const list = byParent.get(ancestor);
+    if (list) list.push(bubble.id);
+    else byParent.set(ancestor, [bubble.id]);
+  }
+  if (!byParent.size) return [...groups];
+
+  return groups.map((group) => {
+    const nested = new Set(group.nested);
+    const sessions: string[] = [];
+    for (const id of group.sessions) {
+      sessions.push(id);
+      const children = byParent.get(id);
+      if (children) {
+        for (const childId of children) {
+          sessions.push(childId);
+          nested.add(childId);
+        }
+      }
+    }
+    return { ...group, sessions, nested };
   });
+}
+
+/**
+ * Derive the active desktop bubble list from live waiting sessions plus an optional
+ * currently-viewed sticky bubble. When a sticky bubble leaves `waiting`, its activity
+ * clears to `idle` so an approved row stays anchored without showing a stale Waiting badge.
+ */
+export function selectBubbledChildren<
+  T extends BubbledChild & { activity: 'idle' | 'working' | 'waiting' },
+>(
+  waiting: readonly T[],
+  visible: readonly { id: string; parentSessionId: string | null }[],
+  botSession: string | null,
+  sticky: T | null,
+): T[] {
+  const merged = new Map<string, T>();
+  for (const session of waiting) {
+    if (session.parentSessionId !== null) merged.set(session.id, session);
+  }
+  if (sticky && sticky.parentSessionId !== null && !merged.has(sticky.id)) {
+    merged.set(sticky.id, sticky.activity === 'waiting' ? { ...sticky, activity: 'idle' } : sticky);
+  }
+  const list = [...merged.values()];
+  if (botSession === null) return list;
+  const parents = new Map<string, string | null>([
+    ...visible.map((session) => [session.id, session.parentSessionId] as const),
+    ...list.map((session) => [session.id, session.parentSessionId] as const),
+  ]);
+  return list.filter(
+    (session) =>
+      session.id !== botSession &&
+      !descendsFrom(session.id, botSession, parents, session.ancestorIds),
+  );
+}
+
+/**
+ * Build the desktop sidebar groups shared by both rendering and keyboard stepping
+ * (`mod+shift+[` / `mod+shift+]`), including bubbled waiting child rows.
+ */
+export function desktopSidebarGroups<Project extends Listable>(
+  visible: readonly Groupable[],
+  projects: readonly Project[],
+  bubbles: readonly BubbledChild[],
+  options: { byTime: boolean; withEmpty: boolean; attachBubbles: boolean },
+): ConversationGroup<Project>[] {
+  const base = options.byTime
+    ? groupConversationsByTime<Project>(visible)
+    : groupConversations(visible, projects, options.withEmpty);
+  return options.attachBubbles ? attachBubbledChildren(base, bubbles) : base;
 }
 
 export function projectSessionLimit(group: ConversationGroup<unknown>): number {
@@ -123,60 +223,15 @@ export function withinLimit(
   });
 }
 
-// A family this large folds behind one row; folding a smaller one would save
-// at most a row.
-const FOLDED_FAMILY_SIZE = 3;
-
-/**
- * The group's conversations that created at least three listed under them,
- * each with those conversations in list order.
- */
-export function foldableFamilies(group: ConversationGroup<unknown>): Map<string, string[]> {
-  const families = new Map<string, string[]>();
-  let parent: string | null = null;
-  for (const id of group.sessions) {
-    if (!group.nested.has(id)) parent = id;
-    else if (parent !== null) {
-      const members = families.get(parent);
-      if (members) members.push(id);
-      else families.set(parent, [id]);
-    }
-  }
-  for (const [id, members] of families)
-    if (members.length < FOLDED_FAMILY_SIZE) families.delete(id);
-  return families;
-}
-
-/**
- * The group's conversations without those folded under their creator; a
- * family is folded while its creator is in `folded`.
- */
-export function unfoldedSessions(
-  group: ConversationGroup<unknown>,
-  folded: ReadonlySet<string>,
-  current: string | null = null,
-): string[] {
-  const hidden = new Set<string>();
-  for (const [parent, members] of foldableFamilies(group))
-    if (folded.has(parent)) for (const id of members) if (id !== current) hidden.add(id);
-  return hidden.size ? group.sessions.filter((id) => !hidden.has(id)) : group.sessions;
-}
-
-/**
- * Step through the visible conversations, keeping a hidden current row as a
- * starting point. Without `foldedFamilies`, as in the terminal, nothing folds.
- */
+/** Step through the visible conversations, keeping a hidden current row as a starting point. */
 export function browserOrder(
   groups: readonly ConversationGroup<unknown>[],
   collapsed: ReadonlySet<string>,
   current: string | null,
   expandedProjects?: ReadonlySet<string>,
-  foldedFamilies?: ReadonlySet<string>,
 ): string[] {
   return groups.flatMap((group) => {
-    const sessions = foldedFamilies
-      ? unfoldedSessions(group, foldedFamilies, current)
-      : group.sessions;
+    const sessions = group.sessions;
     const limit = collapsed.has(group.key)
       ? 0
       : expandedProjects && !expandedProjects.has(group.key)
@@ -260,10 +315,13 @@ export function groupWorkspace(
 ): AgentWorkspaceSelection | null {
   if (group.pinned || group.key.startsWith('time:')) return null;
   if (group.project) {
-    const project = group.project;
-    if (project.archived || !project.available || !project.path) return null;
-    return { kind: 'project', projectId: project.reference.id, path: project.path };
+    if (group.project.archived || !group.project.available || !group.project.path) return null;
+    return {
+      kind: 'project',
+      projectId: group.project.reference.id,
+      path: group.project.path,
+    };
   }
-  const sessionId = group.sessions[0];
-  return sessionId ? { kind: 'session', sessionId } : null;
+  const seed = group.sessions[0];
+  return seed ? { kind: 'session', sessionId: seed } : null;
 }

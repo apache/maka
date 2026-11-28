@@ -84,6 +84,7 @@ A video takes the props of a [view](./view.md) (it has no children) plus:
 | Prop | Rust | Type | Default | Description |
 |---|---|---|---|---|
 | `src` | `video(url)` | `string` | | The video's URL (in Rust, an asset's `uri` too: `video(CLIP.uri)`). |
+| `poster` | `.poster(url)` | `string` | | An image shown while the video loads, until its first frame is ready. |
 | `paused` | `.paused(..)` | `boolean` | `false` | Playback is paused. |
 | `muted` | `.muted(..)` | `boolean` | `false` | No sound. |
 | `volume` | `.volume(..)` | `number` | `1` | 0..1. |

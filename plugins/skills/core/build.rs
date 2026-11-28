@@ -204,6 +204,7 @@ fn main() {
     for (id, relative, resources) in [
         ("maka-cua", "platform/computer-use/skills/maka-cua", &[][..]),
         ("maka-generative-ui", "skills/maka-generative-ui", &[][..]),
+        ("maka-theme", "skills/maka-theme", &[][..]),
         (
             "maka-plugin-authoring",
             "skills/maka-plugin-authoring",

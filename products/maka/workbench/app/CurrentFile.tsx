@@ -94,6 +94,7 @@ import {
   quietActiveStyle,
   quietFocusStyle,
   quietHoverStyle,
+  radius,
   textTooltip,
 } from './ui';
 import type { WorkspaceFileAnchor, WorkspaceFileTarget } from './workspaceFileState';
@@ -541,7 +542,7 @@ export function CurrentFile(props: {
                     {
                       width: 32,
                       height: 32,
-                      borderRadius: 8,
+                      borderRadius: radius(8),
                       backgroundColor: C.card,
                       alignItems: 'center',
                       justifyContent: 'center',
@@ -662,7 +663,7 @@ function FileAction(props: {
         props.iconInMenu
           ? { ...menuRowStyle(), flexDirection: 'row', alignItems: 'center', gap: 8 }
           : {
-              ...controlStyle,
+              ...controlStyle(),
               minHeight: 28,
               paddingHorizontal: 7,
               alignItems: 'center',
@@ -1000,7 +1001,7 @@ function SourceEditorView(props: {
             alignItems: 'center',
             gap: 4,
             padding: 4,
-            borderRadius: 8,
+            borderRadius: radius(8),
             backgroundColor: C.card,
           }}
         >
@@ -1020,7 +1021,7 @@ function SourceEditorView(props: {
               minWidth: 80,
               height: 28,
               paddingHorizontal: 8,
-              borderRadius: 6,
+              borderRadius: radius(6),
               backgroundColor: C.panel,
               color: C.text,
             }}
@@ -1033,7 +1034,7 @@ function SourceEditorView(props: {
             selected={caseSensitive()}
             onPress={() => caseSensitive.set(!caseSensitive())}
             style={{
-              ...controlStyle,
+              ...controlStyle(),
               minHeight: 24,
               height: 24,
               paddingHorizontal: 6,
@@ -1049,7 +1050,7 @@ function SourceEditorView(props: {
             selected={wholeWord()}
             onPress={() => wholeWord.set(!wholeWord())}
             style={{
-              ...controlStyle,
+              ...controlStyle(),
               minHeight: 24,
               height: 24,
               paddingHorizontal: 6,
@@ -1064,7 +1065,7 @@ function SourceEditorView(props: {
             accessibilityLabel={tr('Previous match')}
             onPress={() => editorRef?.run('findPrevious')}
             style={{
-              ...controlStyle,
+              ...controlStyle(),
               width: 24,
               minHeight: 24,
               paddingHorizontal: 4,
@@ -1079,7 +1080,7 @@ function SourceEditorView(props: {
             accessibilityLabel={tr('Next match')}
             onPress={() => editorRef?.run('findNext')}
             style={{
-              ...controlStyle,
+              ...controlStyle(),
               width: 24,
               minHeight: 24,
               paddingHorizontal: 4,
@@ -1094,7 +1095,7 @@ function SourceEditorView(props: {
             accessibilityLabel={tr('Close find')}
             onPress={closeFind}
             style={{
-              ...controlStyle,
+              ...controlStyle(),
               width: 24,
               minHeight: 24,
               paddingHorizontal: 4,
@@ -1200,7 +1201,7 @@ function SourceEditorView(props: {
               style={{
                 flex: 1,
                 minHeight: 0,
-                borderRadius: 8,
+                borderRadius: radius(8),
                 overflow: 'hidden',
                 backgroundColor: C.card,
               }}
@@ -1382,7 +1383,7 @@ function SourceEditorView(props: {
                   void props.navigation!.goToDefinition(pos);
                 }}
                 style={{
-                  ...controlStyle,
+                  ...controlStyle(),
                   minHeight: 24,
                   height: 24,
                   paddingHorizontal: 8,
@@ -1400,7 +1401,7 @@ function SourceEditorView(props: {
                   void props.navigation!.findReferences(pos);
                 }}
                 style={{
-                  ...controlStyle,
+                  ...controlStyle(),
                   minHeight: 24,
                   height: 24,
                   paddingHorizontal: 8,
@@ -1426,7 +1427,7 @@ function RetryCurrentFile(props: { model: CurrentFileModel }) {
       disabled={props.model.state().kind === 'loading'}
       onPress={inputAction(props.model.refresh, null)}
       style={{
-        ...controlStyle,
+        ...controlStyle(),
         flexDirection: 'row',
         alignItems: 'center',
         gap: 8,

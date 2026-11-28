@@ -18,8 +18,10 @@
 //! dist/nsh/embed/android/{nsh,nsh-dev}.aar                     embedding in Android apps
 //! ```
 //!
-//! The iOS runtimes and SDK need Xcode: they are built on Apple silicon Macs
-//! only. The macOS (AppKit) runtime is built on macOS, for this machine. The
+//! The iOS runtimes need Xcode and are built on a Mac, for its own simulator
+//! and Mac Catalyst (arm64 on Apple silicon, x86_64 on Intel); the device
+//! runner and the embedding SDK are built on Apple silicon only. The macOS
+//! (AppKit) runtime is built on macOS, for this machine. The
 //! Linux runtime is built for this machine, on Linux only (where it runs,
 //! GTK 4, Pango and, for web views, WebKitGTK 6.0 must be installed;
 //! without WebKitGTK's development files it is built with placeholders for
@@ -43,13 +45,24 @@ use anyhow::{Context as _, bail};
 use crate::{android, term};
 
 const IOS: &str = "aarch64-apple-ios";
-const IOS_SIM: &str = "aarch64-apple-ios-sim";
-const CATALYST: &str = "aarch64-apple-ios-macabi";
-/// Whether the distribution has the iOS runtimes and SDK: on Apple silicon
-/// only, the `ios` component's one host. They are built for arm64 (devices,
-/// Apple silicon's simulator, Mac Catalyst), which an Intel Mac's simulator
-/// and Mac Catalyst do not run.
-const WITH_IOS: bool = cfg!(all(target_os = "macos", target_arch = "aarch64"));
+const IOS_SIM: &str = if cfg!(target_arch = "x86_64") {
+    "x86_64-apple-ios"
+} else {
+    "aarch64-apple-ios-sim"
+};
+const CATALYST: &str = if cfg!(target_arch = "x86_64") {
+    "x86_64-apple-ios-macabi"
+} else {
+    "aarch64-apple-ios-macabi"
+};
+/// Whether the distribution has the iOS runtimes: on every Mac. Each is built
+/// for this Mac's own simulator and Mac Catalyst, which run its processor.
+const WITH_IOS: bool = cfg!(target_os = "macos");
+/// Whether it also has the iOS device runner and the embedding SDK: on Apple
+/// silicon only. Both are built with the iOS 26 SDK (Xcode 26), which does not
+/// run on Intel Macs, so an Intel one's `nsh package --target ios` has no
+/// runner.
+const WITH_IOS_DEVICES: bool = cfg!(all(target_os = "macos", target_arch = "aarch64"));
 
 pub(crate) fn dist() -> anyhow::Result<()> {
     let root = android::root();
@@ -266,7 +279,7 @@ pub(crate) fn dist() -> anyhow::Result<()> {
         ));
     }
 
-    if WITH_IOS {
+    if WITH_IOS_DEVICES {
         // iOS embedding: a static framework per platform (Rust + the Swift
         // module) in an XCFramework.
         crate::ios::xcframeworks(
@@ -433,7 +446,12 @@ fn web_runtimes(root: &Path, out: &Path, release: &Path) -> anyhow::Result<()> {
 
 /// The iOS runtimes: release runners, development hosts.
 fn ios_runtimes(release: &Path, out: &Path) -> anyhow::Result<()> {
-    for (triple, dir) in [(IOS, "iphoneos"), (IOS_SIM, "iphonesimulator")] {
+    let release_runners: &[(&str, &str)] = if WITH_IOS_DEVICES {
+        &[(IOS, "iphoneos"), (IOS_SIM, "iphonesimulator")]
+    } else {
+        &[(IOS_SIM, "iphonesimulator")]
+    };
+    for &(triple, dir) in release_runners {
         cargo(
             &[
                 "build",

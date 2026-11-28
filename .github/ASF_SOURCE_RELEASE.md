@@ -33,6 +33,6 @@ node scripts/asf-source-release.mjs sign --artifact <archive.tar.gz> --key <fing
 node scripts/asf-source-release.mjs verify --artifact <archive.tar.gz> --keys <KEYS>
 ```
 
-Signing reproduces the archive from the named commit before adding its signature. Follow the Apache Incubator release voting process; a GitHub prerelease or npm preview is not an ASF release.
+Signing reproduces the archive from the named commit before adding its signature. Follow the Apache Incubator release voting process; a GitHub prerelease or `@nightly` npm build is not an ASF release.
 
-Native npm artifacts are built from the verified source archive through `just package`. Collect the native packages and source together, run `just release-prepare`, and only then use `just publish` for the verified preview set.
+After the ASF source vote passes, push the immutable release tag `v<version>-incubating` pointing to the exact voted commit on `main`, then dispatch [`.github/workflows/release.yml`](workflows/release.yml) on that tag (`gh workflow run release.yml --ref v<version>-incubating`) to publish convenience binaries, the signed `latest.json` updater manifest, and optional `@latest` npm packages.

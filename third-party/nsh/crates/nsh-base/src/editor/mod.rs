@@ -30,6 +30,7 @@ mod keymap;
 pub(crate) mod language;
 pub(crate) mod languages;
 pub(crate) mod layout;
+pub(crate) mod line_break;
 mod movement;
 mod parts;
 mod search;
@@ -124,6 +125,14 @@ pub struct EditorProps {
     /// screen (the default), `false` not at all, a number that many rows.
     #[prop(default)]
     pub scroll_beyond_last_line: Prop<EditorScrollBeyond>,
+    /// How far the scroll bars keep from each edge of the editor, as a
+    /// scroll view's `scrollbarInset`: clear of a rounded container's
+    /// corners or of bars floating over the editor; the text still scrolls
+    /// under them. The vertical bar and the overview ruler keep within the
+    /// top, bottom and right; the horizontal one (without `softWrap`)
+    /// within the left, right and bottom.
+    #[prop(default)]
+    pub scrollbar_inset: Prop<EdgeInsets>,
     /// The font family (default the theme's `font-mono`, else the
     /// system's monospaced font). The editor measures its text in it, so
     /// set the font here rather than with classes.
@@ -143,7 +152,8 @@ pub struct EditorProps {
     #[prop(default)]
     pub diagnostics: Prop<Vec<EditorDiagnostic>>,
     /// Ranges the app styles (semantic highlighting, a statement being
-    /// run), carried through edits until the app sets new ones.
+    /// run) or shows as a label (`label`), carried through edits until the
+    /// app sets new ones.
     #[prop(default)]
     pub decorations: Prop<Vec<EditorDecoration>>,
     /// The width of the gutter's strip of decorations' marks
@@ -274,6 +284,16 @@ pub enum EditorEvent {
     /// (`showCodeActions`, Mod+.): the app shows its menu at `bounds`.
     #[args(event)]
     CodeActionRequest(EditorCodeActionRequest),
+    /// The text scrolled, or the viewport or the content changed size (a
+    /// resize, an edit, a fold, soft wrap): the offset, the content's size
+    /// and the viewport's, as a `Scroll`'s `onScroll` gives them, when one
+    /// differs from those reported last (first once the editor is laid
+    /// out). The offset is `scrollOffset()`'s; the content is as wide as
+    /// the viewport plus how far the text scrolls sideways (none while
+    /// lines wrap), so `offset` runs from 0 to `contentSize - size`. An
+    /// app draws a line or a fade at an edge the text scrolls under.
+    #[args(offset, content_size, size)]
+    Scroll(Point<Points>, Size<Points>, Size<Points>),
 }
 
 /// What an [`Editor`]'s `replaceAll` did.

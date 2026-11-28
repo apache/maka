@@ -99,6 +99,10 @@ use nsh_core::time::Instant;
 /// Samples kept for the distributions (frames, commits).
 const CAPACITY: usize = 120;
 
+/// The span [`PerfSnapshot::gc`] covers: long enough to hold the idle
+/// collections the engine makes at most every 5 s while it has work.
+const GC_WINDOW: Duration = Duration::from_secs(10);
+
 /// The window over which rates (frames, commits per second) are counted.
 const RATE_WINDOW: Duration = Duration::from_secs(1);
 
@@ -186,6 +190,19 @@ pub struct MemorySample {
     pub node_ids: u64,
 }
 
+/// The engine's idle cycle collections over the last 10 seconds. A
+/// collection walks every object of the JS heap at once (it cannot be cut
+/// into slices) and runs between commits, so it is not in
+/// [`PerfSnapshot::js`]; the collections QuickJS starts by itself while
+/// the app's code allocates are, inside that code's time.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct GcSample {
+    /// Collections in the window.
+    pub count: u32,
+    /// The longest of them (zero without any).
+    pub longest: Duration,
+}
+
 /// What a [`PerfMonitor`] read, as of one moment.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct PerfSnapshot {
@@ -230,6 +247,8 @@ pub struct PerfSnapshot {
     /// What the app holds, as last given to [`PerfMonitor::set_memory`]:
     /// none before the engine's first idle collection.
     pub memory: Option<MemorySample>,
+    /// The engine's idle collections over the last few seconds.
+    pub gc: GcSample,
 }
 
 impl PerfSnapshot {
@@ -238,6 +257,7 @@ impl PerfSnapshot {
         let mut stats = nsh_core::platform::PerfStats::new(self.fps);
         stats.refresh_rate = self.refresh_rate;
         stats.dropped = nsh_core::geometry::Percentage(self.dropped);
+        stats.memory = self.process.memory;
         stats
     }
 }
@@ -270,6 +290,8 @@ struct Inner {
     busy: VecDeque<(Instant, Duration)>,
     process: ProcessSample,
     memory: Option<MemorySample>,
+    /// Idle collections: when they ended, and how long they took.
+    gcs: VecDeque<(Instant, Duration)>,
 }
 
 impl Default for PerfMonitor {
@@ -289,6 +311,7 @@ impl Default for PerfMonitor {
                 busy: VecDeque::new(),
                 process: ProcessSample::default(),
                 memory: None,
+                gcs: VecDeque::new(),
             }),
         }
     }
@@ -392,6 +415,23 @@ impl PerfMonitor {
         self.lock().process = sample;
     }
 
+    /// Engine thread: an idle collection took `pause`.
+    pub fn record_gc(&self, pause: Duration) {
+        self.record_gc_at(Instant::now(), pause);
+    }
+
+    fn record_gc_at(&self, at: Instant, pause: Duration) {
+        let mut inner = self.lock();
+        while inner
+            .gcs
+            .front()
+            .is_some_and(|&(then, _)| at.duration_since(then) > GC_WINDOW)
+        {
+            inner.gcs.pop_front();
+        }
+        inner.gcs.push_back((at, pause));
+    }
+
     /// Engine thread: what the app holds, shown with the next snapshots.
     pub fn set_memory(&self, sample: MemorySample) {
         self.lock().memory = Some(sample);
@@ -399,7 +439,10 @@ impl PerfMonitor {
 
     /// The readings as of now.
     pub fn snapshot(&self) -> PerfSnapshot {
-        let now = Instant::now();
+        self.snapshot_at(Instant::now())
+    }
+
+    fn snapshot_at(&self, now: Instant) -> PerfSnapshot {
         let inner = self.lock();
         let recent = |at: Instant| now.duration_since(at) <= RATE_WINDOW;
         // `n` frames span `n - 1` intervals: the rate is measured over the
@@ -479,6 +522,16 @@ impl PerfMonitor {
             frames: inner.frames.iter().map(|&(_, cost)| cost).collect(),
             process: inner.process,
             memory: inner.memory,
+            gc: {
+                let window = inner
+                    .gcs
+                    .iter()
+                    .filter(|&&(at, _)| now.duration_since(at) <= GC_WINDOW);
+                GcSample {
+                    count: window.clone().count() as u32,
+                    longest: window.map(|&(_, pause)| pause).max().unwrap_or_default(),
+                }
+            },
         }
     }
 }
@@ -741,6 +794,37 @@ mod tests {
         assert_eq!(snapshot.js.mean, ms(1));
         assert_eq!(snapshot.layout.p95, ms(2));
         assert_eq!(snapshot.items, 4.0);
+    }
+
+    /// The collections of the last 10 seconds: how many, and the longest.
+    #[test]
+    fn collections_over_a_time_window() {
+        let ms = Duration::from_millis;
+        let monitor = PerfMonitor::new();
+        let start = Instant::now();
+        assert_eq!(monitor.snapshot_at(start).gc, GcSample::default());
+        monitor.record_gc_at(start, ms(90));
+        monitor.record_gc_at(start + ms(5000), ms(30));
+        monitor.record_gc_at(start + ms(9000), ms(40));
+        let at = start + ms(9000);
+        assert_eq!(
+            monitor.snapshot_at(at).gc,
+            GcSample {
+                count: 3,
+                longest: ms(90)
+            }
+        );
+        // The long one leaves the window.
+        let at = start + GC_WINDOW + ms(1);
+        assert_eq!(
+            monitor.snapshot_at(at).gc,
+            GcSample {
+                count: 2,
+                longest: ms(40)
+            }
+        );
+        monitor.record_gc_at(start + ms(20_000), ms(10));
+        assert_eq!(monitor.lock().gcs.len(), 1);
     }
 
     #[test]

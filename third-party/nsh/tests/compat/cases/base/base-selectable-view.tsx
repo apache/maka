@@ -3,9 +3,10 @@
 // `Text`, a `TextView` and a nested selectable `View` inside one area, a
 // `userSelect: "none"` label that stays out, and a text outside every
 // area. Its script checks which views are areas and what the texts carry,
-// and what the areas report of their selection (`onSelectionChange`), and
-// what a TextView's ref reads of it (`selectedText`, as Markdown and HTML).
-import { signal, Text, View } from "nsh";
+// and what the areas report of their selection (`onSelectionChange`: its
+// text, and the list items its ends are in), and what a TextView's ref
+// reads of it (`selectedText`, as Markdown and HTML).
+import { signal, Text, View, type TextSelectionEndpoint } from "nsh";
 import { TextView, type TextViewRef } from "nsh/base";
 
 function App() {
@@ -13,11 +14,14 @@ function App() {
   const own = signal("none");
   const read = signal("none");
   let doc: TextViewRef | undefined;
+  const end = (e: TextSelectionEndpoint | undefined) => (e ? `${e.key}@${e.offset}` : "none");
   return (
     <View style={{ flex: 1, paddingTop: 20, gap: 4 }}>
       <Text>{`Area selected: ${area()}`}</Text>
       <Text>{`Own selected: ${own()}`}</Text>
-      <View selectable testID="area" onSelectionChange={(e) => area.set(e.text || "nothing")} style={{ gap: 4 }}>
+      <View selectable testID="area" onSelectionChange={(e) =>
+          area.set(e.text ? (e.anchor || e.focus ? `${e.text} from ${end(e.anchor)} to ${end(e.focus)}` : e.text) : "nothing")
+        } style={{ gap: 4 }}>
         <Text>Area first text</Text>
         <TextView testID="area-doc" markdown={"Area **document**\n\n- Area item"} />
         <Text style={{ userSelect: "none" }}>Area label</Text>

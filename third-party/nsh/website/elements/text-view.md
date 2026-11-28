@@ -88,7 +88,7 @@ fn release_notes() -> impl IntoElement {
 ```
 
 In Rust, `text_view()` makes one as `view()` makes a view: a setter per prop (`.markdown(..)`, `.options(..)`,
-`.selectable(..)`), a closure per render function (`.render_image(|image| ..)`), a listener per event
+`.selectable(..)`), a closure per render function (`.render_code_block(|code| ..)`), a listener per event
 (`.on_link_press(..)`) and the typed style methods for its root (`.p_5()`, `.text_color(..)`), whose text styles pass
 to every part.
 
@@ -126,7 +126,10 @@ The content is one of three props, read in this order:
   A tag that names no HTML element and no `tag` extension (`<US tech>`, `<公司名>`) shows as written.
 - **`html`**: HTML as a reader shows it. Text, structure and inline formatting come through, text colors too (a
   `<span style="color: …">` or a `<font color="…">` is a `textStyle` in its color); scripts, styles, form
-  controls and hidden elements stay out. A fragment or a whole page both work (a page shows its body).
+  controls and hidden elements stay out. A fragment or a whole page both work (a page shows its body). A table has
+  a header row only when it marks one (`<thead>`, or a first row of `<th>` cells): the `<td>` tables emails lay out
+  show none. An image that cannot load (a `cid:` part of an email, a failed download) shows its alt text in its
+  place, not an empty box its size.
 - **`document`**: blocks the app builds or keeps: plain objects in TSX, `nsh_base::text_view::Document` in Rust
   ([The document model](#the-document-model)).
 
@@ -169,7 +172,9 @@ view's), and `classes.root` classes. `classes` takes Tailwind classes by part an
 default styles, so they win; its `styles` win over its classes. In Rust, the parts take typed styles: `TextViewParts`
 gives each `TextViewPart` a function refining its style, for every `TextView` below the view that provides it
 ([Typed part styles](#typed-part-styles)), and the root takes the style methods. Line heights in the defaults are set in points: a
-class that changes a part's size sets its line height too (Tailwind's `text-*` classes do).
+class that changes a part's size sets its line height too (Tailwind's `text-*` classes do). A block's position variants
+(`first:`, `last:`, `odd:`, `even:`, `only:`) read its place among the blocks around it: `heading: "mt-6 first:mt-0"`
+leaves no room above a heading that opens the document, or a quote.
 
 ```tsx tabs
 <TextView
@@ -414,7 +419,7 @@ rendered again.
 | `renderCodeBlockAction` | `.render_code_block_action(\|action\| ..)` | `TextViewCodeAction` | The icon of a code block action of the app's (`codeBlockActions`); the button around it is `TextView`'s. |
 | `renderTableActions` | `.render_table_actions(\|table\| ..)` | `TextViewTable` (`Table`) | Adds content above a table (copy, export). |
 | `renderMath` | `.render_math(\|math\| ..)` | `TextViewMath` | Replaces a formula: `{ tex, display }`, `display` for a `$$…$$` block. |
-| `renderImage` | `.render_image(\|image\| ..)` | `TextViewImage` (`Image`) | Replaces an image (`{ src, alt, title }`): your own loading, sizing, a viewer on press. |
+| `renderImage` | `.render_image(\|InContext(image, context)\| ..)` | `TextViewImage` (`Image`), then `TextViewImageContext` | Replaces an image (`{ src, alt, title }`): your own loading, sizing, a viewer on press. The second argument says what surrounds the image: `context.link` (`{ url, title }`) is the link it is in. |
 | `renderCustom` | `.render_custom(\|node\| ..)` | `TextViewCustomNode` (`CustomNode`) | Shows a custom node, by its `name` ([Markdown extensions](#markdown-extensions)). |
 
 Code blocks carry actions over their top right corner, all drawn alike: ghost buttons whose background shows while
@@ -481,14 +486,14 @@ import { Image, View } from "nsh";
 ```rust tabs
 use nsh_base::text_view;
 use nsh_base::text_view::{CodeBlock, Image};
-use nsh_base::TextViewMath;
+use nsh_base::{TextViewImageContext, TextViewMath};
 use nsh_core::prelude::*;
 
 fn reply(markdown: Signal<SharedString>) -> impl IntoElement {
     text_view()
         .markdown(move || markdown.get())
         .render_code_block(|code: &CodeBlock| highlighted(code.language.clone(), code.code.clone()))
-        .render_image(|img: &Image| {
+        .render_image(|InContext(img, _): &InContext<Image, TextViewImageContext>| {
             image(img.src.clone())
                 .label(img.alt.clone())
                 .aspect_ratio(16.0 / 9.0)
@@ -835,11 +840,55 @@ markdown-rs's syntax, and `ParseContext` reads a node's children as the parser d
 read a part at a time. Long documents stay fast with plugins; a plugin whose `configure` turns a construct on or off
 has each text parsed in one go.
 
+`ParseContext::conversion_id` tells conversions apart. Every callback of one conversion (a `Parser::markdown` call, or
+a text a `TextView` reads) gets the same `ConversionId`: the nodes read with `ParseContext::blocks` and `inlines`, the
+parts of a long text, a container's content and footnotes. Each conversion gets a new one, even of the same text, in
+views that share their plugins, and in a `Parser::markdown` called inside a callback. A plugin that works something out
+from the whole source does it once per conversion and keeps it under the id; the id says nothing about how many times
+or in what order nodes are offered.
+
+```rust
+use std::{cell::RefCell, collections::HashMap, rc::Rc};
+use nsh_base::text_view::{ConversionId, ParseContext};
+
+/// Abbreviations and their titles.
+type Terms = Rc<HashMap<String, String>>;
+
+/// `*[HTML]: HyperText Markup Language` lines anywhere in the text, read once
+/// per conversion and consulted by the plugin's `inline`.
+#[derive(Default)]
+struct Abbreviations {
+    last: RefCell<Option<(ConversionId, Terms)>>,
+}
+
+impl Abbreviations {
+    fn of(&self, cx: &ParseContext<'_>) -> Terms {
+        let mut last = self.last.borrow_mut();
+        if let Some((id, terms)) = &*last
+            && *id == cx.conversion_id()
+        {
+            return terms.clone();
+        }
+        let terms: Terms = Rc::new(
+            cx.source()
+                .lines()
+                .filter_map(|line| line.strip_prefix("*[")?.split_once("]: "))
+                .map(|(term, title)| (term.to_owned(), title.to_owned()))
+                .collect(),
+        );
+        *last = Some((cx.conversion_id(), terms.clone()));
+        terms
+    }
+}
+```
+
 ## Props
 
 | Prop | Rust | Type | Default | Description |
 |---|---|---|---|---|
 | `markdown` | `.markdown(..)` | `string` | | The document as Markdown. |
+| `sourceId` | `.source_id(..)` | `string` | | Stable identity of the original Markdown for reading anchors. |
+| `sourceOffset` | `.source_offset(..)` | `number` | `0` | With a stable `sourceId`, the UTF-8 start byte of an excerpt in its original Markdown. Keeps a reading anchor on the same text when earlier bytes are prepended. |
 | `html` | `.html(..)` | `string` | | The document as HTML, when `markdown` is not given. |
 | `document` | `.document(..)` | `TextViewDocument` | | The document as blocks, when neither `markdown` nor `html` is given. |
 | `options` | `.options(..)` | `MarkdownOptions` | all defaults | The Markdown syntax read ([Options](#options)). |
@@ -857,7 +906,7 @@ has each text parsed in one go.
 | `renderCodeBlockAction` | `.render_code_block_action(\|action\| ..)` | `(action: TextViewCodeAction) => JSX.Element` | | The icon of an action of the app's. |
 | `renderTableActions` | `.render_table_actions(\|table\| ..)` | `(table: TextViewTable) => JSX.Element` | | Content above each table. |
 | `renderMath` | `.render_math(\|math\| ..)` | `(math: TextViewMath) => JSX.Element` | | Shows formulas. |
-| `renderImage` | `.render_image(\|image\| ..)` | `(image: TextViewImage) => JSX.Element` | | Shows images. |
+| `renderImage` | `.render_image(\|InContext(image, context)\| ..)` | `(image: TextViewImage, context: TextViewImageContext) => JSX.Element` | | Shows images; `context.link` is the link around the image, if any. |
 | `class`, `style` | style methods | `string`, `StyleProp<ViewStyle>` | | The root, a column of the blocks; its text styles pass to every part (typed text styles: `styles.root`). |
 
 In Rust the classes and styles by part are `TextViewClasses` and `TextViewStyles`; a Rust view usually styles the

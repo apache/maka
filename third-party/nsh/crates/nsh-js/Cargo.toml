@@ -19,6 +19,10 @@ zlib = ["quickjs-jit-stdlib/zlib", "quickjs-jit-stdlib/zlib-zstd"]
 # The standard module `crypto` and its globals (`crypto`, `Crypto`,
 # `SubtleCrypto`, `CryptoKey`): hashes, random values, Web Crypto.
 crypto = ["quickjs-jit-stdlib/crypto"]
+# The global `WebSocket` on native hosts (tokio-tungstenite, rustls). Without
+# it, and with no host transport, the constructor throws
+# ERR_FEATURE_UNAVAILABLE_ON_PLATFORM.
+websocket = ["dep:tokio-tungstenite", "dep:rustls", "dep:webpki-roots", "dep:futures-util"]
 
 [dependencies]
 serde_json.workspace = true
@@ -40,12 +44,12 @@ quickjs-jit-stdlib = { workspace = true, features = ["url"] }
 # The heap's allocator: the system's `malloc` (as QuickJS's own).
 libc.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "time", "net", "sync", "io-util", "macros"] }
-futures-util.workspace = true
-tokio-tungstenite.workspace = true
+futures-util = { workspace = true, optional = true }
+tokio-tungstenite = { workspace = true, optional = true }
 # The global `WebSocket`'s TLS: its own crypto provider (AWS-LC), since the
 # runner of an app that never imports `websocket` selects none.
-rustls.workspace = true
-webpki-roots.workspace = true
+rustls = { workspace = true, optional = true }
+webpki-roots = { workspace = true, optional = true }
 
 # The browser uses the same QuickJS and portable standard library.
 [target.'cfg(target_arch = "wasm32")'.dependencies]

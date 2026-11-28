@@ -37,12 +37,10 @@ covers [props] SplitView.detail
 covers [props] SplitView.columnVisibility
 # mod-clipboard-android
 tap id:case-mod-clipboard-android
-# the clipboard carries text: image writes and reads reject, hasImage is no.
+# the clipboard carries images (content: URIs): the write reaches the platform.
 expect Write: not called
 tap id:paste
-expect Write: rejected ERR_FEATURE_UNAVAILABLE_ON_PLATFORM
-expect Read: rejected ERR_FEATURE_UNAVAILABLE_ON_PLATFORM
-expect Has: ok false
+expect Write: ok undefined
 covers [nsh] Clipboard
 # props-platform-android
 tap id:case-props-platform-android

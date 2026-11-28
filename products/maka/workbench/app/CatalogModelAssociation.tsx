@@ -27,13 +27,15 @@ import { tr } from './locale';
 import { errorText, renderText } from './text';
 import { SettingsButton, SettingsRow } from './SettingsPage';
 import {
-  C,
   bodyTextStyle,
+  C,
   captionTextStyle,
-  controlStyle,
-  controlHoverStyle,
-  controlFocusStyle,
   controlDisabledStyle,
+  controlFocusStyle,
+  controlHoverStyle,
+  controlStyle,
+  lineWidth,
+  radius,
 } from './ui';
 
 type CatalogModel = ServiceMethods['settings']['catalogModels']['output']['models'][number];
@@ -170,9 +172,9 @@ function CatalogModelPicker(props: {
           height: 32,
           backgroundColor: C.background,
           paddingHorizontal: 12,
-          borderWidth: 1,
+          borderWidth: lineWidth(),
           borderColor: C.line,
-          borderRadius: 8,
+          borderRadius: radius(8),
           ...captionTextStyle,
         }}
         focusStyle={{ borderColor: C.accent }}
@@ -209,7 +211,7 @@ function CatalogModelPicker(props: {
             disabled={props.settings.busy()}
             onPress={inputAction(choose, item().reference)}
             style={{
-              ...controlStyle,
+              ...controlStyle(),
               height: 64,
               gap: 4,
               justifyContent: 'center',

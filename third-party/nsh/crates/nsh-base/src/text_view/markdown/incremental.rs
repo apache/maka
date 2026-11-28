@@ -84,7 +84,7 @@ use markdown::mdast::Node;
 use nsh_core::element::SharedString;
 
 use super::{
-    Converter, Tree, latex, matching_close, parse_whole,
+    Converter, Tree, is_element, latex, matching_close, parse_whole_in,
     streaming::{blank_lines, repair_tail},
     tree, unclosed_element,
 };
@@ -92,6 +92,7 @@ use crate::text_view::{
     Parser,
     common::Slugger,
     document::{Block, Document, Footnote},
+    extension::ConversionId,
 };
 
 /// A block of a document, shared by the documents it is in. Two of the same
@@ -200,10 +201,12 @@ impl Incremental {
     }
 
     /// [`Self::parse`], a long text read `step` bytes of lines at a time.
+    /// It is one conversion for plugins, whatever parts it is read in.
     fn parse_in_steps(&mut self, parser: &Parser, source: &SharedString, step: usize) -> Parsed {
+        let conversion = ConversionId::next();
         if !incremental(parser) {
             self.clear();
-            return parse_whole(parser, source).into();
+            return parse_whole_in(parser, source, conversion).into();
         }
         let text = if source.contains('\r') {
             source.replace("\r\n", "\n").replace('\r', "\n").into()
@@ -230,12 +233,13 @@ impl Incremental {
             .then(|| super::prepare(parser, super::Source::original(&self.text)));
         let whole = whole.as_ref();
         if !self.prefix.whole {
-            self.prefix.advance(parser, &self.text, whole, read, step);
-            if let Some(parsed) = self.prefix.read(parser, &self.text, whole) {
+            self.prefix
+                .advance(parser, conversion, &self.text, whole, read, step);
+            if let Some(parsed) = self.prefix.read(parser, conversion, &self.text, whole) {
                 return parsed;
             }
         }
-        parse_whole(parser, &self.text).into()
+        parse_whole_in(parser, &self.text, conversion).into()
     }
 
     /// Forgets the text: the next one is read whole.
@@ -256,8 +260,8 @@ impl Incremental {
 const STEP: usize = 32 * 1024;
 
 /// Markdown `source` read with `parser` a [`STEP`] of lines at a time,
-/// when it is long: the document [`parse_whole`] makes of it. `None` when
-/// it is read whole.
+/// when it is long: the document [`super::parse_whole`] makes of it.
+/// `None` when it is read whole.
 pub(super) fn parse_long(parser: &Parser, source: &str) -> Option<Document> {
     parse_long_in_steps(parser, source, STEP)
 }
@@ -298,10 +302,11 @@ impl Prefix {
     fn read(
         &mut self,
         parser: &Parser,
+        conversion: ConversionId,
         text: &str,
         whole: Option<&super::Source>,
     ) -> Option<Parsed> {
-        let open = match self.settle(parser, text, whole, true)? {
+        let open = match self.settle(parser, conversion, text, whole, true)? {
             Read::Whole(document) => return Some(document.into()),
             Read::Open(open) => open,
         };
@@ -322,6 +327,7 @@ impl Prefix {
     fn advance(
         &mut self,
         parser: &Parser,
+        conversion: ConversionId,
         text: &str,
         whole: Option<&super::Source>,
         read: usize,
@@ -344,7 +350,7 @@ impl Prefix {
             }
             cut = next;
             let end = self.end;
-            match self.settle(parser, &text[..cut], whole, false) {
+            match self.settle(parser, conversion, &text[..cut], whole, false) {
                 Some(Read::Open(_)) => {}
                 // What is read whole is the last read's.
                 Some(Read::Whole(_)) | None => return,
@@ -368,6 +374,7 @@ impl Prefix {
     fn settle(
         &mut self,
         parser: &Parser,
+        conversion: ConversionId,
         text: &str,
         whole: Option<&super::Source>,
         open: bool,
@@ -379,7 +386,7 @@ impl Prefix {
         // dropped, so the text is read from its start at once.
         if !first && may_define(tail) {
             *self = Self::default();
-            return self.settle(parser, text, whole, open);
+            return self.settle(parser, conversion, text, whole, open);
         }
         // Where the lines after a blank line start, for the repair's scan.
         let mut blanks = Vec::new();
@@ -410,7 +417,7 @@ impl Prefix {
         // The repair can make one (`[docs][: /guide`, its open `[` removed).
         if !first && matches!(source, Cow::Owned(_)) && may_define(&source) {
             *self = Self::default();
-            return self.settle(parser, text, whole, open);
+            return self.settle(parser, conversion, text, whole, open);
         }
         let mut tree = tree(parser, super::Source::original(&source), first);
         let nodes = tree.root.children().map_or(&[][..], Vec::as_slice);
@@ -432,9 +439,13 @@ impl Prefix {
                 }
                 // The tree is the whole text's, definitions included: it
                 // is the document, with no second parse.
-                let mut converter =
-                    Converter::new(parser, &tree.source, std::slice::from_ref(&tree), false);
-
+                let mut converter = Converter::new(
+                    parser,
+                    &tree.source,
+                    std::slice::from_ref(&tree),
+                    false,
+                    conversion,
+                );
                 let mut blocks = Vec::new();
                 converter.blocks_into(nodes, &mut blocks);
                 let (footnotes, _) = converter.footnotes();
@@ -482,7 +493,13 @@ impl Prefix {
             }
         };
         let nodes = tree.root.children().map_or(&[][..], Vec::as_slice);
-        let mut converter = Converter::new(parser, converted, std::slice::from_ref(&tree), false);
+        let mut converter = Converter::new(
+            parser,
+            converted,
+            std::slice::from_ref(&tree),
+            false,
+            conversion,
+        );
         converter.slugger = std::mem::take(&mut self.slugger);
         let mut done = Vec::new();
         converter.blocks_into(&nodes[..count], &mut done);
@@ -761,8 +778,6 @@ fn defines(node: &Node) -> bool {
 /// element opened by a tag on lines of its own is closed by a later tag
 /// (`Converter::html_element`), and holds the nodes between them.
 fn splits(parser: &Parser, nodes: &[Node]) -> Vec<bool> {
-    let empty = super::Source::default();
-    let converter = Converter::new(parser, &empty, &[], false);
     let mut splits = vec![false; nodes.len() + 1];
     // The first count after every element opened so far.
     let mut closed = 0;
@@ -770,7 +785,7 @@ fn splits(parser: &Parser, nodes: &[Node]) -> Vec<bool> {
         splits[i] = i >= closed;
         if parser.options.html
             && let Node::Html(html) = node
-            && let Some(name) = unclosed_element(&html.value).filter(|n| converter.is_element(n))
+            && let Some(name) = unclosed_element(&html.value).filter(|n| is_element(parser, n))
         {
             match matching_close(nodes, i, name) {
                 Some(close) => closed = closed.max(close + 1),
@@ -785,7 +800,7 @@ fn splits(parser: &Parser, nodes: &[Node]) -> Vec<bool> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{super::parse_whole, *};
     use crate::text_view::{
         CustomNode, Inline, MarkdownExtension, MarkdownOptions, MarkdownPlugin, ParseContext, mdast,
     };
@@ -1054,7 +1069,7 @@ mod tests {
             let parser = parser(streaming);
             for source in [DEFINITIONS, FOOTNOTES, nested] {
                 let read = Prefix::default()
-                    .read(&parser, source, None)
+                    .read(&parser, ConversionId::next(), source, None)
                     .expect("the tree read from the start can be converted");
                 assert_eq!(read.document(), parser.markdown(source));
                 let mut incremental = Incremental::default();
@@ -1294,6 +1309,64 @@ mod tests {
             steps_with(|p| p, &long)
         );
         assert!(steps_with(|p| p, &long) > 3 * source.len());
+    }
+
+    /// A text read in parts is one conversion for plugins, also when a
+    /// definition has it read again from its start; each text a view reads
+    /// is another.
+    #[test]
+    fn conversions_of_texts_read_in_parts() {
+        use std::sync::{Arc, Mutex};
+
+        use crate::text_view::ConversionId;
+
+        #[derive(Clone, Default)]
+        struct Ids(Arc<Mutex<Vec<ConversionId>>>);
+        impl MarkdownPlugin for Ids {
+            fn name(&self) -> &str {
+                "ids"
+            }
+            fn block(&self, _: &mdast::Node, cx: &mut ParseContext<'_>) -> Option<Block> {
+                self.0.lock().unwrap().push(cx.conversion_id());
+                None
+            }
+            fn inline(&self, _: &mdast::Node, cx: &mut ParseContext<'_>) -> Option<Inline> {
+                self.0.lock().unwrap().push(cx.conversion_id());
+                None
+            }
+        }
+        let ids = Ids::default();
+        let parser = parser(true).plugin(ids.clone());
+        let take = || std::mem::take(&mut *ids.0.lock().unwrap());
+        let long = "Some *text* here.\n\n".repeat(20);
+        // A definition the guess misses (`may_define`): found in a tail,
+        // after parts were read, it has the text read again whole.
+        let defined = format!("See [docs].\n\n{long}    ```\n\n[docs]: /guide\n\nEnd.\n");
+        for (text, again) in [(&long, false), (&defined, true)] {
+            parse_whole(&parser, text);
+            let once = take().len();
+            let mut incremental = Incremental::default();
+            incremental.parse_in_steps(&parser, &shared(text), 40);
+            let seen = take();
+            if again {
+                assert!(
+                    seen.len() > once,
+                    "{} callbacks, {once} in one parse",
+                    seen.len()
+                );
+            } else {
+                assert!(incremental.boundary() > 0, "{text:?}");
+            }
+            assert!(seen.iter().all(|id| *id == seen[0]), "{text:?}");
+        }
+        // A view's texts, each read once.
+        let mut incremental = Incremental::default();
+        incremental.parse(&parser, &shared(&long[..40]));
+        let first = take();
+        incremental.parse(&parser, &shared(&long));
+        let second = take();
+        assert_ne!(first[0], second[0]);
+        assert!(second.iter().all(|id| *id == second[0]));
     }
 
     /// A text that is not the last one with more at its end, or another

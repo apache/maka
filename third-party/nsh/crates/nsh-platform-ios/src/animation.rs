@@ -110,8 +110,8 @@ impl Animator {
     }
 }
 
-/// A paused display link calling `frame:` on `target`, unpaused for one
-/// frame when JS calls `requestAnimationFrame`.
+/// A paused display link calling `frame:` on `target` for JS frame requests
+/// and for rechecking a backdrop blocked by a finite native animation.
 pub(crate) fn frame_link(target: &EventTarget) -> Retained<CADisplayLink> {
     // SAFETY: `frame:` is implemented by `EventTarget`, which outlives the
     // link (the mounter invalidates it when dropped).

@@ -23,7 +23,7 @@ use super::{
 use crate::{
     NodeId, Op, Tag, TextEngine,
     element::{
-        Attrs, BoundListConfig, ElNode, ListConfig, SharedString, StyleRefinement,
+        Attrs, BoundListConfig, ElNode, ListConfig, Owner, SharedString, StyleRefinement,
         builder::BoundAttrs,
         flow::{Region, RegionElement},
         reactive::render_effect,
@@ -56,7 +56,11 @@ pub(super) enum Patch {
         elements: Vec<RegionElement>,
     },
     /// A list's layout, its bound parts read again.
-    Layout { list: NodeId, config: ListConfig },
+    Layout {
+        list: NodeId,
+        binding: Owner,
+        config: ListConfig,
+    },
     /// The styles a view gives a nested component (its host), the bound
     /// parts read again.
     Nested {
@@ -69,6 +73,7 @@ pub(super) enum Patch {
     /// A list's rows, its bound count or keys read again.
     Rows {
         list: NodeId,
+        binding: Owner,
         count: u32,
         keys: Option<Rc<[u64]>>,
     },
@@ -328,7 +333,11 @@ impl<M: TextEngine> Core<M> {
                 part(&mut config);
             }
             runs.run(config, |config| {
-                patches.borrow_mut().push(Patch::Layout { list, config });
+                patches.borrow_mut().push(Patch::Layout {
+                    list,
+                    binding: Owner::current(),
+                    config,
+                });
             });
         });
         let config = first.take().unwrap_or(base);
@@ -510,7 +519,17 @@ impl<M: TextEngine> Core<M> {
         }
         match patch {
             Patch::Region { region, elements } => self.reconcile_region(region, elements),
-            Patch::Rows { list, count, keys } => self.set_list_rows(list, count, keys),
+            Patch::Rows {
+                list,
+                binding,
+                count,
+                keys,
+            } => {
+                // The list node can outlive the binding that queued these rows.
+                if binding.is_live() {
+                    self.set_list_rows(list, count, keys);
+                }
+            }
             Patch::NestedAttrs { host, attrs } => {
                 if self.is_host(host) {
                     self.set_given(host, *attrs);
@@ -522,7 +541,14 @@ impl<M: TextEngine> Core<M> {
                     self.set_user(host, user);
                 }
             }
-            Patch::Layout { list, config } => {
+            Patch::Layout {
+                list,
+                binding,
+                config,
+            } => {
+                if !binding.is_live() {
+                    return;
+                }
                 let Some(old) = self.components.list_layouts.get_mut(&list) else {
                     return;
                 };

@@ -621,6 +621,20 @@ fn utf16_len(s: &str) -> u32 {
     s.chars().map(|c| c.len_utf16() as u32).sum()
 }
 
+/// Appends `s` to `out` with the characters HTML gives a meaning (`&`, `<`,
+/// `>`, `"`) escaped: text or an attribute's value of a copy's `text/html`.
+pub(crate) fn escape_html(out: &mut String, s: &str) {
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            c => out.push(c),
+        }
+    }
+}
+
 /// The byte offset in `s` of the UTF-16 offset `to` and the UTF-16 offset
 /// it is at, counting on from byte `byte`, which is at UTF-16 offset `at`:
 /// the end of `s` past it, the start of a character whose surrogate pair
@@ -831,6 +845,107 @@ impl AttributedText {
             }
         });
         out
+    }
+
+    /// The characters of the UTF-16 range `range` as an HTML fragment, for
+    /// the `text/html` flavor of a copy: the characters
+    /// [`Self::copied_text`] gives, escaped, with bold runs (weight 600 or
+    /// more) in `<b>`, italic ones in `<i>`, links with an `href`
+    /// ([`Self::link_hrefs`]) in `<a href>` and line breaks as `<br>`.
+    /// The second value is whether any run was bold, italic or a link:
+    /// without one the fragment is the plain text, escaped. Hidden, as
+    /// `link_hrefs` is: only the platforms' copy reads it.
+    #[doc(hidden)]
+    pub fn copied_html(&self, range: Range<u32>) -> (String, bool) {
+        #[derive(Clone, Copy, PartialEq)]
+        struct Format<'a> {
+            href: Option<&'a str>,
+            bold: bool,
+            italic: bool,
+        }
+        fn close(out: &mut String, f: Format<'_>) {
+            if f.italic {
+                out.push_str("</i>");
+            }
+            if f.bold {
+                out.push_str("</b>");
+            }
+            if f.href.is_some() {
+                out.push_str("</a>");
+            }
+        }
+        fn open(out: &mut String, f: Format<'_>) {
+            if let Some(href) = f.href {
+                out.push_str("<a href=\"");
+                escape_html(out, href);
+                out.push_str("\">");
+            }
+            if f.bold {
+                out.push_str("<b>");
+            }
+            if f.italic {
+                out.push_str("<i>");
+            }
+        }
+        let plain = Format {
+            href: None,
+            bold: false,
+            italic: false,
+        };
+        let mut out = String::new();
+        let mut formatted = false;
+        let mut current = plain;
+        let mut copies = self.copy_texts.iter().peekable();
+        let mut piece = String::new();
+        self.each_shown(range, |s, mut at| {
+            for c in s.chars() {
+                let format = match self.span_at(at) {
+                    Some(span) => Format {
+                        href: self
+                            .links
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, l)| at >= l.start && at < l.end)
+                            .filter_map(|(n, l)| Some((l.end - l.start, self.link_href(n)?)))
+                            .min_by_key(|&(len, _)| len)
+                            .map(|(_, href)| href),
+                        bold: span.style.font_weight >= 600,
+                        italic: span.style.italic,
+                    },
+                    None => plain,
+                };
+                piece.clear();
+                if c == ATTACHMENT_CHAR {
+                    while copies.next_if(|t| t.index < at).is_some() {}
+                    if let Some(copy) = copies.next_if(|t| t.index == at) {
+                        piece.push_str(&copy.text);
+                    }
+                } else {
+                    piece.push(c);
+                }
+                at += c.len_utf16() as u32;
+                if piece.is_empty() {
+                    continue;
+                }
+                if format != current {
+                    close(&mut out, current);
+                    open(&mut out, format);
+                    current = format;
+                    formatted |= format != plain;
+                }
+                for line in piece.split_inclusive('\n') {
+                    match line.strip_suffix('\n') {
+                        Some(line) => {
+                            escape_html(&mut out, line);
+                            out.push_str("<br>");
+                        }
+                        None => escape_html(&mut out, line),
+                    }
+                }
+            }
+        });
+        close(&mut out, current);
+        (out, formatted)
     }
 
     /// The characters of the UTF-16 range `range` without attachments'

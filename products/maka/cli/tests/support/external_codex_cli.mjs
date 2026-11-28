@@ -451,14 +451,30 @@ async function acp(id, method, params) {
         throw Error('ACP prompt did not identify the Room and human sender');
       const { sessionId, messageId } = source;
       const history = await codeResult(
-        `text(await tools.SessionRead(${JSON.stringify({
+        `const { transcript } = await tools.SessionRead(${JSON.stringify({
           sessionId,
           messageId,
           anchor: 'before',
-        })}));`,
+        })}); const post = transcript.items[0]; text({ kind: transcript.kind, firstId: post?.id, sequence: post?.sequence });`,
       );
-      if (history.transcript?.kind !== 'room' || history.transcript.items[0]?.id !== source.replyTo)
+      if (history.kind !== 'room' || history.firstId !== source.replyTo)
         throw Error('ACP agent did not read the earlier Room post');
+      // Read the earlier post at its own watermark so it is in the bounded Room transcript.
+      const path = `maka://session/${sessionId}?through=${history.sequence}`;
+      const room = await codeResult(`
+        let request = ${JSON.stringify({ path })};
+        let pages = 0, content = '';
+        do {
+          const page = await tools.Read(request);
+          if (page.kind !== 'completed') throw Error(page.message);
+          pages++;
+          content += page.value.content;
+          request = page.value.next;
+        } while (request);
+        text({ pages, found: content.includes('The patch is ready.') });
+      `);
+      if (room.pages < 2 || !room.found)
+        throw Error(`Paged Read did not return the original Room post: ${JSON.stringify(room)}`);
       const posted = await codeResult(
         `text(await tools.SessionSend(${JSON.stringify({
           sessionId,

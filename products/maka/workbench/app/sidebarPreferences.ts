@@ -101,9 +101,10 @@ function createSidebarPreferencesOwner() {
       pinnedFeatures.set(toggleSidebarFeature(pinnedFeatures(), feature));
       persist();
     },
-    toggleSortMode() {
+    setSortMode(mode: SidebarSortMode) {
+      if (mode === sortMode()) return;
       dirty.add('sortMode');
-      sortMode.set(sortMode() === 'project' ? 'time' : 'project');
+      sortMode.set(mode);
       persist();
     },
     whenIdle: () => saving ?? Promise.resolve(),
@@ -132,6 +133,8 @@ function createSidebarPreferencesOwner() {
 
 // Independent UI bundles share the window owner, including its in-flight reads and writes.
 const OWNER = Symbol.for('maka.sidebarPreferences');
-const shared = globalThis as { [OWNER]?: ReturnType<typeof createSidebarPreferencesOwner> };
+const shared = globalThis as {
+  [OWNER]?: ReturnType<typeof createSidebarPreferencesOwner>;
+};
 export const sidebarPreferences = (shared[OWNER] ??= createSidebarPreferencesOwner());
 export const initializeSidebarPreferences = sidebarPreferences.initialize;

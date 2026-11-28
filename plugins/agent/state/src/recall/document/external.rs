@@ -186,7 +186,14 @@ impl Body {
             }
         }
     }
-    fn projection(&mut self, raw: &RawValue) -> Result<(), StoreError> {
+    fn projection(
+        &mut self,
+        raw: &RawValue,
+        output: Option<&RawValue>,
+        resolve_content: &mut dyn FnMut(
+            &maka_agent_facts::durable::ContentRef,
+        ) -> Result<Vec<u8>, StoreError>,
+    ) -> Result<(), StoreError> {
         let [kind, string, value, parts] = fields(raw, ["kind", "text", "value", "parts"])?;
         let kind = required(kind)?;
         let start = self.begin();
@@ -194,6 +201,49 @@ impl Body {
             self.string(required(string)?)?;
         } else if equals(kind, "json")? {
             self.json(required(value)?, start)?;
+        } else if equals(kind, "from_output")? {
+            let [format, value] = fields(required(output)?, ["format", "value"])?;
+            let format = required(format)?;
+            let value = required(value)?;
+            if equals(format, "json")? {
+                self.json(value, start)?;
+            } else if equals(format, "text")? {
+                self.string(value)?;
+            } else if equals(format, "cell")? {
+                let [observation, state] = fields(value, ["observation", "state"])?;
+                let obs: maka_agent_facts::cells::CellObservation = match observation {
+                    Some(obs_raw) if obs_raw.get() != "null" => {
+                        serde_json::from_str(obs_raw.get())?
+                    }
+                    _ => {
+                        let [state_kind, result] = fields(required(state)?, ["kind", "result"])?;
+                        if !equals(required(state_kind)?, "completed")? {
+                            return Err(invalid(
+                                "shared cell projection requires a completed cell",
+                            ));
+                        }
+                        let reference: maka_agent_facts::durable::ContentRef =
+                            serde_json::from_str(required(result)?.get())?;
+                        let bytes = resolve_content(&reference)?;
+                        serde_json::from_slice(&bytes)?
+                    }
+                };
+                let text = maka_agent_facts::tool_output::completed_cell_text_projection(&obs)
+                    .ok_or_else(|| {
+                        invalid("shared cell projection requires a text-only completed cell")
+                    })?;
+                self.bytes.extend_from_slice(text.as_bytes());
+            } else if equals(format, "operation")? {
+                let [receipt] = fields(value, ["receipt"])?;
+                let [outcome] = fields(required(receipt)?, ["outcome"])?;
+                let [result] = fields(required(outcome)?, ["result"])?;
+                let [inner] = fields(required(result)?, ["value"])?;
+                self.json(required(inner)?, start)?;
+            } else {
+                return Err(invalid(
+                    "shared projection requires a returned JSON, text, or cell value",
+                ));
+            }
         } else if equals(kind, "content")? {
             let mut first = true;
             values(required(parts)?, |part| {
@@ -255,13 +305,46 @@ pub(in crate::recall) fn prepared(
     body.end(Field::Arguments, start);
     body.finish(message)
 }
-pub(in crate::recall) fn returned(bytes: &[u8], message: &mut Message) -> Result<(), StoreError> {
+pub(in crate::recall) fn returned(
+    bytes: &[u8],
+    message: &mut Message,
+    resolve_content: &mut dyn FnMut(
+        &maka_agent_facts::durable::ContentRef,
+    ) -> Result<Vec<u8>, StoreError>,
+) -> Result<
+    Option<(
+        maka_agent_facts::cells::CellId,
+        maka_agent_facts::durable::ContentRef,
+    )>,
+    StoreError,
+> {
     let raw: &RawValue = serde_json::from_slice(bytes)?;
-    let [kind, projection, diagnostic] = fields(raw, ["kind", "projection", "diagnostic"])?;
+    let [kind, projection, diagnostic, output] =
+        fields(raw, ["kind", "projection", "diagnostic", "output"])?;
     let kind = required(kind)?;
     let mut body = Body::default();
+    let mut completed_cell = None;
     if equals(kind, "output")? {
-        body.projection(required(projection)?)?;
+        body.projection(required(projection)?, output, resolve_content)?;
+        if let Some(output) = output {
+            let [format, value] = fields(output, ["format", "value"])?;
+            if let (Some(format), Some(value)) = (format, value)
+                && equals(format, "cell")?
+            {
+                let [cell, state] = fields(value, ["cell", "state"])?;
+                if let (Some(cell), Some(state)) = (cell, state) {
+                    let [state_kind, result] = fields(state, ["kind", "result"])?;
+                    if let (Some(state_kind), Some(result)) = (state_kind, result)
+                        && equals(state_kind, "completed")?
+                    {
+                        completed_cell = Some((
+                            serde_json::from_str(cell.get())?,
+                            serde_json::from_str(result.get())?,
+                        ));
+                    }
+                }
+            }
+        }
     } else if equals(kind, "failure")? {
         let start = body.begin();
         body.string(required(diagnostic)?)?;
@@ -269,5 +352,191 @@ pub(in crate::recall) fn returned(bytes: &[u8], message: &mut Message) -> Result
     } else {
         return Err(invalid("unsupported original External return"));
     }
-    body.finish(message)
+    body.finish(message)?;
+    Ok(completed_cell)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::recall::{Message, Role, RowPosition};
+    use maka_agent_facts::durable::FactId;
+    use maka_agent_facts::external_effects::ExternalReturn;
+    use maka_agent_facts::tool_output::{DurableToolProjection, ToolOutput};
+    use serde_json::json;
+
+    fn empty_message() -> Message {
+        Message {
+            fact: FactId::new(),
+            message_id: "m-1".into(),
+            position: RowPosition {
+                source_sequence: 1,
+                item_index: 0,
+            },
+            run: RunId::new(),
+            turn_id: "t-1".into(),
+            timestamp: 0,
+            role: Role::ToolResult,
+            body: String::new(),
+            attachments: vec![],
+            references: vec![],
+            fields: vec![],
+            origin: None,
+        }
+    }
+
+    fn field_spans(message: &Message) -> Vec<(Field, usize, usize, bool)> {
+        message
+            .fields
+            .iter()
+            .map(|span| (span.field, span.start, span.end, span.internal))
+            .collect()
+    }
+
+    #[test]
+    fn returned_indexes_from_output_json_and_operation_identically_to_inline() {
+        let value = json!({"summary": "hello recall", "count": 42});
+
+        let compact = serde_json::to_vec(&ExternalReturn::Output {
+            is_error: false,
+            projection: DurableToolProjection::Json {
+                value: value.clone(),
+            },
+            output: ToolOutput::Json(value.clone()),
+            artifacts: vec![],
+            display_budget_chars: None,
+        })
+        .unwrap();
+        let legacy = serde_json::to_vec(&json!({
+            "kind": "output",
+            "is_error": false,
+            "projection": { "kind": "json", "value": value },
+            "output": { "format": "json", "value": value }
+        }))
+        .unwrap();
+
+        let mut no_lookup =
+            |_: &maka_agent_facts::durable::ContentRef| -> Result<Vec<u8>, StoreError> {
+                Err(invalid("unexpected content lookup"))
+            };
+        let mut msg_compact = empty_message();
+        let mut msg_legacy = empty_message();
+        returned(&compact, &mut msg_compact, &mut no_lookup).unwrap();
+        returned(&legacy, &mut msg_legacy, &mut no_lookup).unwrap();
+        assert_eq!(msg_compact.body, msg_legacy.body);
+        assert_eq!(field_spans(&msg_compact), field_spans(&msg_legacy));
+        assert!(msg_compact.body.contains("hello recall"));
+
+        let digest = format!("sha256-{}", "a".repeat(64));
+        let op_reply = maka_plugin_core::operation::OperationReply {
+            reference: maka_plugin_core::operation::RecoveryRef {
+                source: maka_plugin_core::deployment::DeploymentRef {
+                    state_domain: "b".repeat(64),
+                    deployment: uuid::Uuid::new_v4(),
+                    revision: 1,
+                },
+                namespace: maka_plugin_core::composition::InstanceId(vec![uuid::Uuid::new_v4()]),
+                export: "workspace".into(),
+                method: "read".into(),
+                operation: uuid::Uuid::new_v4(),
+                fingerprint: digest.clone(),
+                contract: maka_plugin_core::operation::RecoveryContract {
+                    name: "maka.workspace.Read".into(),
+                    version: 1,
+                    transport: maka_plugin_core::contract::Transport::Remote,
+                    digest,
+                },
+                recovery: maka_plugin_core::operation::RecoveryProtocol::JournalV1,
+            },
+            receipt: maka_plugin_core::operation::Receipt::Recorded {
+                outcome: maka_plugin_core::operation::OperationOutcome::Returned {
+                    result: maka_plugin_core::operation::OperationResult::Success {
+                        value: value.clone(),
+                    },
+                },
+                cleanup: maka_plugin_core::operation::OperationCleanup::Confirmed,
+            },
+        };
+        let op_compact = serde_json::to_vec(&ExternalReturn::Output {
+            is_error: false,
+            projection: DurableToolProjection::Json {
+                value: value.clone(),
+            },
+            output: ToolOutput::Operation(Box::new(op_reply)),
+            artifacts: vec![],
+            display_budget_chars: None,
+        })
+        .unwrap();
+        let op_wire: serde_json::Value = serde_json::from_slice(&op_compact).unwrap();
+        assert_eq!(
+            op_wire["projection"],
+            json!({"kind": "from_output"}),
+            "real ExternalReturn serializer must emit from_output for matching Operation reply"
+        );
+        let mut msg_op = empty_message();
+        returned(&op_compact, &mut msg_op, &mut no_lookup).unwrap();
+        assert_eq!(msg_op.body, msg_legacy.body);
+        assert_eq!(field_spans(&msg_op), field_spans(&msg_legacy));
+
+        // Text output with matching text projection emits from_output and indexes verbatim.
+        let txt_compact = serde_json::to_vec(&ExternalReturn::Output {
+            is_error: false,
+            projection: DurableToolProjection::Text {
+                text: "plain text needle".into(),
+            },
+            output: ToolOutput::Text("plain text needle".into()),
+            artifacts: vec![],
+            display_budget_chars: None,
+        })
+        .unwrap();
+        let txt_wire: serde_json::Value = serde_json::from_slice(&txt_compact).unwrap();
+        assert_eq!(txt_wire["projection"], json!({"kind": "from_output"}));
+        let mut msg_txt = empty_message();
+        returned(&txt_compact, &mut msg_txt, &mut no_lookup).unwrap();
+        assert_eq!(msg_txt.body, "plain text needle");
+
+        // Stripped Completed cell with from_output resolves via content lookup.
+        let cell_id = maka_agent_facts::cells::CellId::new();
+        let obs = maka_agent_facts::cells::CellObservation::Completed {
+            cell_id,
+            content: vec![maka_agent_facts::cells::CellOutput::Text {
+                text: "cell output line".into(),
+            }],
+            result: json!({"ok": true}),
+        };
+        let obs_bytes = serde_json::to_vec(&obs).unwrap();
+        let expected_cell_text =
+            maka_agent_facts::tool_output::completed_cell_text_projection(&obs).unwrap();
+        let obs_ref = maka_agent_facts::durable::ContentRef {
+            digest: maka_agent_facts::artifact::content_digest(&obs_bytes),
+            bytes: obs_bytes.len() as u64,
+        };
+        let cell_stored = maka_agent_facts::external_effects::StoredExternalReturn::from_output(
+            &ToolOutput::Cell(Box::new(maka_agent_facts::cells::CellReply {
+                cell: cell_id,
+                state: maka_agent_facts::cells::CellReplyState::Completed {
+                    result: obs_ref.clone(),
+                },
+                observation: serde_json::to_value(&obs).unwrap(),
+            })),
+            false,
+            &DurableToolProjection::Text {
+                text: expected_cell_text.clone(),
+            },
+            vec![],
+            None,
+        );
+        let cell_wire_bytes = serde_json::to_vec(&cell_stored).unwrap();
+        let cell_wire: serde_json::Value = serde_json::from_slice(&cell_wire_bytes).unwrap();
+        assert_eq!(cell_wire["projection"], json!({"kind": "from_output"}));
+        assert!(cell_wire["output"]["value"].get("observation").is_none());
+        let mut msg_cell = empty_message();
+        let resolved_cell = returned(&cell_wire_bytes, &mut msg_cell, &mut |r| {
+            assert_eq!(r, &obs_ref);
+            Ok(obs_bytes.clone())
+        })
+        .unwrap();
+        assert_eq!(resolved_cell, Some((cell_id, obs_ref)));
+        assert_eq!(msg_cell.body, expected_cell_text);
+    }
 }

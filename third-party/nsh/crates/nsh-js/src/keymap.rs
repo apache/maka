@@ -18,7 +18,7 @@ use std::{
 
 use nsh_core::{
     EventKind, NodeId, Op, Prop, ROOT_ID,
-    keymap::{KeyBinding, Keystroke, When, apple_keys},
+    keymap::{KeyBinding, Keystroke, OverFocused, When, apple_keys},
     platform::Idiom,
 };
 use rquickjs::qjs;
@@ -48,8 +48,8 @@ struct Options {
     fallback: bool,
     within: Option<NodeId>,
     for_focus: bool,
-    /// It comes before the views' bindings of its keystroke.
-    over_focused: bool,
+    /// What it takes from the focused control (`overFocused`).
+    over_focused: OverFocused,
     /// Where it fires; `None`: the current window, or every window in the
     /// app root.
     scope: Option<Scope>,
@@ -132,7 +132,7 @@ fn make(cx: Ctx) -> Raw {
 
 /// The options: `when` (`undefined`, `"always"` or `"notEditing"`),
 /// `repeat`, `passThrough`, `fallback`, `within`, `forFocus`, `overFocused`
-/// and `scope` (`"app"` or `"window"`).
+/// (a boolean or `"pointer"`) and `scope` (`"app"` or `"window"`).
 fn parse_options(cx: Ctx, options: Raw) -> R<Options> {
     if js::is_nullish(options) {
         return Ok(Options::default());
@@ -155,7 +155,27 @@ fn parse_options(cx: Ctx, options: Raw) -> R<Options> {
         .then(|| scoped_node(cx, node.raw(), "keymap.bind within"))
         .transpose()?;
     let for_focus = js::to_bool(cx, js::get(cx, options, "forFocus")?.raw());
-    let over_focused = js::to_bool(cx, js::get(cx, options, "overFocused")?.raw());
+    let over = js::get(cx, options, "overFocused")?;
+    // SAFETY: an inline tag check.
+    let over_focused = if !unsafe { qjs::JS_IsString(over.raw()) } {
+        if js::to_bool(cx, over.raw()) {
+            OverFocused::Always
+        } else {
+            OverFocused::Never
+        }
+    } else {
+        match js::to_string(cx, over.raw())?.as_str() {
+            "pointer" => OverFocused::Pointer,
+            other => {
+                return Err(type_error(
+                    cx,
+                    &format!(
+                        "keymap.bind: overFocused must be a boolean or \"pointer\", not {other:?}"
+                    ),
+                ));
+            }
+        }
+    };
     let scope = js::get(cx, options, "scope")?;
     let scope = if scope.is_undefined() {
         None
@@ -441,13 +461,27 @@ pub(crate) const TYPES: &str = r#"export interface KeyBindingOptions {
    * focus (`onFocus`) and remove it as the focus leaves (`onBlur`): a tile
    * whose Space flips its switch and whose Return opens it. */
   forFocus?: boolean;
-  /** Come before the bindings of the views (default false: a focused
-   * component's own binding of the keystroke wins over the app's). Take a
-   * key a focused component binds itself, as a query editor's mod+enter
-   * over the editor's insert-line-below: bind it while that view has the
-   * focus (`onFocus`) and remove it as the focus leaves (`onBlur`), so the
-   * component keeps the key elsewhere. */
-  overFocused?: boolean;
+  /** What the binding takes from the control with the keyboard focus
+   * (default false: a focused component's own binding of the keystroke and
+   * its press win over the app's).
+   *
+   * `true`: come before the bindings of the views, to take a key a focused
+   * component binds itself, as a query editor's mod+enter over the editor's
+   * insert-line-below: bind it while that view has the focus (`onFocus`)
+   * and remove it as the focus leaves (`onBlur`), so the component keeps
+   * the key elsewhere.
+   *
+   * `"pointer"`: take Return and Space from a control that a pointer gave
+   * the keyboard focus. A press can focus the control it lands on (on
+   * Windows, as native buttons do), and a popup a press used gives the
+   * focus back to its trigger (except on macOS and iOS, where a press
+   * leaves the focus where it was): with this, the binding fires instead
+   * of pressing that control again. A control the keyboard focused (Tab,
+   * the arrows) still takes them, and text inputs keep their keys as
+   * `when` says. A media player's Space plays and pauses after a click on
+   * Mute: `keymap.bind("space", toggle, { when: "notEditing", overFocused:
+   * "pointer" })`. */
+  overFocused?: boolean | "pointer";
   /** Where the binding fires. By default it fires in the window it is bound
    * in (a component inside `<Window>`), and in every window when it is bound
    * in the app root. `"app"`: every window, even when bound inside one.

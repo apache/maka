@@ -61,6 +61,21 @@ impl Target {
         }
     }
 
+    /// The operating system the app runs on, as `platform.os` names it:
+    /// Mac Catalyst's is iOS, a GPUI or terminal host's this machine's.
+    pub(crate) fn os(self) -> nsh_core::platform::Os {
+        use nsh_core::platform::Os;
+        match self {
+            Target::Catalyst | Target::Ios => Os::Ios,
+            Target::Android => Os::Android,
+            Target::Linux => Os::Linux,
+            Target::Macos => Os::MacOs,
+            Target::Windows => Os::Windows,
+            Target::Web => Os::Web,
+            Target::Gpui | Target::Tui => Target::native().os(),
+        }
+    }
+
     pub(crate) fn platform(self) -> crate::runtime::Platform {
         match self {
             Target::Catalyst => crate::runtime::Platform::MacCatalyst,
@@ -88,6 +103,9 @@ pub(crate) struct HostFlags {
     pub(crate) fps: bool,
     /// Terminal Cell dimensions, overriding nsh.json.
     pub(crate) points_per_cell: Option<String>,
+    /// The code signing identity the macOS host is signed with (`--sign`,
+    /// as `nsh package` takes it); `None`: the host as built, signed ad hoc.
+    pub(crate) sign: Option<String>,
 }
 
 /// The host window's own options: the desktop hosts take the size
@@ -196,9 +214,13 @@ pub(crate) fn run(
         trace,
         fps,
         points_per_cell,
+        sign,
     } = flags;
     if points_per_cell.is_some() && target != Target::Tui {
         bail!("--points-per-cell needs --target tui");
+    }
+    if sign.is_some() && target != Target::Macos {
+        bail!("--sign needs --target macos (the other hosts are signed ad hoc)");
     }
     if fps
         && !matches!(
@@ -236,12 +258,13 @@ pub(crate) fn run(
                 trace,
                 fps,
                 points_per_cell,
+                sign: None,
             },
             &work,
         );
     }
     if crate::rust_app::is_root(entry) {
-        return run_rust_app(entry, listen, target, device, &work);
+        return run_rust_app(entry, listen, target, device, &work, sign.as_deref());
     }
     if target == Target::Android {
         return run_android(entry, listen, release, limits, &work, trace, device);
@@ -294,11 +317,13 @@ pub(crate) fn run(
         // Run in place: unlike Catalyst's, the GTK host needs no app
         // bundle around it.
         Target::Linux => {
+            let id = crate::package::app_id(entry)?;
+            dev_desktop_entry(&id, &host);
             let mut command = Command::new(&host);
             command.env("NSH_DEV_APP_DIR", work.parent().expect("source directory"));
             command
                 .args(&args)
-                .args(["--app-id", &crate::package::app_id(entry)?])
+                .args(["--app-id", &id])
                 .args(window.args());
             let schemes = crate::package::read_config(entry)?.schemes;
             if !schemes.is_empty() {
@@ -317,6 +342,10 @@ pub(crate) fn run(
             let config = crate::package::read_config(&entry).unwrap_or_default();
             let (app_name, id) = crate::package::name_and_id(&entry, &config);
             let name = window.name.unwrap_or(&app_name);
+            let host = match &sign {
+                Some(identity) => signed_host(&host, &work.join("signed"), identity, &id)?,
+                None => host,
+            };
             let mut command = Command::new(&host);
             command.env("NSH_DEV_APP_DIR", work.parent().expect("source directory"));
             command
@@ -392,6 +421,49 @@ fn run_web(
     session.watch(|| Ok(false))
 }
 
+/// The desktop portal (xdg-desktop-portal 1.19+) only serves an app
+/// outside a sandbox when an `<id>.desktop` entry names it: without one,
+/// global shortcuts (and the portal's other per-app services) are refused
+/// with "App info not found". A package installs its entry; a run in place
+/// gets a hidden one in `$XDG_DATA_HOME/applications`, written once and
+/// left there (`NoDisplay`, so no launcher lists it). An entry the app or
+/// the user installed is never touched.
+fn dev_desktop_entry(id: &str, exec: &Path) {
+    let Some(dir) = std::env::var_os("XDG_DATA_HOME")
+        .filter(|d| !d.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
+    else {
+        return;
+    };
+    if let Err(e) = write_dev_desktop_entry(&dir.join("applications"), id, exec) {
+        ui::warn(format!(
+            "could not write {id}.desktop for the desktop portal ({e}): global shortcuts may not register"
+        ));
+    }
+}
+
+const DEV_DESKTOP_MARK: &str = "X-NSH-Development=true";
+
+fn write_dev_desktop_entry(dir: &Path, id: &str, exec: &Path) -> anyhow::Result<()> {
+    let path = dir.join(format!("{id}.desktop"));
+    if let Ok(existing) = fs::read_to_string(&path)
+        && !existing.contains(DEV_DESKTOP_MARK)
+    {
+        return Ok(());
+    }
+    let entry = format!(
+        "[Desktop Entry]\nType=Application\nName={id}\nExec={}\nStartupWMClass={id}\nTerminal=false\nNoDisplay=true\n{DEV_DESKTOP_MARK}\n",
+        exec.display()
+    );
+    if fs::read_to_string(&path).ok().as_deref() == Some(entry.as_str()) {
+        return Ok(());
+    }
+    fs::create_dir_all(dir)?;
+    fs::write(&path, entry)?;
+    Ok(())
+}
+
 /// Runs a Rust app (`nsh.json` `"root"`): its own runner, with no JS
 /// runtime, mounts its root. Desktops run the debug runner in place (its
 /// output in this terminal), Catalyst in an app bundle, the iOS simulator
@@ -404,6 +476,7 @@ fn run_rust_app(
     target: Target,
     device: Option<&str>,
     work: &Path,
+    sign: Option<&str>,
 ) -> anyhow::Result<()> {
     let app =
         crate::rust_app::current().context("nsh.json: \"root\" needs \"rust\", the app's crate")?;
@@ -449,8 +522,15 @@ fn run_rust_app(
     match target {
         Target::Linux | Target::Macos | Target::Windows => {
             let runner = crate::runtime::file(target.platform(), false)?;
+            let runner = match sign {
+                Some(identity) => signed_host(&runner, &work.join("signed"), identity, &id)?,
+                None => runner,
+            };
             let dir = run.join("run/nsh");
             resources(&dir)?;
+            if target == Target::Linux {
+                dev_desktop_entry(&id, &runner);
+            }
             let mut command = Command::new(&runner);
             command.env("NSH_APP_DIR", &dir);
             if cfg!(target_os = "macos") {
@@ -571,6 +651,7 @@ fn package_for_run(
         run: false,
         device: None,
         asset_url: None,
+        shared_runtime: false,
         development: true,
     })
 }
@@ -626,6 +707,7 @@ fn run_tui(
         trace,
         fps,
         points_per_cell,
+        sign: _,
     } = flags;
     let config = crate::package::read_config(entry)?;
     let cells = points_per_cell
@@ -1057,7 +1139,7 @@ fn package_catalyst(
     let macos = contents.join("MacOS");
     fs::create_dir_all(&macos)?;
     let meta = crate::module_meta::for_dev_host(
-        "aarch64-apple-ios-macabi",
+        crate::runtime::MAC_CATALYST_TRIPLE,
         crate::module_meta::Platform::Ios,
     );
     let strings = dev_host_strings(config, &meta)?;
@@ -1087,7 +1169,7 @@ pub(crate) fn package_ios(
     // translates them anew) is signed again, as a new binary is.
     let plist = app.join("Info.plist");
     let meta = crate::module_meta::for_dev_host(
-        "aarch64-apple-ios-sim",
+        crate::runtime::IOS_SIMULATOR_TRIPLE,
         crate::module_meta::Platform::Ios,
     );
     let strings = dev_host_strings(config, &meta)?;
@@ -1193,6 +1275,97 @@ fn is_stale(src: &Path, dest: &Path) -> anyhow::Result<bool> {
     };
     let src_meta = fs::metadata(src)?;
     Ok(src_meta.len() != dest_meta.len() || src_meta.modified()? > dest_meta.modified()?)
+}
+
+/// The macOS host `host` signed with `identity` (`nsh run --sign`), under
+/// the app's `id` as its code signing identifier, which a package's
+/// executable has too. An ad hoc signature names the binary's hash, new
+/// with every build; one made with a certificate names the identifier and
+/// the certificate, so what macOS grants the app's signature (access to
+/// its keychain items) holds across rebuilds.
+///
+/// The signed host is a copy in `dir`: the host may be an installed nsh's
+/// runtime, which every app runs. It is signed again when the host changes
+/// (Cargo built it anew) or the identity or id does.
+fn signed_host(host: &Path, dir: &Path, identity: &str, id: &str) -> anyhow::Result<PathBuf> {
+    signed_copy(host, dir, &format!("{identity}\n{id}"), |file| {
+        let step = ui::Step::start(format!("signing the development host as {identity}"));
+        let output = Command::new("codesign")
+            .args(dev_host_codesign_args(file, identity, id))
+            .stdout(Stdio::null())
+            .output()
+            .context("run codesign")?;
+        if !output.status.success() {
+            bail!(
+                "codesign failed for {}: {}",
+                host.display(),
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        step.finish();
+        Ok(())
+    })
+}
+
+/// `codesign`'s arguments for the development host. Unlike a package's
+/// ([`crate::package::codesign_macos_args`]) it has no Hardened Runtime,
+/// which would keep debuggers from attaching, and no secure timestamp,
+/// which would ask Apple's server on every rebuild.
+fn dev_host_codesign_args(file: &Path, identity: &str, id: &str) -> Vec<std::ffi::OsString> {
+    let mut args: Vec<std::ffi::OsString> = [
+        "--force",
+        "--sign",
+        identity,
+        "--identifier",
+        id,
+        "--timestamp=none",
+    ]
+    .into_iter()
+    .map(Into::into)
+    .collect();
+    args.push(file.as_os_str().to_owned());
+    args
+}
+
+/// `host` copied into `dir` and signed there by `sign`, unless the copy
+/// there was made from this very build with the same `key` (what it is
+/// signed as). It is signed under a temporary name, then renamed over the
+/// last one, which a host still running maps: the kernel kills a process
+/// whose code changes under it.
+fn signed_copy(
+    host: &Path,
+    dir: &Path,
+    key: &str,
+    sign: impl FnOnce(&Path) -> anyhow::Result<()>,
+) -> anyhow::Result<PathBuf> {
+    let name = host.file_name().context("the host's file name")?;
+    let with_suffix = |suffix: &str| {
+        let mut name = name.to_owned();
+        name.push(suffix);
+        dir.join(name)
+    };
+    let dest = dir.join(name);
+    let stamp_file = with_suffix(".signed");
+    let meta = fs::metadata(host).with_context(|| format!("read {}", host.display()))?;
+    let modified = meta
+        .modified()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let stamp = format!("{key}\n{}\n{modified}\n", meta.len());
+    if dest.exists() && fs::read_to_string(&stamp_file).is_ok_and(|s| s == stamp) {
+        return Ok(dest);
+    }
+    fs::create_dir_all(dir)?;
+    let tmp = with_suffix(".tmp");
+    fs::copy(host, &tmp).with_context(|| format!("copy {}", host.display()))?;
+    if let Err(e) = sign(&tmp) {
+        let _ = fs::remove_file(&tmp);
+        return Err(e);
+    }
+    fs::rename(&tmp, &dest)?;
+    fs::write(&stamp_file, stamp)?;
+    Ok(dest)
 }
 
 pub(crate) fn simctl(args: &[&str]) -> anyhow::Result<String> {
@@ -1580,6 +1753,109 @@ fn info_plist(target: Target) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// `nsh run --sign` signs a copy of the host, once per build of it
+    /// and identity: a run that changed nothing starts the host it signed
+    /// last time, and the host itself (an installed runtime) is untouched.
+    #[test]
+    fn the_signed_host_is_a_copy_signed_once_per_build_and_identity() {
+        let dir = std::env::temp_dir().join(format!("nsh-signed-host-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let host = dir.join("nsh-macos-host");
+        std::fs::write(&host, "build 1").unwrap();
+        let signed = dir.join("signed");
+        let signs = std::cell::Cell::new(0);
+        let sign = |key: &str| {
+            super::signed_copy(&host, &signed, key, |file| {
+                signs.set(signs.get() + 1);
+                let mut text = std::fs::read_to_string(file)?;
+                text.push_str(" signed");
+                std::fs::write(file, text)?;
+                Ok(())
+            })
+            .unwrap()
+        };
+        let copy = sign("A\ncom.example.app");
+        assert_eq!(copy, signed.join("nsh-macos-host"));
+        assert_eq!(std::fs::read_to_string(&copy).unwrap(), "build 1 signed");
+        assert_eq!(std::fs::read_to_string(&host).unwrap(), "build 1");
+        assert_eq!(signs.get(), 1);
+        // Nothing changed: the copy signed last time.
+        sign("A\ncom.example.app");
+        assert_eq!(signs.get(), 1);
+        // Another identity.
+        sign("B\ncom.example.app");
+        assert_eq!(signs.get(), 2);
+        // A new build.
+        std::fs::write(&host, "build 2!").unwrap();
+        sign("B\ncom.example.app");
+        assert_eq!(signs.get(), 3);
+        assert_eq!(std::fs::read_to_string(&copy).unwrap(), "build 2! signed");
+        // A failed signature leaves no copy behind, and the next run tries again.
+        std::fs::write(&host, "build 3!!").unwrap();
+        assert!(
+            super::signed_copy(&host, &signed, "B\ncom.example.app", |_| anyhow::bail!(
+                "no"
+            ))
+            .is_err()
+        );
+        assert!(!signed.join("nsh-macos-host.tmp").exists());
+        sign("B\ncom.example.app");
+        assert_eq!(signs.get(), 4);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Signed under the app's id, with no Hardened Runtime and no secure
+    /// timestamp (a package has both).
+    #[test]
+    fn the_development_host_is_signed_under_the_app_id() {
+        let args = super::dev_host_codesign_args(
+            std::path::Path::new("/w/.nsh/signed/host"),
+            "Apple Development: A (TEAM)",
+            "com.example.app",
+        );
+        assert_eq!(
+            args,
+            [
+                "--force",
+                "--sign",
+                "Apple Development: A (TEAM)",
+                "--identifier",
+                "com.example.app",
+                "--timestamp=none",
+                "/w/.nsh/signed/host",
+            ]
+        );
+    }
+
+    #[test]
+    fn dev_desktop_entry_never_replaces_an_installed_one() {
+        let dir = std::env::temp_dir().join(format!("nsh-dev-desktop-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("com.example.a.desktop");
+        super::write_dev_desktop_entry(&dir, "com.example.a", std::path::Path::new("/x/host"))
+            .unwrap();
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert!(written.contains("NoDisplay=true") && written.contains("Exec=/x/host"));
+        // Rewritten for a new host.
+        super::write_dev_desktop_entry(&dir, "com.example.a", std::path::Path::new("/y/host"))
+            .unwrap();
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("Exec=/y/host")
+        );
+        // The app's installed entry stays.
+        std::fs::write(&path, "[Desktop Entry]\nName=A\n").unwrap();
+        super::write_dev_desktop_entry(&dir, "com.example.a", std::path::Path::new("/y/host"))
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "[Desktop Entry]\nName=A\n"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     use clap::ValueEnum as _;
 
     use super::{
@@ -1743,6 +2019,18 @@ mod tests {
             .copied()
             .collect();
         assert_eq!(network, [Target::Ios, Target::Android, Target::Web]);
+    }
+
+    /// The OS whose nshm a target links (`nsh.json` `"targets"`): Catalyst
+    /// runs the iOS backend, GPUI and the terminal this machine's.
+    #[test]
+    fn targets_run_on_the_os_platform_os_names() {
+        use nsh_core::platform::Os;
+        assert_eq!(Target::Catalyst.os(), Os::Ios);
+        assert_eq!(Target::Ios.os(), Os::Ios);
+        assert_eq!(Target::Web.os(), Os::Web);
+        assert_eq!(Target::Gpui.os(), Target::native().os());
+        assert_eq!(Target::Tui.os(), Target::native().os());
     }
 
     #[test]

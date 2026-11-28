@@ -52,6 +52,22 @@ dist/nsh/runtime/macos/nsh-macos-host --bundle build/bundle.nshc --window-size 1
 
 `nsh test --target macos` 在 macOS 窗口中运行 TSX 应用的测试，有副显示器时窗口开在副显示器上（主屏留给你用；`--display <n>` 可以另选）：测试打开的每个应用都有自己的窗口，尺寸就是测试要求的尺寸，显示器比窗口矮时也一样；步骤用系统的输入在选择器指向的视图上点击、输入和滚动（[测试](./testing-and-trace.md#在真实平台上运行)）。应用在后台运行：窗口照常显示，键盘留在你正在输入的应用里（`--foreground` 让它们成为当前活跃的应用），点击会像在活跃窗口中一样到达应用的视图，隐藏的标题栏下也是如此。
 
+### 为开发宿主签名
+
+`nsh run` 的 macOS 宿主默认是 ad hoc 签名，即 Rust 工具链产出时的样子。macOS 把应用的钥匙串项和它的签名绑定，而 ad hoc
+签名每次构建都会变：应用的 Rust 代码重新编译后，再读取之前保存的钥匙串项时，macOS 会先要求输入钥匙串密码。把你的签名身份
+（即 [`nsh package --sign`](./packaging.md#macos) 使用的那个）传给 `nsh run`，用它给宿主签名：
+
+```sh
+security find-identity -v -p codesigning           # 这台 Mac 上的签名身份
+nsh run --sign "Apple Development: Jane Doe (ABCDE12345)"
+```
+
+宿主随后以应用的 id 和你的证书签名，这个签名在每次构建之间保持不变，应用在重新编译后仍能访问它的钥匙串项。用同一身份签名的
+安装包具有相同的签名要求。`nsh run` 签名的是应用 `.nsh/` 目录里的一份宿主副本，只在宿主重新构建或身份变化时重新签名。
+`codesign` 第一次使用该身份的私钥时，macOS 可能会询问是否允许；选择**始终允许**，之后的重新编译就不会再询问。宿主签名时不启用
+Hardened Runtime，调试器可以附加到它上面；`nsh package --sign` 会为分发加上 Hardened Runtime 和安全时间戳。
+
 ### 性能监视器
 
 `--fps`（Rust 应用在 `run_app` 中用 `AppOptions { fps: true, .. }`，嵌入时用 `AppView::set_fps_monitor(true)`，
@@ -275,6 +291,7 @@ VoiceOver 和 UI 自动化工具将 `Table` 和 `Grid` 读取为 `AXTable`，将
 | Option+Left、Cmd+[、鼠标后退键 | 返回（输入框有焦点时不会：此时 Option+Left 移动光标） |
 | Option / Cmd + 方向键（可加 Shift）；Option+Delete、Cmd+Delete；Ctrl+A / E / K | 在输入框中按词和按行移动、选择和删除，与所有 Mac 应用一致 |
 | Cmd+Z、Shift+Cmd+Z、Cmd+X / C / V / A | 撤销、重做、剪切、复制、粘贴、全选（`masked` 输入框拒绝剪切和复制）；Cmd+A / Cmd+C 选择并复制 可选择的文本 |
+| Shift + 方向键（可加 Option 或 Cmd）；Shift+Home / End | 扩展最后按下的可选择视图的选区：按字符或按行，按词或按段落（Option），到行或视图的开头 / 结尾（Cmd、Home / End）；外围的滚动视图随之滚动 |
 | 方向键；Page Up / Down、Space、Shift+Space、Option+Up / Down；Home / End、Cmd+Up / Down | 滚动有焦点的视图所在或鼠标下方的滚动视图：一行、一页、到开头 / 结尾（输入框有焦点时不滚动） |
 | Cmd+W、Cmd+M、Ctrl+Cmd+F、Cmd+H、Option+Cmd+H、Cmd+Q | 关闭、最小化、全屏、隐藏、隐藏其他、退出（`nsh package` 和 `nsh run` 应用的菜单） |
 | Cmd+R | 重新加载最新的构建（`nsh run`） |

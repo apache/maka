@@ -26,6 +26,7 @@ mod first_poll;
 mod focus;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod fs;
+mod gc_bench;
 mod handle_bench;
 mod host;
 mod host_channel;

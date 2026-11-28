@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use nsh_core::{
     Bounds, EventKind, NodeId, Point, Points,
-    selection::{SelectionModel, SelectionTexts},
+    selection::{KeptRows, SelectionModel, SelectionTexts, marker_of},
 };
 use ratatui_core::{
     buffer::Buffer,
@@ -46,10 +46,21 @@ pub(crate) struct Selection {
     next: Option<Instant>,
     /// The scroll moved under the drag: extend it at `point` once laid out again.
     follow: bool,
-    /// The selectable view and selected text last reported to its
+    /// The selectable view, selected text and ends last reported to its
     /// `onSelectionChange` (kept when the selection clears).
-    reported: Option<(NodeId, String)>,
+    reported: Option<(NodeId, String, Option<Ends>)>,
+    /// The texts of the ends' virtual list rows, kept rendered while
+    /// scrolled away (kept when the selection clears, to release them).
+    kept: KeptRows,
 }
+
+/// A selection's ends as `SelectionModel::ends` gives them: each text's
+/// node and the offset in it, which the core places in list items.
+pub(crate) type Ends = [(u64, u32); 2];
+
+/// An `onSelectionChange` due: the selectable view, the selected text,
+/// where it starts and its ends.
+pub(crate) type Change = (NodeId, String, u32, Option<Ends>);
 
 /// How often a drag held past a scroll view's edge scrolls it, by as many
 /// Cells as the pointer is past the edge.
@@ -58,24 +69,45 @@ const AUTOSCROLL_INTERVAL: Duration = Duration::from_millis(50);
 struct Texts<'a> {
     tree: &'a Mounter,
     geometry: Vec<&'a Geometry>,
+    /// The list marker beside each text (`selection::marker_of`).
+    markers: Vec<Option<String>>,
 }
 
 impl<'a> Texts<'a> {
     fn new(tree: &'a Mounter, geometry: &'a [Geometry], root: NodeId) -> Self {
-        let geometry = geometry
-            .iter()
-            .filter(|g| {
-                crate::keyboard::contains(tree, root, g.id)
-                    && tree.get(g.id).is_some_and(|view| {
-                        view.text.is_some()
-                            && view
-                                .text_content
-                                .as_ref()
-                                .is_some_and(|text| text.selectable != Some(false))
-                    })
-            })
-            .collect();
-        Self { tree, geometry }
+        let mut texts = Vec::new();
+        let mut markers = Vec::new();
+        // The last text left out (`selectable={false}`): maybe the marker
+        // of the next.
+        let mut chrome: Option<(String, Bounds<Points>)> = None;
+        for g in geometry {
+            if !crate::keyboard::contains(tree, root, g.id) {
+                continue;
+            }
+            let Some(text) = tree
+                .get(g.id)
+                .filter(|view| view.text.is_some())
+                .and_then(|view| view.text_content.as_ref())
+            else {
+                continue;
+            };
+            if text.selectable == Some(false) {
+                if let Some(frame) = g.text_frame {
+                    chrome = Some((text.text.to_string(), frame));
+                }
+                continue;
+            }
+            markers.push(
+                g.text_frame
+                    .and_then(|frame| marker_of(chrome.take().as_ref(), frame)),
+            );
+            texts.push(g);
+        }
+        Self {
+            tree,
+            geometry: texts,
+            markers,
+        }
     }
 
     fn layout(&self, i: usize) -> &CellLayout {
@@ -119,6 +151,9 @@ impl SelectionTexts for Texts<'_> {
     }
     fn frame(&self, i: usize) -> Bounds<Points> {
         self.geometry[i].text_frame.expect("text geometry")
+    }
+    fn marker(&self, i: usize) -> Option<&str> {
+        self.markers[i].as_deref()
     }
     fn continues(&self, i: usize) -> bool {
         self.tree
@@ -177,6 +212,7 @@ impl Selection {
     pub(crate) fn clear(&mut self) {
         *self = Self {
             reported: self.reported.take(),
+            kept: std::mem::take(&mut self.kept),
             ..Self::default()
         };
     }
@@ -185,39 +221,50 @@ impl Selection {
     /// text of the selectable view with the selection when it changed, and
     /// `""` for one that lost a non-empty selection (unless it is gone).
     /// `geometry` is the last frame's.
-    pub(crate) fn changes(
-        &mut self,
-        tree: &Mounter,
-        geometry: &[Geometry],
-    ) -> Vec<(NodeId, String, u32)> {
+    pub(crate) fn changes(&mut self, tree: &Mounter, geometry: &[Geometry]) -> Vec<Change> {
         let mut out = Vec::new();
         let current = self.root.filter(|&root| {
             tree.get(root).is_some_and(|view| {
                 view.props.selectable_view && view.events.contains(EventKind::SelectionChange)
             })
         });
-        if let Some((id, text)) = &self.reported
+        if let Some((id, text, _)) = &self.reported
             && Some(*id) != current
         {
             if !text.is_empty() && tree.get(*id).is_some() {
-                out.push((*id, String::new(), 0));
+                out.push((*id, String::new(), 0, None));
             }
             self.reported = None;
         }
         if let Some(root) = current {
-            let (text, start) = if self.model.is_empty() {
-                (String::new(), 0)
+            let (text, start, ends) = if self.model.is_empty() {
+                (String::new(), 0, None)
             } else {
                 let texts = Texts::new(tree, geometry, root);
-                (self.model.text(&texts), self.model.start_offset(&texts))
+                (
+                    self.model.text(&texts),
+                    self.model.start_offset(&texts),
+                    self.model.ends(&texts),
+                )
             };
-            let last = self.reported.as_ref().map_or("", |(_, t)| t.as_str());
-            if text != last {
-                out.push((root, text.clone(), start));
+            let last = self
+                .reported
+                .as_ref()
+                .map_or(("", None), |(_, t, e)| (t.as_str(), *e));
+            if (text.as_str(), ends) != last {
+                out.push((root, text.clone(), start, ends));
             }
-            self.reported = Some((root, text));
+            self.reported = Some((root, text, ends));
         }
         out
+    }
+
+    /// The nodes whose virtual list rows to keep rendered
+    /// (`EngineControl::keep_rendered`) when they changed since the last
+    /// call; none once the selection clears.
+    pub(crate) fn kept_rows(&mut self) -> Option<Vec<NodeId>> {
+        let nodes = self.kept.changed(&self.model)?;
+        Some(nodes.into_iter().map(|n| n as NodeId).collect())
     }
 
     pub(crate) fn handle(&mut self, mouse: MouseInput, scene: Scene<'_>, clicks: u32) -> bool {

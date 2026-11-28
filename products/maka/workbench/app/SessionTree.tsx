@@ -27,7 +27,7 @@ import { errorText, renderText, UiError, type UiText } from './text';
 import { DialogFooter, DialogHeader, ModalDialog } from './ModalDialog';
 import { SettingsButton } from './SettingsPage';
 import { Icon } from './Icon';
-import { LoadingIndicator } from './Loading';
+import { InlineSkeletonLine } from './Loading';
 import { sessionStatusCaption } from './sessionStatus';
 import type { SessionActionTarget } from './sessionLifecycle';
 import {
@@ -241,10 +241,7 @@ export function SessionTree(props: {
                       }}
                     >
                       <If when={branch().loading}>
-                        <LoadingIndicator />
-                        <Text style={{ ...captionTextStyle, color: C.muted }}>
-                          {tr('Loading…')}
-                        </Text>
+                        <InlineSkeletonLine width={132} label={tr('Loading…')} />
                       </If>
                       <If when={!branch().loading && renderText(branch().error)}>
                         <Text style={{ ...captionTextStyle, flex: 1, color: C.danger }}>
@@ -256,7 +253,7 @@ export function SessionTree(props: {
                           })}
                           disabled={!interactive()}
                           onPress={inputAction(() => load(parent().id, true), null)}
-                          style={controlStyle}
+                          style={controlStyle()}
                           hoverStyle={controlHoverStyle()}
                           focusStyle={controlFocusStyle()}
                           disabledStyle={controlDisabledStyle}
@@ -279,7 +276,7 @@ export function SessionTree(props: {
                             })}
                             disabled={!interactive()}
                             onPress={inputAction(() => load(parent().id), null)}
-                            style={controlStyle}
+                            style={controlStyle()}
                             hoverStyle={controlHoverStyle()}
                             focusStyle={controlFocusStyle()}
                             disabledStyle={controlDisabledStyle}
@@ -380,7 +377,7 @@ export function SessionTree(props: {
                             disabled={!interactive() || !present()}
                             onPress={inputAction(toggle, session().id)}
                             style={{
-                              ...controlStyle,
+                              ...controlStyle(),
                               width: 32,
                               alignItems: 'center',
                               justifyContent: 'center',
@@ -402,7 +399,7 @@ export function SessionTree(props: {
                           disabled={!interactive() || !present()}
                           onPress={inputAction(open, session().id)}
                           style={{
-                            ...controlStyle,
+                            ...controlStyle(),
                             flex: 1,
                             minWidth: 0,
                             height: 48,
@@ -440,7 +437,7 @@ export function SessionTree(props: {
                               tooltip={textTooltip(() => tr('Conversation actions'))}
                               disabled={!interactive() || !present()}
                               style={{
-                                ...controlStyle,
+                                ...controlStyle(),
                                 width: 32,
                                 alignItems: 'center',
                                 justifyContent: 'center',

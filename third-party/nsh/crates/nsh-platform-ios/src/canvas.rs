@@ -442,7 +442,7 @@ impl<'a> Replay<'a> {
                 dest,
             } => self.image(
                 &image.uri,
-                image.density(),
+                || f64::from(image.density()),
                 source.map(|b| [b.origin.x, b.origin.y, b.size.width, b.size.height].map(|v| v.0)),
                 dest,
             ),
@@ -897,7 +897,13 @@ impl<'a> Replay<'a> {
         CGContext::restore_g_state(c);
     }
 
-    fn image(&self, uri: &str, density: f32, source: Option<[f32; 4]>, dest: &[Num; 4]) {
+    fn image(
+        &self,
+        uri: &str,
+        density: impl Fn() -> f64,
+        source: Option<[f32; 4]>,
+        dest: &[Num; 4],
+    ) {
         let Some(image) = self.images.get(uri) else {
             return;
         };
@@ -917,8 +923,8 @@ impl<'a> Replay<'a> {
         // never over the `UIImage`'s scale: that is the screen's the image
         // was loaded for, so the same image would draw at another size on a
         // 2x and a 3x device.
-        let density = f64::from(density);
-        let size = natural_size(&cg, density);
+        // Parsed only when a size is missing: a sprite sheet drawn with
+        // both sizes, thousands of times a frame, never needs it.
         let [dx, dy, mut dw, mut dh] = dest.map(|v| self.n(v));
         if let Some([sx, sy, sw, sh]) = source {
             let rect = CGRect::new(
@@ -930,17 +936,17 @@ impl<'a> Replay<'a> {
                 return;
             }
             if dw.is_nan() {
-                dw = sw as f64 / density;
+                dw = sw as f64 / density();
             }
             if dh.is_nan() {
-                dh = sh as f64 / density;
+                dh = sh as f64 / density();
             }
         }
         if dw.is_nan() {
-            dw = size.width;
+            dw = CGImage::width(Some(&cg)) as CGFloat / density();
         }
         if dh.is_nan() {
-            dh = size.height;
+            dh = CGImage::height(Some(&cg)) as CGFloat / density();
         }
         let c = self.cx();
         CGContext::save_g_state(c);
@@ -957,15 +963,6 @@ impl<'a> Replay<'a> {
         );
         CGContext::restore_g_state(c);
     }
-}
-
-/// An image's natural size in a canvas, in points: its pixels over
-/// `density`.
-fn natural_size(image: &CGImage, density: CGFloat) -> CGSize {
-    CGSize::new(
-        CGImage::width(Some(image)) as CGFloat / density,
-        CGImage::height(Some(image)) as CGFloat / density,
-    )
 }
 
 fn blend(c: Composite) -> CGBlendMode {

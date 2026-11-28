@@ -156,7 +156,8 @@ fn keys_holding_a_nul_render_and_go_as_others() {
 }
 
 /// Runs `app` ([`APP`] or one with other keys): the three values render
-/// once each under the component's context, and nothing of them is left.
+/// under the component's context, a key's new value into the holder of
+/// its old one, and nothing of them is left.
 fn renders_each_key_and_lets_it_go(app: &str) {
     let (_engine, rx) = crate::rust_classes::start(app, vec![registry()]);
     let batches = until_text(&rx, "end");
@@ -183,8 +184,9 @@ fn renders_each_key_and_lets_it_go(app: &str) {
             _ => None,
         })
         .collect();
-    // Each value rendered once.
-    assert_eq!(holders.len(), 3, "Apple, Banana, Avocado");
+    // One holder per key: Avocado, key `a`'s new value, renders into
+    // Apple's holder.
+    assert_eq!(holders.len(), 2, "a (Apple, then Avocado), b (Banana)");
     // Nothing of them is left: every view made is deleted but the end's.
     let mut live = HashSet::new();
     for item in items() {

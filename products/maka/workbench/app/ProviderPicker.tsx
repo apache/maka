@@ -40,11 +40,13 @@ import { providerLabel } from './settingsLabels';
 import {
   C,
   captionTextStyle,
-  controlStyle,
-  controlHoverStyle,
-  controlFocusStyle,
   controlDisabledStyle,
+  controlFocusStyle,
+  controlHoverStyle,
+  controlStyle,
   inputTextStyle,
+  lineWidth,
+  radius,
   textTooltip,
 } from './ui';
 import { settingsGutter, settingsInset } from './SettingsPage';
@@ -66,10 +68,8 @@ export function ProviderPicker(props: { owner: ModelSettingsOwner }) {
   let list: ListRef | undefined;
   let input: InputRef | undefined;
   let removeKeys = () => {};
-  const releaseInlineError = owner.claimInlineError();
   cleanup(() => {
     removeKeys();
-    releaseInlineError();
   });
   const retryProviders = async () => {
     const failed = owner.failedProvider();
@@ -184,9 +184,9 @@ export function ProviderPicker(props: { owner: ModelSettingsOwner }) {
             color: C.text,
             placeholderColor: C.muted,
             backgroundColor: C.background,
-            borderWidth: 1,
+            borderWidth: lineWidth(),
             borderColor: C.line,
-            borderRadius: 8,
+            borderRadius: radius(8),
           }}
           focusStyle={{ borderColor: C.accent }}
           ref={(node) => {
@@ -217,7 +217,7 @@ export function ProviderPicker(props: { owner: ModelSettingsOwner }) {
               search('');
               input?.focus();
             }}
-            style={{ ...controlStyle, width: 32, paddingHorizontal: 0 }}
+            style={{ ...controlStyle(), width: 32, paddingHorizontal: 0 }}
             hoverStyle={controlHoverStyle()}
             focusStyle={controlFocusStyle()}
             activeStyle={{ backgroundColor: C.pressed }}
@@ -345,7 +345,7 @@ function ProviderOption(props: {
       disabled={props.disabled}
       onPress={inputAction(props.owner.chooseProvider, props.provider.identity)}
       style={{
-        ...controlStyle,
+        ...controlStyle(),
         height: 40,
         flexDirection: 'row',
         alignItems: 'center',

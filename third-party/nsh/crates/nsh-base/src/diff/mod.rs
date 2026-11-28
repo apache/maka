@@ -6,7 +6,7 @@
 
 mod controller;
 mod files;
-mod geometry;
+pub(crate) mod geometry;
 mod layout;
 mod model;
 mod parts;

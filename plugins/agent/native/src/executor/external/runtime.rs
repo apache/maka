@@ -500,7 +500,6 @@ async fn execute_observed(
         }
         NativeRuntime::Antigravity => {
             agy_acp::execute(
-                &external.agy_fronts,
                 config,
                 cwd,
                 &request,
@@ -740,16 +739,16 @@ pub(super) struct Pipe {
 }
 impl Pipe {
     pub(super) fn session(
-        socket: maka_host_runtime::ipc::LocalStream,
+        stdin: tokio::process::ChildStdin,
+        stdout: BufReader<Box<dyn tokio::io::AsyncRead + Unpin + Send>>,
         observation: Observation,
         stop: CancellationToken,
         failed: CancellationToken,
     ) -> Self {
-        let (read, write) = tokio::io::split(socket);
         Self {
             wire: Wire::Lines {
-                input: Box::new(write),
-                reader: BufReader::new(Box::new(read)),
+                input: Box::new(stdin),
+                reader: stdout,
                 buffer: Vec::new(),
             },
             next_id: 0,

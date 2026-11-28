@@ -538,6 +538,9 @@ pub(crate) struct Executor {
     pub(crate) quit: Rc<RefCell<super::quit::QuitListeners>>,
     /// The quit listeners' work still running ([`crate::Core::start_quit`]).
     pub(crate) quitting: Rc<std::cell::Cell<usize>>,
+    /// The JS calls of an `async fn` into Rust still running (a native
+    /// module's or a class's): what they wait on answers from elsewhere.
+    pub(crate) calls: Rc<std::cell::Cell<usize>>,
     /// What hears the user ask to quit ([`super::desktop::on_quit_request`]).
     pub(crate) quit_requests: Rc<RefCell<super::quit::QuitRequestListeners>>,
     /// What hears the OS ask the app to show itself

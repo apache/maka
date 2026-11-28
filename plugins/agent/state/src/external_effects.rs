@@ -37,8 +37,9 @@ pub struct MissingReturn {
 
 mod sql;
 pub(crate) use sql::{
-    MissingReturns, ReadDescriptor, ReadEffect, load_run, native_source_pending, persist,
-    read_descriptor, read_original, replay, verify_native_source,
+    MissingReturns, PersistedExternalEffect, ReadDescriptor, ReadEffect, ReadReturn, load_run,
+    native_source_pending, persist, read_descriptor, read_descriptor_with_definition_ref,
+    read_original, replay, verify_native_source,
 };
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

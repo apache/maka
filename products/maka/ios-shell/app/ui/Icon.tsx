@@ -62,6 +62,11 @@ const glyphs = {
     { tag: 'path', d: 'M12 3 5 6v6c0 4.5 3 7.8 7 9 4-1.2 7-4.5 7-9V6z' },
     { tag: 'path', d: 'm9.2 12 2 2 3.8-4' },
   ],
+  more: [
+    { tag: 'circle', cx: 5, cy: 12, r: 1 },
+    { tag: 'circle', cx: 12, cy: 12, r: 1 },
+    { tag: 'circle', cx: 19, cy: 12, r: 1 },
+  ],
   chevronRight: [{ tag: 'path', d: 'm9.5 6.5 5.5 5.5-5.5 5.5' }],
   chevronLeft: [{ tag: 'path', d: 'm14.5 6.5-5.5 5.5 5.5 5.5' }],
   chevronDown: [{ tag: 'path', d: 'm6.5 9.5 5.5 5.5 5.5-5.5' }],
@@ -210,6 +215,13 @@ const glyphs = {
     { tag: 'line', x1: 4.5, y1: 7, x2: 19.5, y2: 7 },
     { tag: 'line', x1: 4.5, y1: 12, x2: 15, y2: 12 },
     { tag: 'line', x1: 4.5, y1: 17, x2: 12, y2: 17 },
+  ],
+  sideQuestion: [
+    { tag: 'path', d: 'M4 5v6a4 4 0 0 0 4 4h5' },
+    {
+      tag: 'path',
+      d: 'M20 10h-5a2 2 0 0 0-2 2v5a2 2 0 0 0 2 2h1v3l4-3a2 2 0 0 0 2-2v-5a2 2 0 0 0-2-2z',
+    },
   ],
   quote: [
     { tag: 'path', d: 'M6 9h4v4H7.5c0 1.5.8 2.5 2 3' },

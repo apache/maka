@@ -32,10 +32,7 @@ use rustc_hash::FxHashMap;
 
 pub use self::theme::{Theme, ThemeError};
 pub(crate) use self::utilities::{Decl, Len, Part, PropDecl};
-use self::{
-    theme::ClassTokens,
-    utilities::{Parts, touched},
-};
+use self::{theme::ClassTokens, utilities::Parts};
 use crate::{
     geometry::{Points, Size},
     props::PointerEvents,
@@ -144,6 +141,8 @@ pub mod deps {
     /// The pointer's precision and the terminal (`pointer-fine:`,
     /// `pointer-coarse:`, `terminal:`).
     pub const DEVICE: u16 = 4096;
+    /// The platform (`ios:`, `android:`, `web:`).
+    pub const PLATFORM: u16 = 8192;
 }
 
 /// CSS's `ch` where no font is known ([`ClassList::apply`]): half a `rem`,
@@ -343,6 +342,9 @@ impl Condition {
         }
         if self.pointer.is_some() || self.terminal.is_some() {
             d |= deps::DEVICE;
+        }
+        if self.platform.is_some() {
+            d |= deps::PLATFORM;
         }
         if self.states != 0 || self.not_states != 0 {
             d |= deps::STATE;
@@ -656,6 +658,15 @@ impl Space {
     }
 }
 
+/// Precomputed rule capabilities on [`ClassList`], maintained by [`ClassList::add`]
+/// so [`ClassList::apply_with_current`] skips unnecessary passes and `Parts` allocations.
+mod rule_flags {
+    pub(super) const DEFAULTS: u8 = 1 << 0;
+    pub(super) const PSEUDO: u8 = 1 << 1;
+    pub(super) const PARTS: u8 = 1 << 2;
+    pub(super) const INTERACTIVE_BG: u8 = 1 << 3;
+}
+
 /// A parsed class string.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ClassList {
@@ -664,6 +675,8 @@ pub struct ClassList {
     deps: u16,
     /// [`state`] bits the platform must report for this view.
     tracked: u16,
+    /// [`rule_flags`] bits summarizing declarations and pseudo rules.
+    flags: u8,
     /// The view is a `group` (`""`) or named groups (`group/item`).
     groups: Vec<Box<str>>,
     /// Classes that are not known utilities.
@@ -736,32 +749,55 @@ impl ClassList {
         props: &mut ClassProps,
         inline: impl FnOnce(&mut Style),
     ) {
-        let mut parts = Parts::default();
-        parts.ch = ch;
+        self.apply_with_current(cx, data, theme, current, None, ch, style, props, inline);
+    }
+
+    /// [`ClassList::apply_with`] taking a precomputed `resolved_current` when
+    /// the caller already resolved `current_color` for an inline style.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn apply_with_current(
+        &self,
+        cx: &Context<'_>,
+        data: Data<'_>,
+        theme: &Theme,
+        current: CurrentColor,
+        resolved_current: Option<Color>,
+        ch: f32,
+        style: &mut Style,
+        props: &mut ClassProps,
+        inline: impl FnOnce(&mut Style),
+    ) {
+        let mut parts = (self.flags & rule_flags::PARTS != 0).then(Parts::default);
         let mut important = false;
         let current = if self.deps & deps::CURRENT_COLOR != 0 {
-            self.current_color(cx, data, current)
+            resolved_current.unwrap_or_else(|| self.current_color(cx, data, current))
         } else {
             Color::BLACK
         };
-        parts.current = current;
-        for rule in &self.rules {
-            if rule.cond.pseudo() || !rule.cond.matches(cx, data) {
-                continue;
-            }
-            for decl in &rule.decls {
-                match decl {
-                    Decl::Default(key, value) => {
-                        let _ = style.apply_value(*key, value);
+        if let Some(p) = parts.as_mut() {
+            p.current = current;
+            p.ch = ch;
+        }
+        if self.flags & rule_flags::DEFAULTS != 0 {
+            for rule in &self.rules {
+                if rule.cond.pseudo() || !rule.cond.matches(cx, data) {
+                    continue;
+                }
+                for decl in &rule.decls {
+                    match decl {
+                        Decl::Default(key, value) => {
+                            let _ = style.apply_value(*key, value);
+                        }
+                        Decl::CurrentColor(key) => style.set_color(*key, current),
+                        _ => {}
                     }
-                    Decl::CurrentColor(key) => style.set_color(*key, current),
-                    _ => {}
                 }
             }
         }
         // A background color of an interaction state (`active:bg-*`) hides
         // the gradients unless that state sets one too: drawn over the
         // color, they would hide the feedback (CSS would keep them).
+        let track_interactive_bg = self.flags & rule_flags::INTERACTIVE_BG != 0;
         let mut state_background = false;
         let mut state_image = false;
         for rule in &self.rules {
@@ -770,35 +806,55 @@ impl ClassList {
             }
             important |= rule.important;
             for decl in &rule.decls {
-                decl.apply(cx.env.dark, rule.important, style, props, &mut parts);
+                decl.apply(
+                    cx.env.dark,
+                    rule.important,
+                    current,
+                    ch,
+                    style,
+                    props,
+                    parts.as_mut(),
+                );
             }
-            let background = rule.decls.iter().any(Decl::sets_background_color);
-            if rule.cond.interactive() {
-                if background {
-                    state_background = true;
-                    state_image = false;
-                }
-                state_image |= rule.decls.iter().any(Decl::sets_background_image);
-            } else if background {
-                // A later rule's color (`dark:bg-*`) is not feedback.
-                state_background = false;
-            }
-        }
-        let state_color = style.view.background_color;
-        // `placeholder:` and `selection:` rules only carry a color.
-        for rule in self.rules.iter().filter(|r| r.cond.pseudo()) {
-            if !rule.cond.matches(cx, data) {
-                continue;
-            }
-            if let Some(c) = rule.cond.pseudo_color(&rule.decls) {
-                if rule.cond.placeholder {
-                    props.placeholder_color = Some(c);
-                } else {
-                    props.selection_color = Some(c);
+            if track_interactive_bg {
+                let background = rule.decls.iter().any(Decl::sets_background_color);
+                if rule.cond.interactive() {
+                    if background {
+                        state_background = true;
+                        state_image = false;
+                    }
+                    state_image |= rule.decls.iter().any(Decl::sets_background_image);
+                } else if background {
+                    // A later rule's color (`dark:bg-*`) is not feedback.
+                    state_background = false;
                 }
             }
         }
-        parts.finish(style, props, theme, cx.window, touched::ALL);
+        let state_color = if state_background {
+            style.view.background_color
+        } else {
+            Color::TRANSPARENT
+        };
+        if self.flags & rule_flags::PSEUDO != 0 {
+            // `placeholder:` and `selection:` rules only carry a color.
+            for rule in self.rules.iter().filter(|r| r.cond.pseudo()) {
+                if !rule.cond.matches(cx, data) {
+                    continue;
+                }
+                if let Some(c) = rule.cond.pseudo_color(&rule.decls) {
+                    if rule.cond.placeholder {
+                        props.placeholder_color = Some(c);
+                    } else {
+                        props.selection_color = Some(c);
+                    }
+                }
+            }
+        }
+        if let Some(p) = parts.as_ref()
+            && p.touched != 0
+        {
+            p.finish(style, props, theme, cx.window, p.touched);
+        }
         inline(style);
         if self.deps & deps::CURRENT_COLOR != 0 {
             // What the classes set to `currentColor` inside a value.
@@ -809,9 +865,11 @@ impl ClassList {
             // parts keep every rule's values (a `!scale-*` still composes
             // with a plain `translate-*`); only the groups the important
             // rules touch are written again.
-            parts.touched = 0;
-            parts.transform_parts = 0;
-            parts.screen.clear();
+            if let Some(p) = parts.as_mut() {
+                p.touched = 0;
+                p.transform_parts = 0;
+                p.screen.clear();
+            }
             for rule in self
                 .rules
                 .iter()
@@ -819,11 +877,23 @@ impl ClassList {
             {
                 if rule.cond.matches(cx, data) {
                     for decl in &rule.decls {
-                        decl.apply(cx.env.dark, rule.important, style, props, &mut parts);
+                        decl.apply(
+                            cx.env.dark,
+                            rule.important,
+                            current,
+                            ch,
+                            style,
+                            props,
+                            parts.as_mut(),
+                        );
                     }
                 }
             }
-            parts.finish(style, props, theme, cx.window, parts.touched);
+            if let Some(p) = parts.as_ref()
+                && p.touched != 0
+            {
+                p.finish(style, props, theme, cx.window, p.touched);
+            }
             if self.deps & deps::CURRENT_COLOR != 0 {
                 style.apply_current_color(current);
             }
@@ -895,8 +965,24 @@ impl ClassList {
         if rule.cond.states & state::FOCUS_WITHIN != 0 {
             self.tracked |= state::FOCUS_WITHIN;
         }
+        let pseudo = rule.cond.pseudo();
+        if pseudo {
+            self.flags |= rule_flags::PSEUDO;
+        }
+        let interactive = !pseudo && rule.cond.interactive();
         for d in &rule.decls {
             self.deps |= d.deps();
+            if !pseudo {
+                if d.is_default() {
+                    self.flags |= rule_flags::DEFAULTS;
+                }
+                if d.needs_parts() {
+                    self.flags |= rule_flags::PARTS;
+                }
+                if interactive && d.sets_background_color() {
+                    self.flags |= rule_flags::INTERACTIVE_BG;
+                }
+            }
         }
         if rule.theme {
             self.deps |= deps::THEME;

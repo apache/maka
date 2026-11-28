@@ -279,18 +279,11 @@ pub fn Sheet(props: SheetProps, cx: Scope<SheetEvent>) -> impl IntoElement {
                 // presented surface may be taller than the window), or its
                 // largest detent's.
                 .style_with(move |s| {
+                    // The same on every platform: the modal root the sheet
+                    // owns keeps the window's whole height (Android's too,
+                    // since #3154), and the panel stands on the keyboard.
                     let lift = keyboard_lift();
-                    // This sheet owns a modal root. Android already takes
-                    // the whole IME out of that root: restore only the safe
-                    // area's overlap, so the panel's padding ends behind
-                    // the keyboard. Other popups can live in the full
-                    // surface and keep their own keyboard lift.
-                    let offset = if platform_name() == "android" {
-                        Points::ZERO - keyboard_height().min(safe_area().bottom)
-                    } else {
-                        lift
-                    };
-                    let above = Length::from(offset);
+                    let above = Length::from(lift);
                     let s = match props.side.get() {
                         Placement::Bottom if lift > Points::ZERO => s
                             .left_0()
@@ -308,7 +301,22 @@ pub fn Sheet(props: SheetProps, cx: Scope<SheetEvent>) -> impl IntoElement {
                     }
                 })
                 .app_class(props.popup_class)
-                .inline_style(props.popup_style)
+                // The app's height gives way to the room above the keyboard
+                // while it lifts the panel (`maxHeight: "92%"` would put its
+                // top under the status bar), and comes back with it down.
+                .inline_style(move || {
+                    let style = props.popup_style.get();
+                    let lift = keyboard_lift();
+                    if props.side.get() != Placement::Bottom || lift <= Points::ZERO {
+                        return style;
+                    }
+                    let screen = window().height;
+                    style.max_height_at_most(screen - safe_area().top - lift, screen)
+                })
+                // Standing on the keyboard already, what the app pads by
+                // `env(keyboard-inset-height)` in it reads 0: one sheet
+                // works on every platform, and is never lifted twice.
+                .clears_keyboard(move || props.side.get() != Placement::Top)
                 .bind_translate_x(&motion.x)
                 .on_layout(move |frame: &Bounds<Points>| {
                     panel_height.replace(frame.size.height.max(Points(1.0)));

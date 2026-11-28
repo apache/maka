@@ -43,6 +43,7 @@ impl BuildUi {
                     self.asset_root.as_ref().map(|root| root.as_os_str()),
                 ),
             ],
+            &[],
         )
     }
 }

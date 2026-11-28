@@ -56,7 +56,7 @@ mod replay_admission;
 pub(super) use replay_admission::{ReplayTarget, append_observed, current_context};
 mod summary_repair;
 mod tool_projection;
-use compacted::CoveredPrefix;
+pub(super) use compacted::CoveredPrefix;
 use history_source::HistorySource;
 use materialize::FrozenMaterializer;
 
@@ -76,6 +76,7 @@ pub(in crate::owner) fn validate_native_compaction_producer(
 }
 
 pub(super) struct DriverModel {
+    pub memory: Option<Arc<maka_agent_facts::memory::MemoryProjection>>,
     pub state: Store,
     pub history: SessionHistory,
     pub log: Arc<SessionStore>,
@@ -138,6 +139,8 @@ struct FrozenInput {
     prompt: ContentRef,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     prompt_chunks: Vec<ContentRef>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    prompt_media: Vec<ContentRef>,
     layout: preparation::FrozenPromptLayout,
     covered_prefix: Option<CoveredPrefix>,
     normalization: Option<maka_model::ProviderKind>,
@@ -211,12 +214,38 @@ impl FrozenCellKnowledge {
     }
 }
 impl FrozenInput {
+    async fn restore_prompt(
+        &self,
+        io: preparation::PreparationIo,
+        resources: ModelPreparationResources,
+        source: preparation::ContentSource<'_>,
+        run: RunId,
+        cancellation: &CancellationToken,
+    ) -> Result<maka_agent_engine::prepared_prompt::PreparedPrompt, RunError> {
+        preparation::restore_prompt_from(
+            io,
+            resources,
+            source,
+            run,
+            &self.prompt,
+            &self.prompt_chunks,
+            &self.prompt_media,
+            &self.layout,
+            cancellation,
+        )
+        .await
+    }
     fn content_refs(&self) -> Vec<ContentRef> {
         let mut refs = if self.prompt_chunks.is_empty() {
             vec![self.prompt.clone()]
         } else {
             self.prompt_chunks.clone()
         };
+        for reference in &self.prompt_media {
+            if !refs.contains(reference) {
+                refs.push(reference.clone());
+            }
+        }
         for notice in &self.notifications {
             for reference in &notice.dependencies {
                 if !refs.contains(reference) {
@@ -876,6 +905,9 @@ impl DriverModel {
                 purpose,
                 calibration,
             )?;
+            if purpose == ModelPurpose::Main {
+                self.check_pinned_window(model, &request.context_breakdown)?;
+            }
             if let Some(claim) = continuation {
                 if preflight.is_some() {
                     preparation::validate_continuation_source(
@@ -903,7 +935,7 @@ impl DriverModel {
                 &self.cancellation,
             )
             .await?;
-            let (prompt_content, chunks, layout, cleanup) = snapshot.into_parts();
+            let (prompt_content, chunks, media, layout, cleanup) = snapshot.into_parts();
             let cleanup_evidence = self.cleanup.clone();
             self.workers.spawn(async move {
                 if let Err(error) = cleanup.await {
@@ -921,6 +953,7 @@ impl DriverModel {
                 language: request.request.language,
                 prompt: prompt_content,
                 prompt_chunks: chunks.iter().map(|chunk| chunk.reference().clone()).collect(),
+                prompt_media: media.iter().map(|blob| blob.reference().clone()).collect(),
                 layout,
                 covered_prefix,
                 normalization: request.request.prompt.normalization().cloned(),
@@ -951,8 +984,8 @@ impl DriverModel {
                 "execution": self.execution, "canonicalRevision": source_evidence.current_revision,
                 "input": view.spec.input, "historicalSourceDigest": source_evidence.cut.digest,
                 "steering": steering_refs,
-                "notifications": &frozen.notifications,
-                "recoveredCells": &frozen.recovered_cells,
+                "notificationsDigest": maka_agent_engine::digest(&frozen.notifications)?,
+                "recoveredCellsDigest": maka_agent_engine::digest(&frozen.recovered_cells)?,
             }))?;
             let mut request_context = model.context.clone();
             if let Some(context) = request_context.as_mut() {
@@ -962,6 +995,9 @@ impl DriverModel {
                 Some(catalog) => driver.tool_contracts(catalog, &definitions)?,
                 None => std::collections::BTreeMap::new(),
             };
+            let tool_contracts_blob = (!tool_contracts.is_empty())
+                .then(|| ContentBlob::json(&tool_contracts))
+                .transpose()?;
             let compaction_request = compaction_request.filter(|key| summary || matches!(mode,
                 Preparation::ToolContinuation { attempt } | Preparation::Notifications { attempt } | Preparation::Steering { attempt } if attempt == key.attempt
             ));
@@ -969,7 +1005,6 @@ impl DriverModel {
                 "inputDigest": request.input_digest,
                 "compactionRequest": compaction_request,
                 "resumeModel": summary_options.resume_model,
-                "toolContracts": tool_contracts,
                 "routeIdentity": request.route_identity,
                 "modelInputPolicy": {"vision": model.supports_vision, "imageInput": model.provider.image_input},
                 "breakdown": request.context_breakdown,
@@ -978,8 +1013,6 @@ impl DriverModel {
                 "codexPreflight": preflight,
                 "previousCheckpointId":previous_checkpoint_id,
                 "steering": steering_evidence,
-                "notifications": &frozen.notifications,
-                "recoveredCells": &frozen.recovered_cells,
             }))?;
             let mut revisions = system
                 .as_ref()
@@ -1001,6 +1034,7 @@ impl DriverModel {
                 max_output_tokens: request.request.max_output_tokens,
             };
             let spec = RequestSpec {
+                memory_replay: if self.history.has_memory_reads(view.run).await? { maka_agent_facts::memory::MemoryReplay::Run(view.run) } else { maka_agent_facts::memory::MemoryReplay::Shared },
                 schema_version: SCHEMA_VERSION,
                 step: StepId::new(),
                 composition,
@@ -1027,6 +1061,7 @@ impl DriverModel {
                 source_digest: source_evidence.cut.digest.clone(),
                 effective_source_digest: projection.reference().digest.clone(),
                 provenance: provenance.reference().clone(),
+                tool_contracts: tool_contracts_blob.as_ref().map(|blob| blob.reference().clone()),
                 projection: Some(match &mode {
                     Preparation::Prefix { proof, .. } => proof.clone(),
                     _ => projection.reference().clone(),
@@ -1051,7 +1086,11 @@ impl DriverModel {
                         provenance,
                         projection,
                     ];
+                    if let Some(blob) = tool_contracts_blob {
+                        contents.push(blob);
+                    }
                     contents.extend(chunks);
+                    contents.extend(media);
                     contents.extend(steering_contents);
                     contents.extend(texts);
                     contents
@@ -1162,6 +1201,9 @@ impl DriverModel {
                 &self.cancellation,
             )
             .await?;
+            if !summary {
+                self.append_pinned(&mut messages).await?;
+            }
             let previous_checkpoint_id;
             let mut tail = ReplayedTail::default();
             let mut has_main_attempt = false;
@@ -1706,19 +1748,49 @@ impl DriverModel {
         if request.request_contents != frozen.content_refs() {
             return Err(unsupported("frozen-input-content-dependencies"));
         }
-        let prompt = preparation::restore_prompt_from(
-            self.preparation_io()?,
-            self.resources.clone(),
-            reader.content_source(),
-            run,
-            &frozen.prompt,
-            &frozen.prompt_chunks,
-            &frozen.layout,
-            &self.cancellation,
-        )
-        .await?;
+        let prompt = frozen
+            .restore_prompt(
+                self.preparation_io()?,
+                self.resources.clone(),
+                reader.content_source(),
+                run,
+                &self.cancellation,
+            )
+            .await?;
         Ok(prompt
             .with_frozen_transport(frozen.instructions.as_deref(), frozen.normalization.clone()))
+    }
+    fn check_pinned_window(
+        &self,
+        model: &maka_agent_engine::PreparedModel,
+        budget: &maka_agent_facts::context::PreparedContextBreakdown,
+    ) -> Result<(), RunError> {
+        if let Some(memory) = &self.memory {
+            memory
+                .check_window(
+                    model.context.as_ref().and_then(|context| {
+                        maka_agent_facts::context::effective_input_limit(
+                            context.model_context_window,
+                            context.context_window,
+                        )
+                    }),
+                    budget.fixed_tokens(),
+                )
+                .map_err(RunError::InvalidInput)?;
+        }
+        Ok(())
+    }
+
+    async fn append_pinned(
+        &self,
+        messages: &mut preparation::PromptBuilder,
+    ) -> Result<(), RunError> {
+        if let Some(memory) = &self.memory {
+            messages
+                .append_pinned_memory(memory.message().map_err(RunError::Json)?)
+                .await?;
+        }
+        Ok(())
     }
     async fn append_frozen_base(
         &self,
@@ -1736,6 +1808,9 @@ impl DriverModel {
                 .ok_or_else(|| unsupported("frozen-recipe-source"))?;
             let mut cursor = source.open(0);
             while let Some(recipe) = cursor.next().await? {
+                if recipe.is_pinned_memory() {
+                    continue;
+                }
                 if !matches!(
                     recipe,
                     maka_agent_facts::model::prompt_source::source::MessageRecipe::System { .. }
@@ -1792,6 +1867,7 @@ impl DriverModel {
     pub(super) async fn prepare_continuation(
         &self,
         source_run: RunId,
+        memory: Option<&maka_agent_facts::memory::MemoryProjection>,
         mut system: Option<SystemPrompt>,
     ) -> Result<PreparedContinuation, RunError> {
         let reader = &self.history_reader(source_run).await?;
@@ -1835,6 +1911,11 @@ impl DriverModel {
         )
         .await?;
         if let Err(original) = async {
+            if let Some(memory) = memory {
+                messages
+                    .append_pinned_memory(memory.message().map_err(RunError::Json)?)
+                    .await?;
+            }
             self.inherited_messages(
                 target,
                 reader,
@@ -2039,7 +2120,15 @@ impl DriverModel {
                                     Fact::StepPrepared { step, .. } => {
                                         let request =
                                             reader.request(item.recorded.run, *step).await?;
-                                        if !request.adjudications.is_empty() {
+                                        if !request.adjudications.is_empty()
+                                            && reader
+                                                .can_replay_memory(
+                                                    request.memory_replay,
+                                                    item.recorded.run,
+                                                    self.execution.run_id,
+                                                )
+                                                .await?
+                                        {
                                             base = Some(Base::Request {
                                                 sequence: item.sequence,
                                                 run: item.recorded.run,
@@ -2049,6 +2138,16 @@ impl DriverModel {
                                         }
                                     }
                                     Fact::ContextCompacted { baseline } => {
+                                        if !self
+                                            .checkpoint_available(
+                                                reader,
+                                                item.recorded.run,
+                                                baseline,
+                                            )
+                                            .await?
+                                        {
+                                            continue;
+                                        }
                                         base = Some(Base::Compacted {
                                             id: item.recorded.id,
                                             run: item.recorded.run,
@@ -2269,11 +2368,25 @@ impl DriverModel {
                         match fact.fact {
                             Fact::StepPrepared { step, .. } => {
                                 let request = reader.request(prior.run, step).await?;
-                                if !request.adjudications.is_empty() {
+                                if !request.adjudications.is_empty()
+                                    && reader
+                                        .can_replay_memory(
+                                            request.memory_replay,
+                                            prior.run,
+                                            self.execution.run_id,
+                                        )
+                                        .await?
+                                {
                                     base = Some(Base::Request { after, request });
                                 }
                             }
                             Fact::ContextCompacted { baseline } => {
+                                if !self
+                                    .checkpoint_available(reader, prior.run, &baseline)
+                                    .await?
+                                {
+                                    continue;
+                                }
                                 base = Some(Base::Compacted {
                                     id: fact.id,
                                     baseline,
@@ -2490,7 +2603,9 @@ impl DriverModel {
                         })
                         .map(|f| f.id)
                         .collect();
-                    self.history.restricted_archives(results).await?
+                    self.history
+                        .archive_restrictions(results, reader.as_snapshot())
+                        .await?
                 } else {
                     Default::default()
                 };
@@ -2687,6 +2802,20 @@ impl DriverModel {
                 body.resolve(reply)
                     .map_err(|reason| RunError::InvalidInput(reason.into()))?
             }
+            StoredToolResult::CellCompleted(body) => {
+                let result_ref = body
+                    .result_ref()
+                    .ok_or_else(|| {
+                        RunError::InvalidInput(
+                            "shared cell projection missing completed result ref".into(),
+                        )
+                    })?
+                    .clone();
+                let obs: maka_agent_facts::cells::CellObservation =
+                    reader.decode(view.run, &result_ref).await?;
+                body.resolve(&obs)
+                    .map_err(|reason| RunError::InvalidInput(reason.into()))?
+            }
         };
         preparation::project_returned_tool_from(
             reader.media_source(
@@ -2861,6 +2990,7 @@ impl DriverModel {
             work.cancellation.cancel();
             return Ok(None);
         }
+        let progress = access.progress.get().cloned();
         let history = self
             .state
             .session_history(view.spec.owner.clone(), view.spec.session_id.clone());
@@ -2868,6 +2998,7 @@ impl DriverModel {
         let io = self.preparation_io()?;
         let resources = self.resources.clone();
         let access = access.clone();
+        let memory = self.memory.clone();
         let contract_ref = request.recovery_contract.clone();
         let can_replay_without_output = recovery.contract.is_some();
         let prefix_request = request.request.clone();
@@ -2903,6 +3034,7 @@ impl DriverModel {
                 sender: preview.clone(),
                 scope: attempt_binding.clone(),
             };
+            let authorization_failure = Arc::new(std::sync::Mutex::new(None));
             let mut stream_opened = false;
             let mut late_cleanup = None;
             let mut private_cut = None;
@@ -2930,6 +3062,7 @@ impl DriverModel {
                     return Err(unsupported("admitted-recovery-contract-changed"));
                 }
                 let observation = ObservationProtocol {
+                    progress,
                     run,
                     attempt,
                     contract_ref,
@@ -2964,9 +3097,10 @@ impl DriverModel {
                     executor: executor.clone(),
                     provenance,
                     recovery,
-                    authorization_failure: std::sync::Mutex::new(None),
+                    authorization_failure: authorization_failure.clone(),
                     provider: prepared.provider,
                     budget: expected_breakdown,
+                    memory,
                 });
                 let (prompt, input) = factory.build(&cancellation).await?;
                 let source = maka_agent_ports::model::RequestSource {
@@ -3255,6 +3389,7 @@ impl DriverModel {
                 Ok::<_, RunError>(fact)
             }
             .await;
+            let cleanup_recorded = cleanup_publication.is_ok();
             match cleanup_publication {
                 Ok(fact) => {
                     emit(
@@ -3281,6 +3416,13 @@ impl DriverModel {
             }
             if let Err(error) = result {
                 cleanup.observe(&error);
+                let denial = authorization_failure.lock().unwrap().clone();
+                if cleanup_confirmed && cleanup_recorded && let Some(materialize::Denial::Memory(message)) = denial {
+                    // This local refusal is the outcome, not a wake hint. Deliver
+                    // it even when the bounded observation channel is full.
+                    let _ = send.send(Err(RunError::FrozenMemoryDenied(message))).await;
+                    return;
+                }
                 // Preparation failure and lost local observation are not upstream closure.
                 if proactive || !stream_opened || !matches!(&error, RunError::Model(_)) {
                     emit(&send, &cancellation, Err(error)).await;
@@ -3797,6 +3939,7 @@ fn publish_preview(
 }
 
 struct ObservationProtocol {
+    progress: Option<std::sync::Weak<super::worker_progress::Run>>,
     run: RunId,
     attempt: ModelAttemptId,
     contract_ref: ContentRef,
@@ -3809,6 +3952,23 @@ struct ObservationProtocol {
     scope: maka_agent_facts::model::assembly::AttemptBinding,
 }
 impl ObservationProtocol {
+    fn progress_part(&self, part: &maka_agent_facts::model::ModelPart) {
+        if self.scope.purpose == ModelPurpose::Main
+            && let maka_agent_facts::model::ModelPart::Text {
+                text_kind: maka_agent_facts::model::TextKind::Text,
+                text,
+                provider_options,
+            } = part
+            && provider_options
+                .as_deref()
+                .and_then(maka_agent_facts::model::responses_message_phase)
+                == Some("commentary")
+            && let Some(p) = self.progress.as_ref().and_then(std::sync::Weak::upgrade)
+        {
+            p.commentary(text.chunks().flat_map(str::chars));
+        }
+    }
+
     fn continuation(
         &self,
         index: u64,
@@ -3839,6 +3999,7 @@ impl ObservationProtocol {
         send: &mpsc::Sender<Result<ModelObservation, RunError>>,
         cancellation: &CancellationToken,
     ) -> Result<bool, RunError> {
+        self.progress_part(&part);
         let continuation = self.continuation(index, &part)?;
         let replayable = continuation.is_some();
         let fact = self
@@ -3990,6 +4151,30 @@ async fn receive(
             ModelEvent::ProviderToolResult { id, .. } => clock.tool_finished(id),
             _ => {}
         }
+        if !private_summary
+            && let Some(progress) = observation
+                .progress
+                .as_ref()
+                .and_then(std::sync::Weak::upgrade)
+        {
+            use crate::contract::WorkerProgressKind as Kind;
+            match &emission.event {
+                ModelEvent::PartStarted { text_kind, .. } => progress.phase(
+                    if *text_kind == maka_agent_facts::model::TextKind::Thinking {
+                        Kind::Thinking
+                    } else {
+                        Kind::Generating
+                    },
+                ),
+                ModelEvent::ToolCall(call) if call.provider_executed => progress.start(
+                    &call.id,
+                    &call.name,
+                    call.input.as_json().unwrap_or(&serde_json::Value::Null),
+                ),
+                ModelEvent::ProviderToolResult { id, .. } => progress.finish(id),
+                _ => {}
+            }
+        }
         let finished = matches!(&emission.event, ModelEvent::Finished { .. });
         let model_time_ms = finished.then(|| clock.millis()).flatten();
         let first_token = !saw_token
@@ -4038,6 +4223,7 @@ async fn receive(
                     .filter(|record| record.ordinal >= first_buffered)
                 {
                     let part = record.part.as_ref().clone();
+                    observation.progress_part(&part);
                     let continuation = observation.continuation(record.ordinal, &part)?;
                     buffered.push((record.ordinal, part, continuation));
                     emitted = record.ordinal + 1;
@@ -4899,6 +5085,35 @@ mod frozen_text_tests {
             Some(shared)
         );
         assert_eq!(hydrated.content_refs(), to_seal.content_refs());
+    }
+
+    #[test]
+    fn prompt_media_round_trips_and_pins_in_content_refs() {
+        let base = minimal_wire_value();
+        let legacy: FrozenInput = serde_json::from_value(base.clone()).unwrap();
+        assert!(legacy.prompt_media.is_empty());
+        let legacy_wire: Value = serde_json::to_value(&legacy).unwrap();
+        assert!(
+            legacy_wire.get("promptMedia").is_none(),
+            "empty promptMedia must stay omitted on wire: {legacy_wire}"
+        );
+
+        let media_a = ContentBlob::new(b"png-bytes-a".to_vec())
+            .reference()
+            .clone();
+        let media_b = ContentBlob::new(b"png-bytes-b".to_vec())
+            .reference()
+            .clone();
+        let mut with_media: FrozenInput = serde_json::from_value(base).unwrap();
+        with_media.prompt_media = vec![media_a.clone(), media_b.clone(), media_a.clone()];
+        let refs = with_media.content_refs();
+        assert_eq!(refs.iter().filter(|r| **r == media_a).count(), 1);
+        assert_eq!(refs.iter().filter(|r| **r == media_b).count(), 1);
+
+        let encoded = serde_json::to_vec(&with_media).unwrap();
+        let decoded: FrozenInput = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(decoded.prompt_media, with_media.prompt_media);
+        assert_eq!(decoded.content_refs(), refs);
     }
 
     #[test]

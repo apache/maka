@@ -70,8 +70,7 @@ parts! {
     /// The title cell of the column the table is sorted by, after
     /// `headerCell`.
     header_cell_sorted => HeaderCellSorted,
-    /// The title cell of the selected column (a title pressed),
-    /// after `headerCell`.
+    /// The title cell of the selected or highlighted column, after `headerCell`.
     header_cell_selected => HeaderCellSelected,
     /// The sort button of a sortable column.
     sort_indicator => SortIndicator,
@@ -107,11 +106,17 @@ parts! {
     cell_column_selected => CellColumnSelected,
     /// The row header cells (`rowHeader`): row numbers, which select rows.
     row_header => RowHeader,
+    /// A highlighted row number, after `rowHeader`.
+    row_header_highlighted => RowHeaderHighlighted,
     /// The corner above the row headers.
     row_header_corner => RowHeaderCorner,
     /// The line at the fixed columns' trailing edge, over the columns that
     /// scroll under them.
     fixed_edge => FixedEdge,
+    /// The fill over a selected range of cells, excluding the active cell.
+    selection_fill => SelectionFill,
+    /// The outline of a selected range of cells.
+    selection_outline => SelectionOutline,
     /// What shows when there are no rows (the `empty` slot's box).
     empty => Empty,
 }

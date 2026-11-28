@@ -236,6 +236,31 @@ pub trait JsValue: Sized {
 
     /// The value as a JS value of `host`.
     fn to_js<'a>(&self, host: &'a dyn JsHost) -> Result<JsOwned<'a>, PropError>;
+
+    /// Whether a render function of these values (`Renderer<Self>`) gets
+    /// them as its arguments, spread from the JS array the value is
+    /// ([`InContext`]'s), so `Renderer<InContext<A, B>>` is `(value: A,
+    /// context: B) => JSX.Element`.
+    #[doc(hidden)]
+    const RENDER_SPREAD: bool = false;
+
+    /// The parameters of a render function of these values, in
+    /// TypeScript (`value: T`).
+    #[doc(hidden)]
+    fn render_params(types: &mut TsTypes) -> String {
+        format!("value: {}", Self::ts_type(types))
+    }
+}
+
+/// The parameters of a render function of `T`s ([`JsValue::render_params`]),
+/// or none in builds without declarations, as [`ts_of`].
+#[doc(hidden)]
+pub const fn render_params_of<T: JsValue>() -> TsType {
+    if super::DECLARATIONS {
+        T::render_params
+    } else {
+        |_| String::new()
+    }
 }
 
 impl JsValue for bool {
@@ -939,6 +964,53 @@ impl<T: JsValue> JsValue for Vec<T> {
         }
         let raws = items.into_iter().map(JsOwned::into_raw).collect();
         Ok(JsOwned::new(host, host.new_array(raws)?))
+    }
+}
+
+/// A value and what surrounds it: `[value, context]` in JS. A render
+/// function of these (`Renderer<InContext<T, C>>`) gets the two as its
+/// arguments, `(value: T, context: C) => JSX.Element` (`TextView`'s
+/// `renderImage(image, { link })`); a Rust closure takes
+/// `|InContext(value, context)| ..`.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct InContext<T, C>(pub T, pub C);
+
+impl<A: JsValue, B: JsValue> JsValue for InContext<A, B> {
+    const RENDER_SPREAD: bool = true;
+
+    fn ts_type(types: &mut TsTypes) -> String {
+        format!("[{}, {}]", A::ts_type(types), B::ts_type(types))
+    }
+
+    fn render_params(types: &mut TsTypes) -> String {
+        format!(
+            "value: {}, context: {}",
+            A::ts_type(types),
+            B::ts_type(types)
+        )
+    }
+
+    fn from_js(value: JsIn<'_>) -> Result<Self, PropError> {
+        let len = value
+            .array_len()?
+            .ok_or_else(|| value.expected("an array of two"))?;
+        if len != 2 {
+            return Err(value.expected("an array of two"));
+        }
+        let a = value.index(0)?;
+        let a = A::from_js(a.get()).map_err(|e| PropError(format!("[0]: {e}")))?;
+        let b = value.index(1)?;
+        let b = B::from_js(b.get()).map_err(|e| PropError(format!("[1]: {e}")))?;
+        Ok(InContext(a, b))
+    }
+
+    fn to_js<'a>(&self, host: &'a dyn JsHost) -> Result<JsOwned<'a>, PropError> {
+        let a = self.0.to_js(host)?;
+        let b = self.1.to_js(host)?;
+        Ok(JsOwned::new(
+            host,
+            host.new_array(vec![a.into_raw(), b.into_raw()])?,
+        ))
     }
 }
 

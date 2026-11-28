@@ -28,7 +28,7 @@ import {
 } from '../../../packages/plugin-sdk/src/workbench-views.js';
 import { ModelSettings } from '../../../products/maka/workbench/app/ModelSettings';
 import { dictationPreferences } from '../../../products/maka/workbench/app/dictationPreferences';
-import { LoadingIndicator } from '../../../products/maka/workbench/app/Loading';
+import { SettingsSkeleton } from '../../../products/maka/workbench/app/Loading';
 import { SettingsProblem } from '../../../products/maka/workbench/app/SettingsPage';
 import { ConnectionSettings } from '../../../products/maka/workbench/app/ConnectionSettings';
 import { GeneralSettings } from '../../../products/maka/workbench/app/GeneralSettings';
@@ -392,8 +392,8 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
                 <If
                   when={form.editor() !== null}
                   else={
-                    <If when={!!operations.error()} else={<LoadingIndicator />}>
-                      <SettingsProblem message={operations.error()} retry={() => void open()} />
+                    <If when={!!operations.error()} else={<SettingsSkeleton rows={3} />}>
+                      <SettingsProblem retry={() => void open()} />
                     </If>
                   }
                 >
@@ -456,6 +456,7 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
               },
               backLabel: () => tr('Back from connection settings'),
               busy: operations.navigationBusy,
+              ownsError: () => connections.page() === 'providers',
             },
             () => <ConnectionSettings owner={connections} externalAgents={externalAgents} />,
           ),

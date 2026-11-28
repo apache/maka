@@ -114,6 +114,8 @@ describe('loadDirectory', () => {
       expect(entries.map((e) => e.id)).toEqual(['auth', 'forms', 'icons']);
       expect(entries[2].stars).toBeNull();
       expect(entries[0].platforms).toEqual([]);
+      await writeFile(join(root, 'directory-featured.json'), JSON.stringify(['icons', 'forms']));
+      expect((await loadDirectory(root)).map((e) => e.id)).toEqual(['icons', 'forms', 'auth']);
     } finally {
       await rm(root, { recursive: true });
     }

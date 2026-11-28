@@ -241,12 +241,44 @@ fn modifiers_of(flags: UIKeyModifierFlags) -> nsh_core::keymap::Modifiers {
 /// `KeyDown` per key (marked prevented by the mounted rules), then the
 /// defaults a captured key never reaches.
 pub(crate) fn began(view: &NshView, presses: &NSSet<UIPress>) -> bool {
+    view.isFirstResponder() && reported_began(view, presses)
+}
+
+/// The presses a selectable view's internal responder
+/// ([`crate::selectable_view::AreaResponder`]) did not take (it answers
+/// Copy and Select All): they go through `area`'s raw key path, as if the
+/// area were focused, so its `KeyDown` and capture rules and the listening
+/// ancestors hear them. Whether the presses were consumed.
+pub(crate) fn area_began(area: &UIView, presses: &NSSet<UIPress>) -> bool {
+    area.downcast_ref::<NshView>()
+        .is_some_and(|view| reported_began(view, presses))
+}
+
+/// [`area_began`] for releases ([`ended`]).
+pub(crate) fn area_ended(area: &UIView, presses: &NSSet<UIPress>) -> bool {
+    area.downcast_ref::<NshView>()
+        .is_some_and(|view| reported_ended(view, presses))
+}
+
+/// [`area_began`] for cancellations ([`cancelled`]).
+pub(crate) fn area_cancelled(area: &UIView, presses: &NSSet<UIPress>) -> bool {
+    area.downcast_ref::<NshView>()
+        .is_some_and(|view| reported_cancelled(view, presses))
+}
+
+/// Whether `area` reports raw keys itself ([`area_began`]): the surface
+/// root then leaves the presses its responder passes on alone.
+pub(crate) fn area_reports(area: &UIView) -> bool {
+    area.downcast_ref::<NshView>()
+        .is_some_and(|view| view.keyboard_target().is_some())
+}
+
+/// [`began`] on `view`, which holds the keyboard (as the first responder,
+/// or through its selectable view's responder).
+fn reported_began(view: &NshView, presses: &NSSet<UIPress>) -> bool {
     let Some(target) = view.keyboard_target() else {
         return false;
     };
-    if !view.isFirstResponder() {
-        return false;
-    }
     // The app's shortcuts keep their precedence: a press they consume is no
     // raw notification, and a pass-through one is reported and goes on.
     if crate::keymap::began(&target, presses, false, view.takes_presses()) {
@@ -311,12 +343,13 @@ pub(crate) fn changed(_view: &NshView, _presses: &NSSet<UIPress>) -> bool {
 /// A real release is reported on the view that has the focus now, even if
 /// its press went elsewhere (the DOM's behavior).
 pub(crate) fn ended(view: &NshView, presses: &NSSet<UIPress>) -> bool {
+    view.isFirstResponder() && reported_ended(view, presses)
+}
+
+fn reported_ended(view: &NshView, presses: &NSSet<UIPress>) -> bool {
     let Some(target) = view.keyboard_target() else {
         return false;
     };
-    if !view.isFirstResponder() {
-        return false;
-    }
     if crate::keymap::ended(&target, presses) {
         return true;
     }
@@ -350,12 +383,13 @@ pub(crate) fn ended(view: &NshView, presses: &NSSet<UIPress>) -> bool {
 /// press instead of releasing it, so no release is invented. What the
 /// cancelled keys held is forgotten.
 pub(crate) fn cancelled(view: &NshView, presses: &NSSet<UIPress>) -> bool {
+    view.isFirstResponder() && reported_cancelled(view, presses)
+}
+
+fn reported_cancelled(view: &NshView, presses: &NSSet<UIPress>) -> bool {
     let Some(target) = view.keyboard_target() else {
         return false;
     };
-    if !view.isFirstResponder() {
-        return false;
-    }
     let mut cleared = crate::keymap::ended(&target, presses);
     let mtm = view.mtm();
     let state = target.keyboard();
