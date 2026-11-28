@@ -162,8 +162,10 @@ pub struct DiffChange {
 pub struct DiffLine {
     /// The side.
     pub side: DiffSide,
-    /// The line, from 0.
+    /// The line's index in the diff's text for this side, from 0.
     pub line: u32,
+    /// The one-based line number shown in the gutter, including any patch offset.
+    pub number: u32,
 }
 
 /// Lines `start` to `end` (both included, from 0) of a side: the lines
@@ -309,6 +311,16 @@ pub struct DiffViewProps {
     /// sideways; a split row is as tall as its taller side.
     #[prop(default)]
     pub soft_wrap: Prop<bool>,
+    /// A tap on code selects that line just like a tap in the gutter and
+    /// emits `onLineNumberPress`. Text selection still owns long presses.
+    #[prop(default)]
+    pub select_line_on_press: Prop<bool>,
+    /// Extra space before the rows, so the diff can scroll under a translucent header.
+    #[prop(default)]
+    pub scroll_padding_top: Prop<Points>,
+    /// Extra space after the rows in the scroll view, for controls that float over the diff.
+    #[prop(default)]
+    pub scroll_padding_bottom: Prop<Points>,
     /// The app's content under lines (review comments), each drawn by
     /// `renderAnnotation`.
     #[prop(default)]

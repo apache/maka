@@ -30,7 +30,8 @@ import {
 import { showToast } from '../../state/hostPool';
 import { hapticNotification, hapticSelection } from '../../state/preferences';
 import { spacing, type } from '../../theme/tokens';
-import { ActionButton, Icon, ScreenHeader } from '../../ui';
+import { ActionButton, ScreenHeader } from '../../ui';
+import { glassSurfaceStyle } from '../../ui/Glass';
 
 export function DiffScreen(props: {
   rootId: string;
@@ -40,7 +41,6 @@ export function DiffScreen(props: {
   onBack: () => void;
   onQuotedBackToChat: () => void;
 }) {
-  const insets = safeAreaInsets();
   const selectedLine = signal<{ side: 'old' | 'new'; line: number; text: string } | null>(null);
 
   const limitReached = () => getDraft(props.rootId, props.sessionId).quotes.length >= quoteLimit;
@@ -76,98 +76,22 @@ export function DiffScreen(props: {
       title={fileName()}
       hidesBottomBarWhenPushed
       headerShadowVisible={false}
-      ios={{
-        headerRightItems:
-          props.canQuote && !limitReached()
-            ? [
-                {
-                  key: 'quote',
-                  symbol: 'quote.bubble',
-                  label: tr('Quote line to chat'),
-                  onPress: quoteAndReturn,
-                },
-              ]
-            : [],
-      }}
-      header={
-        <ScreenHeader
-          title={fileName()}
-          backLabel={tr('Changes')}
-          onBack={props.onBack}
-          trailing={
-            <If when={props.canQuote && !limitReached()}>
-              <View
-                role="button"
-                accessibilityLabel={tr('Quote')}
-                onPress={quoteAndReturn}
-                style={{ minHeight: 44, paddingHorizontal: 8, justifyContent: 'center' }}
-              >
-                <Text style={{ ...type.subheadlineMedium, color: token('primary') }}>
-                  {tr('Quote')}
-                </Text>
-              </View>
-            </If>
-          }
-        />
-      }
+      headerTransparent
+      headerBackgroundOnScroll
+      header={<ScreenHeader title={fileName()} backLabel={tr('Changes')} onBack={props.onBack} />}
     >
-      <View style={{ flex: 1, backgroundColor: token('canvas') }}>
-        {/* File Path & Diff Stats Strip */}
-        <View
-          style={{
-            paddingHorizontal: spacing.pageX,
-            paddingVertical: 10,
-            backgroundColor: token('grouped-bg'),
-            borderBottomWidth: spacing.hairline,
-            borderBottomColor: token('separator'),
-            flexDirection: 'row',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: 10,
-          }}
-        >
-          <Text
-            style={{
-              ...type.mono,
-              fontSize: 12,
-              color: token('muted-foreground'),
-              flex: 1,
-              numberOfLines: 1,
-              textOverflow: 'ellipsis-middle',
-            }}
-          >
-            {props.file.path}
-          </Text>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-            <If when={props.file.added > 0}>
-              <Text
-                style={{
-                  ...type.caption,
-                  fontWeight: '600',
-                  fontVariant: ['tabular-nums'],
-                  color: token('diff-add-fg'),
-                }}
-              >
-                {'+' + formatCount(props.file.added)}
-              </Text>
-            </If>
-            <If when={props.file.deleted > 0}>
-              <Text
-                style={{
-                  ...type.caption,
-                  fontWeight: '600',
-                  fontVariant: ['tabular-nums'],
-                  color: token('diff-del-fg'),
-                }}
-              >
-                {'-' + formatCount(props.file.deleted)}
-              </Text>
-            </If>
-          </View>
-        </View>
+      <DiffContent />
+    </NavPage>
+  );
 
-        {/* Single-Column Unified DiffView */}
+  function DiffContent() {
+    const insets = safeAreaInsets();
+    const quoteBarHeight = signal(0);
+    const bottom = () => insets().bottom + 8;
+    return (
+      <View style={{ flex: 1, backgroundColor: token('canvas') }}>
         <DiffView
+          testID="diff-code"
           patch={normalizedPatch()}
           layout="unified"
           softWrap
@@ -184,11 +108,12 @@ export function DiffScreen(props: {
             indicatorDeleted: { color: token('diff-del-fg') },
             separator: { backgroundColor: token('grouped-bg') },
           }}
+          selectLineOnPress={props.canQuote}
           onLineNumberPress={
             props.canQuote
               ? ({ line }) => {
                   hapticSelection();
-                  const lineNum = line.line + 1;
+                  const lineNum = line.number;
                   const side: 'old' | 'new' = line.side === 'old' ? 'old' : 'new';
                   selectedLine.set({
                     side,
@@ -198,53 +123,101 @@ export function DiffScreen(props: {
                 }
               : undefined
           }
-          style={{ flex: 1 }}
+          renderFileHeader={() => (
+            <View
+              style={{
+                paddingHorizontal: 12,
+                flex: 1,
+                backgroundColor: token('grouped-bg'),
+                borderBottomWidth: spacing.hairline,
+                borderBottomColor: token('separator'),
+                flexDirection: 'row',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: 10,
+              }}
+            >
+              <Text
+                style={{
+                  ...type.mono,
+                  fontSize: 12,
+                  color: token('muted-foreground'),
+                  flex: 1,
+                  numberOfLines: 1,
+                  textOverflow: 'ellipsis-middle',
+                }}
+              >
+                {props.file.path}
+              </Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <If when={props.file.added > 0}>
+                  <Text
+                    style={{
+                      ...type.caption,
+                      fontWeight: '600',
+                      fontVariant: ['tabular-nums'],
+                      color: token('diff-add-fg'),
+                    }}
+                  >
+                    {'+' + formatCount(props.file.added)}
+                  </Text>
+                </If>
+                <If when={props.file.deleted > 0}>
+                  <Text
+                    style={{
+                      ...type.caption,
+                      fontWeight: '600',
+                      fontVariant: ['tabular-nums'],
+                      color: token('diff-del-fg'),
+                    }}
+                  >
+                    {'-' + formatCount(props.file.deleted)}
+                  </Text>
+                </If>
+              </View>
+            </View>
+          )}
+          scrollPaddingTop={insets().top}
+          scrollPaddingBottom={props.canQuote ? quoteBarHeight() + bottom() + 8 : insets().bottom}
+          style={{ flex: 1, marginLeft: insets().left, marginRight: insets().right }}
         />
 
         <If when={props.canQuote}>
           <View
             style={{
-              paddingHorizontal: spacing.pageX,
-              paddingTop: 10,
-              paddingBottom: Math.max(insets().bottom, 14) + 6,
-              backgroundColor: token('surface'),
-              borderTopWidth: spacing.hairline,
-              borderTopColor: token('separator'),
-              gap: 8,
+              position: 'absolute',
+              left: Math.max(spacing.pageX, insets().left),
+              right: Math.max(spacing.pageX, insets().right),
+              bottom: bottom(),
+              alignItems: 'center',
+              pointerEvents: 'box-none',
             }}
           >
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-              <Icon name="quote" color={token('primary')} size={18} />
-              <Text
-                style={{
-                  ...type.footnote,
-                  color: token('muted-foreground'),
-                  flex: 1,
-                  numberOfLines: 1,
-                  textOverflow: 'ellipsis',
-                }}
-              >
-                {limitReached()
-                  ? tr('Quote limit reached ({count})', { count: quoteLimit })
-                  : selectedLine()
-                    ? props.file.path + ':' + String(selectedLine()!.line)
-                    : tr('Tap any line number to quote a specific line into chat')}
-              </Text>
+            <View
+              testID="diff-quote-bar"
+              onLayout={({ bounds }) => quoteBarHeight.set(Math.ceil(bounds.size.height))}
+              style={{ ...glassSurfaceStyle(spacing.pillRadius), padding: 4, maxWidth: '100%' }}
+            >
+              <ActionButton
+                title={
+                  limitReached()
+                    ? tr('Quote limit reached ({count})', { count: quoteLimit })
+                    : selectedLine()
+                      ? tr('Quote line {line} to chat', { line: String(selectedLine()!.line) })
+                      : tr('Quote line to chat')
+                }
+                variant="glassPrimary"
+                icon="quote"
+                compact
+                pill
+                minHeight={spacing.rowMinHeight}
+                disabled={limitReached()}
+                onPress={quoteAndReturn}
+              />
             </View>
-            <ActionButton
-              title={
-                selectedLine()
-                  ? tr('Quote line {line} to chat', { line: String(selectedLine()!.line) })
-                  : tr('Quote line to chat')
-              }
-              icon="quote"
-              compact
-              disabled={limitReached()}
-              onPress={quoteAndReturn}
-            />
           </View>
         </If>
       </View>
-    </NavPage>
-  );
+    );
+  }
 }

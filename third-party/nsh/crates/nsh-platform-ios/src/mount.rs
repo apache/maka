@@ -5648,17 +5648,21 @@ impl Mounter {
                 // Scroll views and inputs: only what UIKit offers directly.
                 use objc2_ui_kit::{NSObjectUIAccessibility, UIAccessibilityIdentification};
                 let view = s.native.view();
+                let accessibility_view = match &s.native {
+                    Native::Input(input) => input.editor_view(),
+                    _ => view,
+                };
                 let test_id = props
                     .test_id
                     .as_deref()
                     .map(objc2_foundation::NSString::from_str);
-                view.setAccessibilityIdentifier(test_id.as_deref());
+                accessibility_view.setAccessibilityIdentifier(test_id.as_deref());
                 let label = props
                     .accessibility
                     .label
                     .as_deref()
                     .map(objc2_foundation::NSString::from_str);
-                view.setAccessibilityLabel(label.as_deref(), mtm);
+                accessibility_view.setAccessibilityLabel(label.as_deref(), mtm);
                 view.setAccessibilityElementsHidden(props.accessibility.hidden, mtm);
                 // An input that is no target lets touches through to the
                 // views below it (an editor's hidden input at its caret,
@@ -5811,7 +5815,11 @@ impl Mounter {
             None => {
                 use objc2_ui_kit::NSObjectUIAccessibility;
                 let label = label.as_deref().map(objc2_foundation::NSString::from_str);
-                s.native.view().setAccessibilityLabel(label.as_deref(), mtm);
+                let view = match &s.native {
+                    Native::Input(input) => input.editor_view(),
+                    _ => s.native.view(),
+                };
+                view.setAccessibilityLabel(label.as_deref(), mtm);
             }
         }
     }

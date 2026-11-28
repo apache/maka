@@ -724,7 +724,7 @@ pub(crate) struct Dv {
     pub(crate) rev: Signal<u64>,
     /// Highlighting progressed.
     pub(crate) hl_rev: Signal<u64>,
-    pub(crate) scroll_y: Signal<Points>,
+    pub(crate) content_scroll_y: Signal<Points>,
     pub(crate) viewport: Signal<Size<Points>>,
     highlighting: Rc<Cell<bool>>,
     /// The stats reported last (`onStatsChange`).
@@ -769,7 +769,7 @@ impl Dv {
             cx,
             rev: signal(0),
             hl_rev: signal(0),
-            scroll_y: signal(px(0.0)),
+            content_scroll_y: signal(px(0.0)),
             viewport: signal(Size::default()),
             highlighting: Rc::new(Cell::new(false)),
             reported: Rc::default(),
@@ -893,7 +893,8 @@ impl Dv {
         self.geo.get();
         let st = self.st.borrow();
         let lh = st.font.line_height.max(px(1.0));
-        let y = self.scroll_y.get().max(Points::ZERO);
+        let y =
+            (self.content_scroll_y.get() - self.props.scroll_padding_top.get()).max(Points::ZERO);
         let height = self.viewport.get().height.max(lh * 40.0);
         let visible = st.geometry.range(y, height, 0);
         self.rows_window.rows(visible, st.geometry.rows())
@@ -1110,7 +1111,7 @@ impl Dv {
             };
             st.font.line_height * row as f32
         };
-        self.vscroll.scroll_to(point(px(0.0), y), true);
+        self.scroll_to_y(y, None);
     }
 
     // Highlighting.

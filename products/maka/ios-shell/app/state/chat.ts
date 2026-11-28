@@ -488,37 +488,147 @@ export interface ParsedDiffFile {
   patch: string;
 }
 
+const gitEscapes: Record<string, string> = {
+  a: '\x07',
+  b: '\b',
+  f: '\f',
+  n: '\n',
+  r: '\r',
+  t: '\t',
+  v: '\v',
+};
+
+const pathUtf8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+
+function decodePathUtf8(bytes: Uint8Array): string | undefined {
+  try {
+    return pathUtf8.decode(bytes);
+  } catch (cause) {
+    if (!(cause instanceof TypeError)) throw cause;
+    return undefined; // Git paths may contain arbitrary non-UTF-8 bytes.
+  }
+}
+
+function escapePathText(text: string): string {
+  return text.replaceAll('\\', '\\\\');
+}
+
+// A shared path spelling for list keys and quote labels: literal backslashes
+// are doubled, so an octal escape always denotes an undecodable byte.
+export function formatFilePath(bytes: Uint8Array): string {
+  const text = decodePathUtf8(bytes);
+  if (text !== undefined) return escapePathText(text);
+
+  let path = '';
+  for (let i = 0; i < bytes.length; ) {
+    const first = bytes[i];
+    const width = first < 0x80 ? 1 : first < 0xe0 ? 2 : first < 0xf0 ? 3 : 4;
+    const scalar = decodePathUtf8(bytes.subarray(i, i + width));
+    if (scalar === undefined) {
+      path += '\\' + first.toString(8).padStart(3, '0');
+      i += 1;
+    } else {
+      path += escapePathText(scalar);
+      i += width;
+    }
+  }
+  return path;
+}
+
+function quotedGitPath(text: string) {
+  const match = /^"((?:[^"\\]|\\.)*)"/.exec(text);
+  if (!match) return;
+  const body = match[1];
+  const rest = text.slice(match[0].length);
+  if (!body.includes('\\')) return { name: body, rest };
+  // Git escapes bytes, not Unicode code points. Decode after joining the octets.
+  const bytes = Array.from(body.matchAll(/([^\\]+)|\\([0-3][0-7]{2}|.)/g), ([, plain, escape]) =>
+    plain !== undefined
+      ? Buffer.from(plain)
+      : escape.length === 3
+        ? Buffer.from([Number.parseInt(escape, 8)])
+        : Buffer.from(gitEscapes[escape] ?? escape),
+  );
+  return { name: formatFilePath(Buffer.concat(bytes)), rest };
+}
+
+function gitPath(text: string) {
+  return text.startsWith('"') ? quotedGitPath(text)?.name : escapePathText(text) || undefined;
+}
+
+function gitHeaderPaths(text: string): [string | undefined, string | undefined] {
+  if (text.startsWith('"')) {
+    const first = quotedGitPath(text);
+    return [
+      first?.name.replace(/^a\//, ''),
+      gitPath(first?.rest.slice(1) ?? '')?.replace(/^b\//, ''),
+    ];
+  }
+  // Except for renames (which have explicit headers), both names are equal
+  // after stripping their prefixes, even with " b/" inside the filename.
+  const middle = Math.floor(text.length / 2);
+  const sameName =
+    text[middle] === ' ' &&
+    text.startsWith('b/', middle + 1) &&
+    text.slice(2, middle) === text.slice(middle + 3);
+  const quoted = text.indexOf(' "b/');
+  const separator = quoted >= 0 ? quoted : sameName ? middle : text.indexOf(' b/');
+  return separator < 0
+    ? [undefined, undefined]
+    : [
+        escapePathText(text.slice(0, separator)).replace(/^a\//, ''),
+        gitPath(text.slice(separator + 1))?.replace(/^b\//, ''),
+      ];
+}
+
+function patchPath(text: string, prefix: RegExp) {
+  const name = gitPath(text.split('\t', 1)[0]!);
+  return name === '/dev/null' ? null : name?.replace(prefix, '');
+}
+
 export function parseUnifiedDiffFiles(fullPatch: string): ParsedDiffFile[] {
-  if (!fullPatch.trim()) return [];
-  const sections = fullPatch.split(/(?=^diff --git )/m).filter((s) => s.trim().length > 0);
   const files: ParsedDiffFile[] = [];
-  for (const section of sections) {
-    const lines = section.split('\n');
+  for (const patch of fullPatch.split(/(?=^diff --git )/m)) {
+    const lines = patch.split(/\r?\n/);
     const header = lines[0] ?? '';
-    const match = /^diff --git a\/(.+?) b\/(.+)$/.exec(header);
-    let path = match ? match[2] : '';
-    let oldPath = match && match[1] !== match[2] ? match[1] : undefined;
-    let status: ParsedDiffFile['status'] = oldPath ? 'renamed' : 'modified';
+    const [oldHeader, newHeader] = header.startsWith('diff --git ')
+      ? gitHeaderPaths(header.slice('diff --git '.length))
+      : [];
+    let oldName: string | null | undefined = oldHeader;
+    let newName: string | null | undefined = newHeader;
+    let status: ParsedDiffFile['status'] | undefined;
+    let inHunk = false;
     let added = 0;
     let deleted = 0;
     for (const line of lines) {
-      if (line.startsWith('new file mode')) status = 'added';
-      else if (line.startsWith('deleted file mode')) status = 'deleted';
-      else if (line.startsWith('rename to ')) {
-        status = 'renamed';
-        path = line.slice('rename to '.length).trim();
+      if (line.startsWith('@@ ')) inHunk = true;
+      if (inHunk) {
+        if (line.startsWith('+')) added += 1;
+        if (line.startsWith('-')) deleted += 1;
+      } else if (line.startsWith('new file mode ')) {
+        status = 'added';
+      } else if (line.startsWith('deleted file mode ')) {
+        status = 'deleted';
       } else if (line.startsWith('rename from ')) {
-        oldPath = line.slice('rename from '.length).trim();
-      } else if (line.startsWith('+++ b/') && !path) {
-        path = line.slice('+++ b/'.length).trim();
-      } else if (line.startsWith('+') && !line.startsWith('+++')) {
-        added += 1;
-      } else if (line.startsWith('-') && !line.startsWith('---')) {
-        deleted += 1;
+        oldName = gitPath(line.slice('rename from '.length)) ?? oldName;
+        status = 'renamed';
+      } else if (line.startsWith('rename to ')) {
+        newName = gitPath(line.slice('rename to '.length)) ?? newName;
+        status = 'renamed';
+      } else if (line.startsWith('--- ')) {
+        const path = patchPath(line.slice(4), /^a\//);
+        if (path !== undefined) oldName = path;
+      } else if (line.startsWith('+++ ')) {
+        const path = patchPath(line.slice(4), /^b\//);
+        if (path !== undefined) newName = path;
       }
     }
-    if (!path) path = 'changes.diff';
-    files.push({ path, oldPath, status, added, deleted, patch: section });
+    const oldPath = oldName && newName && oldName !== newName ? oldName : undefined;
+    const path = newName ?? oldName;
+    if (!path && !inHunk) continue; // A truncated header can have no complete path.
+    status ??=
+      oldName === null ? 'added' : newName === null ? 'deleted' : oldPath ? 'renamed' : 'modified';
+    files.push({ path: path ?? 'changes.diff', oldPath, status, added, deleted, patch });
   }
   return files;
 }

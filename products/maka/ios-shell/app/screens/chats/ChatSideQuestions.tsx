@@ -22,7 +22,8 @@ import { Sheet } from 'nsh/base';
 import type { AgentSession } from '../../bridge';
 import { tr } from '../../locale';
 import { spacing, type } from '../../theme/tokens';
-import { ActionButton, BannerNotice, GroupRow, InsetGroup } from '../../ui';
+import { BannerNotice, GroupRow, InsetGroup } from '../../ui';
+import { SheetHeader, sheetInsets } from '../../ui/SheetHeader';
 
 export function SideQuestionList(props: {
   open: boolean;
@@ -32,6 +33,7 @@ export function SideQuestionList(props: {
   onClose: () => void;
   onOpen?: (session: AgentSession) => void;
 }) {
+  const layout = sheetInsets();
   return (
     <Sheet
       open={props.open}
@@ -42,28 +44,10 @@ export function SideQuestionList(props: {
         if (!open) props.onClose();
       }}
       backdropStyle={{ backgroundColor: token('scrim') }}
-      popupStyle={{ backgroundColor: token('grouped-bg') }}
+      popupStyle={{ backgroundColor: token('grouped-bg'), ...layout.extraGutters() }}
     >
-      <View
-        style={{
-          flexDirection: 'row',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          paddingHorizontal: spacing.pageX,
-        }}
-      >
-        <Text role="header" style={{ ...type.headline, color: token('foreground'), flex: 1 }}>
-          {props.title}
-        </Text>
-        <ActionButton
-          title={tr('Done')}
-          variant="quiet"
-          compact
-          minHeight={44}
-          onPress={props.onClose}
-        />
-      </View>
-      <Scroll style={{ flex: 1 }} contentStyle={{ paddingBottom: 32, gap: 8 }}>
+      <SheetHeader title={props.title} action={tr('Done')} onPress={props.onClose} />
+      <Scroll style={{ flex: 1 }} contentStyle={{ paddingBottom: layout.bottomPadding(), gap: 8 }}>
         <If when={props.error}>
           <View style={{ marginHorizontal: spacing.pageX }}>
             <BannerNotice tone="destructive" title={props.error!} />

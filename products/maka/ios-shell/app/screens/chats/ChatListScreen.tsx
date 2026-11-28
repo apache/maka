@@ -17,7 +17,18 @@
  * under the License.
  */
 
-import { cleanup, computed, effect, safeAreaInsets, Scroll, signal, Text, View, token } from 'nsh';
+import {
+  cleanup,
+  computed,
+  effect,
+  safeAreaInsets,
+  Scroll,
+  signal,
+  Text,
+  View,
+  token,
+  windowSize,
+} from 'nsh';
 import { SegmentedControl, isAvailable } from 'nsh/mobile';
 import { ThinkingMark, ShimmerText } from '../../ui/ThinkingMark';
 import { AlertDialog, ContextMenu, Input, NavPage, Sheet } from 'nsh/base';
@@ -83,6 +94,7 @@ import {
 } from '../../ui';
 import { ConnectionProgress } from '../../ui/ConnectionProgress';
 import { ListSkeleton } from '../../ui/Skeleton';
+import { confirmDiscard, SheetHeader, sheetInsets } from '../../ui/SheetHeader';
 import { NewChatSheet } from './NewChatSheet';
 
 const catalogEdge = 160;
@@ -307,6 +319,7 @@ function SessionSection(props: {
 export function ChatListScreen(props: { onOpenSession: (item: ScopedSession) => void }) {
   const insets = safeAreaInsets();
   const newChatOpen = signal(false);
+  const renameLayout = sheetInsets();
   const renamingItem = signal<ScopedSession | null>(null);
   const renameValue = signal('');
   const renamingBusy = signal(false);
@@ -412,6 +425,13 @@ export function ChatListScreen(props: { onOpenSession: (item: ScopedSession) => 
   const openRename = (item: ScopedSession) => {
     renameValue.set(item.session.title);
     renamingItem.set(item);
+  };
+
+  const renameDirty = () => renameValue() !== renamingItem()?.session.title;
+  const canDismissRename = () => !renamingBusy() && !renameDirty();
+  const closeRename = async () => {
+    if (renamingBusy() || (renameDirty() && !(await confirmDiscard()))) return;
+    renamingItem.set(null);
   };
 
   const submitRename = async () => {
@@ -858,77 +878,62 @@ export function ChatListScreen(props: { onOpenSession: (item: ScopedSession) => 
         <Sheet
           open={renamingItem() !== null}
           accessibilityLabel={tr('Rename conversation')}
-          detents={['medium']}
-          defaultDetent="medium"
-          grabber
-          closeOnSwipe
+          detents={[windowSize().height <= 430 ? 'large' : 'medium']}
+          closeOnSwipe={canDismissRename()}
+          closeOnEscape={canDismissRename()}
+          closeOnBackdropPress={canDismissRename()}
           onOpenChange={({ open }) => {
-            if (!open) renamingItem.set(null);
+            if (!open && canDismissRename()) renamingItem.set(null);
           }}
           backdropStyle={{ backgroundColor: token('scrim') }}
           popupStyle={{
+            ...renameLayout.extraGutters(),
+            ...renameLayout.keyboardBounds(),
             backgroundColor: token('grouped-bg'),
             borderTopLeftRadius: 20,
             borderTopRightRadius: 20,
             borderCurve: 'continuous',
             paddingTop: 4,
           }}
-          grabberStyle={{
-            width: 36,
-            height: 5,
-            borderRadius: 3,
-            alignSelf: 'center',
-            backgroundColor: token('tertiary-foreground'),
-            marginTop: 6,
-            marginBottom: 4,
-          }}
         >
-          <View
-            style={{
-              flexDirection: 'row',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              paddingHorizontal: spacing.pageX,
-              paddingTop: 6,
-              paddingBottom: 14,
-            }}
+          <SheetHeader
+            title={tr('Rename conversation')}
+            action={tr('Cancel')}
+            disabled={renamingBusy()}
+            onPress={() => void closeRename()}
+          />
+          <Scroll
+            testID="rename-form"
+            style={{ flex: 1, minHeight: 0 }}
+            contentStyle={{ paddingBottom: renameLayout.bottomPadding() }}
+            keyboardShouldPersistTaps="handled"
           >
-            <Text style={{ ...type.headline, color: token('foreground') }}>
-              {tr('Rename conversation')}
-            </Text>
-            <View
-              role="button"
-              accessibilityLabel={tr('Cancel')}
-              onPress={() => renamingItem.set(null)}
-              style={{ minHeight: 36, paddingHorizontal: 8, justifyContent: 'center' }}
-            >
-              <Text style={{ ...type.bodyMedium, color: token('primary') }}>{tr('Cancel')}</Text>
-            </View>
-          </View>
-          <InsetGroup elevated>
-            <View style={{ paddingHorizontal: 16, paddingVertical: 10 }}>
-              <Input
-                accessibilityLabel={tr('Conversation title')}
-                value={renameValue()}
-                placeholder={tr('Conversation title')}
-                onChange={({ value }) => renameValue.set(value)}
-                style={{
-                  minHeight: 40,
-                  ...type.body,
-                  color: token('foreground'),
-                  placeholderColor: token('muted-foreground'),
-                  backgroundColor: 'transparent',
-                }}
+            <InsetGroup elevated>
+              <View style={{ paddingHorizontal: 16, paddingVertical: 10 }}>
+                <Input
+                  accessibilityLabel={tr('Conversation title')}
+                  value={renameValue()}
+                  placeholder={tr('Conversation title')}
+                  onChange={({ value }) => renameValue.set(value)}
+                  style={{
+                    minHeight: 44,
+                    ...type.body,
+                    color: token('foreground'),
+                    placeholderColor: token('muted-foreground'),
+                    backgroundColor: 'transparent',
+                  }}
+                />
+              </View>
+            </InsetGroup>
+            <View style={{ paddingHorizontal: spacing.pageX }}>
+              <ActionButton
+                title={tr('Save')}
+                variant="glassPrimary"
+                disabled={renamingBusy() || !renameValue().trim()}
+                onPress={() => void submitRename()}
               />
             </View>
-          </InsetGroup>
-          <View style={{ paddingHorizontal: spacing.pageX }}>
-            <ActionButton
-              title={tr('Save')}
-              disabled={renamingBusy() || !renameValue().trim()}
-              onPress={() => void submitRename()}
-            />
-          </View>
+          </Scroll>
         </Sheet>
       </View>
     </NavPage>

@@ -295,6 +295,8 @@ async fn signed_invite_is_confirmed_on_the_live_connection_and_revocation_is_vis
     assert!(!app.shows("text:First test Host"));
     app.press("label:Confirm & Connect").unwrap();
     app.wait_for("text:Travel Mac · Online").unwrap();
+    app.wait_for_gone("label:Computer name", Duration::from_secs(5))
+        .unwrap();
     assert_eq!(first.host.list_peer_access().await.unwrap().len(), 1);
     assert!(matches!(
         first.handshakes.try_recv(),
@@ -311,7 +313,9 @@ async fn signed_invite_is_confirmed_on_the_live_connection_and_revocation_is_vis
     let (_, sas) = second.sas().await;
     app.wait_for(&format!("text:{sas}")).unwrap();
     app.press("label:Confirm & Connect").unwrap();
-    app.wait_for("text:Second test Host").unwrap();
+    app.wait_for("text:Connected to Second test Host").unwrap();
+    app.wait_for_gone("label:Computer name", Duration::from_secs(5))
+        .unwrap();
 
     app.press("label:Settings").unwrap();
     app.wait_for("label:Computer: Travel Mac").unwrap();
@@ -1380,6 +1384,19 @@ async fn multi_host_tab_shell_isolates_scopes_and_routes_inbox_approval_by_root(
     app.press("label:Target computer").unwrap();
     app.choose_menu_item("Linux Workstation").unwrap();
     app.wait_for("text:Linux workspace").unwrap();
+    app.on_dialog(|dialog| {
+        assert_eq!(dialog.title.as_deref(), Some("Discard changes?"));
+        nsh_testing::DialogAnswer::Press("Discard".into())
+    });
+    app.press_key("Escape").unwrap();
+    app.wait_for_gone("label:Target computer", Duration::from_secs(2))
+        .unwrap();
+    app.press("label:New Chat").unwrap();
+    app.wait_for("text:Apple workspace").unwrap();
+    app.press("label:Target computer").unwrap();
+    app.choose_menu_item("Linux Workstation").unwrap();
+    app.wait_for("text:Linux workspace").unwrap();
+
     for excluded in [
         "Archived workspace",
         "Unavailable workspace",
@@ -1394,6 +1411,10 @@ async fn multi_host_tab_shell_isolates_scopes_and_routes_inbox_approval_by_root(
 
     app.wait_for_gone("text:Apple workspace", Duration::from_secs(2))
         .unwrap();
+    app.on_dialog(|dialog| {
+        assert_eq!(dialog.title.as_deref(), Some("Discard changes?"));
+        nsh_testing::DialogAnswer::Press("Discard".into())
+    });
     app.press("label:Cancel").unwrap();
 
     // Filter to MacBook Pro hides Linux Workstation's conversation.
@@ -4649,6 +4670,157 @@ fn workspace_host_state(revision: u64, name: &str) -> Value {
     })
 }
 
+#[test]
+fn unified_diff_file_paths_follow_git_quoting_and_file_headers() {
+    let bundle = Bundle::source(include_str!(concat!(env!("OUT_DIR"), "/parse-diff.js")).into())
+        .with_capabilities_json(Some(r#"{"host":true}"#))
+        .unwrap();
+    let (send, mut receive) = mpsc::unbounded_channel();
+    let channel = HostChannel::new();
+    channel.handle("test.diffFiles", move |mut call| {
+        send.send(call.take_data()).unwrap();
+    });
+    let mut config = EngineConfig::new(bundle);
+    config.host = channel;
+    let mut app = Headless::start(config).unwrap();
+
+    let cases = [
+        (
+            "diff --git \"a/src/lib.rs\" \"b/src/lib.rs\"\n@@ -1 +1 @@\n---old\n+++new\n",
+            "src/lib.rs",
+            "modified",
+            None,
+            1,
+            1,
+        ),
+        (
+            "diff --git a/a b/c.txt b/a b/c.txt\nold mode 100644\nnew mode 100755\n",
+            "a b/c.txt",
+            "modified",
+            None,
+            0,
+            0,
+        ),
+        (
+            r#"diff --git "a/some space/\346\226\207\"file\\.txt" "b/some space/\346\226\207\"file\\.txt""#,
+            r#"some space/文"file\\.txt"#,
+            "modified",
+            None,
+            0,
+            0,
+        ),
+        (
+            "diff --git a/old name \"b/new name\"\nrename from old name\nrename to \"new name\"\n",
+            "new name",
+            "renamed",
+            Some("old name"),
+            0,
+            0,
+        ),
+        (
+            r#"diff --git "a/old" "b/new"
+rename from "before \346\226\207"
+rename to "after \"quote\""
+"#,
+            "after \"quote\"",
+            "renamed",
+            Some("before 文"),
+            0,
+            0,
+        ),
+        (
+            "diff --git \"a/added file\" \"b/added file\"\nnew file mode 100644\n",
+            "added file",
+            "added",
+            None,
+            0,
+            0,
+        ),
+        (
+            "diff --git \"a/deleted file\" \"b/deleted file\"\ndeleted file mode 100644\n",
+            "deleted file",
+            "deleted",
+            None,
+            0,
+            0,
+        ),
+        (
+            "--- /dev/null\n+++ \"b/added from marker\"\t2026-11-28\n@@ -0,0 +1,2 @@\n+first",
+            "added from marker",
+            "added",
+            None,
+            1,
+            0,
+        ),
+        (
+            "diff --git incomplete\n--- a/deleted from marker\n+++ /dev/null\n@@ -1 +0,0 @@\n-gone",
+            "deleted from marker",
+            "deleted",
+            None,
+            0,
+            1,
+        ),
+        (
+            "diff --git \"a/last-known.rs\" \"b/incom",
+            "last-known.rs",
+            "modified",
+            None,
+            0,
+            0,
+        ),
+    ];
+    let expected = |(patch, path, status, old, added, deleted)| {
+        let mut file = json!({"path": path, "status": status, "added": added, "deleted": deleted, "patch": patch});
+        if let Some(old) = old {
+            file["oldPath"] = json!(old);
+        }
+        file
+    };
+    for case in cases {
+        app.send_host_event("test.parseDiff", json!(case.0))
+            .unwrap();
+        assert_eq!(
+            receive.try_recv().unwrap(),
+            json!([expected(case)]),
+            "{}",
+            case.0
+        );
+    }
+    let patch = format!("{}{}diff --git \"a/partial", cases[0].0, cases[5].0);
+    app.send_host_event("test.parseDiff", json!(patch)).unwrap();
+    assert_eq!(
+        receive.try_recv().unwrap(),
+        json!([expected(cases[0]), expected(cases[5])])
+    );
+
+    let patch = r#"diff --git "a/f\377" "b/f\377"
+diff --git "a/f\376" "b/f\376"
+diff --git "a/f\\377" "b/f\\377"
+diff --git "a/f\\\377" "b/f\\\377"
+diff --git "a/\346\226\207\360\237\232\200" "b/\346\226\207\360\237\232\200"
+diff --git "a/\346\226\207\377\360\237\232\200" "b/\346\226\207\377\360\237\232\200"
+"#;
+    app.send_host_event("test.parseDiff", json!(patch)).unwrap();
+    let parsed = receive.try_recv().unwrap();
+    let paths = parsed
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|file| file["path"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        paths,
+        [
+            r"f\377",
+            r"f\376",
+            r"f\\377",
+            r"f\\\377",
+            "文🚀",
+            r"文\377🚀"
+        ]
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn diff_and_file_quotes_join_the_composer_without_changing_text() {
     let channel = HostChannel::new();
@@ -4661,17 +4833,23 @@ async fn diff_and_file_quotes_join_the_composer_without_changing_text() {
         "revision": 1, "updatedAt": 1700000002000u64, "archived": false, "pinned": false, "hasUnread": false, "activity": "idle"
     });
     let session_q = session.clone();
-    let sample_patch = "diff --git a/src/auth.rs b/src/auth.rs
---- a/src/auth.rs
-+++ b/src/auth.rs
-@@ -1234,3 +1234,3 @@ fn refresh() {
+    let sample_patch = format!(
+        "diff --git \"a/src/auth.rs\" \"b/src/auth.rs\"
+--- \"a/src/auth.rs\"
++++ \"b/src/auth.rs\"
+@@ -1234,3 +1234,27 @@ fn refresh() {{
 -    let ttl = 30;
 +    let ttl = 60;
      ttl
- }
-";
+ }}
+{}",
+        (1..=24)
+            .map(|i| format!("+// Note {i}\n"))
+            .collect::<String>()
+    );
     let (files_tx, mut files_rx) = mpsc::unbounded_channel();
     let (diff_tx, mut diff_rx) = mpsc::unbounded_channel();
+    let later_patch = sample_patch.clone();
     let first_diff = std::sync::atomic::AtomicBool::new(true);
     channel.handle("ios.hostQuery", move |mut call| {
         let data = call.take_data();
@@ -4688,7 +4866,7 @@ async fn diff_and_file_quotes_join_the_composer_without_changing_text() {
                 let entries = if path.is_null() {
                     json!([{"path":{"bytesBase64":"LmdpdGh1Yg=="},"kind":"directory"}])
                 } else {
-                    json!([{"path":{"bytesBase64":"LmdpdGh1Yi9OT1RJQ0U="},"kind":"file"}])
+                    json!([{"path":{"bytesBase64":"LmdpdGh1Yi9OT1RJQ0X/"},"kind":"file"}])
                 };
                 json!({"directoryIdentity":"directory","entries":entries,"next":null})
             }
@@ -4696,7 +4874,7 @@ async fn diff_and_file_quotes_join_the_composer_without_changing_text() {
                 diff_tx.send(call.into_reply().unwrap()).unwrap();
                 return;
             }
-            "gitWorkspaceDiff" => json!({ "patch": sample_patch, "truncated": false, "skippedFiles": 0 }),
+            "gitWorkspaceDiff" => json!({ "patch": later_patch, "truncated": false, "skippedFiles": 0 }),
             _ => json!({}),
         };
         call.reply(Ok(json!({ "value": value })));
@@ -4717,6 +4895,7 @@ async fn diff_and_file_quotes_join_the_composer_without_changing_text() {
         ..Environment::default()
     };
     let mut app = Headless::start(config).unwrap();
+    let mut screen_ids = transparent_screens(&mut app);
 
     app.wait_for("label:Conversation: Login fix").unwrap();
     app.press("label:Conversation: Login fix").unwrap();
@@ -4740,28 +4919,149 @@ async fn diff_and_file_quotes_join_the_composer_without_changing_text() {
         "value": {"patch": sample_patch, "truncated": false, "skippedFiles": 0}
     }));
     app.wait_for("label:Diff: src/auth.rs").unwrap();
+    assert_page_top_inset(
+        &mut app,
+        &mut screen_ids,
+        "maka-agent",
+        "label:Files",
+        [0., 0.],
+    );
     app.press("label:Diff: src/auth.rs").unwrap();
-    app.wait_for("label:Quote line to chat").unwrap();
-    app.press("label:Quote line to chat").unwrap();
-    app.wait_for("text:Quoted auth.rs:1234").unwrap();
+    landscape(&mut app);
+    let quote = "label:Quote line to chat";
+    let capsule = "id:diff-quote-bar";
+    app.wait_for(quote).unwrap();
+    assert_page_top_inset(
+        &mut app,
+        &mut screen_ids,
+        "auth.rs",
+        "text:src/auth.rs",
+        [47., 21.],
+    );
+    assert_landscape_button(&app, quote, 369.);
+    assert_contrast_in_both_schemes(&mut app, &[quote]);
+    let first = frame(&app, "id:diff-line:new:1234");
+    assert!(first.origin.y >= frame_bottom(frame(&app, "label:Changes")));
+    assert!(first.origin.x >= px(47.));
+    app.scroll("id:diff-code", px(1_000.)).unwrap();
+    let tail = "id:diff-line:new:1260";
+    assert!(frame_bottom(frame(&app, tail)) <= frame(&app, capsule).origin.y);
+    app.press("text:/Note 23$/").unwrap();
+    app.wait_for("label:Quote line 1259 to chat").unwrap();
+    app.press_at(tail, nsh_core::Point::new(px(12.), px(9.)))
+        .unwrap();
+    app.press("label:Quote line 1260 to chat").unwrap();
+    app.wait_for("text:Quoted auth.rs:1260").unwrap();
+    portrait(&mut app);
 
     // Both references land in the same Composer queue, independently of the draft text.
     app.wait_for("text:/Please check this:/").unwrap();
-    app.wait_for("text:src/auth.rs:1234").unwrap();
-    app.wait_for("label:Remove quote: let ttl = 60;").unwrap();
+    app.wait_for("text:src/auth.rs:1260").unwrap();
+    app.wait_for("label:Remove quote: // Note 24").unwrap();
     app.press("label:Files & Changes").unwrap();
     app.press("label:Files").unwrap();
     app.wait_for("label:.github").unwrap();
     app.press("label:.github").unwrap();
-    app.press("label:NOTICE").unwrap();
+    app.press(r"label:NOTICE\377").unwrap();
     app.wait_for("text:2 quotes").unwrap();
-    app.wait_for("text:.github/NOTICE:1").unwrap();
+    app.wait_for(r"text:.github/NOTICE\377:1").unwrap();
     let root = files_rx.try_recv().unwrap();
     let directory = files_rx.try_recv().unwrap();
     assert_eq!(root["sessionId"], "chat-diff");
     assert!(root["path"].is_null());
     assert_eq!(directory["sessionId"], "chat-diff");
     assert_eq!(directory["path"]["bytesBase64"], "LmdpdGh1Yg==");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rename_sheet_keeps_dirty_edits_and_saves_above_the_landscape_keyboard() {
+    let channel = HostChannel::new();
+    channel.handle("ios.bootstrap", |call| {
+        call.resolve(workspace_host_state(1, "MacBook Pro"))
+    });
+    channel.handle("ios.hostQuery", |mut call| {
+        let data = call.take_data();
+        let value = match data["method"].as_str().unwrap() {
+            "list" => json!({"revision":"1","needsYouCount":0,"sessions":[{
+                "id":"chat","title":"Login fix","kind":"agent","revision":1,
+                "updatedAt":1700000002000u64,"activity":"idle"
+            }]}),
+            "pendingInteractions" => json!({"revision":1,"entries":[]}),
+            "botOutbox" => json!({"isBot":false}),
+            method => panic!("unexpected query {method}"),
+        };
+        call.resolve(json!({"value":value}));
+    });
+    channel.handle("ios.subscribe", |mut call| {
+        let data = call.take_data();
+        call.resolve(
+            json!({"subscriptionId":data["subscriptionId"],"rootId":"root-a","generation":1}),
+        );
+    });
+    channel.handle("ios.unsubscribe", |call| {
+        call.resolve(json!({"cancelled":true}))
+    });
+    let (rename_tx, mut renames) = mpsc::unbounded_channel();
+    channel.handle("ios.hostMutate", move |mut call| {
+        rename_tx.send(call.take_data()).unwrap();
+        call.resolve(json!({"value":{"kind":"updated"}}));
+    });
+    let mut config = engine_config(channel, tokio::runtime::Handle::current());
+    config.viewport = Size::new(px(390.), px(844.));
+    config.environment = Environment {
+        os: Os::Ios,
+        reduce_motion: true,
+        ..Environment::default()
+    };
+    let mut app = Headless::start(config).unwrap();
+    let (menus, mut menu) = mpsc::unbounded_channel();
+    app.observe(move |_, batch| {
+        for item in &batch.items {
+            if let nsh_core::MountItem::ComponentProps { id, props } = item
+                && props.iter().any(|(name, value)| {
+                    name.as_ref() == "title"
+                        && value.as_ref().and_then(Value::as_str) == Some("Login fix")
+                })
+            {
+                menus.send(*id).unwrap();
+            }
+        }
+    });
+    app.wait_for("label:Conversation: Login fix").unwrap();
+    // UIKit owns the context menu; the headless driver supplies UIKit's selection.
+    app.engine().control().dispatch_event(
+        menu.try_recv().unwrap(),
+        nsh_core::EventKind::NativeEvent,
+        nsh_core::EventPayload::Native {
+            name: "select".into(),
+            data: json!("rename"),
+        },
+    );
+    app.wait_for("label:Conversation title").unwrap();
+    assert!(!app.screen().matches("role:adjustable").unwrap());
+    landscape(&mut app);
+    assert_landscape_button(&app, "label:Cancel", 369.);
+    assert_contrast_in_both_schemes(&mut app, &["label:Cancel"]);
+    app.type_text("label:Conversation title", " revised")
+        .unwrap();
+    landscape_keyboard(&mut app);
+    app.press_key("Escape").unwrap();
+    assert!(
+        app.screen().matches("label:Conversation title").unwrap(),
+        "Escape discarded the edit"
+    );
+    app.scroll("id:rename-form", px(500.)).unwrap();
+    assert_landscape_button(&app, "label:Save", 150.);
+    assert_contrast_in_both_schemes(&mut app, &["label:Save"]);
+    app.press("label:Save").unwrap();
+    let rename = renames.try_recv().unwrap();
+    assert_eq!(rename["method"], "metadata");
+    assert!(
+        rename["input"]["title"]
+            .as_str()
+            .unwrap()
+            .ends_with("revised")
+    );
 }
 
 fn quote_chat_fixture(
@@ -6544,6 +6844,137 @@ async fn composer_and_keyboard_toolbar_keep_glass_and_touch_targets() {
     assert_hit_target("label:Clear all quotes", &app, &slop);
 }
 
+fn landscape(app: &mut Headless) {
+    app.set_viewport(Size::new(px(844.), px(390.))).unwrap();
+    app.set_environment("landscape safe area", |env| {
+        env.safe_area.left = px(47.);
+        env.safe_area.right = px(47.);
+        env.safe_area.bottom = px(21.);
+    })
+    .unwrap();
+}
+
+fn landscape_keyboard(app: &mut Headless) {
+    app.set_environment("landscape keyboard", |env| env.keyboard_height = px(240.))
+        .unwrap();
+}
+
+fn portrait(app: &mut Headless) {
+    app.set_environment("portrait safe area", |env| {
+        env.safe_area.left = px(0.);
+        env.safe_area.right = px(0.);
+        env.safe_area.bottom = px(0.);
+        env.keyboard_height = px(0.);
+    })
+    .unwrap();
+    app.set_viewport(Size::new(px(390.), px(844.))).unwrap();
+}
+
+fn transparent_screens(app: &mut Headless) -> mpsc::UnboundedReceiver<(String, nsh_core::NodeId)> {
+    let (send, receive) = mpsc::unbounded_channel();
+    app.observe(move |_, batch| {
+        for item in &batch.items {
+            if let nsh_core::MountItem::ScreenConfig { id, config } = item
+                && config.header_transparent
+                && let Some(title) = &config.title
+            {
+                send.send((title.to_string(), *id)).unwrap();
+            }
+        }
+    });
+    receive
+}
+
+fn assert_page_top_inset(
+    app: &mut Headless,
+    ids: &mut mpsc::UnboundedReceiver<(String, nsh_core::NodeId)>,
+    title: &str,
+    selector: &str,
+    [side, bottom]: [f64; 2],
+) {
+    let id = std::iter::from_fn(|| ids.try_recv().ok())
+        .find(|(name, _)| name == title)
+        .unwrap_or_else(|| panic!("transparent screen {title}"))
+        .1;
+    let y = frame(app, selector).origin.y;
+    let mut set = |top| {
+        let payload = [
+            ("top", top),
+            ("left", side),
+            ("right", side),
+            ("bottom", bottom),
+        ]
+        .map(|(key, value)| (key, nsh_core::PayloadValue::Number(value)))
+        .to_vec();
+        app.engine().control().dispatch_event(
+            id,
+            nsh_core::EventKind::Insets,
+            nsh_core::EventPayload::Map(payload),
+        );
+        assert!(app.settle());
+        frame(app, selector).origin.y
+    };
+    assert_eq!(set(90.) - y, px(90.), "{title}: {selector}");
+    assert_eq!(set(0.), y);
+}
+
+fn assert_named_input(app: &Headless, name: &str) {
+    let selector = format!("label:{name}");
+    assert!(
+        app.screen().input_text(&selector).unwrap().is_some(),
+        "{name} isn't an input"
+    );
+    assert_eq!(
+        app.screen()
+            .accessibility(Some(&selector))
+            .unwrap()
+            .unwrap()
+            .label
+            .as_deref(),
+        Some(name)
+    );
+    assert!(
+        frame(app, &selector).size.height >= px(44.),
+        "{name} is too short"
+    );
+}
+
+fn frame(app: &Headless, selector: &str) -> nsh_core::Bounds<nsh_core::Points> {
+    app.screen().layout(selector).unwrap().unwrap().bounds
+}
+
+fn frame_bottom(frame: nsh_core::Bounds<nsh_core::Points>) -> nsh_core::Points {
+    frame.origin.y + frame.size.height
+}
+
+fn assert_landscape_button(app: &Headless, selector: &str, bottom: f32) {
+    let layout = app.screen().layout(selector).unwrap().unwrap();
+    let b = layout.bounds;
+    assert!(!layout.clipped, "{selector} is clipped at {b:?}");
+    assert!(
+        b.origin.x >= px(47.)
+            && b.origin.x + b.size.width <= px(797.)
+            && b.origin.y >= px(0.)
+            && frame_bottom(b) <= px(bottom)
+            && b.size.height >= px(44.)
+            && b.size.width >= px(44.),
+        "{selector} escapes the readable area or is too small: {b:?}"
+    );
+}
+
+fn assert_contrast_in_both_schemes(app: &mut Headless, selectors: &[&str]) {
+    for scheme in [
+        nsh_core::platform::ColorScheme::Light,
+        nsh_core::platform::ColorScheme::Dark,
+    ] {
+        app.set_environment("appearance", |env| env.color_scheme = scheme)
+            .unwrap();
+        for selector in selectors {
+            assert_chat_button_contrast(app, selector, None, button_text_color);
+        }
+    }
+}
+
 fn assert_chat_button_contrast(
     app: &mut Headless,
     selector: &str,
@@ -6599,6 +7030,36 @@ fn assert_chat_button_contrast(
     assert_ne!(fills[0], fills[1], "{selector} has no pressed feedback");
     control.set_states(id, 0);
     assert!(app.settle());
+}
+
+fn opaque_contrast(foreground: nsh_core::Color, background: nsh_core::Color) -> f64 {
+    let luminance = |color: nsh_core::Color| {
+        let (r, g, b, a) = color.to_f64();
+        assert_eq!(a, 1.0, "transparent color {color:?}");
+        relative_luminance([r, g, b])
+    };
+    let (fg, bg) = (luminance(foreground), luminance(background));
+    (bg.max(fg) + 0.05) / (bg.min(fg) + 0.05)
+}
+
+fn assert_text_contrast(app: &Headless, selector: &str) {
+    let fg = app.screen().span_style(selector).unwrap().color;
+    let nodes = app.screen().layout_nodes();
+    let mut parent = app.screen().id(selector).unwrap();
+    let bg = loop {
+        if let Some(color) = app
+            .screen()
+            .view_style(&format!("view:{parent}"))
+            .unwrap()
+            .unwrap()
+            .background_color
+        {
+            break nsh_core::Color(color);
+        }
+        parent = nodes.iter().find(|node| node.id == parent).unwrap().parent;
+    };
+    let contrast = opaque_contrast(fg, bg);
+    assert!(contrast >= 4.5, "{selector}: {contrast:.2}:1");
 }
 
 fn button_text_color(app: &Headless, id: nsh_core::NodeId) -> nsh_core::Color {
@@ -6863,7 +7324,16 @@ async fn side_chat_rediscovers_anchors_pages_and_brings_a_link_back() {
         .wait_for("label:Saved side question · Waiting for your response")
         .unwrap();
     fx.app.wait_for("label:From an unloaded page").unwrap();
+    landscape(&mut fx.app);
+    assert_landscape_button(&fx.app, "label:Done", 369.);
+    let row = frame(
+        &fx.app,
+        "label:Saved side question · Waiting for your response",
+    );
+    assert!(row.origin.x >= px(47.) && row.origin.x + row.size.width <= px(797.));
+    assert_contrast_in_both_schemes(&mut fx.app, &["label:Done"]);
     fx.app.press("label:Done").unwrap();
+    portrait(&mut fx.app);
 
     fx.app
         .type_text("label:Message composer", "Main draft")
@@ -8122,7 +8592,7 @@ async fn inbox_review_detail_reflects_remote_desktop_resolution_and_disables_dup
     .unwrap();
 
     app.wait_for("text:Approved on another device").unwrap();
-    app.wait_for_gone("label:Allow", Duration::from_secs(2))
+    app.wait_for_gone("id:review-actions", Duration::from_secs(2))
         .unwrap();
     app.wait_for("label:Open Conversation").unwrap();
 }
@@ -8860,27 +9330,41 @@ async fn host_settings_edit_presets_plugins_mcp_and_skills() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn approval_actions_match_the_scope_shown_and_fail_closed_for_future_grants() {
     let permissions = json!({"filesystem":[{"path":"/fixture/report","scope":"exact","access":"read"}],"network":"denied"});
-    let known = |tool| {
+    let known = |tool: Value| {
         json!({"kind":"permissions","toolUseId":tool,
-        "request":{"reason":"Report access","command":{"command":"read-report"},"permissions":permissions}})
+        "request":{"reason":"Report access","command":{"command": if tool.is_null() {
+            "read-report".into()
+        } else {
+            "read-report --verify\n".repeat(24)
+        }},"permissions":permissions}})
     };
     let capability = |scope| {
         json!({"kind":"client_capability","toolUseId":"tool","target":{
         "providerId":"browser","contractId":"browser","serverId":"browser","toolName":"navigate",
         "capability":"browser","scope":scope}})
     };
+    let prompt = "Choose the release after reading these compatibility notes. ".repeat(6);
+    let option = "Stable release for the currently supported systems. ".repeat(5);
+    let description =
+        "Includes the fixes that were reviewed and verified for offline use. ".repeat(5);
+    let question = json!({"kind":"question","toolUseId":"tool","questions":[
+        {"question":prompt.trim(),"options":[{"label":"Beta release"},{"label":option.trim(),"description":description.trim()}]},
+        {"question":"What notes?","options":[{"label":"Short"},{"label":"Full"}]}
+    ]});
+    let answer = json!(InteractionAnswer::Question {
+        answers: vec![
+            Some(option.trim().into()),
+            Some("Include upgrade notes".into())
+        ]
+    });
     let cases = [
         (
-            json!({"kind":"question","toolUseId":"tool","questions":[
-                {"question":"Which release?","options":[{"label":"Stable"},{"label":"Beta"}]},
-                {"question":"What notes?","options":[{"label":"Short"},{"label":"Full"}]}
-            ]}),
-            "Which release?",
+            question.clone(),
+            "ask-review",
             "Submit Answer",
-            json!(InteractionAnswer::Question {
-                answers: vec![Some("Stable".into()), None]
-            }),
+            answer.clone(),
         ),
+        (question, "ask-inline", "Submit Answer", answer),
         (
             capability(json!({"kind":"browser_origin","origin":"https://example.test"})),
             "https://example.test",
@@ -8943,12 +9427,17 @@ async fn approval_actions_match_the_scope_shown_and_fail_closed_for_future_grant
         });
         let settled = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let settled_q = settled.clone();
+        let session = json!({"id":"s","title":"Review report","kind":"agent",
+            "workspace":{"path":"/fixture","name":"Fixture"},"updatedAt":1700000000000u64,
+            "activity":"waiting","revision":1});
         let (unexpected_tx, mut unexpected) = mpsc::unbounded_channel();
         channel.handle("ios.hostQuery", move |mut call| {
             let data = call.take_data();
             let value = match data["method"].as_str().unwrap() {
-                "list" => json!({"revision":"1","needsYouCount":1,"sessions":[{"id":"s","title":"Review report","kind":"agent",
-                    "workspace":{"path":"/fixture","name":"Fixture"},"updatedAt":1700000000000u64,"activity":"waiting"}]}),
+                "list" => json!({"revision":"1","needsYouCount":1,"sessions":[session]}),
+                "observe" => json!({"session":session,"through":1,"run":null}),
+                "history" => json!({"kind":"ready","through":1,"chunks":[],"before":null,"after":null}),
+                "models" => json!({"kind":"ready","choices":[]}),
                 "botOutbox" => json!({"isBot":false,"through":0,"readThrough":0}),
                 "queue" => json!({"revision":0,"entries":[]}),
                 "pendingInteractions" => json!({"entries": if settled_q.load(std::sync::atomic::Ordering::SeqCst) {json!([])} else {
@@ -8988,18 +9477,163 @@ async fn approval_actions_match_the_scope_shown_and_fail_closed_for_future_grant
             ..Environment::default()
         };
         let mut app = Headless::start(config).unwrap();
-        app.wait_for("label:Pending").unwrap();
-        app.press("label:Pending").unwrap();
+        let chrome = Arc::new(std::sync::Mutex::new(BTreeMap::new()));
         if button == "Submit Answer" {
-            app.press("text:Which release?").unwrap();
-            app.wait_for("text:What notes?").unwrap();
-            app.press("label:Stable").unwrap();
-            app.press("label:Submit Answer").unwrap();
+            let chrome = chrome.clone();
+            app.observe(move |_, batch| {
+                let mut chrome = chrome.lock().unwrap();
+                for item in &batch.items {
+                    if let nsh_core::MountItem::ViewStyle { id, style } = item {
+                        chrome.insert(*id, style.glass_effect);
+                    }
+                }
+            });
+        }
+        let mut screen_ids = (button == "Allow once").then(|| transparent_screens(&mut app));
+        if detail == "ask-inline" {
+            app.wait_for("label:Conversation: Review report").unwrap();
+            app.press("label:Conversation: Review report").unwrap();
+        } else {
+            app.wait_for("label:Pending").unwrap();
+            app.press("label:Pending").unwrap();
+        }
+        if button == "Submit Answer" {
+            let inline = detail == "ask-inline";
+            if !inline {
+                app.set_viewport(Size::new(px(375.), px(812.))).unwrap();
+                app.wait_for("text:Waiting for your response").unwrap();
+                app.set_environment("larger accessibility text", |env| env.font_scale = 3.)
+                    .unwrap();
+                let header = frame(&app, "text:Waiting for your response");
+                assert!(
+                    header.origin.x + header.size.width <= px(375.) && header.size.height > px(54.)
+                );
+                app.set_environment("standard text", |env| env.font_scale = 1.)
+                    .unwrap();
+                app.press("text:/Choose the release/").unwrap();
+            }
+            let card = "id:question-fields >> nth=0";
+            app.wait_for(card).unwrap();
+            assert_eq!(
+                chrome.lock().unwrap().get(&app.screen().id(card).unwrap()),
+                Some(&nsh_core::GlassEffect::None)
+            );
+            if !inline {
+                let bar = app.screen().id("id:review-actions").unwrap();
+                assert_eq!(
+                    chrome.lock().unwrap().get(&bar),
+                    Some(&nsh_core::GlassEffect::Regular)
+                );
+            }
+            let surface = app
+                .screen()
+                .view_style(card)
+                .unwrap()
+                .unwrap()
+                .background_color;
+            assert_eq!(surface, Some(if inline { 0xf2f2f7ff } else { 0xffffffff }));
+            assert_eq!(app.screen().matches("id:review-actions").unwrap(), !inline);
+            for width in [375., 390., 844.] {
+                if width == 844. {
+                    landscape(&mut app);
+                } else {
+                    app.set_viewport(Size::new(px(width), px(844.))).unwrap();
+                }
+                let form = frame(&app, card);
+                assert!(form.origin.x >= px(if width == 844. { 47. } else { 0. }));
+                for (selector, line_height) in [
+                    ("text:/Choose the release/", 22.),
+                    ("text:/Stable release for the/", 22.),
+                    ("text:/Includes the fixes/", 18.),
+                ] {
+                    let text = frame(&app, selector);
+                    assert!(
+                        text.size.height > px(line_height)
+                            && text.origin.x + text.size.width <= form.origin.x + form.size.width,
+                        "{selector} does not wrap inside {form:?} at {width}pt: {text:?}"
+                    );
+                }
+            }
+            let option = format!("label:{}", option.trim());
+            let input = "id:question-fields >> nth=1 >> label:Write your own answer";
+            if inline {
+                portrait(&mut app);
+            } else {
+                app.scroll("id:review-details", px(100.)).unwrap();
+            }
+            let other = "label:Beta release";
+            assert!(!app.screen().accessibility_state(other).unwrap().selected);
+            app.press(other).unwrap();
+            assert!(app.screen().accessibility_state(other).unwrap().selected);
+            app.press(&option).unwrap();
+            assert!(app.screen().accessibility_state(&option).unwrap().selected);
+            assert!(!app.screen().accessibility_state(other).unwrap().selected);
+
+            let scroll = if inline {
+                "id:chat-transcript"
+            } else {
+                "id:review-details"
+            };
+            // The second answer remains reachable independently of the first.
+            if !inline {
+                app.scroll(scroll, px(1_000.)).unwrap();
+                let actions = frame(&app, "id:review-actions");
+                assert!(frame_bottom(frame(&app, input)) < actions.origin.y);
+            }
+            app.type_text(input, "Include upgrade notes").unwrap();
+            let submit = if inline {
+                "label:Submit Answer"
+            } else {
+                "id:review-actions >> label:Submit Answer"
+            };
+            if !inline {
+                landscape_keyboard(&mut app);
+                assert_landscape_button(&app, submit, 150.);
+                assert_contrast_in_both_schemes(&mut app, &[submit]);
+            }
+            app.press(submit).unwrap();
             let data = rx.try_recv().unwrap();
             assert_eq!(data["method"], "respond");
             assert_eq!(data["input"]["answer"], expected);
             assert!(unexpected.try_recv().is_err());
             continue;
+        }
+        if button == "Allow once" {
+            app.press("text:Report access").unwrap();
+            landscape(&mut app);
+            app.wait_for("id:review-actions").unwrap();
+            assert_page_top_inset(
+                &mut app,
+                screen_ids.as_mut().unwrap(),
+                "Permission",
+                "id:review-details >> text:Source",
+                [47., 21.],
+            );
+            let buttons = ["label:Deny", "label:This session", "label:Allow once"];
+            for button in buttons {
+                assert_landscape_button(&app, button, 369.);
+            }
+            assert_contrast_in_both_schemes(&mut app, &buttons);
+            for scheme in [
+                nsh_core::platform::ColorScheme::Light,
+                nsh_core::platform::ColorScheme::Dark,
+            ] {
+                app.set_environment("appearance", |env| env.color_scheme = scheme)
+                    .unwrap();
+                assert_text_contrast(&app, "id:review-details >> text:Permission");
+                assert_chat_button_contrast(
+                    &mut app,
+                    "id:review-open-conversation",
+                    None,
+                    button_text_color,
+                );
+            }
+            let actions = frame(&app, "id:review-actions");
+            let open = "id:review-open-conversation";
+            assert!(frame_bottom(frame(&app, open)) > actions.origin.y);
+            app.scroll("id:review-details", px(1_000.)).unwrap();
+            assert!(frame_bottom(frame(&app, open)) < actions.origin.y);
+            assert_eq!(frame(&app, "id:review-actions"), actions);
         }
         app.wait_for(&format!("text:/{}/", detail.replace('/', "\\/")))
             .unwrap();
@@ -9018,6 +9652,185 @@ async fn approval_actions_match_the_scope_shown_and_fail_closed_for_future_grant
             "text:Allowed"
         })
         .unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn native_tab_bar_survives_review_and_badge_removal() {
+    for question in [true, false] {
+        let channel = HostChannel::new();
+        let (boot, mut bootstraps) = mpsc::unbounded_channel();
+        channel.handle("ios.bootstrap", move |call| {
+            boot.send(call.into_reply().unwrap()).unwrap();
+        });
+        channel.handle("ios.subscribe", |mut call| {
+            let data = call.take_data();
+            call.resolve(
+                json!({"rootId":"root-a","generation":1,"subscriptionId":data["subscriptionId"]}),
+            );
+        });
+        channel.handle("ios.unsubscribe", |call| {
+            call.resolve(json!({"cancelled":true}))
+        });
+        let request = if question {
+            json!({"kind":"question","toolUseId":"tool","questions":[
+                {"question":"Pick a route","options":[{"label":"Short route"}]}
+            ]})
+        } else {
+            json!({"kind":"permissions","toolUseId":"tool","request":{
+                "reason":"Review access","command":{"command":"read-report"},
+                "permissions":{"filesystem":[{"path":"/report","scope":"exact","access":"read"}],
+                    "network":"denied"}
+            }})
+        };
+        let session = json!({"id":"s","title":"Tab recovery fixture","kind":"agent",
+            "workspace":{"name":"Fixture","path":"/fixture"},"updatedAt":1700000000000u64,
+            "activity":"waiting","revision":1});
+        let outcome = Arc::new(std::sync::Mutex::new(Value::Null));
+        let answer = outcome.clone();
+        channel.handle("ios.hostQuery", move |mut call| {
+            let data = call.take_data();
+            let outcome = outcome.lock().unwrap();
+            let pending = outcome.is_null();
+            let value = match data["method"].as_str().unwrap() {
+                "list" => json!({"revision": if pending {"1"} else {"2"},
+                    "needsYouCount":u8::from(pending),"before":null,"after":null,"sessions":[session]}),
+                "observe" => json!({"session":session,"through":1,"run":null}),
+                "history" => json!({"kind":"ready","chunks":[],"through":1,"before":null,"after":null}),
+                "models" => json!({"kind":"ready","choices":[]}),
+                "queue" => json!({"revision":0,"entries":[]}),
+                "botOutbox" => json!({"isBot":false,"through":0,"readThrough":0}),
+                "pendingInteractions" => json!({"entries":if pending {
+                    json!([{"requestId":"review","kind":request["kind"],"toolUseId":"tool"}])
+                } else {json!([])}}),
+                "interaction" => json!({"requestId":"review","request":request,"outcome":*outcome}),
+                method => panic!("unexpected query {method}"),
+            };
+            call.resolve(json!({"value":value}));
+        });
+        channel.handle("ios.hostMutate", move |mut call| {
+            let data = call.take_data();
+            assert_eq!(data["method"], "respond");
+            let answer_payload = &data["input"]["answer"];
+            let record = if question {
+                assert_eq!(answer_payload["answers"], json!(["Short route"]));
+                json!(InteractionOutcome::QuestionAnswer {
+                    answers: vec![Some("Short route".into())],
+                    committed_at: 1,
+                })
+            } else {
+                assert_eq!(answer_payload["decision"]["decision"], "allow");
+                json!({"kind":"permissions_decision","decision":answer_payload["decision"],"committedAt":1})
+            };
+            *answer.lock().unwrap() = record.clone();
+            call.resolve(json!({"value":{"kind":"recorded","record":{"outcome":record}}}));
+        });
+
+        let mut config = engine_config(channel, tokio::runtime::Handle::current());
+        config.viewport = Size::new(px(390.), px(844.));
+        config.environment = Environment {
+            os: Os::Ios,
+            tab_bar: true,
+            reduce_motion: true,
+            ..Environment::default()
+        };
+        let mut app = Headless::start(config).unwrap();
+        let (send, mut updates) = mpsc::unbounded_channel();
+        app.observe(move |_, batch| {
+            for item in &batch.items {
+                if let nsh_core::MountItem::ComponentProps { id, props } = item {
+                    for (name, value) in props {
+                        if name.as_ref() == "items"
+                            && let Some(items) = value.as_ref()
+                            && items[1]["title"] == "Pending"
+                        {
+                            send.send((*id, items.clone())).unwrap();
+                        }
+                    }
+                }
+            }
+        });
+        let mut state = workspace_host_state(1, "MacBook Pro");
+        state["hosts"].as_array_mut().unwrap().truncate(1);
+        tokio::time::timeout(Duration::from_secs(2), bootstraps.recv())
+            .await
+            .unwrap()
+            .unwrap()
+            .resolve(state);
+        app.wait_for("label:Conversation: Tab recovery fixture")
+            .unwrap();
+        let (bar, mut items) = std::iter::from_fn(|| updates.try_recv().ok())
+            .last()
+            .expect("mounted native TabBar");
+        // Headless does not have UITabBar to report its intrinsic height.
+        app.engine()
+            .control()
+            .set_component_size(bar, Size::new(px(0.), px(83.)));
+        let bar_selector = "id:main-tab-bar";
+        app.wait_for(bar_selector).unwrap();
+        assert_eq!(app.screen().id(bar_selector).unwrap(), bar);
+        let choose_tab = |app: &Headless, index| {
+            app.engine().control().dispatch_event(
+                bar,
+                nsh_core::EventKind::NativeEvent,
+                nsh_core::EventPayload::Native {
+                    name: "change".into(),
+                    data: json!(index),
+                },
+            );
+        };
+        choose_tab(&app, 1);
+        let title = if question {
+            "text:Pick a route"
+        } else {
+            "text:Review access"
+        };
+        app.wait_for(title).unwrap();
+        if let Some((id, latest)) = std::iter::from_fn(|| updates.try_recv().ok()).last() {
+            assert_eq!(id, bar);
+            items = latest;
+        }
+        assert_eq!(
+            items[1],
+            json!({"title":"Pending","icon":"tray.full","badge":"1"})
+        );
+        app.press(title).unwrap();
+        app.wait_for("id:review-details").unwrap();
+        assert_eq!(app.screen().id(bar_selector).unwrap(), bar);
+        if question {
+            app.press("id:review-open-conversation").unwrap();
+            app.wait_for("label:Message composer").unwrap();
+            assert_eq!(app.screen().id(bar_selector).unwrap(), bar);
+            app.send_url_scheme("maka://settings");
+            app.wait_for("label:Language").unwrap();
+            assert_eq!(app.screen().id(bar_selector).unwrap(), bar);
+            app.send_url_scheme("maka://pending");
+            app.wait_for("id:review-details").unwrap();
+            app.press("label:Short route").unwrap();
+            app.press("id:review-actions >> label:Submit Answer")
+                .unwrap();
+        } else {
+            app.press("label:Allow once").unwrap();
+            app.wait_for("text:Allowed").unwrap();
+            assert_eq!(app.screen().id(bar_selector).unwrap(), bar);
+            app.press("label:Pending").unwrap();
+        }
+        app.wait_for("text:All caught up").unwrap();
+        let items = std::iter::from_fn(|| updates.try_recv().ok())
+            .last()
+            .unwrap();
+        assert_eq!(items.0, bar);
+        assert_eq!(items.1[1], json!({"title":"Pending","icon":"tray"}));
+        assert_eq!(app.screen().id(bar_selector).unwrap(), bar);
+        assert!(!app.screen().layout(bar_selector).unwrap().unwrap().hidden);
+        choose_tab(&app, 0);
+        app.wait_for(if question {
+            "label:Message composer"
+        } else {
+            "label:Conversation: Tab recovery fixture"
+        })
+        .unwrap();
+        assert_eq!(app.screen().id(bar_selector).unwrap(), bar);
     }
 }
 
@@ -9051,11 +9864,38 @@ async fn manual_websocket_is_visible_until_disconnected() {
     let mut app = Headless::start(config).unwrap();
     app.wait_for("label:Scan QR code on computer").unwrap();
     app.press("label:Scan QR code on computer").unwrap();
-    app.wait_for("text:Scan QR Code").unwrap();
+    app.wait_for("label:Paste pairing link").unwrap();
     app.press("label:Back").unwrap();
     app.press("label:Paste pairing link or connect manually")
         .unwrap();
+    assert_named_input(&app, "Pairing URI input");
+    let grabber = "label:Adjust sheet height";
+    assert_eq!(
+        app.screen()
+            .accessibility(Some(grabber))
+            .unwrap()
+            .unwrap()
+            .role,
+        Some(nsh_core::AccessibilityRole::Adjustable)
+    );
+    let target = frame(&app, grabber);
+    assert!(target.size.width >= px(44.) && target.size.height >= px(44.));
+    assert_contrast_in_both_schemes(&mut app, &["label:Paste from Clipboard"]);
+    landscape(&mut app);
+    assert_landscape_button(&app, "label:Done", 369.);
+    assert_contrast_in_both_schemes(&mut app, &["label:Done"]);
     app.press("label:Custom relay or WebSocket").unwrap();
+    for name in [
+        "Relay URL",
+        "Relay Bearer token",
+        "WebSocket endpoint",
+        "Root ID",
+        "Bearer token",
+        "Client instance",
+    ] {
+        assert_named_input(&app, name);
+    }
+
     app.type_text(
         "label:WebSocket endpoint",
         "wss://host.example/runtime-host",
@@ -9066,7 +9906,13 @@ async fn manual_websocket_is_visible_until_disconnected() {
         .unwrap();
     app.type_text("label:Client instance", "fixture-client")
         .unwrap();
+    landscape_keyboard(&mut app);
+    assert!(!app.screen().matches(grabber).unwrap());
+    app.scroll("id:advanced-connect-form", px(2_000.)).unwrap();
+    assert_landscape_button(&app, "label:Connect via WebSocket", 150.);
+    assert_contrast_in_both_schemes(&mut app, &["label:Connect via WebSocket"]);
     app.press("label:Connect via WebSocket").unwrap();
+    portrait(&mut app);
     assert_eq!(
         connect_rx.try_recv().unwrap(),
         json!({"endpoint":"wss://host.example/runtime-host","rootId":"manual",
@@ -9550,6 +10396,8 @@ async fn default_model_is_sent_on_create_and_recovers_unbound_conversations() {
     app.wait_for("label:New Chat").unwrap();
     app.press("label:New Chat").unwrap();
     app.wait_for("text:Kimi default · Personal").unwrap();
+    assert_named_input(&app, "Conversation title");
+    assert!(!app.screen().matches("role:adjustable").unwrap());
     app.press("label:Model").unwrap();
     let entries = app.menu().unwrap();
     assert_eq!(
@@ -9565,7 +10413,17 @@ async fn default_model_is_sent_on_create_and_recovers_unbound_conversations() {
     );
     app.close_menu().unwrap();
     assert_eq!(resolves.try_recv().unwrap(), default_target);
+    landscape(&mut app);
+    assert_landscape_button(&app, "label:Cancel", 369.);
+    assert_contrast_in_both_schemes(&mut app, &["label:Cancel"]);
+    app.scroll("id:new-chat-form", px(500.)).unwrap();
+    app.type_text("label:Conversation title", "").unwrap();
+    landscape_keyboard(&mut app);
+    app.scroll("id:new-chat-form", px(500.)).unwrap();
+    assert_landscape_button(&app, "label:Start Chat", 150.);
+    assert_contrast_in_both_schemes(&mut app, &["label:Start Chat"]);
     app.press("label:Start Chat").unwrap();
+    portrait(&mut app);
     let data = mutations.try_recv().unwrap();
     assert_eq!(data["generation"], 7);
     let create: Create = serde_json::from_value(data["input"].clone()).unwrap();

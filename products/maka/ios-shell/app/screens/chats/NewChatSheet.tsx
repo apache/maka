@@ -18,7 +18,7 @@
  */
 
 import { cleanup, effect, untracked, Scroll, signal, Text, View, token } from 'nsh';
-import { Input, MenuButton, Sheet, type MenuButtonItem, type SheetDetent } from 'nsh/base';
+import { Input, MenuButton, Sheet, type MenuButtonItem } from 'nsh/base';
 import { isAvailable, SegmentedControl } from 'nsh/mobile';
 import {
   hasAgentEndpoint,
@@ -56,6 +56,7 @@ import { settingsRpc } from '../../state/settings/rpc';
 import { SettingChoice } from '../settings/SettingsForm';
 import { spacing, type } from '../../theme/tokens';
 import { ActionButton, BannerNotice, GroupRow, Icon, InsetGroup, StatusDot } from '../../ui';
+import { confirmDiscard, SheetHeader, sheetInsets } from '../../ui/SheetHeader';
 
 interface WorkspaceOption {
   id: string;
@@ -71,8 +72,9 @@ export function NewChatSheet(props: {
   onClose: () => void;
   onCreated: (session: ScopedSession) => void;
 }) {
-  const detent = signal<SheetDetent>('large');
+  const layout = sheetInsets();
   const targetRootId = signal('');
+  let initialRootId = '';
   const modeIndex = signal(0);
   const title = signal('');
   const workspaces = signal<WorkspaceOption[]>([]);
@@ -96,14 +98,14 @@ export function NewChatSheet(props: {
 
   effect(() => {
     if (!props.open) return;
-    detent.set(untracked(savedHosts).length === 1 ? 'medium' : 'large');
     const scope = untracked(selectedScopeRootId);
     const hosts = untracked(eligibleHosts);
     const preferred =
       hosts.find(({ host }) => host.rootId === scope) ??
       hosts.find(({ host }) => host.rootId === lastUsedRootId) ??
       hosts[0];
-    targetRootId.set(preferred?.host.rootId ?? '');
+    initialRootId = preferred?.host.rootId ?? '';
+    targetRootId.set(initialRootId);
   });
   effect(() => {
     const rootId = targetRootId();
@@ -225,8 +227,25 @@ export function NewChatSheet(props: {
     error.set(null);
     props.onClose();
   };
-  const close = () => {
-    if (!creating()) reset();
+  const dirty = () =>
+    targetRootId() !== initialRootId ||
+    !!title().trim() ||
+    modeIndex() !== 0 ||
+    modelIndex() !== '' ||
+    (!!selectedWorkspaceId() && selectedWorkspaceId() !== workspaces()[0]?.id);
+  const canDismiss = () => !creating() && !createdRoom() && !dirty();
+  let discardPending = false;
+  const close = async () => {
+    if (creating() || discardPending) return;
+    if (!createdRoom() && dirty()) {
+      discardPending = true;
+      try {
+        if (!(await confirmDiscard())) return;
+      } finally {
+        discardPending = false;
+      }
+    }
+    reset();
   };
   const finish = (created: ScopedSession) => {
     lastUsedRootId = created.rootId;
@@ -318,57 +337,39 @@ export function NewChatSheet(props: {
       open={props.open}
       accessibilityLabel={tr('New Chat')}
       detents={['large']}
-      detent={detent()}
-      onDetentChange={(e) => detent.set(e.detent)}
-      grabber
-      closeOnSwipe={!creating()}
+      closeOnSwipe={canDismiss()}
+      closeOnEscape={canDismiss()}
+      closeOnBackdropPress={canDismiss()}
+      onCancel={() => {
+        if (props.open && dirty()) void close();
+      }}
       onOpenChange={({ open }) => {
-        if (!open) close();
+        if (!open && canDismiss()) reset();
       }}
       backdropStyle={{ backgroundColor: token('scrim') }}
       popupStyle={{
+        ...layout.extraGutters(),
+        ...layout.keyboardBounds(),
         backgroundColor: token('grouped-bg'),
         borderTopLeftRadius: 20,
         borderTopRightRadius: 20,
         borderCurve: 'continuous',
         paddingTop: 4,
       }}
-      grabberStyle={{
-        width: 36,
-        height: 5,
-        borderRadius: 3,
-        alignSelf: 'center',
-        backgroundColor: token('tertiary-foreground'),
-        marginTop: 6,
-        marginBottom: 4,
-      }}
     >
-      {/* Header */}
-      <View
-        style={{
-          flexDirection: 'row',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          paddingHorizontal: spacing.pageX,
-          paddingTop: 6,
-          paddingBottom: 12,
-        }}
-      >
-        <Text style={{ ...type.headline, color: token('foreground') }}>
-          {modeIndex() === 1 ? tr('New Room') : tr('New Chat')}
-        </Text>
-        <View
-          role="button"
-          accessibilityLabel={tr('Cancel')}
-          onPress={close}
-          class="active:opacity-60"
-          style={{ minHeight: 36, paddingHorizontal: 8, justifyContent: 'center' }}
-        >
-          <Text style={{ ...type.bodyMedium, color: token('primary') }}>{tr('Cancel')}</Text>
-        </View>
-      </View>
+      <SheetHeader
+        title={modeIndex() === 1 ? tr('New Room') : tr('New Chat')}
+        action={tr('Cancel')}
+        onPress={() => void close()}
+        disabled={creating()}
+      />
 
-      <Scroll style={{ flex: 1 }} contentStyle={{ paddingBottom: 36 }}>
+      <Scroll
+        testID="new-chat-form"
+        style={{ flex: 1, minHeight: 0 }}
+        contentStyle={{ paddingBottom: layout.bottomPadding() }}
+        keyboardShouldPersistTaps="handled"
+      >
         <If when={error()}>
           <BannerNotice tone="destructive" title={error()!} />
         </If>
@@ -418,7 +419,7 @@ export function NewChatSheet(props: {
                   onPress={() => modeIndex.set(0)}
                   style={{
                     flex: 1,
-                    minHeight: 34,
+                    minHeight: spacing.rowMinHeight,
                     borderRadius: 8,
                     backgroundColor: modeIndex() === 0 ? token('surface') : 'transparent',
                     alignItems: 'center',
@@ -435,7 +436,7 @@ export function NewChatSheet(props: {
                   onPress={() => modeIndex.set(1)}
                   style={{
                     flex: 1,
-                    minHeight: 34,
+                    minHeight: spacing.rowMinHeight,
                     borderRadius: 8,
                     backgroundColor: modeIndex() === 1 ? token('surface') : 'transparent',
                     alignItems: 'center',
@@ -456,7 +457,7 @@ export function NewChatSheet(props: {
                 hapticSelection();
                 modeIndex.set(index);
               }}
-              style={{ height: 34 }}
+              style={{ minHeight: spacing.rowMinHeight }}
             />
           </If>
         </View>
@@ -548,7 +549,7 @@ export function NewChatSheet(props: {
               }
               onChange={({ value }) => title.set(value)}
               style={{
-                minHeight: 38,
+                minHeight: spacing.rowMinHeight,
                 ...type.body,
                 color: token('foreground'),
                 placeholderColor: token('muted-foreground'),
@@ -560,6 +561,7 @@ export function NewChatSheet(props: {
 
         <View style={{ paddingHorizontal: spacing.pageX }}>
           <ActionButton
+            variant="glassPrimary"
             minHeight={46}
             title={
               createdRoom()

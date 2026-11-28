@@ -31,11 +31,11 @@ use objc2_foundation::{
     NSString,
 };
 use objc2_ui_kit::{
-    NSFontAttributeName, NSForegroundColorAttributeName, NSTextAlignment, UIColor, UIControl,
-    UIControlEvents, UIEdgeInsets, UIKeyboardAppearance, UIKeyboardType, UILabel, UIPress,
-    UIPressesEvent, UIResponder, UIReturnKeyType, UITextAutocapitalizationType,
-    UITextAutocorrectionType, UITextField, UITextSmartDashesType, UITextSmartQuotesType,
-    UITextView, UIView, UIViewAutoresizing,
+    NSFontAttributeName, NSForegroundColorAttributeName, NSObjectUIAccessibility, NSTextAlignment,
+    UIAccessibilityIdentification, UIColor, UIControl, UIControlEvents, UIEdgeInsets,
+    UIKeyboardAppearance, UIKeyboardType, UILabel, UIPress, UIPressesEvent, UIResponder,
+    UIReturnKeyType, UITextAutocapitalizationType, UITextAutocorrectionType, UITextField,
+    UITextSmartDashesType, UITextSmartQuotesType, UITextView, UIView, UIViewAutoresizing,
 };
 
 use crate::{target::EventTarget, text};
@@ -1318,6 +1318,8 @@ impl Input {
         if config.multiline != multiline {
             let text = self.text();
             let focused = self.editor_view().isFirstResponder();
+            let label = self.editor_view().accessibilityLabel(mtm);
+            let identifier = self.editor_view().accessibilityIdentifier();
             self.editor_view().removeFromSuperview();
             self.editor = if config.multiline {
                 Editor::Area {
@@ -1328,6 +1330,10 @@ impl Input {
                 Editor::Line(Field::new(mtm))
             };
             self.attach(target);
+            self.editor_view()
+                .setAccessibilityLabel(label.as_deref(), mtm);
+            self.editor_view()
+                .setAccessibilityIdentifier(identifier.as_deref());
             self.set_text(&text);
             self.set_content(self.content);
             if focused {

@@ -41,7 +41,7 @@ pub(crate) struct LineDrag {
 pub(crate) struct Nav {
     /// The change.
     hunk: usize,
-    /// Where the view scrolls to.
+    /// Where the view scrolls to, in content coordinates.
     y: Points,
     /// The view got there.
     reached: bool,
@@ -100,12 +100,17 @@ pub(crate) fn hunk_spans(rows: &[Row], geometry: &Geometry) -> Vec<(usize, Point
 }
 
 /// The box of each change's rows in `rows`, as wide as `width`.
-pub(crate) fn hunk_bounds(rows: &[Row], geometry: &Geometry, width: Points) -> Vec<DiffHunkBounds> {
+pub(crate) fn hunk_bounds(
+    rows: &[Row],
+    geometry: &Geometry,
+    width: Points,
+    padding_top: Points,
+) -> Vec<DiffHunkBounds> {
     hunk_spans(rows, geometry)
         .into_iter()
         .map(|(hunk, top, bottom)| DiffHunkBounds {
             index: hunk as u32,
-            bounds: bounds(point(px(0.0), top), size(width, bottom - top)),
+            bounds: bounds(point(px(0.0), top + padding_top), size(width, bottom - top)),
         })
         .collect()
 }
@@ -191,7 +196,7 @@ impl Dv {
                 anchor,
                 head: line,
                 shift: at.y - page.y,
-                scroll: self.scroll_y.get_untracked(),
+                scroll: self.row_scroll_y(),
                 moved: false,
                 extended: shift,
             }));
@@ -222,7 +227,7 @@ impl Dv {
         let Some(mut drag) = self.line_drag.get() else {
             return;
         };
-        let y = page.y + drag.shift + (self.scroll_y.get_untracked() - drag.scroll);
+        let y = page.y + drag.shift + (self.row_scroll_y() - drag.scroll);
         let line = {
             let st = self.st.borrow();
             let row = st.geometry.row_at(y);
@@ -321,9 +326,17 @@ impl Dv {
     }
 
     fn line_number_press(&self, side: DiffSide, line: usize) {
+        let number = {
+            let st = self.st.borrow();
+            match side {
+                DiffSide::Old => st.old.number(line),
+                DiffSide::New => st.new.number(line),
+            }
+        };
         self.emit(DiffViewEvent::LineNumberPress(DiffLine {
             side,
             line: line as u32,
+            number: number as u32,
         }));
     }
 
@@ -475,20 +488,29 @@ impl Dv {
 
     // Scrolling.
 
+    fn row_scroll_y(&self) -> Points {
+        self.content_scroll_y.get_untracked() - self.props.scroll_padding_top.get_untracked()
+    }
+
+    fn scroll_range_end(&self) -> Points {
+        (self.st.borrow().geometry.height()
+            + self.props.scroll_padding_top.get_untracked()
+            + self.props.scroll_padding_bottom.get_untracked()
+            - self.viewport.get_untracked().height)
+            .max(Points::ZERO)
+    }
+
     /// Scrolls `y` to the top of the view (as far as the rows go), with
     /// an animation: to change `hunk`, which navigation goes on from.
     pub(crate) fn scroll_to_y(&self, y: Points, hunk: Option<usize>) {
-        let max = {
-            let st = self.st.borrow();
-            (st.geometry.height() - self.viewport.get_untracked().height).max(Points::ZERO)
-        };
-        let y = y.min(max).max(Points::ZERO);
+        let top = self.props.scroll_padding_top.get_untracked();
+        let offset = (y + top).clamp(Points::ZERO, self.scroll_range_end());
         self.nav.set(hunk.map(|hunk| Nav {
             hunk,
-            y,
-            reached: (self.scroll_y.get_untracked() - y).abs() < px(1.0),
+            y: offset,
+            reached: (self.content_scroll_y.get_untracked() - offset).abs() < px(1.0),
         }));
-        self.vscroll.scroll_to(point(px(0.0), y), true);
+        self.vscroll.scroll_to(point(px(0.0), offset), true);
     }
 
     /// The view scrolled to `y`: a navigation got there, or the user
@@ -513,9 +535,11 @@ impl Dv {
         let dv = self.clone();
         let reported = std::cell::Cell::<Option<Scrolled>>::new(None);
         effect(move || {
-            let offset = point(px(0.0), dv.scroll_y.get());
+            let top = dv.props.scroll_padding_top.get();
+            let bottom = dv.props.scroll_padding_bottom.get();
+            let offset = point(px(0.0), dv.content_scroll_y.get().max(Points::ZERO));
             let viewport = dv.viewport.get();
-            let content = size(viewport.width, dv.rows_height());
+            let content = size(viewport.width, dv.rows_height() + top + bottom);
             if viewport == Size::default() {
                 return;
             }
@@ -545,7 +569,12 @@ impl Dv {
             }
             let now = {
                 let st = dv.st.borrow();
-                hunk_bounds(&st.rows, &st.geometry, width)
+                hunk_bounds(
+                    &st.rows,
+                    &st.geometry,
+                    width,
+                    dv.props.scroll_padding_top.get(),
+                )
             };
             if reported.borrow().as_ref() == Some(&now) {
                 return;
@@ -557,25 +586,29 @@ impl Dv {
 
     /// Scrolls `y` to the top of the view (as far as the rows go) at once.
     pub(crate) fn set_scroll_offset(&self, y: Points) {
-        let max = {
-            let st = self.st.borrow();
-            (st.geometry.height() - self.viewport.get_untracked().height).max(Points::ZERO)
-        };
-        let y = y.min(max).max(Points::ZERO);
+        let y = y.clamp(Points::ZERO, self.scroll_range_end());
         // The rows in view follow now; the scroll view reports `y` back.
-        self.scroll_y.set(y);
+        self.content_scroll_y.set(y);
         self.vscroll.scroll_to(point(px(0.0), y), false);
     }
 
     /// How far the rows are scrolled.
     pub(crate) fn scroll_offset(&self) -> Point<Points> {
-        point(px(0.0), self.scroll_y.get_untracked())
+        point(
+            px(0.0),
+            self.content_scroll_y.get_untracked().max(Points::ZERO),
+        )
     }
 
     pub(crate) fn hunk_bounds(&self) -> Vec<DiffHunkBounds> {
         let width = self.viewport.get_untracked().width;
         let st = self.st.borrow();
-        hunk_bounds(&st.rows, &st.geometry, width)
+        hunk_bounds(
+            &st.rows,
+            &st.geometry,
+            width,
+            self.props.scroll_padding_top.get_untracked(),
+        )
     }
 
     fn spans(&self) -> Vec<(usize, Points, Points)> {
@@ -596,7 +629,7 @@ impl Dv {
         let spans = self.spans();
         let hunk = self
             .nav_from(&spans, 1)
-            .or_else(|| next_of(&spans, self.scroll_y.get_untracked()))?;
+            .or_else(|| next_of(&spans, self.row_scroll_y()))?;
         self.go_to_hunk(hunk);
         Some(hunk)
     }
@@ -605,7 +638,7 @@ impl Dv {
         let spans = self.spans();
         let hunk = self
             .nav_from(&spans, -1)
-            .or_else(|| previous_of(&spans, self.scroll_y.get_untracked()))?;
+            .or_else(|| previous_of(&spans, self.row_scroll_y()))?;
         self.go_to_hunk(hunk);
         Some(hunk)
     }
@@ -614,7 +647,7 @@ impl Dv {
         let spans = self.spans();
         self.nav_from(&spans, 0).or_else(|| {
             let height = self.viewport.get_untracked().height;
-            current_of(&spans, self.scroll_y.get_untracked(), height)
+            current_of(&spans, self.row_scroll_y(), height)
         })
     }
 
@@ -706,7 +739,7 @@ mod tests {
         let mut extra = vec![Points::ZERO; 6];
         extra[5] = px(15.0);
         let geometry = Geometry::new(&[1, 1, 3, 1, 1, 1], &extra, px(10.0));
-        let marks = hunk_bounds(&rows, &geometry, px(300.0));
+        let marks = hunk_bounds(&rows, &geometry, px(300.0), Points::ZERO);
         let got: Vec<_> = marks.iter().map(|m| (m.index, m.bounds)).collect();
         assert_eq!(
             got,
@@ -722,9 +755,21 @@ mod tests {
             ]
         );
         assert_eq!(
-            hunk_bounds(&[], &Geometry::default(), px(300.0)),
+            hunk_bounds(&[], &Geometry::default(), px(300.0), Points::ZERO),
             Vec::new()
         );
+    }
+
+    #[test]
+    fn hunk_bounds_use_the_padded_scroll_content_coordinates() {
+        let geometry = Geometry::new(&[1; 6], &[], px(10.0));
+        let top = px(90.0);
+        let bottom = px(40.0);
+        let content_height = geometry.height() + top + bottom;
+        let marks = hunk_bounds(&rows(), &geometry, px(300.0), top);
+        assert_eq!(marks[0].bounds.origin.y, top + px(10.0));
+        let last = marks.last().unwrap().bounds;
+        assert_eq!(last.origin.y + last.size.height + bottom, content_height);
     }
 
     #[test]

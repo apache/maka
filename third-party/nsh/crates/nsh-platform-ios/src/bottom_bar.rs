@@ -3,6 +3,19 @@
 
 use std::cell::Cell;
 
+pub(crate) enum Update {
+    AlongsideTransition,
+    Settled,
+}
+
+impl Update {
+    pub(crate) fn apply(self, schedule: impl FnOnce() -> bool, apply: impl FnOnce()) {
+        if !matches!(self, Self::AlongsideTransition) || !schedule() {
+            apply();
+        }
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct Visibility {
     navigation: Cell<bool>,
@@ -25,7 +38,28 @@ impl Visibility {
 
 #[cfg(test)]
 mod tests {
-    use super::Visibility;
+    use super::{Update, Visibility};
+
+    #[test]
+    fn a_settled_stack_restores_its_bar_without_the_transition_coordinator() {
+        let bar = Visibility::default();
+        Update::AlongsideTransition.apply(|| true, || bar.set_navigation(true));
+        assert!(!bar.hidden());
+        bar.set_navigation(true);
+        Update::Settled.apply(
+            || panic!("didShow must not queue another animation"),
+            || bar.set_navigation(false),
+        );
+        assert!(!bar.hidden());
+    }
+
+    #[test]
+    fn a_coordinator_that_refuses_animation_does_not_lose_the_update() {
+        let bar = Visibility::default();
+        bar.set_navigation(true);
+        Update::AlongsideTransition.apply(|| false, || bar.set_navigation(false));
+        assert!(!bar.hidden());
+    }
 
     #[test]
     fn pushes_and_pops_preserve_the_apps_hidden_prop() {
