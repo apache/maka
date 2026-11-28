@@ -17,14 +17,25 @@
  * under the License.
  */
 
-import { cleanup, computed, effect, inputAction, signal, Text, View } from 'nsh';
+import {
+  cleanup,
+  computed,
+  effect,
+  type InputRef,
+  inputAction,
+  List,
+  platform,
+  signal,
+  Text,
+  View,
+  windowSize,
+} from 'nsh';
 import type { CredentialStatus } from '../../../../packages/plugin-sdk/src/generated/runtime';
 import type { ModelSettingsOwner } from './settings';
 import { ConnectionLogin } from './ConnectionLogin';
 import { useHost } from './host';
 import { tr } from './locale';
 import {
-  RowLine,
   SettingsBody,
   SettingsButton,
   SettingsInput,
@@ -38,13 +49,21 @@ import {
 } from './SettingsPage';
 import { C, captionTextStyle } from './ui';
 
+const terminal = platform.idiom === 'terminal';
+const MODEL_FILTER_THRESHOLD = 8;
+const modelViewportHeight = () =>
+  Math.min(360, Math.max(200, Math.floor(windowSize().height * 0.45)));
+
 const blocked = (owner: ModelSettingsOwner) =>
   owner.busy() || owner.loading() || !owner.pendingKnown() || owner.pending().length > 0;
 
 export function ConnectionForm(props: { settings: ModelSettingsOwner }) {
   const owner = props.settings;
+  let searchInput: InputRef | undefined;
   const form = () => owner.editor()!;
   const disabled = () => blocked(owner);
+  const fieldsDirty = () => owner.connectionFieldsDirty();
+  const modelsDirty = () => owner.modelsDirty();
   const interactive = () =>
     form().provider.descriptor.authentication.some((method) => method.interactive);
   const usageAuthentication = () => form().provider.descriptor.usageAuthentication;
@@ -60,6 +79,61 @@ export function ConnectionForm(props: { settings: ModelSettingsOwner }) {
   const isDefault = (id: string) =>
     owner.defaultTarget()?.connectionId === form().baseline?.target.connectionId &&
     owner.defaultTarget()?.modelId === id;
+  const modelQueryTrimmed = () => owner.modelQuery().trim();
+  const filtered = () => owner.filteredModels();
+  const showsModelFilter = () =>
+    owner.modelCount() > MODEL_FILTER_THRESHOLD || !!modelQueryTrimmed();
+  const visibleEnabledCount = computed(() => {
+    const enabled = owner.enabledModels();
+    return filtered().filter((id) => enabled.has(id)).length;
+  });
+  const allVisibleEnabled = () =>
+    filtered().length > 0 && visibleEnabledCount() === filtered().length;
+  const noneVisibleEnabled = () => visibleEnabledCount() === 0;
+  const modelsSummary = () => {
+    const total = owner.modelCount();
+    if (!total) return undefined;
+    const enabled = owner.enabledModelCount();
+    return modelQueryTrimmed()
+      ? tr('{enabled} of {total} enabled · {matched} matching', {
+          enabled,
+          total,
+          matched: filtered().length,
+        })
+      : tr('{enabled} of {total} enabled', { enabled, total });
+  };
+  const renderModelRow = (id: () => string, index: () => number) => (
+    <SettingsRow
+      label={name(id())}
+      description={name(id()) === id() ? undefined : id()}
+      line={index() > 0}
+      trailing={
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+          <If when={isDefault(id())}>
+            <Text style={{ ...captionTextStyle, color: C.secondary }}>{tr('Default')}</Text>
+          </If>
+          <SettingsButton
+            label={tr('Edit model {id}', { id: id() })}
+            icon="edit"
+            iconOnly
+            tone="quiet"
+            disabled={disabled() || owner.dirty()}
+            onPress={inputAction(owner.editModel, { ...owner.action(), id: id() })}
+          />
+          <SettingsSwitchControl
+            accessibilityLabel={name(id())}
+            checked={owner.enabledModels().has(id())}
+            disabled={disabled()}
+            onChange={inputAction(owner.setModelEnabled, {
+              ...owner.action(),
+              id: id(),
+              enabled: !owner.enabledModels().has(id()),
+            })}
+          />
+        </View>
+      }
+    />
+  );
   return (
     <SettingsBody
       footerShown={!form().baseline || owner.dirty()}
@@ -67,9 +141,11 @@ export function ConnectionForm(props: { settings: ModelSettingsOwner }) {
         <ConnectionFooter
           owner={owner}
           note={
-            form().baseline && owner.dirty()
+            form().baseline && fieldsDirty()
               ? tr('Save or discard the connection changes before editing models.')
-              : undefined
+              : form().baseline && modelsDirty()
+                ? tr('Unsaved model selection changes.')
+                : undefined
           }
         />
       }
@@ -123,16 +199,10 @@ export function ConnectionForm(props: { settings: ModelSettingsOwner }) {
       >
         <UsageAccessKey owner={owner} requiresTeam={usageAuthentication() === 'team_access_key'} />
       </If>
-      <If when={form().baseline && (owner.modelCount() > 8 || owner.modelQuery().trim())}>
-        <SettingsSearch
-          label={tr('Search models')}
-          value={owner.modelQuery()}
-          change={(text) => owner.modelQuery.set(text)}
-        />
-      </If>
       <If when={form().baseline}>
         <SettingsSection
-          title={tr('Models · {count}', { count: owner.modelCount() })}
+          title={tr('Models')}
+          description={modelsSummary()}
           note={
             owner.discovery() === 'failed'
               ? tr(
@@ -158,7 +228,6 @@ export function ConnectionForm(props: { settings: ModelSettingsOwner }) {
               <SettingsButton
                 label={tr('Add model')}
                 accessibilityLabel={tr('Add model manually')}
-                tone="quiet"
                 icon="plus"
                 disabled={disabled() || owner.dirty()}
                 onPress={inputAction(owner.editModel, { ...owner.action(), id: null })}
@@ -166,56 +235,98 @@ export function ConnectionForm(props: { settings: ModelSettingsOwner }) {
             </>
           }
         >
-          <Each of={owner.filteredModels()} key={(id) => id}>
-            {(id) => (
-              <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                <RowLine />
-                <View style={{ flex: 1, minWidth: 0 }}>
-                  <SettingsRow
-                    label={name(id())}
-                    description={name(id()) === id() ? undefined : id()}
-                    accessibilityLabel={tr('Edit model {id}', { id: id() })}
-                    trailing={
-                      <If when={isDefault(id())}>
-                        <Text style={{ ...captionTextStyle, color: C.secondary }}>
-                          {tr('Default')}
-                        </Text>
-                      </If>
-                    }
-                    opens
-                    line={false}
-                    disabled={disabled() || owner.dirty()}
-                    onPress={inputAction(owner.editModel, { ...owner.action(), id: id() })}
-                  />
-                </View>
-                <View
-                  style={{
-                    paddingHorizontal: settingsInset,
-                    alignSelf: 'stretch',
-                    alignItems: 'center',
-                    justifyContent: 'center',
+          <If when={owner.modelCount() > 0 || !!modelQueryTrimmed()}>
+            <View
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                flexWrap: 'wrap',
+                gap: 8,
+                paddingLeft: terminal
+                  ? 0
+                  : showsModelFilter()
+                    ? settingsInset
+                    : Math.max(0, settingsInset - 8),
+                paddingRight: settingsInset,
+                paddingVertical: terminal ? 0 : 8,
+                borderBottomWidth: terminal ? 0 : 1,
+                borderBottomColor: C.line,
+              }}
+            >
+              <If when={showsModelFilter()}>
+                <SettingsSearch
+                  contained
+                  ref={(node) => {
+                    searchInput = node;
                   }}
-                >
-                  <SettingsSwitchControl
-                    accessibilityLabel={name(id())}
-                    checked={owner.enabledModels().has(id())}
-                    disabled={disabled() || owner.dirty()}
-                    onChange={inputAction(owner.setModelEnabled, {
+                  label={tr('Search models')}
+                  value={owner.modelQuery()}
+                  change={(text) => owner.modelQuery.set(text)}
+                />
+              </If>
+              <If when={filtered().length > 0}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                  <SettingsButton
+                    label={modelQueryTrimmed() ? tr('Enable matching') : tr('Enable all')}
+                    tone="quiet"
+                    disabled={disabled() || allVisibleEnabled()}
+                    onPress={inputAction(owner.setModelsEnabled, {
                       ...owner.action(),
-                      id: id(),
-                      enabled: !owner.enabledModels().has(id()),
+                      ids: filtered(),
+                      enabled: true,
+                    })}
+                  />
+                  <SettingsButton
+                    label={modelQueryTrimmed() ? tr('Disable matching') : tr('Disable all')}
+                    tone="quiet"
+                    disabled={disabled() || noneVisibleEnabled()}
+                    onPress={inputAction(owner.setModelsEnabled, {
+                      ...owner.action(),
+                      ids: filtered(),
+                      enabled: false,
                     })}
                   />
                 </View>
-              </View>
-            )}
-          </Each>
-          <If when={!owner.filteredModels().length && owner.discovery() !== 'fetching'}>
-            <SettingsRow
-              label={
-                owner.modelQuery().trim() ? tr('No matching models.') : tr('No models added yet.')
+              </If>
+            </View>
+          </If>
+          <If when={filtered().length > 0}>
+            <If
+              when={!terminal && filtered().length > MODEL_FILTER_THRESHOLD}
+              else={
+                <Each of={filtered()} key={(id) => id}>
+                  {(id, index) => renderModelRow(id, index)}
+                </Each>
               }
+            >
+              <List
+                each={filtered()}
+                keyExtractor={(id) => id}
+                estimatedItemSize={48}
+                accessibilityLabel={tr('Models')}
+                style={{ height: modelViewportHeight() }}
+              >
+                {(id, index) => renderModelRow(id, index)}
+              </List>
+            </If>
+          </If>
+          <If when={!filtered().length && owner.discovery() !== 'fetching'}>
+            <SettingsRow
+              label={modelQueryTrimmed() ? tr('No matching models.') : tr('No models added yet.')}
               tone="muted"
+              line={false}
+              trailing={
+                <If when={!!modelQueryTrimmed()}>
+                  <SettingsButton
+                    label={tr('Clear search')}
+                    tone="quiet"
+                    onPress={() => {
+                      owner.modelQuery.set('');
+                      searchInput?.focus();
+                    }}
+                  />
+                </If>
+              }
             />
           </If>
         </SettingsSection>
@@ -441,6 +552,7 @@ export function ConnectionAdvanced(props: { settings: ModelSettingsOwner }) {
 function ConnectionFooter(props: { owner: ModelSettingsOwner; note?: string }) {
   const owner = props.owner;
   const form = () => owner.editor()!;
+  const modelsOnly = () => !owner.connectionFieldsDirty() && owner.modelsDirty();
   return (
     <>
       <If when={props.note}>
@@ -449,13 +561,26 @@ function ConnectionFooter(props: { owner: ModelSettingsOwner; note?: string }) {
         </Text>
       </If>
       <If when={form().baseline}>
-        <SettingsButton
-          label={tr('Discard')}
-          accessibilityLabel={tr('Discard changes and reload')}
-          tone="quiet"
-          disabled={blocked(owner)}
-          onPress={inputAction(owner.reloadConnection, owner.action())}
-        />
+        <If
+          when={modelsOnly()}
+          else={
+            <SettingsButton
+              label={tr('Discard')}
+              accessibilityLabel={tr('Discard changes and reload')}
+              tone="quiet"
+              disabled={blocked(owner)}
+              onPress={inputAction(owner.reloadConnection, owner.action())}
+            />
+          }
+        >
+          <SettingsButton
+            label={tr('Cancel')}
+            accessibilityLabel={tr('Discard model selection changes')}
+            tone="quiet"
+            disabled={blocked(owner)}
+            onPress={inputAction(owner.discardModelSelection, owner.action())}
+          />
+        </If>
       </If>
       <SettingsButton
         label={

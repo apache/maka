@@ -63,6 +63,7 @@ export type ConnectionEditor = {
   baseUrl: string;
   serverSideCompaction: boolean;
   enabled: boolean;
+  enabledModelIds: string[];
   overlay: string;
   apiKey: string;
   useForDictation?: boolean;
@@ -160,6 +161,7 @@ const fields = (detail: Detail) => ({
   name: detail.name,
   slug: detail.target.slug,
   enabled: detail.enabled,
+  enabledModelIds: [...detail.editing!.enabledModelIds],
   baseUrl:
     typeof detail.target.configuration.baseUrl === 'string'
       ? detail.target.configuration.baseUrl
@@ -167,6 +169,13 @@ const fields = (detail: Detail) => ({
   serverSideCompaction: detail.target.configuration.serverSideCompaction === true,
   overlay: pretty(detail.editing!.requestBodyOverlay),
 });
+const sameModelSet = (left: readonly string[], right: readonly string[]) => {
+  const a = new Set(left);
+  const b = new Set(right);
+  if (a.size !== b.size) return false;
+  for (const id of a) if (!b.has(id)) return false;
+  return true;
+};
 function overlay(text: string): Record<string, unknown> | null {
   let value: unknown;
   try {
@@ -275,7 +284,9 @@ export function createModelSettings(
     })),
   );
   const editing = computed(() => editor()?.baseline?.editing);
-  const enabledModels = computed(() => new Set(editing()?.enabledModelIds));
+  const draftEnabledIds = (form: ConnectionEditor | null) =>
+    form?.enabledModelIds ?? form?.baseline?.editing?.enabledModelIds ?? [];
+  const enabledModels = computed(() => new Set(draftEnabledIds(editor())));
   const modelProvider = computed(() =>
     [editor()?.provider.descriptor.label ?? '', editor()?.provider.identity.name ?? ''].join('\n'),
   );
@@ -284,8 +295,9 @@ export function createModelSettings(
     return [
       ...new Set([
         ...(facts?.discoveredModelIds ?? []),
-        ...enabledModels(),
+        ...(facts?.enabledModelIds ?? []),
         ...Object.keys(facts?.modelOverrides ?? {}),
+        ...enabledModels(),
       ]),
     ].map((id) => ({
       id,
@@ -293,6 +305,10 @@ export function createModelSettings(
         .join('\n')
         .toLowerCase(),
     }));
+  });
+  const enabledModelCount = computed(() => {
+    const enabled = enabledModels();
+    return modelIndex().filter(({ id }) => enabled.has(id)).length;
   });
   const filteredConnections = computed(() => {
     const terms = searchTerms(connectionQuery());
@@ -505,6 +521,7 @@ export function createModelSettings(
         name: provider.descriptor.label,
         slug,
         enabled: true,
+        enabledModelIds: [],
         overlay: 'null',
         apiKey: '',
         baseUrl: typeof configuration?.baseUrl === 'string' ? configuration.baseUrl : '',
@@ -661,7 +678,7 @@ export function createModelSettings(
       (!form.baseline || !!form.apiKey || !!form.useForDictation)
     );
   };
-  const dirty = () => {
+  const connectionFieldsDirty = () => {
     const form = editor();
     if (!form?.baseline) return !!form;
     try {
@@ -677,6 +694,12 @@ export function createModelSettings(
       return true;
     }
   };
+  const modelsDirty = () => {
+    const form = editor();
+    if (!form?.baseline?.editing) return false;
+    return !sameModelSet(draftEnabledIds(form), form.baseline.editing.enabledModelIds);
+  };
+  const dirty = () => connectionFieldsDirty() || modelsDirty();
   const adopt = async (
     target: ConnectionVersionBasis,
     captured: number,
@@ -724,6 +747,7 @@ export function createModelSettings(
         !form.baseline || !!form.apiKey || !sameValue(config, form.baseline.target.configuration);
       let result: CatalogMutationResult | null = null;
       const original = form.baseline;
+      let connectionFieldsChanged = !original || !!form.apiKey;
       const expectedCredential = credentialBasis(credential());
       if (!original) {
         if (!/^[a-z0-9]+(?:[-_][a-z0-9]+)*$/.test(form.slug))
@@ -745,6 +769,7 @@ export function createModelSettings(
           },
         });
       } else {
+        const facts = original.editing!;
         const changes: Record<string, unknown> = {};
         if (form.name !== original.name) changes.name = form.name;
         if (form.enabled !== original.enabled) changes.enabled = form.enabled;
@@ -752,10 +777,28 @@ export function createModelSettings(
           changes.configuration = config;
           // A provider configuration change resets discovery in Host. Preserve the
           // explicit per-model choices from the exact editing baseline.
-          changes.modelOverrides = original.editing!.modelOverrides;
+          changes.modelOverrides = facts.modelOverrides;
         }
-        if (!sameValue(body, original.editing!.requestBodyOverlay))
-          changes.requestBodyOverlay = body;
+        if (!sameValue(body, facts.requestBodyOverlay)) changes.requestBodyOverlay = body;
+        connectionFieldsChanged = !!form.apiKey || Object.keys(changes).length > 0;
+        const nextEnabledIds = draftEnabledIds(form);
+        if (!sameModelSet(nextEnabledIds, facts.enabledModelIds)) {
+          changes.enabledModelIds = nextEnabledIds;
+          const nextEnabled = new Set(nextEnabledIds);
+          const discovered = new Set(facts.discoveredModelIds);
+          const baseOverrides: Record<string, ModelOverride | undefined> =
+            (changes.modelOverrides as Record<string, ModelOverride | undefined> | undefined) ??
+            facts.modelOverrides ??
+            {};
+          let preservedOverrides: Record<string, ModelOverride | undefined> | null = null;
+          for (const id of facts.enabledModelIds) {
+            if (!nextEnabled.has(id) && !discovered.has(id) && !baseOverrides[id]) {
+              if (!preservedOverrides) preservedOverrides = { ...baseOverrides };
+              preservedOverrides[id] = {};
+            }
+          }
+          if (preservedOverrides) changes.modelOverrides = preservedOverrides;
+        }
         if (Object.keys(changes).length)
           result = await mutate('settings', 'update', {
             expected: basis(original),
@@ -768,10 +811,12 @@ export function createModelSettings(
         detail = await adopt(
           result.connection,
           form.instance,
-          form.apiKey ? 'unchanged' : 'refresh',
+          form.apiKey || !connectionFieldsChanged ? 'unchanged' : 'refresh',
         );
         if (!detail) return;
-        notice.set(message('Connection saved.'));
+        notice.set(
+          message(connectionFieldsChanged ? 'Connection saved.' : 'Model selection saved.'),
+        );
       }
       if (form.apiKey) {
         if (!alive || editor()?.instance !== form.instance) return;
@@ -957,32 +1002,34 @@ export function createModelSettings(
         notice.set(message('Model list refreshed.'));
     });
   };
-  const setModelEnabled = (request: ConnectionAction & { id: string; enabled: boolean }) => {
+  const setModelsEnabled = (request: ConnectionAction & { ids: string[]; enabled: boolean }) => {
     const form = editor();
-    if (!current(request) || !form?.baseline?.editing || dirty()) return;
-    const facts = form.baseline.editing;
-    const expected = basis(form.baseline);
-    const ids = new Set(enabledModels());
-    if (request.enabled) ids.add(request.id);
-    else ids.delete(request.id);
-    const keepManualModel =
-      !request.enabled &&
-      !facts.discoveredModelIds.includes(request.id) &&
-      !facts.modelOverrides?.[request.id];
-    return run(async () => {
-      const result = await mutate('settings', 'update', {
-        expected,
-        changes: {
-          enabledModelIds: [...ids],
-          ...(keepManualModel
-            ? { modelOverrides: { ...facts.modelOverrides, [request.id]: {} } }
-            : {}),
-        },
-      });
-      if (result.kind !== 'committed' || !result.connection) throw rejection(result);
-      if (!(await adopt(result.connection, form.instance, 'unchanged'))) return;
-      await loadConnections();
+    if (!current(request) || !form?.baseline?.editing || busy()) return;
+    const currentIds = draftEnabledIds(form);
+    const ids = new Set(currentIds);
+    for (const id of request.ids) {
+      if (request.enabled) ids.add(id);
+      else ids.delete(id);
+    }
+    const nextIds = [...ids];
+    if (sameModelSet(nextIds, currentIds)) return;
+    editor.set({ ...form, enabledModelIds: nextIds });
+  };
+  const setModelEnabled = (request: ConnectionAction & { id: string; enabled: boolean }) =>
+    setModelsEnabled({
+      editor: request.editor,
+      revision: request.revision,
+      ids: [request.id],
+      enabled: request.enabled,
     });
+  const discardModelSelection = (request: ConnectionAction) => {
+    const form = editor();
+    if (!current(request) || !form?.baseline?.editing || busy()) return;
+    editor.set({
+      ...form,
+      enabledModelIds: [...form.baseline.editing.enabledModelIds],
+    });
+    error.set('');
   };
   const editModel = (request: ConnectionAction & { id: string | null }) => {
     if (!current(request)) return;
@@ -1464,8 +1511,13 @@ export function createModelSettings(
     filteredProviders,
     filteredModels,
     modelCount: () => modelIndex().length,
+    enabledModelCount,
     enabledModels,
     setModelEnabled,
+    setModelsEnabled,
+    discardModelSelection,
+    connectionFieldsDirty,
+    modelsDirty,
     searchConnections,
     searchProviders,
     revision,

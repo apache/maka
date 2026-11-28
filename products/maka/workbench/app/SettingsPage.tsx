@@ -37,6 +37,7 @@ import {
   quietFocusStyle,
   radius,
   raisedShadow,
+  textTooltip,
 } from './ui';
 
 const terminal = platform.idiom === 'terminal';
@@ -137,6 +138,7 @@ export function SettingsLede(props: { children: string }) {
 /** A group of rows on `card`, optionally named, with an optional note below. */
 export function SettingsSection(props: {
   title?: string;
+  description?: string;
   trailing?: JSX.Element;
   note?: string;
   /** The note reports something that went wrong, not how the section works. */
@@ -145,29 +147,53 @@ export function SettingsSection(props: {
 }) {
   return (
     <View style={{ gap: terminal ? 0 : 8 }}>
-      <If when={props.title || props.trailing}>
+      <If when={props.title || props.description || props.trailing}>
         <View
           style={{
             flexDirection: 'row',
             alignItems: 'center',
+            flexWrap: 'wrap',
             gap: 8,
             minHeight: terminal ? 16 : 28,
             paddingLeft: inset,
           }}
         >
-          <Text
+          <View
             style={{
-              ...captionTextStyle,
-              lineHeight: terminal ? 16 : 20,
-              fontWeight: '600',
-              color: C.secondary,
               flex: 1,
-              minWidth: 0,
+              minWidth: props.title || props.description ? 120 : 0,
+              gap: terminal ? 0 : 2,
             }}
           >
-            {props.title ?? ''}
-          </Text>
-          {props.trailing}
+            <If when={props.title}>
+              <Text
+                style={{
+                  ...captionTextStyle,
+                  lineHeight: terminal ? 16 : 20,
+                  fontWeight: '600',
+                  color: C.secondary,
+                }}
+              >
+                {props.title}
+              </Text>
+            </If>
+            <If when={props.description}>
+              <Text
+                style={{
+                  ...captionTextStyle,
+                  lineHeight: terminal ? 16 : 18,
+                  color: C.muted,
+                }}
+              >
+                {props.description}
+              </Text>
+            </If>
+          </View>
+          <If when={props.trailing}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+              {props.trailing}
+            </View>
+          </If>
         </View>
       </If>
       <View
@@ -642,6 +668,7 @@ export function SettingsSearch(props: {
   autoFocus?: boolean;
   ref?: (node: InputRef) => void;
   onSubmit?(): void;
+  contained?: boolean;
 }) {
   return (
     <Input
@@ -657,9 +684,10 @@ export function SettingsSearch(props: {
       autoCorrect={false}
       style={{
         ...fieldStyle(),
-        backgroundColor: C.background,
-        height: terminal ? 16 : 32,
+        backgroundColor: props.contained ? C.panel : C.background,
+        height: terminal ? 16 : props.contained ? 28 : 32,
         paddingHorizontal: inset,
+        ...(props.contained ? { flex: 1, minWidth: 160 } : {}),
       }}
       focusStyle={{ borderColor: C.accent }}
     />
@@ -848,6 +876,9 @@ export function SettingsButton(props: {
         if (props.autoFocus) node.focus();
       }}
       accessibilityLabel={props.accessibilityLabel ?? props.label}
+      tooltip={
+        props.iconOnly ? textTooltip(() => props.accessibilityLabel ?? props.label) : undefined
+      }
       disabled={props.disabled}
       selected={props.selected}
       onPress={props.onPress}
