@@ -267,6 +267,16 @@ fn registry(make_host: impl Fn() -> Instance<ApplicationHost> + Send + Sync + 's
     registry
 }
 
+#[nsh_core::element::class]
+struct WorkbenchLocales;
+
+#[nsh_core::element::class]
+impl WorkbenchLocales {
+    pub fn read(&self, locale: String) -> Option<String> {
+        crate::locales::read(&locale)
+    }
+}
+
 /// Native workbench components and classes, independent of the Host connection.
 #[must_use]
 pub fn ui_registry() -> Registry {
@@ -281,6 +291,7 @@ pub fn ui_registry() -> Registry {
     registry.class::<uploads::UploadIntake>();
     registry.class::<uploads::StagedFile>();
     registry.class::<ui_services::UiScope>();
+    registry.value("workbenchLocales", || Instance::new(WorkbenchLocales));
     registry
 }
 

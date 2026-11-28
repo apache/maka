@@ -179,6 +179,11 @@ pub(super) struct Loader(pub(super) Arc<Owner>);
 
 impl nsh_engine::ChunkLoader for Loader {
     fn load(&self, id: &str) -> nsh_engine::ChunkLoad {
+        if id == crate::MERMAID_CHUNK_ID {
+            return Box::pin(async move {
+                Ok(nsh_engine::ChunkSource::new(crate::mermaid_chunk_source()))
+            });
+        }
         let owner = self.0.clone();
         let id = id.to_owned();
         Box::pin(async move {

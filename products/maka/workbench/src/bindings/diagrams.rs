@@ -141,7 +141,7 @@ mod tests {
     ) -> nsh_testing::Headless {
         environment.native_focus_scopes = true;
         use nsh_core::{Size, element::Instance, prelude::px};
-        let mut registry = nsh_core::element::Registry::ui_set("maka/host");
+        let mut registry = crate::bindings::ui_registry();
         registry.value("host", move || {
             Instance::new(DiagramHost {
                 pending: pending.clone(),
@@ -165,10 +165,24 @@ mod tests {
             ..Default::default()
         })
         .unwrap();
+        struct MermaidLoader;
+        impl nsh_engine::ChunkLoader for MermaidLoader {
+            fn load(&self, id: &str) -> nsh_engine::ChunkLoad {
+                let id = id.to_owned();
+                Box::pin(async move {
+                    if id == crate::MERMAID_CHUNK_ID {
+                        Ok(nsh_engine::ChunkSource::new(crate::mermaid_chunk_source()))
+                    } else {
+                        Err(format!("unexpected test chunk: {id}"))
+                    }
+                })
+            }
+        }
         nsh_testing::Headless::start(nsh_engine::EngineConfig {
             viewport: Size::new(px(720.0), px(900.0)),
             environment,
             ui_sets: sets,
+            chunk_loader: Some(std::sync::Arc::new(MermaidLoader)),
             ..nsh_engine::EngineConfig::new(nsh_engine::Bundle::source(bundle.code))
         })
         .unwrap()

@@ -164,6 +164,7 @@ pub fn compile_with_locales(
         "MarkdownFileEditor",
         "TerminalGrid",
         "UploadIntake",
+        "workbenchLocales",
     ]);
     let base = nsh_base::registry();
     let ui_sets = base

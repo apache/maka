@@ -19,35 +19,50 @@
 
 import { effect } from 'nsh';
 import { setLocale as setNshLocale } from 'nsh/i18n';
-import { createI18n } from '../../../../packages/plugin-sdk/src/index.js';
+import { workbenchLocales } from 'maka/host';
+import {
+  createI18n,
+  type LocaleCatalogBundle,
+  type PartialLocaleMessages,
+  type SupportedLocaleTag,
+} from '../../../../packages/plugin-sdk/src/index.js';
 import en from '../locales/en.json' with { type: 'json' };
-import zhCN from '../locales/zh-CN.json' with { type: 'json' };
-import zhTW from '../locales/zh-TW.json' with { type: 'json' };
-import zhHK from '../locales/zh-HK.json' with { type: 'json' };
-import ja from '../locales/ja.json' with { type: 'json' };
-import ko from '../locales/ko.json' with { type: 'json' };
-import es from '../locales/es.json' with { type: 'json' };
-import fr from '../locales/fr.json' with { type: 'json' };
-import de from '../locales/de.json' with { type: 'json' };
-import ptBR from '../locales/pt-BR.json' with { type: 'json' };
-import ru from '../locales/ru.json' with { type: 'json' };
-import it from '../locales/it.json' with { type: 'json' };
 import { currentLocale, registerWorkbenchLocaleRuntime, type MessageKey } from './locale';
 
-const catalog = createI18n<MessageKey>({
-  en,
-  'zh-CN': zhCN,
-  'zh-TW': zhTW,
-  'zh-HK': zhHK,
-  ja,
-  ko,
-  es,
-  fr,
-  de,
-  'pt-BR': ptBR,
-  ru,
-  it,
-});
+const NON_ENGLISH_LOCALES: readonly Exclude<SupportedLocaleTag, 'en'>[] = [
+  'zh-CN',
+  'zh-TW',
+  'zh-HK',
+  'ja',
+  'ko',
+  'es',
+  'fr',
+  'de',
+  'pt-BR',
+  'ru',
+  'it',
+];
+
+function createLazyBundle(): LocaleCatalogBundle<MessageKey> {
+  const loaded = new Map<string, PartialLocaleMessages<MessageKey> | undefined>();
+  const bundle: Record<string, unknown> = { en };
+  for (const tag of NON_ENGLISH_LOCALES) {
+    Object.defineProperty(bundle, tag, {
+      enumerable: true,
+      get(): PartialLocaleMessages<MessageKey> | undefined {
+        if (loaded.has(tag)) return loaded.get(tag);
+        const raw =
+          typeof workbenchLocales?.read === 'function' ? workbenchLocales.read(tag) : null;
+        const parsed = raw ? (JSON.parse(raw) as PartialLocaleMessages<MessageKey>) : undefined;
+        loaded.set(tag, parsed);
+        return parsed;
+      },
+    });
+  }
+  return bundle as LocaleCatalogBundle<MessageKey>;
+}
+
+const catalog = createI18n<MessageKey>(createLazyBundle());
 
 /**
  * Install the single window-owned workbench translation catalog and bind NSH's
