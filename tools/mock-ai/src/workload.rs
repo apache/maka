@@ -20,8 +20,9 @@
 use crate::handler::{HandlerFuture, TurnContext, TurnDecision, TurnHandler};
 use crate::plan::{
     Citation, CompactionOutput, FinishReason, HttpErrorSpec, MidStreamErrorSpec, NativeToolEvent,
-    ToolCallSpec, TurnEvent, TurnPlan, Usage, WebSearchResult,
+    ToolCallPayload, ToolCallSpec, TurnEvent, TurnPlan, Usage, WebSearchResult,
 };
+use crate::protocol::ToolDeclKind;
 use crate::protocol::{NormalizedRequest, NormalizedTool};
 use crate::schema_synth::{
     SynthMode, WirePoisonConfig, context_overflow_error, synthesize_tool_arguments,
@@ -142,7 +143,15 @@ pub struct ChaosConfig {
 #[serde(rename_all = "camelCase")]
 pub struct SyntheticToolTemplate {
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
     pub arguments: Value,
+}
+
+impl SyntheticToolTemplate {
+    fn matches(&self, tool: &NormalizedTool) -> bool {
+        self.name == tool.name && self.namespace == tool.namespace
+    }
 }
 
 fn default_seed() -> u64 {
@@ -334,37 +343,49 @@ impl WorkloadGenerator {
         }
     }
 
-    fn build_plan(&self, req: &NormalizedRequest, ctx: &TurnContext) -> TurnPlan {
-        let mut rng = self.turn_rng(req, ctx);
-        let chaos = ctx.chaos_override.as_ref().unwrap_or(&self.config.chaos);
-
-        // 0) Context overflow ceiling (exercises Maka's emergency compaction & retry path)
+    fn admission_error(
+        &self,
+        req: &NormalizedRequest,
+        chaos: &ChaosConfig,
+    ) -> Option<HttpErrorSpec> {
         if let Some(limit_bytes) = self.config.context_overflow_bytes
             && !req.has_compaction_trigger
             && req.prompt_bytes > limit_bytes
         {
-            return TurnPlan::http_error(context_overflow_error(
+            return Some(context_overflow_error(
                 req.protocol,
                 req.prompt_bytes,
                 limit_bytes,
             ));
         }
-
-        // 1) Pre-stream chaos faults
-        let roll = rng.f64();
+        if chaos.rate_limit_rate + chaos.server_error_rate <= 0.0 {
+            return None;
+        }
+        // Transport attempts sample admission independently of the logical workload turn.
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.config.seed.hash(&mut hasher);
+        req.session_key.hash(&mut hasher);
+        req.sequence.hash(&mut hasher);
+        let roll = fastrand::Rng::with_seed(hasher.finish()).f64();
         if roll < chaos.rate_limit_rate {
-            return TurnPlan::http_error(
+            Some(
                 HttpErrorSpec::rate_limit(None, "synthetic rate limit")
                     .with_retry_after_ms(chaos.rate_limit_retry_after_ms),
-            );
-        }
-        if roll < chaos.rate_limit_rate + chaos.server_error_rate {
-            return TurnPlan::http_error(HttpErrorSpec::new(
+            )
+        } else if roll < chaos.rate_limit_rate + chaos.server_error_rate {
+            Some(HttpErrorSpec::new(
                 503,
                 "overloaded_error",
                 "synthetic upstream overload",
-            ));
+            ))
+        } else {
+            None
         }
+    }
+
+    fn build_plan(&self, req: &NormalizedRequest, ctx: &TurnContext) -> TurnPlan {
+        let mut rng = self.turn_rng(req, ctx);
+        let chaos = ctx.chaos_override.as_ref().unwrap_or(&self.config.chaos);
 
         let mut plan = TurnPlan::new()
             .with_chunk_delay_ms(self.config.chunk_delay_ms)
@@ -465,11 +486,18 @@ impl WorkloadGenerator {
         }
 
         // 7) Multi-step tool chain (with JSON Schema synthesis & bad-tool chaos)
-        let want_tools = ctx.session_turn <= self.config.tool_turns_per_session;
-        let candidates = self.select_tool_candidates(req, chaos, &mut rng);
-        if want_tools && !candidates.is_empty() {
-            let lo = self.config.min_parallel_tools.max(1);
-            let hi = self.config.max_parallel_tools.max(lo);
+        let candidates = if ctx.session_turn <= self.config.tool_turns_per_session {
+            self.select_tool_candidates(req, chaos, &mut rng)
+        } else {
+            Vec::new()
+        };
+        if !candidates.is_empty() {
+            let (lo, hi) = if req.options.parallel_tool_calls == Some(false) {
+                (1, 1)
+            } else {
+                let lo = self.config.min_parallel_tools.max(1);
+                (lo, self.config.max_parallel_tools.max(lo))
+            };
             let count = if hi > lo { rng.usize(lo..=hi) } else { lo };
             let mut total_arg_chars = 0;
             for idx in 0..count {
@@ -482,9 +510,24 @@ impl WorkloadGenerator {
                     } else {
                         tpl.name.clone()
                     };
-                let mut spec = ToolCallSpec::new(call_id, tool_name, tpl.arguments.clone())
-                    .with_chunk_chars(self.config.chunk_chars);
+                let spec = if req.tools.iter().any(|tool| {
+                    tpl.matches(tool) && matches!(tool.tool_kind, ToolDeclKind::Freeform { .. })
+                }) {
+                    let input = tpl
+                        .arguments
+                        .as_str()
+                        .map_or_else(|| tpl.arguments.to_string(), str::to_owned);
+                    ToolCallSpec::with_payload(
+                        call_id,
+                        tool_name,
+                        ToolCallPayload::FreeformInput(input),
+                    )
+                } else {
+                    ToolCallSpec::new(call_id, tool_name, tpl.arguments.clone())
+                };
+                let mut spec = spec.with_chunk_chars(self.config.chunk_chars);
                 spec.item_id = Some(item_id);
+                spec.namespace.clone_from(&tpl.namespace);
                 total_arg_chars += spec.arguments_string().len();
                 plan = plan.push(TurnEvent::ToolCall(spec));
             }
@@ -549,7 +592,7 @@ impl WorkloadGenerator {
                     .config
                     .tool_templates
                     .iter()
-                    .filter(|t| req.has_tool(&t.name))
+                    .filter(|t| req.tools.iter().any(|tool| t.matches(tool)))
                     .cloned()
                     .collect();
             }
@@ -599,6 +642,7 @@ impl WorkloadGenerator {
 
         Some(SyntheticToolTemplate {
             name: tool.name.clone(),
+            namespace: tool.namespace.clone(),
             arguments: args,
         })
     }
@@ -625,6 +669,25 @@ fn fallback_tool_args(tool: &NormalizedTool, rng: &mut fastrand::Rng, mode: Synt
 
 impl TurnHandler for WorkloadGenerator {
     fn handle<'a>(&'a self, req: &'a NormalizedRequest, ctx: &'a TurnContext) -> HandlerFuture<'a> {
+        if let Some(spec) = self.reject_before_turn(req, ctx.chaos_override.as_ref()) {
+            return Box::pin(async move { Some(TurnDecision::Plan(TurnPlan::http_error(spec))) });
+        }
+        self.handle_admitted(req, ctx)
+    }
+
+    fn reject_before_turn(
+        &self,
+        req: &NormalizedRequest,
+        chaos: Option<&ChaosConfig>,
+    ) -> Option<HttpErrorSpec> {
+        self.admission_error(req, chaos.unwrap_or(&self.config.chaos))
+    }
+
+    fn handle_admitted<'a>(
+        &'a self,
+        req: &'a NormalizedRequest,
+        ctx: &'a TurnContext,
+    ) -> HandlerFuture<'a> {
         let plan = self.build_plan(req, ctx);
         Box::pin(async move { Some(TurnDecision::Plan(plan)) })
     }
@@ -647,4 +710,104 @@ fn synth_text(rng: &mut fastrand::Rng, target_chars: usize, prefix: &str) -> Str
         out.truncate(target_chars);
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{MockAiBuilder, RuntimeProfile};
+
+    #[tokio::test]
+    async fn requests_can_disable_parallel_tool_calls_under_stress() {
+        let server = MockAiBuilder::new()
+            .workload(WorkloadConfig {
+                min_parallel_tools: 3,
+                ..WorkloadConfig::stress_preset(42)
+            })
+            .start()
+            .await
+            .unwrap();
+        let client = reqwest::Client::new();
+        let anthropic = json!({
+            "model": "test",
+            "max_tokens": 128,
+            "messages": [{"role": "user", "content": "run fixture"}],
+            "tools": [{"name": "fixture", "input_schema": {"type": "object"}}],
+            "tool_choice": {"type": "auto", "disable_parallel_tool_use": true}
+        });
+        let openai = json!({
+            "model": "test",
+            "messages": [{"role": "user", "content": "run fixture"}],
+            "tools": [{"type": "function", "function": {
+                "name": "fixture", "parameters": {"type": "object"}
+            }}],
+            "parallel_tool_calls": false
+        });
+        for (route, request, calls_pointer) in [
+            ("messages", anthropic, "/content"),
+            ("chat/completions", openai, "/choices/0/message/tool_calls"),
+        ] {
+            let response = client
+                .post(format!("{}/{route}", server.base_url()))
+                .body(request.to_string())
+                .send()
+                .await
+                .unwrap()
+                .error_for_status()
+                .unwrap();
+            let response: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+            let calls = response
+                .pointer(calls_pointer)
+                .and_then(Value::as_array)
+                .unwrap()
+                .iter()
+                .filter(|part| matches!(part["type"].as_str(), Some("tool_use" | "function")))
+                .count();
+            assert_eq!(calls, 1, "{route}: {response}");
+        }
+        server.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn rejected_workload_attempt_keeps_the_first_freeform_tool_turn() {
+        let server = MockAiBuilder::new()
+            .workload(WorkloadConfig {
+                tool_turns_per_session: 1,
+                ..WorkloadConfig::default()
+            })
+            .start()
+            .await
+            .unwrap();
+        server.set_runtime_profile(Some(RuntimeProfile {
+            chaos_override: Some(ChaosConfig {
+                rate_limit_rate: 1.0,
+                ..ChaosConfig::default()
+            }),
+            ..RuntimeProfile::default()
+        }));
+        let client = reqwest::Client::new();
+        let model = format!("{}/responses", server.base_url());
+        let request = json!({
+            "input": "run fixture",
+            "tools": [{
+                "type": "namespace", "name": "bench", "tools": [{"type": "custom", "name": "fixture"}],
+            }],
+        });
+        let send = || client.post(&model).body(request.to_string()).send();
+        assert_eq!(
+            send().await.unwrap().status(),
+            reqwest::StatusCode::TOO_MANY_REQUESTS
+        );
+
+        server.set_runtime_profile(None);
+        let response: Value =
+            serde_json::from_slice(&send().await.unwrap().bytes().await.unwrap()).unwrap();
+        let call = &response["output"][0];
+        assert_eq!(call["type"], "custom_tool_call");
+        assert_eq!(call["name"], "fixture");
+        assert_eq!(call["namespace"], "bench");
+        assert_eq!(call["call_id"], "call_t1_0");
+        assert!(call["input"].is_string());
+        server.shutdown().await;
+    }
 }

@@ -58,6 +58,7 @@ futures-util.workspace = true
 http-body-util = "0.1.5"
 hyper = { version = "1.13.0", features = ["server", "http1"] }
 hyper-util = { version = "0.1.21", features = ["tokio"] }
+jsonschema.workspace = true
 regex = { workspace = true, optional = true }
 reqwest = { workspace = true, features = ["stream"], optional = true }
 rustls-pemfile = { version = "2.2.0", optional = true }

@@ -19,9 +19,10 @@
 
 use clap::{Parser, ValueEnum};
 use maka_mock_ai::{
-    ControlPlaneConfig, LatencyProfile, MockAiBuilder, MockServerConfig, ProxyRecordConfig,
-    RateLimitConfig, RateLimitScope, RecorderMode, ReplayConfig, ReplayMatchMode, ScenarioSchedule,
-    ServerTuning, TlsServerConfig, WatchdogConfig, WorkloadConfig, builder_from_config,
+    ControlPlaneConfig, LatencyProfile, MockAiBuilder, MockServerConfig, ProviderDialectProfile,
+    ProxyRecordConfig, RateLimitConfig, RateLimitScope, RecorderMode, ReplayConfig,
+    ReplayMatchMode, ScenarioSchedule, ScenarioSpec, ServerTuning, TlsServerConfig, WatchdogConfig,
+    WirePoisonConfig, WorkloadConfig, builder_from_config,
 };
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -39,6 +40,30 @@ enum LatencyPreset {
     Instant,
     Frontier,
     Degraded,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum CliDialect {
+    #[value(name = "standard-openai", alias = "standard-open-ai")]
+    StandardOpenAi,
+    #[value(name = "deepseek-chat", alias = "deep-seek-chat")]
+    DeepSeekChat,
+    KimiChat,
+    AnthropicMessages,
+    #[value(name = "openai-responses", alias = "open-ai-responses")]
+    OpenAiResponses,
+}
+
+impl From<CliDialect> for ProviderDialectProfile {
+    fn from(dialect: CliDialect) -> Self {
+        match dialect {
+            CliDialect::StandardOpenAi => Self::StandardOpenAi,
+            CliDialect::DeepSeekChat => Self::DeepSeekChat,
+            CliDialect::KimiChat => Self::KimiChat,
+            CliDialect::AnthropicMessages => Self::AnthropicMessages,
+            CliDialect::OpenAiResponses => Self::OpenAiResponses,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -60,6 +85,30 @@ struct Cli {
     /// Path to a JSON or YAML MockServerConfig file.
     #[arg(long)]
     config: Option<PathBuf>,
+
+    /// Benchmark scenario file (JSON or YAML).
+    #[arg(long, conflicts_with_all = ["preset", "proxy_record", "replay"])]
+    scenario: Option<PathBuf>,
+
+    /// Unicode scalars per scenario text or tool-argument delta (0 sends one delta).
+    #[arg(long, default_value_t = 0)]
+    chunk_chars: usize,
+
+    /// Enable scenario stream framing stress (SSE comments, CRLF and split UTF-8).
+    #[arg(long)]
+    wire_poison: bool,
+
+    /// Require requests to resolve to a registered benchmark session.
+    #[arg(long)]
+    strict_benchmark: bool,
+
+    /// Select the provider response dialect.
+    #[arg(long, value_enum)]
+    provider_dialect: Option<CliDialect>,
+
+    /// Reject missing, exhausted or truncated recordings instead of simulating them.
+    #[arg(long, requires = "replay")]
+    strict_replay: bool,
 
     /// Built-in workload preset when --config is omitted.
     #[arg(long, value_enum, default_value_t = Preset::Echo)]
@@ -155,6 +204,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ..Default::default()
     };
 
+    let scenario = if let Some(path) = &cli.scenario {
+        let source = tokio::fs::read_to_string(path).await?;
+        Some(
+            if path
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
+            {
+                ScenarioSpec::from_json_str(&source)?
+            } else {
+                ScenarioSpec::from_yaml_str(&source)?
+            },
+        )
+    } else {
+        None
+    };
+    let mut strict_benchmark = cli.strict_benchmark;
     let mut builder = if let Some(path) = &cli.config {
         let mut cfg = MockServerConfig::from_file(path)?;
         if cli.admin {
@@ -165,6 +230,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         if cli.no_watchdog {
             cfg.watchdog.enabled = false;
+        }
+        if scenario.is_some() {
+            cfg.scenario = scenario;
+        }
+        strict_benchmark |= cfg.strict_benchmark;
+        cfg.strict_benchmark = strict_benchmark;
+        if let Some(dialect) = cli.provider_dialect {
+            cfg.provider_dialect = Some(dialect.into());
         }
         builder_from_config(cfg)?
     } else {
@@ -184,10 +257,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             enabled: !cli.no_watchdog,
             ..Default::default()
         };
-        let b = MockAiBuilder::new()
+        let mut b = MockAiBuilder::new()
             .control(control)
             .recorder(recorder)
-            .watchdog(watchdog);
+            .watchdog(watchdog)
+            .strict_benchmark(strict_benchmark);
+        if let Some(dialect) = cli.provider_dialect {
+            b = b.provider_dialect(dialect.into());
+        }
+        if let Some(scenario) = scenario {
+            b = b.scenario(scenario);
+        }
         match cli.preset {
             Preset::Echo => b,
             Preset::Stress => b.workload(WorkloadConfig::stress_preset(cli.seed)),
@@ -197,6 +277,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Preset::ChaosFuzz => b.workload(WorkloadConfig::chaos_fuzz_preset(cli.seed)),
         }
     };
+    builder = builder.scenario_streaming(
+        cli.chunk_chars,
+        WirePoisonConfig {
+            split_utf8_boundaries: cli.wire_poison,
+            crlf_line_endings: cli.wire_poison,
+            inject_sse_comments: cli.wire_poison,
+        },
+    );
 
     match cli.latency_profile {
         LatencyPreset::Instant => {}
@@ -248,12 +336,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             CliReplayMatch::Sequential => ReplayMatchMode::Sequential,
             CliReplayMatch::Fingerprint => ReplayMatchMode::Fingerprint,
         };
+        let mut replay = ReplayConfig::new(replay_path)
+            .with_speed(cli.replay_speed)
+            .with_match_mode(mode);
+        replay.strict_replay = cli.strict_replay || strict_benchmark;
         builder = builder
-            .replay(
-                ReplayConfig::new(replay_path)
-                    .with_speed(cli.replay_speed)
-                    .with_match_mode(mode),
-            )
+            .replay(replay)
             .map_err(|e| format!("replay setup failed: {e}"))?;
     }
 

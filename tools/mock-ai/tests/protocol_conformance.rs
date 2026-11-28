@@ -22,8 +22,8 @@
 
 use futures_util::{SinkExt, StreamExt};
 use maka_mock_ai::{
-    Citation, CompactionOutput, FinishReason, MockAiBuilder, NativeToolEvent, ToolCallSpec,
-    TurnEvent, TurnPlan, Usage, WebSearchResult,
+    Citation, CompactionOutput, ControlPlaneConfig, FinishReason, MidStreamErrorSpec,
+    MockAiBuilder, NativeToolEvent, ToolCallSpec, TurnEvent, TurnPlan, Usage, WebSearchResult,
 };
 use maka_provider_protocol::{
     anthropic, chat_completions,
@@ -34,13 +34,817 @@ use serde_json::{Value, json};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
 async fn post_json(client: &reqwest::Client, url: &str, body: &Value) -> reqwest::Response {
+    json_request(client, url, body).send().await.unwrap()
+}
+
+fn json_request(client: &reqwest::Client, url: &str, body: &Value) -> reqwest::RequestBuilder {
     client
         .post(url)
         .header("content-type", "application/json")
         .body(body.to_string())
-        .send()
+}
+
+async fn json_status(request: reqwest::RequestBuilder, status: u16) -> Value {
+    let response = request.send().await.unwrap();
+    let actual = response.status();
+    let body = response.text().await.unwrap();
+    assert_eq!(actual, status, "{body}");
+    serde_json::from_str(&body).unwrap()
+}
+
+fn sse_events(body: &str) -> impl Iterator<Item = Value> + '_ {
+    body.lines()
+        .filter_map(|line| line.strip_prefix("data: "))
+        .filter(|data| *data != "[DONE]")
+        .map(|data| serde_json::from_str(data).unwrap())
+}
+
+#[tokio::test]
+async fn deleting_a_parent_after_child_stream_start_keeps_the_completed_child_resumable() {
+    let mut server = MockAiBuilder::new()
+        .strict_benchmark(true)
+        .interactive(1)
+        .start()
+        .await
+        .unwrap();
+    let origin = server.origin_url();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .build()
+        .unwrap();
+    json_status(
+        json_request(
+            &client,
+            &format!("{origin}/admin/sessions"),
+            &json!({
+                "runId": "run", "sessionId": "owner", "logicalLane": "owner",
+                "harness": "codex", "scenario": "lineage",
+            }),
+        ),
+        201,
+    )
+    .await;
+    let url = format!("{origin}/s/run/owner/v1/responses");
+    let parent = tokio::spawn(json_status(
+        json_request(&client, &url, &json!({"input":"first", "store":true})),
+        200,
+    ));
+    server
+        .next_turn()
         .await
         .unwrap()
+        .send_plan(TurnPlan::text("parent").with_response_id("parent"));
+    assert_eq!(parent.await.unwrap()["id"], "parent");
+
+    let child = tokio::spawn(
+        json_request(
+            &client,
+            &url,
+            &json!({
+                "input":"next", "stream":true, "store":true, "previous_response_id":"parent",
+            }),
+        )
+        .send(),
+    );
+    let turn = server.next_turn().await.unwrap();
+    turn.set_response_id("child");
+    assert!(turn.send(TurnEvent::StreamStart).await);
+    let mut child = child.await.unwrap().unwrap();
+    assert_eq!(child.status(), 200);
+    let mut opening = Vec::new();
+    while !opening.ends_with(b"\n\n") {
+        opening.extend(child.chunk().await.unwrap().unwrap());
+    }
+    let event = sse_events(std::str::from_utf8(&opening).unwrap())
+        .next()
+        .unwrap();
+    assert_eq!(event["type"], "response.created");
+    assert_eq!(event["response"]["id"], "child");
+
+    assert_eq!(
+        json_status(client.delete(format!("{url}/parent")), 200).await["deleted"],
+        true
+    );
+    assert!(turn.delta("child reply").await);
+    turn.finish().await;
+    let stream = child.text().await.unwrap();
+    let completed = sse_events(&stream)
+        .find(|event| event["type"] == "response.completed")
+        .unwrap();
+    let saved = json_status(client.get(format!("{url}/child")), 200).await;
+    assert_eq!(saved, completed["response"]);
+
+    let resumed = tokio::spawn(json_status(
+        json_request(
+            &client,
+            &url,
+            &json!({
+                "input":"continue", "previous_response_id":"child",
+            }),
+        ),
+        200,
+    ));
+    server
+        .next_turn()
+        .await
+        .unwrap()
+        .reply_text("resumed child");
+    assert_eq!(
+        resumed.await.unwrap()["output"][0]["content"][0]["text"],
+        "resumed child"
+    );
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn reset_excludes_faults_from_in_flight_http_and_ws_turns() {
+    use std::time::Duration;
+
+    let mut server = MockAiBuilder::new()
+        .control(ControlPlaneConfig {
+            enable_admin_api: true,
+            ..Default::default()
+        })
+        .interactive(2)
+        .start()
+        .await
+        .unwrap();
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+        .unwrap();
+    let response = tokio::spawn(
+        json_request(
+            &client,
+            &format!("{}/responses", server.base_url()),
+            &json!({"input": "HTTP", "stream":true}),
+        )
+        .send(),
+    );
+    let http = server.next_turn().await.unwrap();
+    assert!(http.send(TurnEvent::StreamStart).await);
+    let mut response = response.await.unwrap().unwrap();
+    assert_eq!(response.status(), 200);
+    assert!(response.chunk().await.unwrap().is_some());
+
+    let (mut socket, _) = tokio_tungstenite::connect_async(server.responses_ws_url())
+        .await
+        .unwrap();
+    socket
+        .send(WsMessage::text(
+            json!({"type":"response.create", "input":"WS"}).to_string(),
+        ))
+        .await
+        .unwrap();
+    let ws = server.next_turn().await.unwrap();
+    assert!(ws.send(TurnEvent::StreamStart).await);
+    let open = tokio::time::timeout(Duration::from_secs(3), socket.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let event: Value = serde_json::from_str(open.to_text().unwrap()).unwrap();
+    assert_eq!(event["type"], "response.created");
+    assert_eq!(
+        json_status(
+            client.post(format!("{}/admin/reset", server.origin_url())),
+            200
+        )
+        .await,
+        json!({"reset":true})
+    );
+
+    http.drop_connection().await;
+    ws.mid_stream_error(MidStreamErrorSpec {
+        error_type: "server_error".into(),
+        code: Some("old_generation_fault".into()),
+        message: "injected WS failure".into(),
+        retryable: None,
+    })
+    .await;
+    assert!(response.text().await.is_err());
+    let failure = tokio::time::timeout(Duration::from_secs(3), socket.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let event: Value = serde_json::from_str(failure.to_text().unwrap()).unwrap();
+    assert_eq!(event["type"], "response.failed");
+    assert_eq!(event["response"]["error"]["code"], "old_generation_fault");
+    let metrics = server.metrics();
+    assert_eq!(metrics.connection_drops_emitted, 0);
+    assert_eq!(metrics.mid_stream_errors_emitted, 0);
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn scoped_control_routes_enforce_response_ownership_and_storage() {
+    let server = MockAiBuilder::new()
+        .strict_benchmark(true)
+        .scripted([TurnPlan::text("saved"), TurnPlan::text("transient")])
+        .start()
+        .await
+        .unwrap();
+    let origin = server.origin_url();
+    let client = reqwest::Client::new();
+    for session in ["owner", "other"] {
+        json_status(
+            json_request(
+                &client,
+                &format!("{origin}/admin/sessions"),
+                &json!({
+                    "runId": "run", "sessionId": session, "logicalLane": session,
+                    "harness": "codex", "scenario": "control",
+                }),
+            ),
+            201,
+        )
+        .await;
+    }
+    let scope = format!("{origin}/s/run/owner");
+    for path in ["/admin/health", "/metrics"] {
+        let error = json_status(client.get(format!("{scope}{path}")), 403).await;
+        assert!(
+            error["error"]
+                .as_str()
+                .unwrap()
+                .contains("unavailable under session scope")
+        );
+    }
+    let model = json_status(client.get(format!("{scope}/v1/models/gpt-4.1")), 200).await;
+    assert_eq!(model["id"], "gpt-4.1");
+    assert_eq!(model["object"], "model");
+    assert_eq!(
+        json_status(
+            json_request(
+                &client,
+                &format!("{scope}/v1/messages/count_tokens"),
+                &json!({
+                    "model": "claude-sonnet-4-5", "system": "sys",
+                    "messages": [{"role": "user", "content": "hello"}],
+                })
+            ),
+            200
+        )
+        .await,
+        json!({"input_tokens":4})
+    );
+
+    let responses = format!("{scope}/v1/responses");
+    let saved = json_status(
+        json_request(
+            &client,
+            &responses,
+            &json!({
+                "model": "gpt-4.1", "input": "first", "store": true,
+            }),
+        ),
+        200,
+    )
+    .await;
+    assert_eq!(saved["output"][0]["content"][0]["text"], "saved");
+    let retained =
+        json!({"type":"message", "role":"user", "content":[{"type":"input_text","text":"first"}]});
+    let compact = json_status(
+        json_request(
+            &client,
+            &format!("{responses}/compact"),
+            &json!({
+                "model":"gpt-4.1", "previous_response_id":saved["id"], "input":[retained],
+            }),
+        ),
+        200,
+    )
+    .await;
+    assert_eq!(compact["object"], "response.compaction");
+    assert_eq!(compact["output"][0], retained);
+    let checkpoint = &compact["output"][1];
+    assert_eq!(checkpoint["type"], "compaction");
+    assert_eq!(
+        checkpoint["encrypted_content"],
+        format!("mock:{}", checkpoint["id"].as_str().unwrap())
+    );
+
+    let transient = json_status(json_request(&client, &responses, &json!({
+        "model":"gpt-4.1", "previous_response_id":compact["id"], "input":[checkpoint], "store":false,
+    })), 200).await;
+    assert_eq!(transient["output"][0]["content"][0]["text"], "transient");
+    let id = saved["id"].as_str().unwrap();
+    let own_url = format!("{responses}/{id}");
+    let foreign_url = format!("{origin}/s/run/other/v1/responses/{id}");
+    assert_eq!(
+        client
+            .get(format!("{responses}/{}", transient["id"].as_str().unwrap()))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        404
+    );
+    assert_eq!(client.get(&foreign_url).send().await.unwrap().status(), 404);
+    assert_eq!(
+        client.delete(&foreign_url).send().await.unwrap().status(),
+        404
+    );
+    assert_eq!(json_status(client.get(&own_url), 200).await, saved);
+    assert_eq!(
+        json_status(client.delete(&own_url), 200).await,
+        json!({"id":id, "object":"response.deleted", "deleted":true})
+    );
+    assert_eq!(client.get(&own_url).send().await.unwrap().status(), 404);
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn chat_sse_usage_and_reasoning_follow_independent_wire_options() {
+    use maka_mock_ai::ProviderDialectProfile::{DeepSeekChat, StandardOpenAi};
+
+    let client = reqwest::Client::new();
+    for (dialect, expected_reasoning) in [(StandardOpenAi, ""), (DeepSeekChat, "draft 🦀")] {
+        let plan = TurnPlan::new()
+            .push_reasoning("draft 🦀")
+            .push_text_chunked("answer", 2)
+            .with_usage(Usage::new(7, 2))
+            .finish(FinishReason::Stop);
+        let server = MockAiBuilder::new()
+            .provider_dialect(dialect)
+            .scripted([plan.clone(), plan])
+            .start()
+            .await
+            .unwrap();
+        for include_usage in [true, false] {
+            let response = post_json(&client, &format!("{}/chat/completions", server.base_url()), &json!({
+                "model":"gpt-4.1", "stream":true, "stream_options":{"include_usage":include_usage},
+                "messages":[{"role":"user", "content":"answer this"}],
+            })).await.error_for_status().unwrap().text().await.unwrap();
+            assert!(response.ends_with("data: [DONE]\n\n"));
+            let mut chunks: Vec<_> = sse_events(&response).collect();
+            if include_usage {
+                let tail = chunks.pop().unwrap();
+                assert_eq!(tail["choices"], json!([]));
+                assert_eq!(
+                    tail["usage"],
+                    json!({"prompt_tokens":7,"completion_tokens":2,"total_tokens":9})
+                );
+            }
+            assert_eq!(
+                chunks.last().unwrap()["choices"][0]["finish_reason"],
+                "stop"
+            );
+            let mut reasoning = String::new();
+            let mut text = String::new();
+            for chunk in chunks {
+                assert_eq!(chunk.get("usage"), include_usage.then_some(&Value::Null));
+                assert_eq!(chunk["choices"].as_array().unwrap().len(), 1);
+                let delta = &chunk["choices"][0]["delta"];
+                if expected_reasoning.is_empty() {
+                    assert!(delta.get("reasoning_content").is_none());
+                }
+                reasoning.extend(delta["reasoning_content"].as_str());
+                text.extend(delta["content"].as_str());
+            }
+            assert_eq!(reasoning, expected_reasoning);
+            assert_eq!(text, "answer");
+        }
+        server.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn responses_text_and_refusal_fold_to_json_and_stored_response() {
+    let plan = TurnPlan::new()
+        .with_response_id("resp_mixed")
+        .push_text_chunked("Visible 🦀", 2)
+        .push(TurnEvent::Refusal {
+            text: "Cannot share that.".into(),
+        })
+        .push_text_chunked("Try this.", 3)
+        .with_usage(Usage::new(17, 8))
+        .finish(FinishReason::Stop);
+    let server = MockAiBuilder::new()
+        .scripted([plan.clone(), plan])
+        .start()
+        .await
+        .unwrap();
+    let client = reqwest::Client::new();
+    let url = format!("{}/responses", server.base_url());
+    let mut request = json!({"model":"gpt-4.1","input":"mixed reply","stream":true,"store":true});
+    let body = post_json(&client, &url, &request)
+        .await
+        .error_for_status()
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    let mut sequence = None;
+    let mut parts = Vec::<Value>::new();
+    let mut done_indexes = Vec::new();
+    let mut folded = None;
+    let mut completed = None;
+    for event in sse_events(&body) {
+        let next = event["sequence_number"].as_u64().unwrap();
+        assert!(sequence.is_none_or(|previous| previous < next));
+        sequence = Some(next);
+        match event["type"].as_str().unwrap() {
+            "response.output_item.added" => {
+                assert_eq!(event["output_index"], 0);
+                assert_eq!(event["item"]["status"], "in_progress");
+                assert_eq!(event["item"]["content"], json!([]));
+                assert!(folded.replace(event["item"].clone()).is_none());
+            }
+            "response.content_part.added" => {
+                assert_eq!(event["output_index"], 0);
+                assert_eq!(event["content_index"], parts.len());
+                parts.push(event["part"].clone());
+            }
+            "response.output_text.delta" | "response.refusal.delta" => {
+                assert_eq!(event["output_index"], 0);
+                let index = event["content_index"].as_u64().unwrap() as usize;
+                let (kind, field) = if event["type"] == "response.output_text.delta" {
+                    ("output_text", "text")
+                } else {
+                    ("refusal", "refusal")
+                };
+                let part = &mut parts[index];
+                assert_eq!(part["type"], kind);
+                part[field] = json!(format!(
+                    "{}{}",
+                    part[field].as_str().unwrap(),
+                    event["delta"].as_str().unwrap()
+                ));
+            }
+            "response.content_part.done" => {
+                assert_eq!(event["output_index"], 0);
+                let index = event["content_index"].as_u64().unwrap() as usize;
+                assert_eq!(event["part"], parts[index]);
+                done_indexes.push(index);
+            }
+            "response.output_item.done" => {
+                assert_eq!(event["output_index"], 0);
+                let item = folded.as_mut().unwrap();
+                item["content"] = json!(parts);
+                item["status"] = json!("completed");
+                assert_eq!(&event["item"], item);
+            }
+            "response.completed" => assert!(completed.replace(event["response"].clone()).is_none()),
+            _ => {}
+        }
+    }
+    assert_eq!(done_indexes, [0, 1, 2]);
+    assert_eq!(
+        parts,
+        [
+            json!({"type":"output_text","text":"Visible 🦀","annotations":[]}),
+            json!({"type":"refusal","refusal":"Cannot share that."}),
+            json!({"type":"output_text","text":"Try this.","annotations":[]}),
+        ]
+    );
+    let completed = completed.unwrap();
+    assert_eq!(completed["output"], json!([folded.unwrap()]));
+    assert_eq!(completed["usage"]["total_tokens"], 25);
+    let stored = json_status(client.get(format!("{url}/resp_mixed")), 200).await;
+    assert_eq!(completed, stored);
+
+    request["stream"] = json!(false);
+    let mut standalone = json_status(json_request(&client, &url, &request), 200).await;
+    // Independent requests can start on different wall-clock seconds.
+    assert!(standalone["created_at"].as_u64().is_some());
+    standalone["created_at"] = completed["created_at"].clone();
+    assert_eq!(completed, standalone);
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn anthropic_ping_signed_thinking_and_compaction_survive_stream_and_replay() {
+    let server = MockAiBuilder::new()
+        .handler_fn(|request, _| {
+            if request.last_user_text() == Some("resume") {
+                let prior = &request.raw_body["messages"][1]["content"];
+                if prior
+                    == &json!([
+                        {"type":"thinking", "thinking":"check 🦀", "signature":"opaque-signature"},
+                        {"type":"compaction", "content":"checkpoint summary"},
+                    ])
+                {
+                    return TurnPlan::text("resumed from checkpoint");
+                }
+                return TurnPlan::http_error(maka_mock_ai::HttpErrorSpec::new(
+                    422,
+                    "invalid_request_error",
+                    "signed checkpoint was not replayed",
+                ));
+            }
+            TurnPlan::new()
+                .push(TurnEvent::Ping)
+                .push(TurnEvent::Reasoning {
+                    text: "check 🦀".into(),
+                    chunk_chars: 2,
+                    signature: Some("opaque-signature".into()),
+                    encrypted_content: None,
+                })
+                .push_compaction(
+                    CompactionOutput::new("checkpoint summary")
+                        .with_pause(request.options.anthropic_pause_after_compaction),
+                )
+                .push_text("continued in the same response")
+                .finish(FinishReason::Stop)
+        })
+        .start()
+        .await
+        .unwrap();
+    let client = reqwest::Client::new();
+    let url = format!("{}/messages", server.base_url());
+    let mut request = json!({
+        "model":"claude-sonnet-4-5", "max_tokens":512, "stream":true,
+        "context_management":{"edits":[{"type":"compact_20260112"}]},
+        "messages":[{"role":"user","content":"compact history"}],
+    });
+    for (pause, stop, expected_text) in [
+        (true, "compaction", "checkpoint summary"),
+        (
+            false,
+            "end_turn",
+            "checkpoint summarycontinued in the same response",
+        ),
+    ] {
+        request["context_management"]["edits"][0]["pause_after_compaction"] = json!(pause);
+        let raw = post_json(&client, &url, &request)
+            .await
+            .error_for_status()
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap();
+        let wire = std::str::from_utf8(&raw).unwrap();
+        assert!(
+            wire.split("\n\n")
+                .any(|frame| frame == "event: ping\ndata: {\"type\":\"ping\"}")
+        );
+        let mut decoder = anthropic::stream::Stream::new(anthropic::response::Options::default());
+        let mut sequence = 0;
+        let mut next_id = || {
+            sequence += 1;
+            format!("part_{sequence}")
+        };
+        let mut events = decoder.push(&raw, &mut next_id, |_| {}).unwrap();
+        events.extend(decoder.finish());
+        let mut thinking = String::new();
+        let mut signature = None;
+        let mut text = String::new();
+        let mut finish = None;
+        for event in events {
+            match event {
+                WireEvent::TextDelta {
+                    kind: TextKind::Reasoning,
+                    text,
+                    extensions,
+                    ..
+                } => {
+                    thinking.push_str(&text);
+                    if let Some(extensions) = extensions {
+                        let signed = extensions["anthropic"]["signature"].as_str().unwrap();
+                        assert!(signature.replace(signed.to_owned()).is_none());
+                    }
+                }
+                WireEvent::TextDelta {
+                    kind: TextKind::Text,
+                    text: delta,
+                    ..
+                } => text.push_str(&delta),
+                WireEvent::Finish(event) => assert!(finish.replace(event.raw_reason).is_none()),
+                WireEvent::Error(error) => panic!("Anthropic decoder rejected the stream: {error}"),
+                _ => {}
+            }
+        }
+        assert_eq!(finish.flatten().as_deref(), Some(stop));
+        assert_eq!(text, expected_text);
+        assert_eq!(thinking, "check 🦀");
+        assert_eq!(signature.as_deref(), Some("opaque-signature"));
+        if pause {
+            let resumed = json_status(
+                json_request(
+                    &client,
+                    &url,
+                    &json!({
+                        "model":"claude-sonnet-4-5", "max_tokens":512,
+                        "messages":[
+                            {"role":"user","content":"compact history"},
+                            {"role":"assistant","content":[
+                                {"type":"thinking","thinking":thinking,"signature":signature},
+                                {"type":"compaction","content":text},
+                            ]},
+                            {"role":"user","content":"resume"},
+                        ],
+                    }),
+                ),
+                200,
+            )
+            .await;
+            assert_eq!(resumed["content"][0]["text"], "resumed from checkpoint");
+        }
+    }
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn responses_replays_a_namespaced_mcp_call_until_its_receipt() {
+    use maka_mock_ai::scenario::{BenchmarkTrack, CanonicalAction, FixtureDef, ScenarioSpec};
+
+    let spec = ScenarioSpec::new("mcp-read", 17, "note", BenchmarkTrack::SharedMcp)
+        .with_fixture(
+            "note",
+            FixtureDef::File {
+                path: "note.txt".into(),
+                content: "fixture marker\n".into(),
+            },
+        )
+        .with_step(
+            "read",
+            CanonicalAction::ReadFile {
+                path: "note.txt".into(),
+                expect_marker: "fixture marker".into(),
+            },
+        )
+        .with_step(
+            "done",
+            CanonicalAction::FinalAnswer {
+                text: "Read verified.".into(),
+                expect_markers: vec!["Read verified.".into()],
+            },
+        );
+    let server = MockAiBuilder::new().scenario(spec).start().await.unwrap();
+    let origin = server.origin_url();
+    let client = reqwest::Client::new();
+    json_status(
+        json_request(
+            &client,
+            &format!("{origin}/admin/sessions"),
+            &json!({
+                "runId": "run", "sessionId": "lane", "logicalLane": "lane", "harness": "codex",
+                "scenario": "mcp-read", "workspace": std::env::current_dir().unwrap(),
+            }),
+        ),
+        201,
+    )
+    .await;
+    let url = format!("{origin}/s/run/lane/v1/responses");
+    let read = json!({
+        "type": "function", "name": "bench_read_file", "defer_loading": true,
+        "parameters": {
+            "type": "object", "properties": { "path": { "type": "string" } },
+            "required": ["path"], "additionalProperties": false,
+        }
+    });
+    let namespace = |name: &str| json!({"type": "namespace", "name": name, "tools": [read]});
+    let user = json!({"role": "user", "content": "Read the note."});
+    let mut request = json!({
+        "input": [user], "tools": [namespace("mcp__bench")], "stream": true, "store": true,
+    });
+    let sse = post_json(&client, &url, &request)
+        .await
+        .error_for_status()
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    let events: Vec<_> = sse_events(&sse).collect();
+    let event = |kind| events.iter().find(|event| event["type"] == kind).unwrap();
+    let completed = &event("response.completed")["response"];
+    let done = &event("response.output_item.done")["item"];
+    assert_eq!(completed["output"], json!([done]));
+    assert_eq!(done["type"], "function_call");
+    assert_eq!(done["name"], "bench_read_file");
+    assert_eq!(done["namespace"], "mcp__bench");
+    assert_eq!(done["arguments"], r#"{"path":"note.txt"}"#);
+    let mut added = done.clone();
+    added["status"] = json!("in_progress");
+    added["arguments"] = json!("");
+    assert_eq!(event("response.output_item.added")["item"], added);
+    let id = completed["id"].as_str().unwrap();
+    let stored = json_status(client.get(format!("{url}/{id}")), 200).await;
+    assert_eq!(stored["output"], completed["output"]);
+
+    request["stream"] = json!(false);
+    request["tools"] = json!([namespace("other"), read]);
+    let rejected = json_status(json_request(&client, &url, &request), 422).await;
+    assert_eq!(
+        rejected["error"]["message"],
+        r#"unsupported bench_read_file: ["replay requires one matching tool declaration"]"#
+    );
+    request["tools"]
+        .as_array_mut()
+        .unwrap()
+        .push(namespace("mcp__bench"));
+    let replay = json_status(json_request(&client, &url, &request), 200).await;
+    assert_eq!(replay["id"], id);
+    assert_eq!(replay["output"], completed["output"]);
+
+    request["input"] = json!([
+        user, done, {
+            "type": "function_call_output", "call_id": done["call_id"], "output": "fixture marker\n",
+        }
+    ]);
+    let next = json_status(json_request(&client, &url, &request), 200).await;
+    assert_ne!(next["id"], id);
+    assert_eq!(next["output"][0]["content"][0]["text"], "Read verified.");
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn harness_titles_take_the_side_path_and_user_title_requests_complete_the_scenario() {
+    use maka_mock_ai::scenario::{
+        BenchmarkTrack, CanonicalAction, FaultKind, ScenarioSpec, ScheduledFault,
+    };
+
+    let spec = ScenarioSpec::new("user-title", 7, "article", BenchmarkTrack::Native)
+        .with_step(
+            "answer",
+            CanonicalAction::FinalAnswer {
+                text: "潮汐之后".into(),
+                expect_markers: vec!["潮汐之后".into()],
+            },
+        )
+        .with_fault(ScheduledFault {
+            step: "answer".into(),
+            attempt: 1,
+            at: Default::default(),
+            emit: FaultKind::Http429,
+        });
+    let server = MockAiBuilder::new().scenario(spec).start().await.unwrap();
+    let origin = server.origin_url();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .unwrap();
+    for harness in ["opencode", "claude-code"] {
+        json_status(
+            json_request(
+                &client,
+                &format!("{origin}/admin/sessions"),
+                &json!({
+                    "runId":"run","sessionId":harness,"logicalLane":harness,"harness":harness,
+                    "scenario":"user-title","workspace":std::env::current_dir().unwrap(),
+                }),
+            ),
+            201,
+        )
+        .await;
+        let (path, system, side_text, text_pointer) = if harness == "opencode" {
+            (
+                "chat/completions",
+                "You are a title generator. You output ONLY a thread title.",
+                "Benchmark task",
+                "/choices/0/message/content",
+            )
+        } else {
+            (
+                "messages",
+                "Generate a concise, sentence-case title (3-7 words). Return JSON with a single \"title\" field.",
+                r#"{"title":"Benchmark task"}"#,
+                "/content/0/text",
+            )
+        };
+        let url = format!("{origin}/s/run/{harness}/v1/{path}");
+        let user = json!({"role":"user","content":"帮这篇文章起个标题"});
+        let main = json!({"model":"mock-model","max_tokens":256,"messages":[user]});
+        let mut side = main.clone();
+        if harness == "opencode" {
+            side["messages"]
+                .as_array_mut()
+                .unwrap()
+                .insert(0, json!({"role":"system","content":system}));
+        } else {
+            side["system"] = json!(system);
+        }
+        let title = json_status(json_request(&client, &url, &side), 200).await;
+        assert_eq!(title.pointer(text_pointer).unwrap(), side_text);
+        let rejected = json_status(json_request(&client, &url, &main), 429).await;
+        assert_eq!(rejected["error"]["type"], "rate_limit_error");
+        let answer = json_status(json_request(&client, &url, &main), 200).await;
+        assert_eq!(answer.pointer(text_pointer).unwrap(), "潮汐之后");
+        let detail = format!("{origin}/admin/sessions/{harness}");
+        let summary = json_status(
+            json_request(
+                &client,
+                &format!("{detail}/finalize"),
+                &json!({
+                    "responseId":answer["id"], "observedMarkers":["潮汐之后"],
+                }),
+            ),
+            200,
+        )
+        .await;
+        assert_eq!(summary["finalized"], true);
+        let timeline = json_status(client.get(&detail), 200).await;
+        let purposes: Vec<_> = timeline["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["purpose"].as_str().unwrap())
+            .collect();
+        assert_eq!(purposes, ["title", "main", "main"]);
+    }
+    server.shutdown().await;
 }
 
 #[tokio::test]

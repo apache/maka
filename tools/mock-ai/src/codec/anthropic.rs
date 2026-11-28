@@ -17,9 +17,14 @@
  * under the License.
  */
 
-use super::{TurnCompletion, WireEncoder, WireFrame, split_utf8_chunks, sse_named};
-use crate::plan::{FinishReason, NativeToolEvent, TurnEvent, Usage};
+use super::{
+    EncodedFrame, EventFrames, FrameKind, StringField, TurnCompletion, WireEncoder, WireFrame,
+    chunk_frames, split_utf8_chunks,
+};
+use crate::plan::{Citation, FinishReason, NativeToolEvent, ToolCallPayload, TurnEvent, TurnUsage};
+use serde::Serialize;
 use serde_json::{Value, json};
+use std::borrow::Cow;
 
 pub struct AnthropicEncoder {
     id: String,
@@ -27,24 +32,93 @@ pub struct AnthropicEncoder {
     stream: bool,
     started: bool,
     finished: bool,
-    errored: bool,
-    next_index: usize,
-    active_block: Option<ActiveBlock>,
-    completed_blocks: Vec<Value>,
-    usage: Usage,
+    paused: bool,
+    error: Option<Value>,
+    active: Option<ActiveBlock>,
+    blocks: Vec<Value>,
+    usage: TurnUsage,
 }
 
 enum ActiveBlock {
     Text {
-        index: usize,
         text: String,
         citations: Vec<Value>,
     },
     Thinking {
-        index: usize,
-        thinking: String,
+        text: String,
         signature: Option<String>,
     },
+}
+
+fn frame(
+    event: &str,
+    value: &impl Serialize,
+    kind: FrameKind,
+    semantic_bytes: usize,
+) -> EncodedFrame {
+    EncodedFrame::new_sse(Some(event), value, kind, semantic_bytes)
+}
+
+fn block_start(index: usize, block: &Value, kind: FrameKind, bytes: usize) -> EncodedFrame {
+    frame(
+        "content_block_start",
+        &json!({
+            "type": "content_block_start", "index": index, "content_block": block,
+        }),
+        kind,
+        bytes,
+    )
+}
+
+fn block_stop(index: usize) -> EncodedFrame {
+    frame(
+        "content_block_stop",
+        &json!({ "type": "content_block_stop", "index": index }),
+        FrameKind::Lifecycle,
+        0,
+    )
+}
+
+fn block_delta(
+    index: usize,
+    kind: &str,
+    field: &str,
+    chunk: &str,
+    semantic_bytes: usize,
+) -> EncodedFrame {
+    #[derive(Serialize)]
+    struct Delta<'a> {
+        #[serde(rename = "type")]
+        kind: &'a str,
+        #[serde(flatten)]
+        data: StringField<'a>,
+    }
+    #[derive(Serialize)]
+    struct BlockDelta<'a> {
+        #[serde(rename = "type")]
+        kind: &'a str,
+        index: usize,
+        delta: Delta<'a>,
+    }
+
+    let kind_on_wire = if semantic_bytes == 0 {
+        FrameKind::Lifecycle
+    } else {
+        FrameKind::SemanticDelta
+    };
+    frame(
+        "content_block_delta",
+        &BlockDelta {
+            kind: "content_block_delta",
+            index,
+            delta: Delta {
+                kind,
+                data: StringField(field, chunk),
+            },
+        },
+        kind_on_wire,
+        semantic_bytes,
+    )
 }
 
 impl AnthropicEncoder {
@@ -55,612 +129,641 @@ impl AnthropicEncoder {
             stream,
             started: false,
             finished: false,
-            errored: false,
-            next_index: 0,
-            active_block: None,
-            completed_blocks: Vec::new(),
-            usage: Usage::new(10, 10),
+            paused: false,
+            error: None,
+            active: None,
+            blocks: Vec::new(),
+            usage: TurnUsage::default(),
         }
     }
 
-    fn emit(&self, event: &str, value: Value, out: &mut Vec<WireFrame>) {
-        if self.stream {
-            out.push(sse_named(event, &value));
-        }
-    }
-
-    fn uncached_input_tokens(&self) -> u64 {
-        let cached = self
-            .usage
+    fn wire_usage(&self, starting: bool) -> Value {
+        let totals = &self.usage.totals;
+        let cached = totals
             .cache_read_tokens
             .unwrap_or(0)
-            .saturating_add(self.usage.cache_creation_tokens.unwrap_or(0));
-        self.usage.input_tokens.saturating_sub(cached)
+            .saturating_add(totals.cache_creation_tokens.unwrap_or(0));
+        let mut usage = json!({
+            "input_tokens": totals.input_tokens.saturating_sub(cached),
+            "output_tokens": if starting { 0 } else { totals.output_tokens },
+        });
+        if let Some(read) = totals.cache_read_tokens {
+            usage["cache_read_input_tokens"] = json!(read);
+        }
+        if let Some(create) = totals.cache_creation_tokens {
+            usage["cache_creation_input_tokens"] = json!(create);
+        }
+        if !starting && !self.usage.iterations.is_empty() {
+            usage["iterations"] = json!(self.usage.iterations);
+        }
+        usage
     }
 
-    fn ensure_started(&mut self, out: &mut Vec<WireFrame>) {
-        if self.started {
+    fn ensure_started(&mut self, emit: &mut dyn FnMut(EncodedFrame)) {
+        if !self.stream || self.started {
             return;
         }
         self.started = true;
-        let mut usage = serde_json::Map::new();
-        // Anthropic wire `input_tokens` is uncached input; total input = input + cache_read + cache_creation.
-        usage.insert("input_tokens".into(), json!(self.uncached_input_tokens()));
-        usage.insert("output_tokens".into(), json!(0));
-        if let Some(cr) = self.usage.cache_read_tokens {
-            usage.insert("cache_read_input_tokens".into(), json!(cr));
-        }
-        if let Some(cw) = self.usage.cache_creation_tokens {
-            usage.insert("cache_creation_input_tokens".into(), json!(cw));
-        }
-        self.emit(
+        emit(frame(
             "message_start",
-            json!({
+            &json!({
                 "type": "message_start",
                 "message": {
-                    "id": self.id,
-                    "type": "message",
-                    "role": "assistant",
-                    "model": self.model,
-                    "content": [],
-                    "stop_reason": Value::Null,
-                    "stop_sequence": Value::Null,
-                    "usage": Value::Object(usage),
-                }
+                    "id": self.id, "type": "message", "role": "assistant", "model": self.model,
+                    "content": [], "stop_reason": null, "stop_sequence": null,
+                    "usage": self.wire_usage(true),
+                },
             }),
-            out,
-        );
+            FrameKind::Lifecycle,
+            0,
+        ));
     }
 
-    fn close_active(&mut self, out: &mut Vec<WireFrame>) {
-        if let Some(active) = self.active_block.take() {
-            match active {
-                ActiveBlock::Text {
-                    index,
-                    text,
-                    citations,
-                } => {
-                    self.emit(
-                        "content_block_stop",
-                        json!({ "type": "content_block_stop", "index": index }),
-                        out,
-                    );
-                    let mut block = json!({ "type": "text", "text": text });
-                    if !citations.is_empty() {
-                        block["citations"] = Value::Array(citations);
-                    }
-                    self.completed_blocks.push(block);
+    fn close_active(&mut self, emit: &mut dyn FnMut(EncodedFrame)) {
+        let Some(active) = self.active.take() else {
+            return;
+        };
+        let index = self.blocks.len();
+        let block = match active {
+            ActiveBlock::Text { text, citations } => {
+                let mut block = json!({ "type": "text" });
+                block["text"] = Value::String(text);
+                if !citations.is_empty() {
+                    block["citations"] = Value::Array(citations);
                 }
-                ActiveBlock::Thinking {
-                    index,
-                    thinking,
-                    signature,
-                } => {
-                    let sig = signature.unwrap_or_else(|| format!("sig_{}_{index}", self.id));
-                    self.emit(
-                        "content_block_delta",
-                        json!({
-                            "type": "content_block_delta",
-                            "index": index,
-                            "delta": { "type": "signature_delta", "signature": sig },
-                        }),
-                        out,
-                    );
-                    self.emit(
-                        "content_block_stop",
-                        json!({ "type": "content_block_stop", "index": index }),
-                        out,
-                    );
-                    self.completed_blocks.push(json!({
-                        "type": "thinking",
-                        "thinking": thinking,
-                        "signature": sig,
-                    }));
-                }
+                block
             }
+            ActiveBlock::Thinking { text, signature } => {
+                let signature = signature.unwrap_or_else(|| format!("sig_{}_{index}", self.id));
+                if self.stream {
+                    emit(block_delta(
+                        index,
+                        "signature_delta",
+                        "signature",
+                        &signature,
+                        0,
+                    ));
+                }
+                let mut block = json!({ "type": "thinking" });
+                block["thinking"] = Value::String(text);
+                block["signature"] = Value::String(signature);
+                block
+            }
+        };
+        if self.stream {
+            emit(block_stop(index));
         }
+        self.blocks.push(block);
     }
 
-    fn map_stop_reason(reason: &FinishReason) -> &'static str {
-        match reason {
-            FinishReason::Stop => "end_turn",
-            FinishReason::ToolCalls => "tool_use",
-            FinishReason::Length | FinishReason::Incomplete(_) => "max_tokens",
-            FinishReason::ContentFilter | FinishReason::Refusal => "refusal",
-            FinishReason::Compaction => "compaction",
+    fn begin_atomic(&mut self, prefix: &mut Vec<EncodedFrame>) -> usize {
+        self.ensure_started(&mut |frame| prefix.push(frame));
+        self.close_active(&mut |frame| prefix.push(frame));
+        self.blocks.len()
+    }
+
+    fn atomic_block(&mut self, block: Value, bytes: usize, prefix: &mut Vec<EncodedFrame>) {
+        if self.stream {
+            let index = self.blocks.len();
+            let kind = if bytes == 0 {
+                FrameKind::Lifecycle
+            } else {
+                FrameKind::SemanticDelta
+            };
+            prefix.push(block_start(index, &block, kind, bytes));
+            prefix.push(block_stop(index));
         }
+        self.blocks.push(block);
+    }
+
+    fn text(
+        &mut self,
+        text: String,
+        chunk_chars: usize,
+        citations: Vec<Citation>,
+    ) -> EventFrames<'_> {
+        let mut prefix = Vec::new();
+        self.ensure_started(&mut |frame| prefix.push(frame));
+        if !matches!(self.active, Some(ActiveBlock::Text { .. })) {
+            let index = self.begin_atomic(&mut prefix);
+            if self.stream {
+                prefix.push(block_start(
+                    index,
+                    &json!({ "type": "text", "text": "" }),
+                    FrameKind::Lifecycle,
+                    0,
+                ));
+            }
+            self.active = Some(ActiveBlock::Text {
+                text: String::new(),
+                citations: Vec::new(),
+            });
+        }
+        let index = self.blocks.len();
+        let Some(ActiveBlock::Text {
+            text: buffer,
+            citations: annotations,
+        }) = &mut self.active
+        else {
+            unreachable!()
+        };
+        let start = buffer.len();
+        append(buffer, text);
+        let first_citation = annotations.len();
+        annotations.extend(citations.into_iter().map(|citation| {
+            json!({
+                "type": "web_search_result_location",
+                "url": citation.url,
+                "title": citation.title.unwrap_or_default(),
+                "cited_text": citation.cited_text.unwrap_or_default(),
+                "encrypted_index": format!("idx_{index}"),
+            })
+        }));
+        if !self.stream {
+            return EventFrames::default();
+        }
+        let deltas = split_utf8_chunks(&buffer[start..], chunk_chars)
+            .map(move |chunk| block_delta(index, "text_delta", "text", chunk, chunk.len()));
+        let citations = annotations[first_citation..].iter().map(move |citation| {
+            frame(
+                "content_block_delta",
+                &json!({
+                    "type": "content_block_delta", "index": index,
+                    "delta": { "type": "citations_delta", "citation": citation },
+                }),
+                FrameKind::Lifecycle,
+                0,
+            )
+        });
+        EventFrames::then(prefix, deltas.chain(citations))
+    }
+
+    fn thinking(
+        &mut self,
+        text: String,
+        chunk_chars: usize,
+        signature: Option<String>,
+    ) -> EventFrames<'_> {
+        let mut prefix = Vec::new();
+        self.ensure_started(&mut |frame| prefix.push(frame));
+        if !matches!(self.active, Some(ActiveBlock::Thinking { .. })) {
+            let index = self.begin_atomic(&mut prefix);
+            if self.stream {
+                prefix.push(block_start(
+                    index,
+                    &json!({ "type": "thinking", "thinking": "", "signature": "" }),
+                    FrameKind::Lifecycle,
+                    0,
+                ));
+            }
+            self.active = Some(ActiveBlock::Thinking {
+                text: String::new(),
+                signature: None,
+            });
+        }
+        let index = self.blocks.len();
+        let Some(ActiveBlock::Thinking {
+            text: buffer,
+            signature: stored_signature,
+        }) = &mut self.active
+        else {
+            unreachable!()
+        };
+        if signature.is_some() {
+            *stored_signature = signature;
+        }
+        let start = buffer.len();
+        append(buffer, text);
+        if !self.stream {
+            return EventFrames::default();
+        }
+        EventFrames::then(
+            prefix,
+            split_utf8_chunks(&buffer[start..], chunk_chars).map(move |chunk| {
+                block_delta(index, "thinking_delta", "thinking", chunk, chunk.len())
+            }),
+        )
+    }
+}
+
+fn append(buffer: &mut String, text: String) {
+    if buffer.is_empty() {
+        *buffer = text;
+    } else {
+        buffer.push_str(&text);
     }
 }
 
 impl WireEncoder for AnthropicEncoder {
-    fn push_event(&mut self, event: TurnEvent, out: &mut Vec<WireFrame>) {
+    fn encode_event(&mut self, event: TurnEvent) -> EventFrames<'_> {
         if self.finished {
-            return;
+            return EventFrames::default();
         }
-        // Apply Usage before message_start if caller pushed Usage early!
-        if let TurnEvent::Usage(usage) = event {
-            self.usage = usage;
-            return;
-        }
+        let event = match event {
+            TurnEvent::Usage(totals) => {
+                self.usage = totals.into();
+                return EventFrames::default();
+            }
+            TurnEvent::UsageWithIterations(usage) => {
+                self.usage = usage;
+                return EventFrames::default();
+            }
+            _ if self.paused => return EventFrames::default(),
+            event => event,
+        };
+        let mut prefix = Vec::new();
         match event {
+            TurnEvent::Text {
+                text,
+                chunk_chars,
+                citations,
+            } => return self.text(text, chunk_chars, citations),
+            TurnEvent::Refusal { text } => return self.text(text, 0, Vec::new()),
             TurnEvent::Reasoning {
                 text,
                 chunk_chars,
                 signature,
                 ..
-            } => {
-                self.ensure_started(out);
-                let is_thinking = matches!(self.active_block, Some(ActiveBlock::Thinking { .. }));
-                if !is_thinking {
-                    self.close_active(out);
-                    let index = self.next_index;
-                    self.next_index += 1;
-                    self.emit(
-                        "content_block_start",
-                        json!({
-                            "type": "content_block_start",
-                            "index": index,
-                            "content_block": { "type": "thinking", "thinking": "" },
-                        }),
-                        out,
-                    );
-                    self.active_block = Some(ActiveBlock::Thinking {
-                        index,
-                        thinking: String::new(),
-                        signature: signature.clone(),
-                    });
-                }
-                let index = match &mut self.active_block {
-                    Some(ActiveBlock::Thinking {
-                        index,
-                        signature: sig_slot,
-                        ..
-                    }) => {
-                        if signature.is_some() {
-                            *sig_slot = signature;
-                        }
-                        *index
-                    }
-                    _ => unreachable!(),
-                };
-                for chunk in split_utf8_chunks(&text, chunk_chars) {
-                    if let Some(ActiveBlock::Thinking { thinking, .. }) = &mut self.active_block {
-                        thinking.push_str(chunk);
-                    }
-                    self.emit(
-                        "content_block_delta",
-                        json!({
-                            "type": "content_block_delta",
-                            "index": index,
-                            "delta": { "type": "thinking_delta", "thinking": chunk },
-                        }),
-                        out,
-                    );
-                }
-            }
+            } => return self.thinking(text, chunk_chars, signature),
             TurnEvent::RedactedThinking { data } => {
-                self.ensure_started(out);
-                self.close_active(out);
-                let index = self.next_index;
-                self.next_index += 1;
-                let block = json!({ "type": "redacted_thinking", "data": data });
-                self.emit(
-                    "content_block_start",
-                    json!({
-                        "type": "content_block_start",
-                        "index": index,
-                        "content_block": block,
-                    }),
-                    out,
-                );
-                self.emit(
-                    "content_block_stop",
-                    json!({ "type": "content_block_stop", "index": index }),
-                    out,
-                );
-                self.completed_blocks.push(block);
-            }
-            TurnEvent::Text {
-                text,
-                chunk_chars,
-                citations,
-            } => {
-                self.ensure_started(out);
-                let is_text = matches!(self.active_block, Some(ActiveBlock::Text { .. }));
-                if !is_text {
-                    self.close_active(out);
-                    let index = self.next_index;
-                    self.next_index += 1;
-                    self.emit(
-                        "content_block_start",
-                        json!({
-                            "type": "content_block_start",
-                            "index": index,
-                            "content_block": { "type": "text", "text": "" },
-                        }),
-                        out,
-                    );
-                    self.active_block = Some(ActiveBlock::Text {
-                        index,
-                        text: String::new(),
-                        citations: Vec::new(),
-                    });
-                }
-                let index = match &self.active_block {
-                    Some(ActiveBlock::Text { index, .. }) => *index,
-                    _ => unreachable!(),
-                };
-                for chunk in split_utf8_chunks(&text, chunk_chars) {
-                    if let Some(ActiveBlock::Text { text: buf, .. }) = &mut self.active_block {
-                        buf.push_str(chunk);
-                    }
-                    self.emit(
-                        "content_block_delta",
-                        json!({
-                            "type": "content_block_delta",
-                            "index": index,
-                            "delta": { "type": "text_delta", "text": chunk },
-                        }),
-                        out,
-                    );
-                }
-                for cit in citations {
-                    let wire_cit = json!({
-                        "type": "web_search_result_location",
-                        "url": cit.url,
-                        "title": cit.title.unwrap_or_default(),
-                        "cited_text": cit.cited_text.unwrap_or_default(),
-                        "encrypted_index": format!("idx_{index}"),
-                    });
-                    if let Some(ActiveBlock::Text { citations: buf, .. }) = &mut self.active_block {
-                        buf.push(wire_cit.clone());
-                    }
-                    self.emit(
-                        "content_block_delta",
-                        json!({
-                            "type": "content_block_delta",
-                            "index": index,
-                            "delta": { "type": "citations_delta", "citation": wire_cit },
-                        }),
-                        out,
-                    );
-                }
-            }
-            TurnEvent::Refusal { text } => {
-                self.push_event(
-                    TurnEvent::Text {
-                        text,
-                        chunk_chars: 0,
-                        citations: Vec::new(),
-                    },
-                    out,
+                let bytes = data.len();
+                self.begin_atomic(&mut prefix);
+                self.atomic_block(
+                    json!({ "type": "redacted_thinking", "data": data }),
+                    bytes,
+                    &mut prefix,
                 );
             }
             TurnEvent::ToolCall(spec) => {
-                self.ensure_started(out);
-                self.close_active(out);
-                let index = self.next_index;
-                self.next_index += 1;
-                let tool_id = if spec.id.is_empty() {
+                let index = self.begin_atomic(&mut prefix);
+                let id = if spec.id.is_empty() {
                     format!("toolu_{}_{index}", self.id)
                 } else {
-                    spec.id.clone()
+                    spec.id
                 };
-                let args = spec.arguments_string();
-                self.emit(
-                    "content_block_start",
-                    json!({
-                        "type": "content_block_start",
-                        "index": index,
-                        "content_block": {
-                            "type": "tool_use",
-                            "id": tool_id,
-                            "name": spec.name,
-                            "input": {},
+                let (input, raw, literal) = match spec.payload {
+                    Some(ToolCallPayload::FunctionArgs(input)) => (input, None, false),
+                    Some(
+                        ToolCallPayload::MalformedRaw(raw) | ToolCallPayload::FreeformInput(raw),
+                    ) => (Value::String(raw), None, true),
+                    None => match spec.arguments {
+                        Value::String(raw) if spec.custom_tool => (Value::String(raw), None, true),
+                        Value::String(raw) => match serde_json::from_str(&raw) {
+                            Ok(input) => (input, Some(raw), false),
+                            Err(_) => (Value::String(raw), None, true),
                         },
-                    }),
-                    out,
-                );
-                for chunk in split_utf8_chunks(&args, spec.chunk_chars) {
-                    self.emit(
-                        "content_block_delta",
-                        json!({
-                            "type": "content_block_delta",
-                            "index": index,
-                            "delta": { "type": "input_json_delta", "partial_json": chunk },
-                        }),
-                        out,
-                    );
+                        input => (input, None, false),
+                    },
+                };
+                let mut block =
+                    json!({ "type": "tool_use", "id": id, "name": spec.name, "input": {} });
+                if self.stream {
+                    prefix.push(block_start(
+                        index,
+                        &block,
+                        FrameKind::SemanticDelta,
+                        spec.name.len(),
+                    ));
                 }
-                self.emit(
-                    "content_block_stop",
-                    json!({ "type": "content_block_stop", "index": index }),
-                    out,
-                );
-                let parsed_input = match &spec.arguments {
-                    Value::String(s) => serde_json::from_str(s).unwrap_or_else(|_| json!({})),
-                    other => other.clone(),
-                };
-                self.completed_blocks.push(json!({
-                    "type": "tool_use",
-                    "id": tool_id,
-                    "name": spec.name,
-                    "input": parsed_input,
-                }));
-            }
-            TurnEvent::NativeTool(NativeToolEvent::WebSearch { id, query, results }) => {
-                self.ensure_started(out);
-                self.close_active(out);
-                let tool_id = if id.is_empty() {
-                    format!("srvtoolu_{}_{}", self.id, self.next_index)
-                } else {
-                    id
-                };
-                let call_idx = self.next_index;
-                self.next_index += 1;
-                let server_call = json!({
-                    "type": "server_tool_use",
-                    "id": tool_id,
-                    "name": "web_search",
-                    "input": { "query": query },
-                });
-                self.emit(
-                    "content_block_start",
-                    json!({
-                        "type": "content_block_start",
-                        "index": call_idx,
-                        "content_block": server_call,
-                    }),
-                    out,
-                );
-                self.emit(
-                    "content_block_stop",
-                    json!({ "type": "content_block_stop", "index": call_idx }),
-                    out,
-                );
-                self.completed_blocks.push(server_call);
-
-                let res_idx = self.next_index;
-                self.next_index += 1;
-                let items: Vec<Value> = results
-                    .into_iter()
-                    .map(|r| {
-                        json!({
-                            "type": "web_search_result",
-                            "url": r.url,
-                            "title": r.title,
-                            "encrypted_content": r.encrypted_content.unwrap_or_else(|| "opaque".into()),
+                block["input"] = input;
+                self.blocks.push(block);
+                if self.stream {
+                    let input = &self.blocks[index]["input"];
+                    let args = match raw {
+                        Some(raw) => Cow::Owned(raw),
+                        None if literal => {
+                            Cow::Borrowed(input.as_str().expect("literal tool input is a string"))
+                        }
+                        None => Cow::Owned(input.to_string()),
+                    };
+                    return EventFrames::then(
+                        prefix,
+                        chunk_frames(args, spec.chunk_chars, move |chunk| {
+                            block_delta(
+                                index,
+                                "input_json_delta",
+                                "partial_json",
+                                chunk,
+                                chunk.len(),
+                            )
                         })
-                    })
-                    .collect();
-                let res_block = json!({
-                    "type": "web_search_tool_result",
-                    "tool_use_id": tool_id,
-                    "content": items,
-                });
-                self.emit(
-                    "content_block_start",
-                    json!({
-                        "type": "content_block_start",
-                        "index": res_idx,
-                        "content_block": res_block,
-                    }),
-                    out,
-                );
-                self.emit(
-                    "content_block_stop",
-                    json!({ "type": "content_block_stop", "index": res_idx }),
-                    out,
-                );
-                self.completed_blocks.push(res_block);
+                        .chain(std::iter::once_with(move || block_stop(index))),
+                    );
+                }
             }
-            TurnEvent::NativeTool(NativeToolEvent::WebSearchStarted { id, query }) => {
-                self.ensure_started(out);
-                self.close_active(out);
-                let tool_id = if id.is_empty() {
-                    format!("srvtoolu_{}_{}", self.id, self.next_index)
+            TurnEvent::NativeTool(tool) => {
+                let index = self.begin_atomic(&mut prefix);
+                let (id, query, results) = match tool {
+                    NativeToolEvent::WebSearch { id, query, results } => (id, query, Some(results)),
+                    NativeToolEvent::WebSearchStarted { id, query } => (id, query, None),
+                };
+                let id = if id.is_empty() {
+                    format!("srvtoolu_{}_{index}", self.id)
                 } else {
                     id
                 };
-                let call_idx = self.next_index;
-                self.next_index += 1;
-                let server_call = json!({
-                    "type": "server_tool_use",
-                    "id": tool_id,
-                    "name": "web_search",
-                    "input": { "query": query },
-                });
-                self.emit(
-                    "content_block_start",
-                    json!({
-                        "type": "content_block_start",
-                        "index": call_idx,
-                        "content_block": server_call,
-                    }),
-                    out,
-                );
-                self.emit(
-                    "content_block_stop",
-                    json!({ "type": "content_block_stop", "index": call_idx }),
-                    out,
-                );
-                self.completed_blocks.push(server_call);
-            }
-            TurnEvent::NativeCompaction(comp) => {
-                self.ensure_started(out);
-                self.close_active(out);
-                let index = self.next_index;
-                self.next_index += 1;
-                let summary = if comp.summary.is_empty() {
-                    if comp.encrypted_content.is_empty() {
-                        "Compacted conversation summary.".into()
-                    } else {
-                        comp.encrypted_content
-                    }
-                } else {
-                    comp.summary
-                };
-                // Per Anthropic stream decoder: start with content: null, deliver summary via compaction_delta!
-                let mut start_block = serde_json::Map::new();
-                start_block.insert("type".into(), json!("compaction"));
-                start_block.insert("content".into(), Value::Null);
-                if let Some(sig) = &comp.signature {
-                    start_block.insert("signature".into(), json!(sig));
-                }
-                self.emit(
-                    "content_block_start",
-                    json!({
-                        "type": "content_block_start",
-                        "index": index,
-                        "content_block": Value::Object(start_block),
-                    }),
-                    out,
-                );
-                self.emit(
-                    "content_block_delta",
-                    json!({
-                        "type": "content_block_delta",
-                        "index": index,
-                        "delta": {
-                            "type": "compaction_delta",
-                            "content": summary,
-                        },
-                    }),
-                    out,
-                );
-                if let Some(sig) = &comp.signature {
-                    self.emit(
-                        "content_block_delta",
+                self.atomic_block(json!({
+                    "type": "server_tool_use", "id": id, "name": "web_search", "input": { "query": query },
+                }), query.len(), &mut prefix);
+                if let Some(results) = results {
+                    let results: Vec<_> = results.into_iter().map(|result| json!({
+                        "type": "web_search_result", "url": result.url, "title": result.title,
+                        "encrypted_content": result.encrypted_content.as_deref().unwrap_or("opaque"),
+                    })).collect();
+                    self.atomic_block(
                         json!({
-                            "type": "content_block_delta",
-                            "index": index,
-                            "delta": { "type": "signature_delta", "signature": sig },
+                            "type": "web_search_tool_result", "tool_use_id": id, "content": results,
                         }),
-                        out,
+                        0,
+                        &mut prefix,
                     );
                 }
-                self.emit(
-                    "content_block_stop",
-                    json!({ "type": "content_block_stop", "index": index }),
-                    out,
-                );
-                let mut done_block = json!({
-                    "type": "compaction",
-                    "content": summary,
-                });
-                if let Some(sig) = comp.signature {
-                    done_block["signature"] = json!(sig);
-                }
-                self.completed_blocks.push(done_block);
             }
-            TurnEvent::MidStreamError(err) => {
-                self.ensure_started(out);
-                self.errored = true;
+            TurnEvent::NativeCompaction(compaction) => {
+                let index = self.begin_atomic(&mut prefix);
+                self.paused = compaction.pause_after_compaction;
+                let summary = if !compaction.summary.is_empty() {
+                    compaction.summary
+                } else if !compaction.encrypted_content.is_empty() {
+                    compaction.encrypted_content
+                } else {
+                    "Compacted conversation summary.".into()
+                };
+                if self.stream {
+                    prefix.push(block_start(
+                        index,
+                        &json!({ "type": "compaction", "content": null }),
+                        FrameKind::Lifecycle,
+                        0,
+                    ));
+                    prefix.push(block_delta(
+                        index,
+                        "compaction_delta",
+                        "content",
+                        &summary,
+                        summary.len(),
+                    ));
+                    if let Some(signature) = &compaction.signature {
+                        prefix.push(block_delta(
+                            index,
+                            "signature_delta",
+                            "signature",
+                            signature,
+                            0,
+                        ));
+                    }
+                    prefix.push(block_stop(index));
+                }
+                let mut block = json!({ "type": "compaction" });
+                block["content"] = Value::String(summary);
+                if let Some(signature) = compaction.signature {
+                    block["signature"] = Value::String(signature);
+                }
+                self.blocks.push(block);
+            }
+            TurnEvent::MidStreamError(error) => {
+                self.ensure_started(&mut |frame| prefix.push(frame));
                 self.finished = true;
-                let mut err_obj = serde_json::Map::new();
-                err_obj.insert("type".into(), json!(err.error_type));
-                err_obj.insert("message".into(), json!(err.message));
-                if let Some(code) = err.code {
-                    err_obj.insert("code".into(), json!(code));
+                let mut body = json!({ "type": "error", "error": { "type": error.error_type, "message": error.message } });
+                if let Some(code) = error.code {
+                    body["error"]["code"] = Value::String(code);
                 }
-                if let Some(retryable) = err.retryable {
-                    err_obj.insert("isRetryable".into(), json!(retryable));
+                if let Some(retryable) = error.retryable {
+                    body["error"]["isRetryable"] = Value::Bool(retryable);
                 }
-                self.emit(
-                    "error",
-                    json!({
-                        "type": "error",
-                        "error": Value::Object(err_obj),
-                    }),
-                    out,
-                );
-            }
-            TurnEvent::RawJson { value } => {
                 if self.stream {
-                    let event_name = value["type"].as_str().unwrap_or("message");
-                    out.push(sse_named(event_name, &value));
+                    prefix.push(frame("error", &body, FrameKind::Terminal, 0));
                 }
+                self.error = Some(body);
             }
-            TurnEvent::StreamStart => {
-                self.ensure_started(out);
+            TurnEvent::Ping if self.stream => {
+                self.ensure_started(&mut |frame| prefix.push(frame));
+                prefix.push(frame(
+                    "ping",
+                    &json!({ "type": "ping" }),
+                    FrameKind::Keepalive,
+                    0,
+                ));
             }
-            TurnEvent::Flush => {
-                self.close_active(out);
+            TurnEvent::StreamStart => self.ensure_started(&mut |frame| prefix.push(frame)),
+            TurnEvent::Flush => self.close_active(&mut |frame| prefix.push(frame)),
+            TurnEvent::RawJson { value } if self.stream => prefix.push(frame(
+                value["type"].as_str().unwrap_or("message"),
+                &value,
+                FrameKind::Lifecycle,
+                0,
+            )),
+            TurnEvent::SseComment { comment } if self.stream => {
+                prefix.push(EncodedFrame::comment(&comment))
             }
-            TurnEvent::SseComment { comment } => {
-                if self.stream {
-                    out.push(WireFrame::Sse(bytes::Bytes::from(format!(
-                        ": {comment}\n\n"
-                    ))));
-                }
-            }
-            TurnEvent::RawBytes(bytes) => {
-                out.push(WireFrame::Raw(bytes));
-            }
-            TurnEvent::Usage(_)
-            | TurnEvent::Delay { .. }
-            | TurnEvent::JitterDelay { .. }
-            | TurnEvent::Stall
-            | TurnEvent::HttpError(_)
-            | TurnEvent::DropConnection
-            | TurnEvent::TruncateEof
-            | TurnEvent::Finish { .. } => {}
+            TurnEvent::RawBytes(bytes) if self.stream => prefix.push(EncodedFrame::new(
+                WireFrame::Raw(bytes),
+                FrameKind::Lifecycle,
+                0,
+            )),
+            _ => {}
         }
+        EventFrames::prefix(prefix)
     }
 
-    fn finish(&mut self, reason: FinishReason, out: &mut Vec<WireFrame>) -> TurnCompletion {
-        self.ensure_started(out);
-        self.close_active(out);
-
-        let stop_reason = Self::map_stop_reason(&reason);
-        let mut usage_delta = serde_json::Map::new();
-        usage_delta.insert("input_tokens".into(), json!(self.uncached_input_tokens()));
-        // Mandatory per Anthropic stream decoder validation.
-        usage_delta.insert("output_tokens".into(), json!(self.usage.output_tokens));
-        if let Some(cr) = self.usage.cache_read_tokens {
-            usage_delta.insert("cache_read_input_tokens".into(), json!(cr));
+    fn finish_encoded(
+        &mut self,
+        reason: FinishReason,
+        emit: &mut dyn FnMut(EncodedFrame),
+    ) -> TurnCompletion {
+        if let Some(response_json) = self.error.take() {
+            return TurnCompletion {
+                response_json,
+                response_id: self.id.clone(),
+                ws_reusable: false,
+                errored: true,
+            };
         }
-        if let Some(cw) = self.usage.cache_creation_tokens {
-            usage_delta.insert("cache_creation_input_tokens".into(), json!(cw));
-        }
-
+        let stop_reason = match reason {
+            _ if self.paused => "compaction",
+            FinishReason::Stop => "end_turn",
+            FinishReason::ToolCalls => "tool_use",
+            FinishReason::Length | FinishReason::Incomplete(_) => "max_tokens",
+            FinishReason::ContentFilter | FinishReason::Refusal => "refusal",
+            FinishReason::Compaction => "compaction",
+        };
+        let usage = self.wire_usage(false);
         if !self.finished {
+            self.ensure_started(emit);
+            self.close_active(emit);
             self.finished = true;
-            self.emit(
-                "message_delta",
-                json!({
-                    "type": "message_delta",
-                    "delta": {
-                        "stop_reason": stop_reason,
-                        "stop_sequence": Value::Null,
-                    },
-                    "usage": Value::Object(usage_delta.clone()),
-                }),
-                out,
-            );
-            self.emit("message_stop", json!({ "type": "message_stop" }), out);
+            if self.stream {
+                emit(frame(
+                    "message_delta",
+                    &json!({
+                        "type": "message_delta",
+                        "delta": { "stop_reason": stop_reason, "stop_sequence": null },
+                        "usage": usage,
+                    }),
+                    FrameKind::Terminal,
+                    0,
+                ));
+                emit(frame(
+                    "message_stop",
+                    &json!({ "type": "message_stop" }),
+                    FrameKind::Terminal,
+                    0,
+                ));
+            }
         }
-
-        let resp = json!({
-            "id": self.id,
-            "type": "message",
-            "role": "assistant",
-            "model": self.model,
-            "content": self.completed_blocks,
-            "stop_reason": stop_reason,
-            "stop_sequence": Value::Null,
-            "usage": Value::Object(usage_delta),
+        let mut response_json = json!({
+            "id": self.id, "type": "message", "role": "assistant", "model": self.model,
+            "stop_reason": stop_reason, "stop_sequence": null,
         });
-
+        response_json["content"] = Value::Array(std::mem::take(&mut self.blocks));
+        response_json["usage"] = usage;
         TurnCompletion {
-            response_json: resp,
+            response_json,
             response_id: self.id.clone(),
             ws_reusable: false,
-            errored: self.errored,
+            errored: false,
         }
     }
 
     fn is_finished(&self) -> bool {
         self.finished
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::codec::sse_json;
+    use crate::plan::{CompactionOutput, ToolCallSpec, Usage, UsageIteration, UsageIterationKind};
+
+    #[test]
+    fn ping_and_signed_thinking_preserve_the_stream_and_usage() {
+        let mut encoder = AnthropicEncoder::new("msg_1".into(), "test".into(), true);
+        let mut frames = Vec::new();
+        for event in [
+            TurnEvent::Usage(Usage::new(52, 9).with_cache_read(20).with_cache_creation(7)),
+            TurnEvent::Ping,
+            TurnEvent::Reasoning {
+                text: "🦀思".into(),
+                chunk_chars: 1,
+                signature: Some("signed".into()),
+                encrypted_content: None,
+            },
+            TurnEvent::RedactedThinking {
+                data: "opaque".into(),
+            },
+        ] {
+            frames.extend(encoder.encode_event(event));
+        }
+        let result = encoder.finish_encoded(FinishReason::Stop, &mut |frame| frames.push(frame));
+        let events: Vec<_> = frames.iter().map(sse_json).collect();
+        assert_eq!(
+            events[0]["message"]["usage"],
+            json!({
+                "input_tokens": 25, "output_tokens": 0, "cache_read_input_tokens": 20, "cache_creation_input_tokens": 7,
+            })
+        );
+        assert_eq!(frames[1].kind, FrameKind::Keepalive);
+        assert_eq!(frames[1].semantic_bytes, 0);
+        let WireFrame::Sse(ping) = &frames[1].wire else {
+            panic!("expected ping SSE");
+        };
+        assert_eq!(&ping[..], b"event: ping\ndata: {\"type\":\"ping\"}\n\n");
+        let deltas: Vec<_> = events
+            .iter()
+            .filter_map(|event| event.get("delta"))
+            .filter(|delta| delta.get("type").is_some())
+            .cloned()
+            .collect();
+        assert_eq!(
+            deltas,
+            vec![
+                json!({ "type": "thinking_delta", "thinking": "🦀" }),
+                json!({ "type": "thinking_delta", "thinking": "思" }),
+                json!({ "type": "signature_delta", "signature": "signed" }),
+            ]
+        );
+        assert_eq!(
+            result.response_json["content"],
+            json!([
+                { "type": "thinking", "thinking": "🦀思", "signature": "signed" },
+                { "type": "redacted_thinking", "data": "opaque" },
+            ])
+        );
+    }
+
+    #[test]
+    fn compaction_can_pause_or_continue_with_iteration_usage() {
+        for pause in [false, true] {
+            let mut encoder = AnthropicEncoder::new("msg_1".into(), "test".into(), true);
+            let mut frames = Vec::new();
+            let usage = Usage::new(100, 6).with_iterations(vec![
+                UsageIteration {
+                    kind: UsageIterationKind::Compaction,
+                    input_tokens: 80,
+                    output_tokens: 2,
+                    cache_read_input_tokens: None,
+                    cache_creation_input_tokens: None,
+                },
+                UsageIteration {
+                    kind: UsageIterationKind::Message,
+                    input_tokens: 20,
+                    output_tokens: 4,
+                    cache_read_input_tokens: None,
+                    cache_creation_input_tokens: None,
+                },
+            ]);
+            for event in [
+                TurnEvent::UsageWithIterations(usage),
+                TurnEvent::NativeCompaction(CompactionOutput::new("summary").with_pause(pause)),
+                TurnEvent::Text {
+                    text: "continued".into(),
+                    chunk_chars: 0,
+                    citations: Vec::new(),
+                },
+            ] {
+                frames.extend(encoder.encode_event(event));
+            }
+            let result =
+                encoder.finish_encoded(FinishReason::Stop, &mut |frame| frames.push(frame));
+            let delta = sse_json(&frames[frames.len() - 2]);
+            assert_eq!(delta["type"], "message_delta");
+            assert_eq!(
+                delta["delta"]["stop_reason"],
+                if pause { "compaction" } else { "end_turn" }
+            );
+            assert_eq!(
+                delta["usage"]["iterations"],
+                json!([
+                    { "type": "compaction", "input_tokens": 80, "output_tokens": 2 },
+                    { "type": "message", "input_tokens": 20, "output_tokens": 4 },
+                ])
+            );
+            let mut expected = vec![json!({ "type": "compaction", "content": "summary" })];
+            if !pause {
+                expected.push(json!({ "type": "text", "text": "continued" }));
+            }
+            assert_eq!(result.response_json["content"], Value::Array(expected));
+        }
+    }
+
+    #[test]
+    fn nonstreaming_malformed_tool_input_remains_observable() {
+        let mut encoder = AnthropicEncoder::new("msg_1".into(), "test".into(), false);
+        let call = ToolCallSpec::with_payload(
+            "toolu_1",
+            "lookup",
+            ToolCallPayload::MalformedRaw("{-".into()),
+        )
+        .with_chunk_chars(1);
+        assert_eq!(encoder.encode_event(call.into()).count(), 0);
+        let result =
+            encoder.finish_encoded(FinishReason::ToolCalls, &mut |_| panic!("unexpected frame"));
+        assert_eq!(
+            result.response_json["content"],
+            json!([
+                { "type": "tool_use", "id": "toolu_1", "name": "lookup", "input": "{-" },
+            ])
+        );
     }
 }

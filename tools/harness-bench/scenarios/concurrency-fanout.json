@@ -1,0 +1,58 @@
+{
+  "version": 1,
+  "scenario": "concurrency-fanout",
+  "seed": 41002,
+  "fixture": "concurrency-fanout-v1",
+  "track": "native",
+  "fixtures": {
+    "input": {
+      "kind": "file",
+      "path": "artifacts/input.txt",
+      "content": "source=fanout\n"
+    },
+    "verifyFirst": {
+      "kind": "command",
+      "command": "grep -Fx -- 'stage=running' 'artifacts/lane.txt'"
+    },
+    "verifyDone": {
+      "kind": "command",
+      "command": "grep -Fx -- 'stage=verified' 'artifacts/lane.txt'"
+    }
+  },
+  "steps": [
+    {
+      "id": "read",
+      "readFile": { "path": "artifacts/input.txt", "expectMarker": "source=fanout" }
+    },
+    {
+      "id": "write",
+      "writeFile": { "path": "artifacts/lane.txt", "content": "stage=queued\nsource=fanout\n" }
+    },
+    {
+      "id": "start",
+      "editFile": { "path": "artifacts/lane.txt", "old": "stage=queued", "new": "stage=running" }
+    },
+    {
+      "id": "check-start",
+      "parallelBatch": [
+        { "readFile": { "path": "artifacts/lane.txt", "expectMarker": "stage=running" } },
+        { "shell": { "commandId": "verifyFirst" } }
+      ]
+    },
+    {
+      "id": "finish",
+      "editFile": { "path": "artifacts/lane.txt", "old": "stage=running", "new": "stage=verified" }
+    },
+    {
+      "id": "verify",
+      "shell": { "commandId": "verifyDone" }
+    },
+    {
+      "id": "done",
+      "finalAnswer": {
+        "text": "FANOUT_OK: artifacts/lane.txt reached the verified stage.",
+        "expectMarkers": ["FANOUT_OK"]
+      }
+    }
+  ]
+}

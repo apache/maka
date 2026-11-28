@@ -1,0 +1,50 @@
+{
+  "version": 1,
+  "scenario": "long-compaction",
+  "seed": 41003,
+  "fixture": "long-compaction-v1",
+  "track": "native",
+  "fixtures": {
+    "checkpoint": {
+      "kind": "file",
+      "path": "state/handoff.txt",
+      "content": "fact=handoff-ticket-6f32\nstate=pending\n"
+    },
+    "transcript": {
+      "kind": "largeOutput",
+      "pattern": "benchmark transcript segment with no handoff data"
+    }
+  },
+  "steps": [
+    {
+      "id": "read-fact",
+      "readFile": { "path": "state/handoff.txt", "expectMarker": "handoff-ticket-6f32" }
+    },
+    {
+      "id": "fill-context",
+      "largeOutput": { "fixture": "transcript", "bytes": 131072 }
+    },
+    {
+      "id": "compact",
+      "triggerCompaction": {
+        "mode": { "contextOverflow": { "actualBytes": 131072, "limitBytes": 65536 } },
+        "proofMarker": "handoff-ticket-6f32"
+      }
+    },
+    {
+      "id": "read-retained-fact",
+      "readFile": { "path": "state/handoff.txt", "expectMarker": "handoff-ticket-6f32" }
+    },
+    {
+      "id": "record-handoff",
+      "editFile": { "path": "state/handoff.txt", "old": "state=pending", "new": "state=recovered" }
+    },
+    {
+      "id": "done",
+      "finalAnswer": {
+        "text": "COMPACTION_OK: handoff-ticket-6f32 was recovered.",
+        "expectMarkers": ["COMPACTION_OK", "handoff-ticket-6f32"]
+      }
+    }
+  ]
+}

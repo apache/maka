@@ -81,6 +81,13 @@ impl SessionTracker {
         1
     }
 
+    pub(crate) fn remove(&self, session_key: &str) {
+        let mut guard = self.inner.lock().unwrap();
+        if guard.turns.remove(session_key).is_some() {
+            guard.order.retain(|key| key != session_key);
+        }
+    }
+
     pub fn clear(&self) {
         let mut guard = self.inner.lock().unwrap();
         guard.order.clear();
@@ -132,6 +139,23 @@ pub type HandlerFuture<'a> = Pin<Box<dyn Future<Output = Option<TurnDecision>> +
 /// Core extensibility trait for deciding how the mock AI responds to a turn.
 pub trait TurnHandler: Send + Sync {
     fn handle<'a>(&'a self, req: &'a NormalizedRequest, ctx: &'a TurnContext) -> HandlerFuture<'a>;
+
+    /// Pre-stream admission faults may be retried without advancing the session turn.
+    fn reject_before_turn(
+        &self,
+        _request: &NormalizedRequest,
+        _chaos: Option<&crate::workload::ChaosConfig>,
+    ) -> Option<HttpErrorSpec> {
+        None
+    }
+
+    fn handle_admitted<'a>(
+        &'a self,
+        request: &'a NormalizedRequest,
+        ctx: &'a TurnContext,
+    ) -> HandlerFuture<'a> {
+        self.handle(request, ctx)
+    }
 
     /// Reset internal counters/state (called by `MockAiServer::reset()` and `POST /admin/reset`).
     fn reset(&self) {}

@@ -19,23 +19,26 @@
 
 use super::admin::handle_admin;
 use super::{
-    ActiveStreamGuard, BoxBody, FlushStatus, PendingWsUpgrade, ServerState, TtftTracker,
-    TurnCloseGuard, classify_protocol, collect_headers, default_response_id, error_http_response,
-    extract_stored_response_id, full_json, is_responses_path, is_semantic_delta_frame, jitter_ms,
-    json_with_headers, pacer_seed_for, plan_usage_hint, semantic_event_bytes, spawn_tracked,
-    sse_response,
+    ActiveStreamGuard, Attempt, BoxBody, DeliveredItem, PendingWsUpgrade, ServerState,
+    TurnCloseGuard, collect_headers, default_response_id, effective_history, endpoint_protocol,
+    error_http_response, event_usage, full_json, initial_usage, jitter_ms, json_with_headers,
+    spawn_tracked,
 };
-use crate::codec::{WireFrame, create_encoder};
-use crate::handler::{CloseSignalGuard, InteractiveCommand, TurnContext, TurnDecision};
+use crate::codec::{EncodedFrame, FrameKind, WireFrame};
+use crate::handler::{CloseSignalGuard, InteractiveCommand, TurnDecision};
+use crate::metrics::{AttemptOutcome, RequestPurpose};
 use crate::pacing::{LatencyProfile, TurnPacer};
 use crate::plan::{CloseSignal, FinishReason, HttpErrorSpec, TurnEvent, Usage};
 use crate::protocol::{NormalizedRequest, Protocol, Transport, normalize_request};
 #[cfg(feature = "proxy")]
-use crate::proxy::{ReplayConfig, fingerprint_from_normalized};
+use crate::proxy::{
+    ExchangeKind, ReplayConfig, compute_fingerprint_for_lane, fingerprint_from_route,
+};
 use crate::ratelimit::{RateLimitDecision, RateLimitHeaders, RateLimitLease};
+use crate::routing::{CompactKind, EndpointKind, ParsedRoute, RequestUse, ResponseId, parse_route};
 use crate::schema_synth::{WirePoisonConfig, poison_sse_frame};
+use crate::watchdog::HistorySize;
 use bytes::Bytes;
-#[cfg(feature = "proxy")]
 use http_body_util::StreamBody;
 use http_body_util::{BodyExt, Full, Limited};
 use hyper::body::{Frame, Incoming};
@@ -55,85 +58,175 @@ pub(super) async fn handle_http_request(
     state: Arc<ServerState>,
     pending_upgrade: Arc<Mutex<Option<PendingWsUpgrade>>>,
 ) -> Response<BoxBody> {
+    let started = Instant::now();
+    let headers_ns = state.clock.elapsed_ns();
     let method = req.method().clone();
-    let path = req.uri().path().to_owned();
-    let query = req.uri().query().map(str::to_owned);
+    let uri = req.uri().clone();
+    let headers = collect_headers(req.headers());
+    let is_ws_upgrade = headers
+        .get("upgrade")
+        .is_some_and(|v| v.eq_ignore_ascii_case("websocket"));
+    let route = parse_route(
+        method.as_str(),
+        uri.path(),
+        uri.query(),
+        is_ws_upgrade,
+        &state.control.extra_get_routes,
+    );
+
+    match route.endpoint {
+        EndpointKind::ScopedForbidden => {
+            return full_json(
+                StatusCode::FORBIDDEN,
+                &json!({"error": format!("admin and metrics are unavailable under session scope: {}", route.raw_path)}),
+            );
+        }
+        EndpointKind::Metrics => {
+            let body = state.render_prometheus();
+            let bytes = Bytes::from(body);
+            return Response::builder()
+                .header(
+                    header::CONTENT_TYPE,
+                    "text/plain; version=0.0.4; charset=utf-8",
+                )
+                .header(header::CONTENT_LENGTH, bytes.len())
+                .body(
+                    Full::new(bytes)
+                        .map_err(|never| match never {})
+                        .boxed_unsync(),
+                )
+                .unwrap();
+        }
+        EndpointKind::Admin => {
+            return if state.control.enable_admin_api {
+                state
+                    .metrics
+                    .control_plane_requests
+                    .fetch_add(1, Ordering::Relaxed);
+                handle_admin(method, route.canonical_path, req, state).await
+            } else {
+                unknown_route(&state, &method, route.raw_path)
+            };
+        }
+        _ => {}
+    }
+
+    let protocol = endpoint_protocol(&route.endpoint).unwrap_or(Protocol::OpenaiChatCompletions);
+    let attempt = Attempt::new(&state, protocol, Transport::Http, started, headers_ns);
+    let mut response = handle_provider_request(
+        &mut req,
+        &state,
+        pending_upgrade,
+        &method,
+        &route,
+        headers,
+        &attempt,
+    )
+    .await;
+    let status = response.status().as_u16();
+    attempt.http_status(status);
+    if status == 101 {
+        return response;
+    }
+    let sse = response.extensions().get::<TrackedSse>().is_some();
+    let semantic = !sse && attempt.expects_semantic_body();
+    let delivery = response.extensions_mut().remove::<NonStreamDelivery>();
+    response.map(|inner| {
+        AttemptBody {
+            inner,
+            attempt,
+            sse,
+            semantic,
+            delivery,
+        }
+        .boxed_unsync()
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_provider_request(
+    req: &mut Request<Incoming>,
+    state: &Arc<ServerState>,
+    pending_upgrade: Arc<Mutex<Option<PendingWsUpgrade>>>,
+    method: &Method,
+    route: &ParsedRoute<'_>,
+    headers: BTreeMap<String, String>,
+    attempt: &Attempt,
+) -> Response<BoxBody> {
+    #[cfg(feature = "proxy")]
+    let mut headers = headers;
+    let protocol = attempt.0.protocol;
+    // Attach early when headers suffice so an interrupted upload still has a session.
+    if state.auth.verify(&headers) {
+        let _ = state.resolve_identity(
+            attempt,
+            route.scope.as_ref(),
+            &headers,
+            &Value::Null,
+            None,
+            false,
+        );
+    } else {
+        return error_http_response(
+            protocol,
+            &HttpErrorSpec::new(401, "authentication_error", "invalid API key"),
+            attempt,
+        );
+    }
+
     #[cfg(feature = "proxy")]
     let path_and_query = req
         .uri()
         .path_and_query()
-        .map(|pq| pq.as_str().to_owned())
-        .unwrap_or_else(|| path.clone());
-    let headers = collect_headers(req.headers());
-
-    // 1) Prometheus /metrics and Admin routes (do not require provider API key)
-    if method == Method::GET && path == "/metrics" {
-        let body = state
-            .metrics
-            .render_prometheus(state.watchdog.total_violations());
-        let bytes = Bytes::from(body);
-        return Response::builder()
-            .status(StatusCode::OK)
-            .header(
-                header::CONTENT_TYPE,
-                "text/plain; version=0.0.4; charset=utf-8",
-            )
-            .header(header::CONTENT_LENGTH, bytes.len())
-            .body(
-                Full::new(bytes)
-                    .map_err(|never| match never {})
-                    .boxed_unsync(),
-            )
-            .unwrap();
-    }
-    if state.control.enable_admin_api && path.starts_with("/admin/") {
-        state
-            .metrics
-            .control_plane_requests
-            .fetch_add(1, Ordering::Relaxed);
-        return handle_admin(method, &path, req, state).await;
+        .map_or(route.raw_path, |pq| pq.as_str())
+        .to_owned();
+    #[cfg(feature = "proxy")]
+    if let Some(lane) = attempt.lane() {
+        headers.insert(crate::proxy::SCOPE_LANE_HEADER.into(), lane.0);
     }
 
-    // 2) Auth check for provider endpoints
-    if !state.auth.verify(&headers) {
-        let proto = classify_protocol(&path).unwrap_or(Protocol::OpenaiChatCompletions);
-        return error_http_response(
-            proto,
-            &HttpErrorSpec::new(401, "authentication_error", "invalid API key"),
-            &state.metrics,
-        );
-    }
-
-    // 3) Responses WebSocket Upgrade on GET /v1/responses or /responses
-    let is_ws_upgrade = headers
-        .get("upgrade")
-        .is_some_and(|v| v.eq_ignore_ascii_case("websocket"));
-    if is_ws_upgrade && is_responses_path(&path) {
+    if route.endpoint == EndpointKind::ResponsesWs {
         if let Some(reject_status) = state.tuning.reject_websocket_upgrade_status {
             return error_http_response(
-                Protocol::OpenaiResponsesWs,
+                protocol,
                 &HttpErrorSpec::new(
                     reject_status,
                     "websocket_unavailable",
                     "WebSocket upgrade rejected by mock server configuration",
                 ),
-                &state.metrics,
+                attempt,
             );
+        }
+        let require_identity = route.scope.is_some();
+        #[cfg(feature = "proxy")]
+        let require_identity =
+            require_identity || (state.strict_benchmark && state.proxy_recorder.is_some());
+        if require_identity
+            && let Err(spec) = state.resolve_identity(
+                attempt,
+                route.scope.as_ref(),
+                &headers,
+                &Value::Null,
+                None,
+                false,
+            )
+        {
+            return error_http_response(protocol, &spec, attempt);
         }
         let Some(ws_key) = headers.get("sec-websocket-key") else {
             return full_json(
                 StatusCode::BAD_REQUEST,
-                &json!({ "error": { "message": "missing Sec-WebSocket-Key" } }),
+                &json!({"error": {"message":"missing Sec-WebSocket-Key"}}),
             );
         };
         #[cfg(feature = "proxy")]
-        let proxied_upstream = if let Some(ref proxy) = state.proxy_recorder {
+        let proxied_upstream = if let Some(proxy) = &state.proxy_recorder {
             match proxy.connect_upstream_ws(&path_and_query, &headers).await {
-                Ok(upstream_ws) => Some(upstream_ws),
-                Err(err) => {
+                Ok(stream) => Some(stream),
+                Err(error) => {
                     return full_json(
                         StatusCode::BAD_GATEWAY,
-                        &json!({ "error": { "type": "proxy_error", "message": err } }),
+                        &json!({"error": {"type":"proxy_error", "message":error}}),
                     );
                 }
             }
@@ -142,8 +235,11 @@ pub(super) async fn handle_http_request(
         };
         let accept = derive_accept_key(ws_key.as_bytes());
         *pending_upgrade.lock().unwrap() = Some(PendingWsUpgrade {
-            on_upgrade: hyper::upgrade::on(&mut req),
-            path,
+            on_upgrade: hyper::upgrade::on(req),
+            path: route.raw_path.into(),
+            scope: route.scope.clone(),
+            canonical_offset: route.raw_path.len() - route.canonical_path.len(),
+            query: route.query.map(str::to_owned),
             #[cfg(feature = "proxy")]
             path_and_query,
             headers,
@@ -164,103 +260,178 @@ pub(super) async fn handle_http_request(
             .unwrap();
     }
 
-    // 4) Read request body (supports chunked/streaming upload without requiring Content-Length)
-    let body_bytes = match Limited::new(req.into_body(), state.tuning.max_request_bytes)
+    let body_bytes = match Limited::new(req.body_mut(), state.tuning.max_request_bytes)
         .collect()
         .await
     {
-        Ok(collected) => collected.to_bytes(),
-        Err(err) => {
-            return full_json(
-                StatusCode::PAYLOAD_TOO_LARGE,
-                &json!({ "error": { "message": format!("request body read error: {err}") } }),
+        Ok(body) => body.to_bytes(),
+        Err(error) if error.is::<http_body_util::LengthLimitError>() => {
+            return error_http_response(
+                protocol,
+                &crate::schema_synth::payload_too_large_error(protocol),
+                attempt,
+            );
+        }
+        Err(error) => {
+            attempt.outcome(AttemptOutcome::TransportError, Some(400));
+            return error_http_response(
+                protocol,
+                &HttpErrorSpec::new(
+                    400,
+                    "invalid_request_error",
+                    format!("request body read error: {error}"),
+                ),
+                attempt,
             );
         }
     };
+    attempt.body_read(body_bytes.len());
 
-    // 4b) Transparent HTTP proxy-record mode (forwards all provider endpoints to upstream & records cassette)
     #[cfg(feature = "proxy")]
-    if let Some(ref proxy) = state.proxy_recorder {
+    if let Some(proxy) = &state.proxy_recorder {
+        if state.strict_benchmark || route.scope.is_some() {
+            let body = match serde_json::from_slice::<Value>(&body_bytes) {
+                Ok(body) => body,
+                Err(_) if body_bytes.is_empty() => Value::Null,
+                Err(error) => {
+                    return error_http_response(
+                        protocol,
+                        &HttpErrorSpec::new(400, "invalid_request_error", error.to_string()),
+                        attempt,
+                    );
+                }
+            };
+            let parent = body["previous_response_id"]
+                .as_str()
+                .map(|id| ResponseId(id.into()));
+            if let Err(spec) = state.resolve_identity(
+                attempt,
+                route.scope.as_ref(),
+                &headers,
+                &body,
+                parent.as_ref(),
+                false,
+            ) {
+                return error_http_response(protocol, &spec, attempt);
+            }
+            if let Some(lane) = attempt.lane() {
+                headers.insert(crate::proxy::SCOPE_LANE_HEADER.into(), lane.0);
+            }
+        }
         state.metrics.proxy_requests.fetch_add(1, Ordering::Relaxed);
-        let proto = (method == Method::POST)
-            .then(|| classify_protocol(&path))
-            .flatten();
-        match proxy
+        let proxied = match proxy
             .forward_http(
                 method.as_str(),
                 &path_and_query,
-                proto,
+                (*method == Method::POST)
+                    .then(|| endpoint_protocol(&route.endpoint))
+                    .flatten(),
                 &headers,
                 body_bytes,
                 state.shutdown.clone(),
             )
             .await
         {
-            Ok(proxied) => {
-                let metrics = state.metrics.clone();
-                let rx = proxied.rx;
-                let stream = futures_util::stream::unfold(rx, move |mut rx| {
-                    let metrics = metrics.clone();
-                    async move {
-                        let item = rx.recv().await?;
-                        let mapped = match item {
-                            Ok(bytes) => {
-                                metrics
-                                    .bytes_sent
-                                    .fetch_add(bytes.len() as u64, Ordering::Relaxed);
-                                Ok(Frame::data(bytes))
-                            }
-                            Err(msg) => Err(io::Error::other(msg)),
-                        };
-                        Some((mapped, rx))
-                    }
-                });
-                let mut builder = Response::builder().status(
-                    StatusCode::from_u16(proxied.status).unwrap_or(StatusCode::BAD_GATEWAY),
-                );
-                for (k, v) in proxied.headers {
-                    if let (Ok(name), Ok(val)) = (
-                        HeaderName::from_bytes(k.as_bytes()),
-                        HeaderValue::from_str(&v),
-                    ) {
-                        builder = builder.header(name, val);
-                    }
-                }
-                return builder
-                    .body(StreamBody::new(stream).boxed_unsync())
-                    .unwrap();
-            }
-            Err(err) => {
+            Ok(proxied) => proxied,
+            Err(error) => {
                 return full_json(
                     StatusCode::BAD_GATEWAY,
-                    &json!({ "error": { "type": "proxy_error", "message": err } }),
+                    &json!({"error": {"type":"proxy_error", "message":error}}),
                 );
             }
+        };
+        let stream = futures_util::stream::unfold(proxied.rx, |mut rx| async move {
+            let item = rx.recv().await?.map(Frame::data).map_err(io::Error::other);
+            Some((item, rx))
+        });
+        let mut builder = Response::builder()
+            .status(StatusCode::from_u16(proxied.status).unwrap_or(StatusCode::BAD_GATEWAY));
+        for (k, v) in proxied.headers {
+            if let (Ok(name), Ok(value)) = (
+                HeaderName::from_bytes(k.as_bytes()),
+                HeaderValue::from_str(&v),
+            ) {
+                builder = builder.header(name, value);
+            }
         }
+        return builder
+            .body(StreamBody::new(stream).boxed_unsync())
+            .unwrap();
     }
 
-    // 5) Custom dynamic route hook (runs BEFORE built-in control-plane & generation routes so
-    // tests can override /v1/models, add static scripts, or emit custom status/headers)
-    if let Some(custom) = &state.custom_route
-        && let Some(resp) = custom(method.as_str(), &path, &headers, &body_bytes)
-    {
+    let record_control = || {
         state
             .metrics
             .control_plane_requests
             .fetch_add(1, Ordering::Relaxed);
         state
             .recorder
-            .record_control(method.as_str(), &path, query.as_deref(), &headers);
+            .record_control(method.as_str(), route.raw_path, route.query, &headers);
+    };
+    if route.scope.is_some()
+        && !matches!(
+            route.endpoint,
+            EndpointKind::Unknown
+                | EndpointKind::GetResponse(_)
+                | EndpointKind::DeleteResponse(_)
+                | EndpointKind::ChatCompletions
+                | EndpointKind::AnthropicMessages
+                | EndpointKind::AnthropicCountTokens
+                | EndpointKind::ResponsesCreate
+                | EndpointKind::ResponsesCompact
+        )
+        && let Err(spec) = state.resolve_identity(
+            attempt,
+            route.scope.as_ref(),
+            &headers,
+            &Value::Null,
+            None,
+            false,
+        )
+    {
+        return error_http_response(protocol, &spec, attempt);
+    }
+    if let Some(custom) = &state.custom_route
+        && let Some(resp) = custom(method.as_str(), route.canonical_path, &headers, &body_bytes)
+    {
+        if state.strict_benchmark || route.scope.is_some() {
+            let body = match serde_json::from_slice::<Value>(&body_bytes) {
+                Ok(body) => body,
+                Err(_) if body_bytes.is_empty() => Value::Null,
+                Err(error) => {
+                    attempt.outcome(AttemptOutcome::ParseFailed, Some(400));
+                    return error_http_response(
+                        protocol,
+                        &HttpErrorSpec::new(400, "invalid_request_error", error.to_string()),
+                        attempt,
+                    );
+                }
+            };
+            let parent = body["previous_response_id"]
+                .as_str()
+                .map(|id| ResponseId(id.into()));
+            if let Err(spec) = state.resolve_identity(
+                attempt,
+                route.scope.as_ref(),
+                &headers,
+                &body,
+                parent.as_ref(),
+                false,
+            ) {
+                return error_http_response(protocol, &spec, attempt);
+            }
+        }
+        record_control();
         let bytes = Bytes::from(resp.body);
         let mut builder = Response::builder()
             .status(StatusCode::from_u16(resp.status).unwrap_or(StatusCode::OK))
             .header(header::CONTENT_LENGTH, bytes.len());
         for (k, v) in &resp.headers {
-            if let (Ok(name), Ok(val)) = (
+            if let (Ok(name), Ok(value)) = (
                 HeaderName::from_bytes(k.as_bytes()),
                 HeaderValue::from_str(v),
             ) {
-                builder = builder.header(name, val);
+                builder = builder.header(name, value);
             }
         }
         return builder
@@ -272,285 +443,518 @@ pub(super) async fn handle_http_request(
             .unwrap();
     }
 
-    // 6) Control plane GET/DELETE endpoints
-    if method == Method::GET {
-        if path == "/v1/models" || path == "/models" || path.ends_with("/models") {
-            state
-                .metrics
-                .control_plane_requests
-                .fetch_add(1, Ordering::Relaxed);
-            state
-                .recorder
-                .record_control(method.as_str(), &path, query.as_deref(), &headers);
-            let page = state.control.render_models_page(query.as_deref());
-            return full_json(StatusCode::OK, &page);
+    #[cfg(feature = "proxy")]
+    if let Some(replayer) = &state.cassette_replayer
+        && (matches!(
+            route.endpoint,
+            EndpointKind::GetResponse(_) | EndpointKind::DeleteResponse(_)
+        ) || ((replayer.config().strict_replay || state.strict_benchmark)
+            && matches!(
+                route.endpoint,
+                EndpointKind::Models
+                    | EndpointKind::ModelById(_)
+                    | EndpointKind::RelayTokenUsage
+                    | EndpointKind::V1Usage
+                    | EndpointKind::ExtraGet(_)
+            )))
+    {
+        if let Err(spec) = state.resolve_identity(
+            attempt,
+            route.scope.as_ref(),
+            &headers,
+            &Value::Null,
+            None,
+            false,
+        ) && (state.strict_benchmark || route.scope.is_some())
+        {
+            return error_http_response(protocol, &spec, attempt);
         }
-        if let Some(id) = extract_stored_response_id(&path) {
-            state
-                .metrics
-                .control_plane_requests
-                .fetch_add(1, Ordering::Relaxed);
-            state
-                .recorder
-                .record_control(method.as_str(), &path, query.as_deref(), &headers);
-            return match state.stored_responses.get(id) {
-                Some(resp) => full_json(StatusCode::OK, &resp),
-                None => full_json(
-                    StatusCode::NOT_FOUND,
-                    &json!({ "error": { "type": "not_found", "message": format!("response '{id}' not found") } }),
+        let body = serde_json::from_slice::<Value>(&body_bytes).unwrap_or(Value::Null);
+        let lane = attempt.replay_lane(&headers);
+        let fingerprint = compute_fingerprint_for_lane(
+            ExchangeKind::Http,
+            method.as_str(),
+            &route.canonical_path_and_query(),
+            body["model"].as_str().unwrap_or(""),
+            &body,
+            lane.as_ref(),
+        );
+        match replayer.try_next_http_if(&fingerprint, |candidate| {
+            candidate.fingerprint == fingerprint
+        }) {
+            Ok(exchange) => {
+                record_control();
+                attempt.record(|metrics| {
+                    metrics.replay_hits.fetch_add(1, Ordering::Relaxed);
+                });
+                attempt.ready(None);
+                return execute_http_replay(
+                    exchange.clone(),
+                    replayer.config().clone(),
+                    RateLimitHeaders::default(),
+                    None,
+                    attempt.clone(),
+                    state.clone(),
+                );
+            }
+            Err(error) if replayer.config().strict_replay || state.strict_benchmark => {
+                return error_http_response(protocol, &replay_miss(error), attempt);
+            }
+            Err(_) => {}
+        }
+    }
+
+    match &route.endpoint {
+        EndpointKind::Models => {
+            record_control();
+            return full_json(
+                StatusCode::OK,
+                &state.control.render_models_page(route.query),
+            );
+        }
+        EndpointKind::ModelById(id) => {
+            record_control();
+            return match state.control.find_model(id) {
+                Some(model) => full_json(StatusCode::OK, &model),
+                None => error_http_response(
+                    protocol,
+                    &HttpErrorSpec::new(404, "not_found", format!("model '{id}' not found")),
+                    attempt,
                 ),
             };
         }
-        if (path == "/api/usage/token/" || path == "/api/usage/token")
-            && let Some(payload) = &state.control.relay_token_usage
-        {
-            state
-                .metrics
-                .control_plane_requests
-                .fetch_add(1, Ordering::Relaxed);
-            state
-                .recorder
-                .record_control(method.as_str(), &path, query.as_deref(), &headers);
-            return full_json(StatusCode::OK, payload);
+        EndpointKind::GetResponse(id) | EndpointKind::DeleteResponse(id) => {
+            record_control();
+            let not_found = || {
+                full_json(
+                    StatusCode::NOT_FOUND,
+                    &json!({"error": {"type": "not_found", "message": format!("response '{id}' not found")}}),
+                )
+            };
+            if state
+                .resolve_identity(
+                    attempt,
+                    route.scope.as_ref(),
+                    &headers,
+                    &Value::Null,
+                    None,
+                    false,
+                )
+                .is_err()
+            {
+                return not_found();
+            }
+            let owner = attempt.owner();
+            let response_id = ResponseId(id.clone());
+            if matches!(route.endpoint, EndpointKind::GetResponse(_)) {
+                return if let Some(owner) = owner {
+                    let response = state
+                        .benchmark
+                        .read()
+                        .unwrap()
+                        .responses
+                        .get(&owner)
+                        .and_then(|bucket| bucket.entries.get(&response_id))
+                        .map(|(response, _)| response.clone());
+                    response.map_or_else(not_found, |response| {
+                        full_json(StatusCode::OK, response.as_ref())
+                    })
+                } else {
+                    state
+                        .stored_responses
+                        .get(id)
+                        .map_or_else(not_found, |response| full_json(StatusCode::OK, &response))
+                };
+            }
+            let deleted = if let Some(owner) = owner {
+                let mut routing = state.benchmark.write().unwrap();
+                let deleted = routing.lineage.delete_owned(&owner, &response_id);
+                let retired = if deleted {
+                    routing
+                        .responses
+                        .get_mut(&owner)
+                        .and_then(|bucket| bucket.remove(&response_id))
+                } else {
+                    None
+                };
+                drop(routing);
+                drop(retired);
+                deleted
+            } else {
+                state.stored_responses.delete(id)
+            };
+            return if deleted {
+                full_json(
+                    StatusCode::OK,
+                    &json!({"id": id, "object":"response.deleted", "deleted":true}),
+                )
+            } else {
+                not_found()
+            };
         }
-        if path == "/v1/usage"
-            && let Some(payload) = &state.control.v1_usage
-        {
-            state
-                .metrics
-                .control_plane_requests
-                .fetch_add(1, Ordering::Relaxed);
-            state
-                .recorder
-                .record_control(method.as_str(), &path, query.as_deref(), &headers);
-            return full_json(StatusCode::OK, payload);
+        EndpointKind::RelayTokenUsage | EndpointKind::V1Usage | EndpointKind::ExtraGet(_) => {
+            let payload = match &route.endpoint {
+                EndpointKind::RelayTokenUsage => state.control.relay_token_usage.as_ref(),
+                EndpointKind::V1Usage => state.control.v1_usage.as_ref(),
+                EndpointKind::ExtraGet(path) => state.control.extra_get_routes.get(path),
+                _ => unreachable!(),
+            };
+            if let Some(payload) = payload {
+                record_control();
+                return full_json(StatusCode::OK, payload);
+            }
+            return unknown_route(state, method, route.raw_path);
         }
-        if let Some(payload) = state.control.extra_get_routes.get(&path) {
-            state
-                .metrics
-                .control_plane_requests
-                .fetch_add(1, Ordering::Relaxed);
-            state
-                .recorder
-                .record_control(method.as_str(), &path, query.as_deref(), &headers);
-            return full_json(StatusCode::OK, payload);
-        }
+        EndpointKind::Unknown => return unknown_route(state, method, route.raw_path),
+        _ => {}
     }
 
-    if method == Method::DELETE
-        && let Some(id) = extract_stored_response_id(&path)
-    {
-        state
-            .metrics
-            .control_plane_requests
-            .fetch_add(1, Ordering::Relaxed);
-        state
-            .recorder
-            .record_control(method.as_str(), &path, query.as_deref(), &headers);
-        let deleted = state.stored_responses.delete(id);
-        return if deleted {
-            full_json(
-                StatusCode::OK,
-                &json!({ "id": id, "object": "response.deleted", "deleted": true }),
-            )
-        } else {
-            full_json(
-                StatusCode::NOT_FOUND,
-                &json!({ "error": { "type": "not_found", "message": format!("response '{id}' not found") } }),
-            )
-        };
-    }
-
-    // 7) Generation routes (POST /v1/chat/completions, /v1/responses, /v1/messages)
-    let Some(protocol) = (method == Method::POST)
-        .then(|| classify_protocol(&path))
-        .flatten()
-    else {
-        return full_json(
-            StatusCode::NOT_FOUND,
-            &json!({ "error": { "type": "not_found", "message": format!("unknown route: {method} {path}") } }),
-        );
-    };
-
-    let raw_body: Value = match serde_json::from_slice(&body_bytes) {
-        Ok(val) => val,
-        Err(err) => {
+    let raw_body = match serde_json::from_slice::<Value>(&body_bytes) {
+        Ok(body) if body.is_object() => body,
+        result => {
+            let detail = result
+                .err()
+                .map_or_else(|| "expected a JSON object".into(), |err| err.to_string());
+            attempt.outcome(AttemptOutcome::ParseFailed, Some(400));
             return error_http_response(
                 protocol,
-                &HttpErrorSpec::new(
-                    400,
-                    "invalid_request_error",
-                    format!("malformed JSON request body: {err}"),
-                ),
-                &state.metrics,
+                &HttpErrorSpec::new(400, "invalid_request_error", detail),
+                attempt,
             );
         }
     };
-
-    let seq = state.next_sequence();
-    let normalized = normalize_request(
-        seq,
+    let mut normalized = normalize_request(
+        state.next_sequence(),
         protocol,
         Transport::Http,
-        path,
+        route.raw_path.into(),
         headers,
         body_bytes,
         raw_body,
     );
-    let turn_started = Instant::now();
-    state
-        .metrics
-        .record_protocol(protocol, normalized.prompt_bytes);
-    state.recorder.record(&normalized);
-    state.watchdog.inspect_request(&normalized);
-
-    let effective_profile = state.profile.effective();
-
-    // Stateful rate-limit admission (RPM, ITPM, concurrency slots)
-    let (rl_headers, rl_lease) = match state.rate_limiter.check_and_acquire(
-        normalized.api_key(),
-        &normalized.model,
-        normalized.estimated_input_tokens,
-        effective_profile.rate_limit_override.as_ref(),
+    let parent_id = normalized.previous_response_id.clone().map(ResponseId);
+    attempt.classified(&normalized, RequestPurpose::Unclassified);
+    if let Err(spec) = state.resolve_identity(
+        attempt,
+        route.scope.as_ref(),
+        &normalized.headers,
+        &normalized.raw_body,
+        parent_id.as_ref(),
+        false,
     ) {
-        RateLimitDecision::Allowed { headers, lease } => (headers, lease),
-        RateLimitDecision::Rejected {
-            retry_after_ms,
-            reason,
-            headers,
-        } => {
-            let mut spec = HttpErrorSpec::rate_limit(
-                Some(retry_after_ms.div_ceil(1000).max(1)),
-                format!("rate limit exceeded ({reason})"),
-            )
-            .with_retry_after_ms(retry_after_ms);
-            for (k, v) in headers.to_header_pairs() {
-                spec.headers.insert(k.to_string(), v);
-            }
-            state.metrics.record_dimension(
-                protocol,
-                &normalized.model,
-                "429",
-                normalized.estimated_input_tokens,
-                0,
-                0,
-                None,
-                Some(turn_started.elapsed().as_millis() as u64),
-            );
-            return error_http_response(protocol, &spec, &state.metrics);
-        }
-    };
-
-    // Cassette replay mode (checked before strict previous_response_id so multi-turn recorded
-    // Responses HTTP cassettes replay faithfully without pre-populating stored_responses, while
-    // still rejecting requests whose previous_response_id disagrees with the recorded exchange).
-    #[cfg(feature = "proxy")]
-    if let Some(ref replayer) = state.cassette_replayer {
-        let fp = fingerprint_from_normalized(&normalized);
-        let strict_prev =
-            protocol == Protocol::OpenaiResponsesHttp && state.tuning.strict_previous_response_id;
-        let expected_prev = normalized.previous_response_id.as_deref();
-        if let Some(ex) = replayer
-            .next_http_if(&fp, |candidate| {
-                !strict_prev
-                    || expected_prev == candidate.request_body["previous_response_id"].as_str()
-            })
-            .cloned()
-        {
-            state.metrics.replay_hits.fetch_add(1, Ordering::Relaxed);
-            return execute_http_replay(
-                normalized,
-                ex,
-                replayer.config().clone(),
-                rl_headers,
-                rl_lease,
-                turn_started,
-                state,
-            );
-        }
+        return error_http_response(protocol, &spec, attempt);
     }
+    let purpose = state.classify(route, &mut normalized, attempt);
+    let metric_purpose = if route.endpoint == EndpointKind::AnthropicCountTokens {
+        RequestPurpose::CountTokens
+    } else {
+        RequestPurpose::from(&purpose)
+    };
+    attempt.classified(&normalized, metric_purpose);
 
-    // Strict previous_response_id check for HTTP Responses
-    if protocol == Protocol::OpenaiResponsesHttp
-        && state.tuning.strict_previous_response_id
-        && let Some(prev_id) = &normalized.previous_response_id
-        && !state.stored_responses.contains(prev_id)
-    {
-        state
-            .watchdog
-            .record_invalid_previous_response_id(&normalized, prev_id);
-        state.metrics.record_dimension(
-            protocol,
+    let main = purpose == RequestUse::Main;
+    let profile = state.profile.effective();
+    let (rl_headers, rl_lease) = if main {
+        attempt.record(|metrics| {
+            metrics.record_protocol(protocol, normalized.prompt_bytes);
+            state.recorder.record(&normalized);
+        });
+        match state.rate_limiter.check_and_acquire(
+            normalized.api_key(),
             &normalized.model,
-            "400",
             normalized.estimated_input_tokens,
-            0,
-            0,
-            None,
-            Some(turn_started.elapsed().as_millis() as u64),
-        );
-        return error_http_response(
-            protocol,
-            &HttpErrorSpec {
-                status: 400,
-                error_type: "invalid_request_error".into(),
-                code: Some("previous_response_not_found".into()),
-                message: format!("previous_response_id '{prev_id}' not found"),
-                retry_after_secs: None,
-                retry_after_ms: None,
-                headers: BTreeMap::new(),
-                raw_body: None,
-                raw_text: None,
-                content_type: None,
-            },
-            &state.metrics,
-        );
+            profile.rate_limit_override.as_ref(),
+        ) {
+            RateLimitDecision::Allowed { headers, lease } => (headers, lease),
+            RateLimitDecision::Rejected {
+                retry_after_ms,
+                reason,
+                headers,
+            } => {
+                let mut spec = HttpErrorSpec::rate_limit(
+                    Some(retry_after_ms.div_ceil(1000).max(1)),
+                    format!("rate limit exceeded ({reason})"),
+                )
+                .with_retry_after_ms(retry_after_ms);
+                for (key, value) in headers.to_header_pairs() {
+                    spec.headers.insert(key.into(), value);
+                }
+                return error_http_response(protocol, &spec, attempt);
+            }
+        }
+    } else {
+        (RateLimitHeaders::default(), None)
+    };
+
+    #[cfg(feature = "proxy")]
+    if let Some(replayer) = &state.cassette_replayer {
+        let lane = attempt.lane();
+        let fingerprint =
+            fingerprint_from_route(&normalized, method.as_str(), route, lane.as_ref());
+        let strict_prev = protocol.is_responses() && state.tuning.strict_previous_response_id;
+        match replayer.try_next_http_if(&fingerprint, |candidate| {
+            !strict_prev
+                || normalized.previous_response_id.as_deref()
+                    == candidate.request_body["previous_response_id"].as_str()
+        }) {
+            Ok(exchange) => {
+                state.metrics.replay_hits.fetch_add(1, Ordering::Relaxed);
+                attempt.admitted(None);
+                attempt.ready(None);
+                return execute_http_replay(
+                    exchange.clone(),
+                    replayer.config().clone(),
+                    rl_headers,
+                    rl_lease,
+                    attempt.clone(),
+                    state.clone(),
+                );
+            }
+            Err(error) if replayer.config().strict_replay => {
+                return error_http_response(protocol, &replay_miss(error), attempt);
+            }
+            Err(_) => {}
+        }
     }
 
-    let session_turn = state.sessions.next_turn(&normalized.session_key);
-    let ctx = TurnContext {
-        global_turn: seq,
-        session_turn,
-        chaos_override: effective_profile.chaos_override.clone(),
-    };
+    if route.endpoint == EndpointKind::AnthropicCountTokens {
+        state
+            .metrics
+            .control_plane_requests
+            .fetch_add(1, Ordering::Relaxed);
+        state.recorder.record_control(
+            method.as_str(),
+            route.raw_path,
+            route.query,
+            &normalized.headers,
+        );
+        let size = &normalized.size_breakdown;
+        let tokens = size.estimated_history_tokens
+            + (size.tools_bytes as u64).div_ceil(4)
+            + (size.system_bytes as u64).div_ceil(4);
+        attempt.usage(Usage::new(tokens, 0));
+        attempt.admitted(None);
+        return full_json(StatusCode::OK, &crate::control::render_count_tokens(tokens));
+    }
 
-    let decision = match state.handler.handle(&normalized, &ctx).await {
-        Some(d) => d,
-        None => {
-            return error_http_response(
-                protocol,
-                &HttpErrorSpec::new(
-                    500,
-                    "mock_handler_exhausted",
-                    "no handler matched or scripted queue was exhausted",
-                ),
-                &state.metrics,
-            );
+    let parent = match state.check_parent(&normalized, attempt, None) {
+        Ok(parent) => parent,
+        Err(spec) => {
+            if main {
+                attempt.record(|_| {
+                    state.watchdog.record_invalid_previous_response_id(
+                        &normalized,
+                        normalized.previous_response_id.as_deref().unwrap(),
+                    )
+                });
+            }
+            return error_http_response(protocol, &spec, attempt);
         }
     };
+    attempt.admitted(parent.as_ref());
+    let history = effective_history(&normalized, parent.as_ref());
+    let normalized = Arc::new(normalized);
 
-    let store_flag = normalized.raw_body["store"].as_bool().unwrap_or(true);
+    if purpose == RequestUse::Compact(CompactKind::ResponsesEndpoint) {
+        attempt.audit(normalized.clone(), &purpose, history);
+        let output = state.compaction(&normalized, Some(attempt));
+        let id = format!("resp_compact_{}", normalized.sequence);
+        let retained: Vec<_> = match &normalized.raw_body["input"] {
+            Value::String(text) => vec![json!({"type":"message", "role":"user",
+                "content":[{"type":"input_text", "text":text}]})],
+            input => input
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|item| item["role"] == "user")
+                .cloned()
+                .collect(),
+        };
+        let retained_bytes = retained
+            .iter()
+            .map(|value| value.to_string().len())
+            .sum::<usize>();
+        let usage = Usage::new(
+            normalized.estimated_input_tokens
+                + parent.as_ref().map_or(0, |p| p.effective_context_tokens),
+            (output.encrypted_content.len() as u64).div_ceil(4),
+        );
+        let compacted_bytes = retained_bytes + output.encrypted_content.len();
+        let result = crate::control::render_responses_compact(
+            &id,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+            &output.id,
+            &output.encrypted_content,
+            retained,
+            &usage,
+        );
+        attempt.ready(Some(&id));
+        attempt.usage(usage);
+        let mut response = full_json(StatusCode::OK, &result);
+        response.extensions_mut().insert(NonStreamDelivery {
+            items: vec![DeliveredItem::Compaction {
+                id: output.id,
+                bytes: compacted_bytes,
+            }],
+            response: Some(ResponsePublication {
+                id,
+                value: result,
+                store: normalized.options.store.unwrap_or(true),
+                history: HistorySize {
+                    bytes: compacted_bytes,
+                    tokens: (compacted_bytes as u64).div_ceil(4),
+                },
+            }),
+            request: normalized,
+        });
+        return response;
+    }
+
+    let decision = match state
+        .decide(&normalized, &purpose, &profile, attempt, parent.as_ref())
+        .await
+    {
+        Ok(decision) => decision,
+        Err(spec) => return error_http_response(protocol, &spec, attempt),
+    };
+    if main || matches!(purpose, RequestUse::Compact(_)) {
+        attempt.audit(normalized.clone(), &purpose, history);
+    }
+    let store = normalized.options.store.unwrap_or(true);
     execute_http_turn(
         normalized,
         decision,
-        store_flag,
-        effective_profile.latency,
+        store,
+        if main {
+            profile.latency
+        } else {
+            LatencyProfile::default()
+        },
         rl_headers,
         rl_lease,
-        turn_started,
-        state,
+        history,
+        attempt.clone(),
+        state.clone(),
     )
     .await
 }
 
+fn unknown_route(state: &ServerState, method: &Method, path: &str) -> Response<BoxBody> {
+    state.unknown_routes.fetch_add(1, Ordering::Relaxed);
+    full_json(
+        StatusCode::NOT_FOUND,
+        &json!({"error": {"type":"not_found",
+        "message": format!("unknown route: {method} {path}")}}),
+    )
+}
+
+#[derive(Clone)]
+struct TrackedSse;
+
+struct AttemptBody {
+    inner: BoxBody,
+    attempt: Attempt,
+    sse: bool,
+    semantic: bool,
+    delivery: Option<NonStreamDelivery>,
+}
+
+#[derive(Clone)]
+struct NonStreamDelivery {
+    request: Arc<NormalizedRequest>,
+    items: Vec<DeliveredItem>,
+    response: Option<ResponsePublication>,
+}
+
+#[derive(Clone)]
+struct ResponsePublication {
+    id: String,
+    value: Value,
+    store: bool,
+    history: HistorySize,
+}
+
+impl NonStreamDelivery {
+    fn deliver(self, attempt: &Attempt) {
+        for item in self.items {
+            item.deliver(attempt, &self.request);
+        }
+        attempt.deliver_summary(&self.request);
+        if let Some(response) = self.response {
+            attempt.0.state.publish_response(
+                &self.request,
+                attempt,
+                response.id,
+                response.value,
+                response.store,
+                response.history,
+            );
+        }
+    }
+}
+
+impl hyper::body::Body for AttemptBody {
+    type Data = Bytes;
+    type Error = io::Error;
+
+    fn poll_frame(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<Frame<Bytes>, io::Error>>> {
+        let result = std::pin::Pin::new(&mut self.inner).poll_frame(cx);
+        if !self.sse
+            && let std::task::Poll::Ready(Some(Ok(frame))) = &result
+            && let Some(data) = frame.data_ref()
+        {
+            self.attempt.frame(data.len(), self.semantic);
+            if let Some(delivery) = self.delivery.take() {
+                delivery.deliver(&self.attempt);
+            }
+        }
+        if matches!(result, std::task::Poll::Ready(Some(Err(_)))) && !self.sse {
+            self.attempt.outcome(AttemptOutcome::TransportError, None);
+        }
+        if !self.sse
+            && (self.inner.is_end_stream() || matches!(result, std::task::Poll::Ready(None)))
+        {
+            self.attempt.body_completed();
+        }
+        result
+    }
+
+    fn size_hint(&self) -> hyper::body::SizeHint {
+        self.inner.size_hint()
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.inner.is_end_stream()
+    }
+}
+
+impl Drop for AttemptBody {
+    fn drop(&mut self) {
+        self.attempt
+            .with_span(|span, now| span.body_dropped_ns = Some(now));
+    }
+}
+
+#[cfg(feature = "proxy")]
+fn replay_miss(error: crate::proxy::ReplayError) -> HttpErrorSpec {
+    let mut spec = HttpErrorSpec::new(422, "invalid_request_error", error.to_string());
+    spec.code = Some("cassette_replay_miss".into());
+    spec
+}
+
 #[cfg(feature = "proxy")]
 fn execute_http_replay(
-    req: NormalizedRequest,
     exchange: crate::proxy::RecordedExchange,
     replay_cfg: ReplayConfig,
     rl_headers: RateLimitHeaders,
     rl_lease: Option<RateLimitLease>,
-    turn_started: Instant,
+    attempt: Attempt,
     state: Arc<ServerState>,
 ) -> Response<BoxBody> {
     let (tx, rx) = mpsc::channel::<Result<Frame<Bytes>, io::Error>>(16);
@@ -560,6 +964,7 @@ fn execute_http_replay(
     }
     let status = StatusCode::from_u16(exchange.status).unwrap_or(StatusCode::OK);
     let state_clone = state.clone();
+    let replay_attempt = attempt.clone();
 
     spawn_tracked(state, async move {
         let _lease = rl_lease;
@@ -568,43 +973,23 @@ fn execute_http_replay(
             .active_streams
             .fetch_add(1, Ordering::Relaxed);
         let _guard = ActiveStreamGuard(state_clone.metrics.clone());
-        let mut first_recorded: Option<u64> = None;
-
         for chunk in exchange.chunks {
-            let delay = replay_cfg.scaled_delay(chunk.delay_ms);
-            if !delay.is_zero() {
-                tokio::select! {
-                    _ = state_clone.shutdown.cancelled() => break,
-                    _ = tx.closed() => break,
-                    _ = tokio::time::sleep(delay) => {}
-                }
+            if !replay_attempt
+                .wait(replay_cfg.scaled_delay(chunk.delay_ms), tx.closed())
+                .await
+                || tx.send(Ok(Frame::data(chunk.to_bytes()))).await.is_err()
+            {
+                return;
             }
-            let bytes = chunk.to_bytes();
-            let len = bytes.len();
-            if tx.send(Ok(Frame::data(bytes))).await.is_err() {
-                break;
-            }
-            if first_recorded.is_none() {
-                let ttft = turn_started.elapsed().as_millis() as u64;
-                state_clone.metrics.ttft_ms.record(ttft);
-                first_recorded = Some(ttft);
-            }
-            state_clone
-                .metrics
-                .bytes_sent
-                .fetch_add(len as u64, Ordering::Relaxed);
         }
-        let dur = turn_started.elapsed().as_millis() as u64;
-        state_clone.metrics.turn_duration_ms.record(dur);
-        state_clone.metrics.record_dimension(
-            req.protocol,
-            &req.model,
-            &status.as_u16().to_string(),
-            req.estimated_input_tokens,
-            0,
-            0,
-            first_recorded,
-            Some(dur),
+        let completed = exchange.outcome == crate::proxy::ExchangeOutcome::Completed;
+        replay_attempt.outcome(
+            if completed {
+                AttemptOutcome::Completed
+            } else {
+                AttemptOutcome::InjectedFault
+            },
+            Some(status.as_u16()),
         );
     });
 
@@ -637,6 +1022,14 @@ enum HttpEventFeed {
 }
 
 impl HttpEventFeed {
+    fn initial_usage(&self, req: &NormalizedRequest) -> TurnEvent {
+        let events = match self {
+            Self::Plan { events, .. } => events.as_slice(),
+            Self::Interactive { .. } => &[],
+        };
+        initial_usage(events, req)
+    }
+
     fn is_plan(&self) -> bool {
         matches!(self, Self::Plan { .. })
     }
@@ -653,7 +1046,7 @@ impl HttpEventFeed {
     async fn next_event(
         &mut self,
         shutdown: &tokio_util::sync::CancellationToken,
-        tx_closed: Option<&mpsc::Sender<Result<Frame<Bytes>, io::Error>>>,
+        tx_closed: Option<&SseSender>,
     ) -> FeedStep {
         match self {
             Self::Plan { events, .. } => {
@@ -695,7 +1088,7 @@ impl HttpEventFeed {
     async fn wait_stall(
         &mut self,
         shutdown: &tokio_util::sync::CancellationToken,
-        tx_closed: Option<&mpsc::Sender<Result<Frame<Bytes>, io::Error>>>,
+        tx_closed: Option<&SseSender>,
     ) -> StallOutcome {
         match self {
             Self::Plan { .. } => {
@@ -781,17 +1174,16 @@ enum ResolvedHttpDecision {
 
 #[allow(clippy::too_many_arguments)]
 async fn execute_http_turn(
-    req: NormalizedRequest,
+    req: Arc<NormalizedRequest>,
     decision: TurnDecision,
     store_flag: bool,
     latency_profile: LatencyProfile,
     rl_headers: RateLimitHeaders,
-    mut rl_lease: Option<RateLimitLease>,
-    turn_started: Instant,
+    rl_lease: Option<RateLimitLease>,
+    history: HistorySize,
+    attempt: Attempt,
     state: Arc<ServerState>,
 ) -> Response<BoxBody> {
-    // Unwrap interactive turns that reply with a full TurnPlan so they share 100% of
-    // the Plan execution path (leading Delay+HttpError, TTFT/pacing, on_close, headers, etc.).
     let resolved = match decision {
         TurnDecision::Plan(mut plan) => {
             let close_guard = TurnCloseGuard::new(CloseSignalGuard(plan.on_close.take()));
@@ -801,20 +1193,22 @@ async fn execute_http_turn(
             }
         }
         TurnDecision::Interactive(mut stream) => {
-            // Hold stream.closed in an RAII guard BEFORE the first await so client disconnect
-            // (Hyper dropping this future) or server shutdown always wakes TurnHandle::wait_closed().
             let mut close_guard =
                 TurnCloseGuard::new(CloseSignalGuard(Some(CloseSignal(stream.closed.clone()))));
             let first = tokio::select! {
-                _ = state.shutdown.cancelled() => {
-                    return full_json(
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        &json!({ "error": { "message": "server shutting down" } }),
-                    );
-                }
-                ev = stream.events.recv() => ev,
+                _ = state.shutdown.cancelled() => return shutdown_response(&attempt, req.protocol),
+                event = stream.events.recv() => event,
             };
             match first {
+                Some(InteractiveCommand::Plan { plan, on_close }) => {
+                    close_guard.attach(on_close);
+                    ResolvedHttpDecision::Plan { plan, close_guard }
+                }
+                Some(InteractiveCommand::Event(first)) => ResolvedHttpDecision::Interactive {
+                    first,
+                    stream,
+                    close_guard,
+                },
                 None => {
                     return finish_http_error(
                         &req,
@@ -824,776 +1218,560 @@ async fn execute_http_turn(
                             "interactive TurnHandle dropped before reply",
                         ),
                         &rl_headers,
-                        turn_started,
-                        &state,
+                        &attempt,
                     );
-                }
-                Some(InteractiveCommand::Plan { plan, on_close }) => {
-                    close_guard.attach(on_close);
-                    ResolvedHttpDecision::Plan { plan, close_guard }
-                }
-                Some(InteractiveCommand::Event(first_event)) => {
-                    if let TurnEvent::HttpError(spec) = *first_event {
-                        return finish_http_error(&req, &spec, &rl_headers, turn_started, &state);
-                    }
-                    ResolvedHttpDecision::Interactive {
-                        first: first_event,
-                        stream,
-                        close_guard,
-                    }
                 }
             }
         }
     };
-
-    let (
-        mut feed,
-        response_id_override,
-        model_override,
-        mut response_headers,
-        close_connection,
-        wire_poison,
-        pre_usage,
-        usage_hint,
-        mut pacer,
-        ttft_dur,
-        close_guard,
-    ) = match resolved {
+    let (feed, plan, close_guard) = match resolved {
         ResolvedHttpDecision::Plan { plan, close_guard } => {
-            let plan = *plan;
-            // Handle pre-stream HTTP error (including optional leading Delay before HttpError).
-            // Only sleep here when the prefix ends in HttpError so normal Delay -> Text plans
-            // sleep once inside the event loop.
-            match plan.events.as_slice() {
-                [TurnEvent::HttpError(spec), ..] => {
-                    return finish_http_error(&req, spec, &rl_headers, turn_started, &state);
-                }
-                [TurnEvent::Delay { ms }, TurnEvent::HttpError(spec), ..] => {
-                    tokio::select! {
-                        _ = state.shutdown.cancelled() => {
-                            return full_json(
-                                StatusCode::SERVICE_UNAVAILABLE,
-                                &json!({ "error": { "message": "server shutting down" } }),
-                            );
-                        }
-                        _ = tokio::time::sleep(Duration::from_millis(*ms)) => {}
-                    }
-                    return finish_http_error(&req, spec, &rl_headers, turn_started, &state);
-                }
-                _ => {}
+            let mut plan = *plan;
+            attempt.ready(plan.response_id.as_deref());
+            if let [TurnEvent::Delay { ms }, TurnEvent::HttpError(_), ..] = plan.events.as_slice()
+                && !attempt
+                    .wait(Duration::from_millis(*ms), std::future::pending())
+                    .await
+            {
+                return shutdown_response(&attempt, req.protocol);
             }
-
+            if let [TurnEvent::HttpError(spec), ..]
+            | [TurnEvent::Delay { .. }, TurnEvent::HttpError(spec), ..] = plan.events.as_slice()
+            {
+                return finish_http_error(&req, spec, &rl_headers, &attempt);
+            }
             let inferred_finish = plan.inferred_finish_reason();
-            let usage_hint = plan_usage_hint(&plan, &req);
-            let cached_tokens = usage_hint.cache_read_tokens.unwrap_or(0);
-            let uncached_tokens = usage_hint.input_tokens.saturating_sub(cached_tokens);
-            let in_flight_sample = state.metrics.active_streams.load(Ordering::Relaxed) + 1;
-            let mut pacer = TurnPacer::new(
-                latency_profile,
-                pacer_seed_for(&req),
-                in_flight_sample,
-                plan.ttft_ms,
-                (plan.chunk_delay_ms > 0).then_some(plan.chunk_delay_ms),
-            );
-            let ttft_dur = pacer.compute_ttft(uncached_tokens, cached_tokens);
-            let pre_usage = plan.events.iter().find_map(|ev| match ev {
-                TurnEvent::Usage(u) => Some(u.clone()),
-                _ => None,
-            });
             let feed = HttpEventFeed::Plan {
-                events: plan.events.into_iter(),
+                events: std::mem::take(&mut plan.events).into_iter(),
                 inferred_finish,
             };
-            (
-                feed,
-                plan.response_id,
-                plan.model_override,
-                plan.response_headers,
-                plan.close_connection,
-                plan.wire_poison,
-                pre_usage,
-                usage_hint,
-                Some(pacer),
-                ttft_dur,
-                close_guard,
-            )
+            (feed, plan, close_guard)
         }
         ResolvedHttpDecision::Interactive {
             first,
             stream,
             close_guard,
         } => {
-            let response_id = stream.response_id.lock().unwrap().clone();
-            let usage_hint = Usage::new(req.estimated_input_tokens.max(1), 0);
+            if let TurnEvent::HttpError(spec) = &*first {
+                return finish_http_error(&req, spec, &rl_headers, &attempt);
+            }
+            let id = stream.response_id.lock().unwrap().clone();
             let feed = HttpEventFeed::Interactive {
                 pending: Some(first),
                 rx: stream.events,
             };
             (
                 feed,
-                response_id,
-                None,
-                BTreeMap::new(),
-                false,
-                WirePoisonConfig::default(),
-                None,
-                usage_hint,
-                None,
-                Duration::ZERO,
+                crate::plan::TurnPlan {
+                    response_id: id,
+                    ..Default::default()
+                },
                 close_guard,
             )
         }
     };
-
-    let response_id =
-        response_id_override.unwrap_or_else(|| default_response_id(req.protocol, req.sequence));
-    let model = model_override.unwrap_or_else(|| req.model.clone());
-    for (k, v) in rl_headers.to_header_pairs() {
-        response_headers.entry(k.to_string()).or_insert(v);
+    let mut plan = plan;
+    let id = plan
+        .response_id
+        .take()
+        .unwrap_or_else(|| default_response_id(req.protocol, req.sequence));
+    attempt.ready(Some(&id));
+    let model = plan
+        .model_override
+        .take()
+        .unwrap_or_else(|| req.model.clone());
+    let usage_event = feed.initial_usage(&req);
+    let usage = event_usage(&usage_event).unwrap().clone();
+    attempt.usage(usage.clone());
+    let mut pacer = feed.is_plan().then(|| {
+        let active = state.metrics.active_streams.load(Ordering::Relaxed) + 1;
+        super::turn_pacer(&req, &plan, &usage, &attempt, latency_profile, active)
+    });
+    let wire_poison = plan.wire_poison;
+    let close_connection = plan.close_connection;
+    let mut headers = plan.response_headers;
+    for (key, value) in rl_headers.to_header_pairs() {
+        headers.entry(key.into()).or_insert(value);
     }
+    let mut encoder = state.encoder(&req, id, model);
+    for _ in encoder.encode_event(usage_event) {}
 
-    // 1) Non-streaming JSON HTTP response (unified for both Plan and Interactive!)
     if !req.stream {
         let _close_guard = close_guard;
-        if !ttft_dur.is_zero() {
-            tokio::select! {
-                _ = state.shutdown.cancelled() => {}
-                _ = tokio::time::sleep(ttft_dur) => {}
-            }
-        }
-        let mut encoder = create_encoder(req.protocol, response_id, model.clone(), false);
-        let mut scratch = Vec::new();
-        if let Some(u) = pre_usage {
-            encoder.push_event(TurnEvent::Usage(u), &mut scratch);
-        }
-        let mut emitted_tool_ids = Vec::new();
-        let mut emitted_compaction = false;
-        let mut semantic_output_bytes = 0usize;
-        let mut final_usage = usage_hint;
-
-        loop {
-            match feed.next_event(&state.shutdown, None).await {
-                FeedStep::Aborted | FeedStep::Ended => break,
-                FeedStep::Event(ev) => {
-                    let ev = *ev;
-                    semantic_output_bytes += semantic_event_bytes(&ev);
-                    match ev {
-                        TurnEvent::Delay { ms } => {
-                            tokio::select! {
-                                _ = state.shutdown.cancelled() => break,
-                                _ = tokio::time::sleep(Duration::from_millis(ms)) => {}
-                            }
-                        }
-                        TurnEvent::JitterDelay { min_ms, max_ms } => {
-                            let ms = jitter_ms(min_ms, max_ms);
-                            if ms > 0 {
-                                tokio::select! {
-                                    _ = state.shutdown.cancelled() => break,
-                                    _ = tokio::time::sleep(Duration::from_millis(ms)) => {}
-                                }
-                            }
-                        }
-                        TurnEvent::Stall => {
-                            state.metrics.stalls_entered.fetch_add(1, Ordering::Relaxed);
-                            if matches!(
-                                feed.wait_stall(&state.shutdown, None).await,
-                                StallOutcome::Ended
-                            ) {
-                                break;
-                            }
-                        }
-                        TurnEvent::HttpError(spec) => {
-                            return finish_http_error(
-                                &req,
-                                &spec,
-                                &rl_headers,
-                                turn_started,
-                                &state,
-                            );
-                        }
-                        TurnEvent::Usage(u) => {
-                            final_usage = u.clone();
-                            encoder.push_event(TurnEvent::Usage(u), &mut scratch);
-                        }
-                        TurnEvent::ToolCall(tc) => {
-                            emitted_tool_ids.push(tc.id.clone());
-                            encoder.push_event(TurnEvent::ToolCall(tc), &mut scratch);
-                        }
-                        TurnEvent::NativeCompaction(c) => {
-                            emitted_compaction = true;
-                            state
-                                .metrics
-                                .native_compactions_emitted
-                                .fetch_add(1, Ordering::Relaxed);
-                            encoder.push_event(TurnEvent::NativeCompaction(c), &mut scratch);
-                        }
-                        TurnEvent::Finish { reason } => {
-                            let completion = encoder.finish(reason, &mut scratch);
-                            return complete_non_streaming(
-                                &req,
-                                &model,
-                                completion,
-                                store_flag,
-                                &final_usage,
-                                semantic_output_bytes,
-                                &emitted_tool_ids,
-                                emitted_compaction,
-                                &response_headers,
-                                close_connection,
-                                &mut rl_lease,
-                                turn_started,
-                                &state,
-                            );
-                        }
-                        TurnEvent::DropConnection | TurnEvent::TruncateEof => {
-                            return finish_http_error(
-                                &req,
-                                &HttpErrorSpec::new(500, "connection_error", "connection aborted"),
-                                &rl_headers,
-                                turn_started,
-                                &state,
-                            );
-                        }
-                        other => encoder.push_event(other, &mut scratch),
+        let mut lease = rl_lease;
+        let mut feed = feed;
+        let mut usage = usage;
+        let mut semantic_bytes = 0;
+        let mut delivered = Vec::new();
+        let reason = loop {
+            let event = match feed.next_event(&state.shutdown, None).await {
+                FeedStep::Aborted => return shutdown_response(&attempt, req.protocol),
+                FeedStep::Ended => break feed.auto_finish_reason().unwrap_or(FinishReason::Stop),
+                FeedStep::Event(event) => *event,
+            };
+            match event {
+                TurnEvent::Delay { ms } => {
+                    if !attempt
+                        .wait(Duration::from_millis(ms), std::future::pending())
+                        .await
+                    {
+                        return shutdown_response(&attempt, req.protocol);
                     }
                 }
+                TurnEvent::JitterDelay { min_ms, max_ms } => {
+                    let ms = pacer.as_mut().map_or_else(
+                        || jitter_ms(min_ms, max_ms),
+                        |pacer| pacer.jitter_ms(min_ms, max_ms),
+                    );
+                    if !attempt
+                        .wait(Duration::from_millis(ms), std::future::pending())
+                        .await
+                    {
+                        return shutdown_response(&attempt, req.protocol);
+                    }
+                }
+                TurnEvent::Stall => {
+                    attempt.record(|metrics| {
+                        metrics.stalls_entered.fetch_add(1, Ordering::Relaxed);
+                    });
+                    if matches!(
+                        feed.wait_stall(&state.shutdown, None).await,
+                        StallOutcome::Ended
+                    ) {
+                        return shutdown_response(&attempt, req.protocol);
+                    }
+                }
+                TurnEvent::HttpError(spec) => {
+                    return finish_http_error(&req, &spec, &rl_headers, &attempt);
+                }
+                TurnEvent::DropConnection
+                | TurnEvent::TruncateEof
+                | TurnEvent::MidStreamError(_) => {
+                    return finish_http_error(
+                        &req,
+                        &HttpErrorSpec::new(500, "connection_error", "connection aborted"),
+                        &rl_headers,
+                        &attempt,
+                    );
+                }
+                TurnEvent::Finish { reason } => break reason,
+                event => {
+                    if let Some(value) = event_usage(&event) {
+                        usage = value.clone();
+                        attempt.usage(usage.clone());
+                    }
+                    if let Some(item) = DeliveredItem::from_event(&event) {
+                        item.issued(&attempt);
+                        if let DeliveredItem::Compaction { bytes, .. } = item {
+                            attempt.buffering(bytes);
+                        }
+                        delivered.push(item);
+                    }
+                    semantic_bytes += super::semantic_event_bytes(&event);
+                    for _ in encoder.encode_event(event) {}
+                }
             }
+        };
+        if let Some(pacer) = pacer
+            && !attempt
+                .wait(
+                    pacer.non_streaming_total_delay(semantic_bytes),
+                    std::future::pending(),
+                )
+                .await
+        {
+            return shutdown_response(&attempt, req.protocol);
         }
-
-        let finish_reason = feed.auto_finish_reason().unwrap_or(FinishReason::Stop);
-        let completion = encoder.finish(finish_reason, &mut scratch);
-        return complete_non_streaming(
-            &req,
-            &model,
-            completion,
-            store_flag,
-            &final_usage,
-            semantic_output_bytes,
-            &emitted_tool_ids,
-            emitted_compaction,
-            &response_headers,
-            close_connection,
-            &mut rl_lease,
-            turn_started,
-            &state,
-        );
+        let completion = encoder.finish_encoded(reason, &mut |_| {});
+        usage.output_tokens = usage.output_tokens.max((semantic_bytes as u64) / 4);
+        if let Some(lease) = &mut lease {
+            lease.debit_output_tokens(usage.output_tokens);
+        }
+        attempt.usage(usage);
+        let mut response = json_with_headers(&completion.response_json, &headers, close_connection);
+        let publication =
+            if !completion.errored && req.protocol.is_responses() && attempt.can_publish() {
+                Some(ResponsePublication {
+                    id: completion.response_id,
+                    value: completion.response_json,
+                    store: store_flag,
+                    history: attempt.response_history(history, semantic_bytes),
+                })
+            } else {
+                None
+            };
+        if !delivered.is_empty() || publication.is_some() || attempt.has_summary() {
+            response.extensions_mut().insert(NonStreamDelivery {
+                items: delivered,
+                response: publication,
+                request: req,
+            });
+        }
+        return response;
     }
 
-    // 2) Streaming SSE HTTP response (unified for both Plan and Interactive!)
-    let (tx, rx) = mpsc::channel::<Result<Frame<Bytes>, io::Error>>(16);
-    let protocol = req.protocol;
-    let state_clone = state.clone();
-    let ping_interval = pacer.as_ref().and_then(TurnPacer::sse_ping_interval);
-
+    let (tx, rx) = mpsc::channel(16);
+    let producer_attempt = attempt.clone();
+    let producer_state = state.clone();
+    let producer_request = req.clone();
     spawn_tracked(state, async move {
+        let state = producer_state;
+        let req = producer_request;
+        let attempt = producer_attempt;
         let mut lease = rl_lease;
-        state_clone
-            .metrics
-            .active_streams
-            .fetch_add(1, Ordering::Relaxed);
-        let _guard = ActiveStreamGuard(state_clone.metrics.clone());
         let _close_guard = close_guard;
-
-        let mut encoder = create_encoder(protocol, response_id, model.clone(), true);
-        let mut frames = Vec::new();
-        let mut frame_seq = 0usize;
-        let mut first_delta_at: Option<Instant> = None;
-        let mut recorded_ttft_ms: Option<u64> = None;
-        let mut emitted_semantic_bytes = 0usize;
-        let mut emitted_tool_ids: Vec<String> = Vec::new();
-        let mut emitted_compaction = false;
-        let mut final_usage = usage_hint;
-
-        // Dynamic TTFT wait with optional SSE keep-alive ping comments.
-        let mut aborted = false;
-        if !ttft_dur.is_zero() {
-            let deadline = tokio::time::Instant::now() + ttft_dur;
-            loop {
-                let now = tokio::time::Instant::now();
-                if now >= deadline {
-                    break;
+        state.metrics.active_streams.fetch_add(1, Ordering::Relaxed);
+        let _stream = ActiveStreamGuard(state.metrics.clone());
+        let mut feed = feed;
+        let mut usage = usage;
+        let mut writer = SseWriter {
+            tx,
+            attempt: &attempt,
+            req: &req,
+            pacer,
+            poison: wire_poison,
+            frame_index: 0,
+            semantic_bytes: 0,
+        };
+        if !writer.prefill().await {
+            return;
+        }
+        let finish = loop {
+            let event = match feed.next_event(&state.shutdown, Some(&writer.tx)).await {
+                FeedStep::Aborted => return,
+                FeedStep::Ended => {
+                    let Some(reason) = feed.auto_finish_reason() else {
+                        attempt.outcome(AttemptOutcome::TransportError, Some(200));
+                        return;
+                    };
+                    break reason;
                 }
-                let remaining = deadline - now;
-                let step = ping_interval.map_or(remaining, |p| remaining.min(p));
-                tokio::select! {
-                    _ = state_clone.shutdown.cancelled() => { aborted = true; break; }
-                    _ = tx.closed() => { aborted = true; break; }
-                    _ = tokio::time::sleep(step) => {
-                        if ping_interval.is_some() && tokio::time::Instant::now() < deadline {
-                            let ping = if wire_poison.crlf_line_endings {
-                                Bytes::from_static(b": keep-alive\r\n\r\n")
-                            } else {
-                                Bytes::from_static(b": keep-alive\n\n")
-                            };
-                            if tx.send(Ok(Frame::data(ping))).await.is_err() {
-                                aborted = true;
-                                break;
-                            }
-                        }
+                FeedStep::Event(event) => *event,
+            };
+            match event {
+                TurnEvent::Delay { ms } => {
+                    if !writer.wait(ms).await {
+                        return;
                     }
                 }
-            }
-        }
-
-        // Pre-feed Usage so Anthropic message_start has exact input/cache tokens.
-        if !aborted && let Some(u) = pre_usage {
-            encoder.push_event(TurnEvent::Usage(u), &mut frames);
-        }
-
-        let mut explicit_finish = false;
-        let mut intentional_fault = false;
-
-        if !aborted {
-            loop {
-                let ev = match feed.next_event(&state_clone.shutdown, Some(&tx)).await {
-                    FeedStep::Event(ev) => *ev,
-                    FeedStep::Ended => break,
-                    FeedStep::Aborted => {
-                        aborted = true;
-                        break;
+                TurnEvent::JitterDelay { min_ms, max_ms } => {
+                    let ms = writer.pacer.as_mut().map_or_else(
+                        || jitter_ms(min_ms, max_ms),
+                        |pacer| pacer.jitter_ms(min_ms, max_ms),
+                    );
+                    if !writer.wait(ms).await {
+                        return;
                     }
-                };
-                let ev_sem_bytes = semantic_event_bytes(&ev);
-                match ev {
-                    TurnEvent::Delay { ms } => {
-                        tokio::select! {
-                            _ = state_clone.shutdown.cancelled() => { aborted = true; break; }
-                            _ = tx.closed() => { aborted = true; break; }
-                            _ = tokio::time::sleep(Duration::from_millis(ms)) => {}
+                }
+                TurnEvent::Stall => {
+                    attempt.record(|metrics| {
+                        metrics.stalls_entered.fetch_add(1, Ordering::Relaxed);
+                    });
+                    if matches!(
+                        feed.wait_stall(&state.shutdown, Some(&writer.tx)).await,
+                        StallOutcome::Ended
+                    ) {
+                        if feed.is_plan() && !state.shutdown.is_cancelled() {
+                            attempt.outcome(AttemptOutcome::InjectedFault, Some(200));
                         }
+                        return;
                     }
-                    TurnEvent::JitterDelay { min_ms, max_ms } => {
-                        let ms = jitter_ms(min_ms, max_ms);
-                        if ms > 0 {
-                            tokio::select! {
-                                _ = state_clone.shutdown.cancelled() => { aborted = true; break; }
-                                _ = tx.closed() => { aborted = true; break; }
-                                _ = tokio::time::sleep(Duration::from_millis(ms)) => {}
-                            }
-                        }
-                    }
-                    TurnEvent::Stall => {
-                        state_clone
-                            .metrics
-                            .stalls_entered
-                            .fetch_add(1, Ordering::Relaxed);
-                        match feed.wait_stall(&state_clone.shutdown, Some(&tx)).await {
-                            StallOutcome::Resumed => continue,
-                            StallOutcome::Ended => {
-                                intentional_fault = true;
-                                aborted = true;
-                                break;
-                            }
-                        }
-                    }
-                    TurnEvent::DropConnection => {
-                        state_clone
-                            .metrics
+                }
+                TurnEvent::DropConnection => {
+                    attempt.record(|metrics| {
+                        metrics
                             .connection_drops_emitted
                             .fetch_add(1, Ordering::Relaxed);
-                        intentional_fault = true;
-                        let _ = tx
-                            .send(Err(io::Error::new(
-                                io::ErrorKind::ConnectionReset,
-                                "mock-ai simulated connection drop",
-                            )))
-                            .await;
-                        aborted = true;
-                        break;
-                    }
-                    TurnEvent::TruncateEof => {
-                        intentional_fault = true;
-                        aborted = true;
-                        break;
-                    }
-                    TurnEvent::MidStreamError(err) => {
-                        state_clone
-                            .metrics
+                    });
+                    attempt.outcome(AttemptOutcome::InjectedFault, Some(200));
+                    let _ = writer
+                        .tx
+                        .send(Err(io::Error::new(
+                            io::ErrorKind::ConnectionReset,
+                            "mock-ai simulated connection drop",
+                        )))
+                        .await;
+                    return;
+                }
+                TurnEvent::TruncateEof => {
+                    attempt.outcome(AttemptOutcome::InjectedFault, Some(200));
+                    return;
+                }
+                TurnEvent::HttpError(spec) => {
+                    attempt.outcome(AttemptOutcome::InjectedFault, Some(200));
+                    let _ = writer
+                        .send(encoder.encode_event(TurnEvent::HttpError(spec)), None)
+                        .await;
+                    return;
+                }
+                TurnEvent::MidStreamError(error) => {
+                    attempt.record(|metrics| {
+                        metrics
                             .mid_stream_errors_emitted
                             .fetch_add(1, Ordering::Relaxed);
-                        intentional_fault = true;
-                        encoder.push_event(TurnEvent::MidStreamError(err), &mut frames);
-                        if !flush_http_frames(
-                            &tx,
-                            &mut frames,
-                            None,
-                            0,
-                            None,
-                            &wire_poison,
-                            &mut frame_seq,
-                            &state_clone,
+                    });
+                    attempt.outcome(AttemptOutcome::InjectedFault, Some(200));
+                    let _ = writer
+                        .send(encoder.encode_event(TurnEvent::MidStreamError(error)), None)
+                        .await;
+                    return;
+                }
+                TurnEvent::Finish { reason } => break reason,
+                event => {
+                    if let Some(value) = event_usage(&event) {
+                        usage = value.clone();
+                        attempt.usage(usage.clone());
+                    }
+                    let delivered = DeliveredItem::from_event(&event);
+                    if let Some(item) = &delivered {
+                        item.issued(&attempt);
+                        if let DeliveredItem::Compaction { bytes, .. } = item {
+                            attempt.buffering(*bytes);
+                        }
+                    }
+                    if !writer
+                        .send(
+                            encoder.encode_event(event),
+                            delivered.map(SseDelivery::Item),
                         )
                         .await
-                        {
-                            aborted = true;
-                            break;
-                        }
-                        explicit_finish = true;
-                        break;
-                    }
-                    TurnEvent::Finish { reason } => {
-                        let completion = encoder.finish(reason, &mut frames);
-                        if protocol.is_responses() && store_flag {
-                            state_clone
-                                .stored_responses
-                                .put(completion.response_id, completion.response_json);
-                        }
-                        if !flush_http_frames(
-                            &tx,
-                            &mut frames,
-                            None,
-                            0,
-                            None,
-                            &wire_poison,
-                            &mut frame_seq,
-                            &state_clone,
-                        )
-                        .await
-                        {
-                            aborted = true;
-                            break;
-                        }
-                        explicit_finish = true;
-                        break;
-                    }
-                    TurnEvent::NativeCompaction(c) => {
-                        state_clone
-                            .metrics
-                            .native_compactions_emitted
-                            .fetch_add(1, Ordering::Relaxed);
-                        encoder.push_event(TurnEvent::NativeCompaction(c), &mut frames);
-                        let mut ttft = TtftTracker {
-                            turn_started,
-                            first_delta_at: &mut first_delta_at,
-                            recorded_ttft_ms: &mut recorded_ttft_ms,
-                        };
-                        let status = flush_http_frames_detailed(
-                            &tx,
-                            &mut frames,
-                            pacer.as_mut(),
-                            ev_sem_bytes,
-                            Some(&mut ttft),
-                            &wire_poison,
-                            &mut frame_seq,
-                            &state_clone,
-                        )
-                        .await;
-                        if status.all_wire_frames_sent {
-                            emitted_compaction = true;
-                            emitted_semantic_bytes += ev_sem_bytes;
-                        }
-                        if !status.continued {
-                            aborted = true;
-                            break;
-                        }
-                    }
-                    TurnEvent::Usage(u) => {
-                        final_usage = u.clone();
-                        encoder.push_event(TurnEvent::Usage(u), &mut frames);
-                    }
-                    other => {
-                        let maybe_tool_id = match &other {
-                            TurnEvent::ToolCall(tc) => Some(tc.id.clone()),
-                            _ => None,
-                        };
-                        encoder.push_event(other, &mut frames);
-                        let mut ttft = TtftTracker {
-                            turn_started,
-                            first_delta_at: &mut first_delta_at,
-                            recorded_ttft_ms: &mut recorded_ttft_ms,
-                        };
-                        let status = flush_http_frames_detailed(
-                            &tx,
-                            &mut frames,
-                            pacer.as_mut(),
-                            ev_sem_bytes,
-                            Some(&mut ttft),
-                            &wire_poison,
-                            &mut frame_seq,
-                            &state_clone,
-                        )
-                        .await;
-                        if status.all_wire_frames_sent {
-                            if let Some(tid) = maybe_tool_id {
-                                emitted_tool_ids.push(tid);
-                            }
-                            emitted_semantic_bytes += ev_sem_bytes;
-                        }
-                        if !status.continued {
-                            aborted = true;
-                            break;
-                        }
+                    {
+                        return;
                     }
                 }
             }
+        };
+        let mut tail = Vec::new();
+        let completion = encoder.finish_encoded(finish, &mut |frame| tail.push(frame));
+        usage.output_tokens = usage.output_tokens.max((writer.semantic_bytes as u64) / 4);
+        if let Some(lease) = &mut lease {
+            lease.debit_output_tokens(usage.output_tokens);
         }
-
-        if !aborted
-            && !explicit_finish
-            && !intentional_fault
-            && !encoder.is_finished()
-            && let Some(reason) = feed.auto_finish_reason()
-        {
-            let completion = encoder.finish(reason, &mut frames);
-            if protocol.is_responses() && store_flag {
-                state_clone
-                    .stored_responses
-                    .put(completion.response_id, completion.response_json);
-            }
-            if !flush_http_frames(
-                &tx,
-                &mut frames,
-                None,
-                0,
-                None,
-                &wire_poison,
-                &mut frame_seq,
-                &state_clone,
+        attempt.usage(usage);
+        let effective = attempt.response_history(history, writer.semantic_bytes);
+        let _ = writer
+            .send(
+                tail.into_iter(),
+                Some(SseDelivery::Finish {
+                    completion,
+                    history: effective,
+                    store: store_flag,
+                }),
             )
-            .await
-            {
-                aborted = true;
-            }
-        }
-
-        let dur = turn_started.elapsed().as_millis() as u64;
-        let out_toks = final_usage
-            .output_tokens
-            .max((emitted_semantic_bytes as u64) / 4);
-        let cached_tokens = final_usage.cache_read_tokens.unwrap_or(0);
-        if aborted && !intentional_fault {
-            state_clone
-                .metrics
-                .abandoned_streams
-                .fetch_add(1, Ordering::Relaxed);
-            state_clone.watchdog.record_turn_outcome(
-                &req,
-                &emitted_tool_ids,
-                emitted_compaction,
-                false,
-            );
-            state_clone.metrics.record_dimension(
-                protocol,
-                &model,
-                "aborted",
-                final_usage.input_tokens,
-                out_toks,
-                cached_tokens,
-                recorded_ttft_ms,
-                Some(dur),
-            );
-        } else {
-            state_clone.metrics.turn_duration_ms.record(dur);
-            if let Some(first_at) = first_delta_at
-                && out_toks > 0
-            {
-                let tps = ((out_toks as f64) / first_at.elapsed().as_secs_f64().max(0.001))
-                    .round()
-                    .max(1.0) as u64;
-                state_clone.metrics.effective_tps.record(tps);
-            }
-            if let Some(ref mut l) = lease {
-                l.debit_output_tokens(out_toks);
-            }
-            let status_label = if intentional_fault { "fault" } else { "200" };
-            state_clone.metrics.record_dimension(
-                protocol,
-                &model,
-                status_label,
-                final_usage.input_tokens,
-                out_toks,
-                cached_tokens,
-                recorded_ttft_ms,
-                Some(dur),
-            );
-            let completed_cleanly = !intentional_fault && (explicit_finish || feed.is_plan());
-            state_clone.watchdog.record_turn_outcome(
-                &req,
-                &emitted_tool_ids,
-                emitted_compaction,
-                completed_cleanly,
-            );
-        }
+            .await;
     });
 
-    sse_response(rx, &response_headers, close_connection)
+    let stream =
+        futures_util::stream::unfold((rx, attempt, req), |(mut rx, attempt, req)| async move {
+            let chunk = rx.recv().await?;
+            let frame = chunk.map(|chunk: SseChunk| {
+                attempt.frame(chunk.bytes.len(), chunk.semantic);
+                if let Some(delivery) = chunk.delivery {
+                    match delivery {
+                        SseDelivery::Item(item) => item.deliver(&attempt, &req),
+                        SseDelivery::Finish {
+                            completion,
+                            store,
+                            history,
+                        } => {
+                            if completion.errored {
+                                attempt.outcome(AttemptOutcome::InjectedFault, Some(200));
+                            } else {
+                                attempt.deliver_summary(&req);
+                                attempt.0.state.publish_response(
+                                    &req,
+                                    &attempt,
+                                    completion.response_id,
+                                    completion.response_json,
+                                    store,
+                                    history,
+                                );
+                                attempt.outcome(AttemptOutcome::Completed, Some(200));
+                            }
+                        }
+                    }
+                }
+                Frame::data(chunk.bytes)
+            });
+            Some((frame, (rx, attempt, req)))
+        });
+    let mut response = super::sse_response(
+        StreamBody::new(stream).boxed_unsync(),
+        &headers,
+        close_connection,
+    );
+    response.extensions_mut().insert(TrackedSse);
+    response
+}
+
+type SseSender = mpsc::Sender<Result<SseChunk, io::Error>>;
+
+struct SseChunk {
+    bytes: Bytes,
+    semantic: bool,
+    delivery: Option<SseDelivery>,
+}
+
+enum SseDelivery {
+    Item(DeliveredItem),
+    Finish {
+        completion: crate::codec::TurnCompletion,
+        history: HistorySize,
+        store: bool,
+    },
+}
+
+struct SseWriter<'a> {
+    tx: SseSender,
+    attempt: &'a Attempt,
+    req: &'a NormalizedRequest,
+    pacer: Option<TurnPacer>,
+    poison: WirePoisonConfig,
+    frame_index: usize,
+    semantic_bytes: usize,
+}
+
+impl SseWriter<'_> {
+    async fn wait(&self, ms: u64) -> bool {
+        self.attempt
+            .wait(Duration::from_millis(ms), self.tx.closed())
+            .await
+    }
+
+    async fn prefill(&self) -> bool {
+        let Some(pacer) = &self.pacer else {
+            return true;
+        };
+        let delay = pacer.initial_delay();
+        let Some(ping) = pacer.sse_ping_interval() else {
+            return self.attempt.wait(delay, self.tx.closed()).await;
+        };
+        let deadline = tokio::time::Instant::now() + delay;
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if !self
+                .attempt
+                .wait(remaining.min(ping), self.tx.closed())
+                .await
+            {
+                return false;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return true;
+            }
+            let bytes = if self.poison.crlf_line_endings {
+                Bytes::from_static(b": keep-alive\r\n\r\n")
+            } else {
+                Bytes::from_static(b": keep-alive\n\n")
+            };
+            if !self.chunk(bytes, false, None).await {
+                return false;
+            }
+        }
+    }
+
+    async fn chunk(&self, bytes: Bytes, semantic: bool, delivery: Option<SseDelivery>) -> bool {
+        let chunk = SseChunk {
+            bytes,
+            semantic,
+            delivery,
+        };
+        match self.tx.try_send(Ok(chunk)) {
+            Ok(()) => true,
+            Err(mpsc::error::TrySendError::Closed(_)) => false,
+            Err(mpsc::error::TrySendError::Full(chunk)) => {
+                let start = Instant::now();
+                let sent = tokio::select! {
+                    _ = self.attempt.0.state.shutdown.cancelled() => false,
+                    result = self.tx.send(chunk) => result.is_ok(),
+                };
+                self.attempt.backpressure(start.elapsed());
+                sent
+            }
+        }
+    }
+
+    async fn send(
+        &mut self,
+        frames: impl Iterator<Item = EncodedFrame>,
+        mut delivery: Option<SseDelivery>,
+    ) -> bool {
+        let mut frames = frames.peekable();
+        while let Some(frame) = frames.next() {
+            let last = if delivery.is_some() {
+                frames.peek().is_none()
+            } else {
+                false
+            };
+            let EncodedFrame {
+                wire,
+                kind,
+                semantic_bytes,
+            } = frame;
+            let raw = match wire {
+                WireFrame::Sse(bytes) | WireFrame::Raw(bytes) => bytes,
+                WireFrame::WsText(text) => Bytes::from(format!("data: {text}\n\n")),
+            };
+            let semantic = kind == FrameKind::SemanticDelta;
+            if self.poison.is_active() {
+                let chunks = poison_sse_frame(
+                    String::from_utf8_lossy(&raw).into_owned(),
+                    &self.poison,
+                    self.frame_index,
+                );
+                let count = chunks.len();
+                for (index, chunk) in chunks.into_iter().enumerate() {
+                    let final_chunk = index + 1 == count;
+                    let delivered = if last && final_chunk {
+                        delivery.take()
+                    } else {
+                        None
+                    };
+                    if !self.chunk(chunk, semantic && final_chunk, delivered).await {
+                        return false;
+                    }
+                }
+                self.frame_index = self.frame_index.wrapping_add(1);
+            } else if !self
+                .chunk(raw, semantic, if last { delivery.take() } else { None })
+                .await
+            {
+                return false;
+            }
+            self.semantic_bytes += semantic_bytes;
+            if let Some(deadline) = self.pacer.as_mut().and_then(|pacer| {
+                pacer.next_frame_deadline(kind, semantic_bytes, tokio::time::Instant::now())
+            }) && !self.attempt.wait_until(deadline, self.tx.closed()).await
+            {
+                return false;
+            }
+        }
+        if let Some(SseDelivery::Item(item)) = delivery {
+            // Some protocol events update only the terminal JSON.
+            item.deliver(self.attempt, self.req);
+        }
+        true
+    }
+}
+
+fn shutdown_response(attempt: &Attempt, protocol: Protocol) -> Response<BoxBody> {
+    error_http_response(
+        protocol,
+        &HttpErrorSpec::new(503, "server_error", "server shutting down"),
+        attempt,
+    )
 }
 
 fn finish_http_error(
     req: &NormalizedRequest,
     spec: &HttpErrorSpec,
     rl_headers: &RateLimitHeaders,
-    turn_started: Instant,
-    state: &ServerState,
+    attempt: &Attempt,
 ) -> Response<BoxBody> {
-    let status_label = spec.status.to_string();
     let mut enriched = spec.clone();
-    for (k, v) in rl_headers.to_header_pairs() {
-        enriched.headers.entry(k.to_string()).or_insert(v);
+    for (key, value) in rl_headers.to_header_pairs() {
+        enriched.headers.entry(key.into()).or_insert(value);
     }
-    state.metrics.record_dimension(
-        req.protocol,
-        &req.model,
-        &status_label,
-        req.estimated_input_tokens,
-        0,
-        0,
-        None,
-        Some(turn_started.elapsed().as_millis() as u64),
-    );
-    error_http_response(req.protocol, &enriched, &state.metrics)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn complete_non_streaming(
-    req: &NormalizedRequest,
-    model: &str,
-    completion: crate::codec::TurnCompletion,
-    store_flag: bool,
-    usage: &Usage,
-    semantic_output_bytes: usize,
-    emitted_tool_ids: &[String],
-    emitted_compaction: bool,
-    response_headers: &BTreeMap<String, String>,
-    close_connection: bool,
-    rl_lease: &mut Option<RateLimitLease>,
-    turn_started: Instant,
-    state: &ServerState,
-) -> Response<BoxBody> {
-    if req.protocol.is_responses() && store_flag {
-        state.stored_responses.put(
-            completion.response_id.clone(),
-            completion.response_json.clone(),
-        );
-    }
-    let dur = turn_started.elapsed().as_millis() as u64;
-    state.metrics.ttft_ms.record(dur);
-    state.metrics.turn_duration_ms.record(dur);
-    let out_toks = usage.output_tokens.max((semantic_output_bytes as u64) / 4);
-    if let Some(lease) = rl_lease.as_mut() {
-        lease.debit_output_tokens(out_toks);
-    }
-    state.metrics.record_dimension(
-        req.protocol,
-        model,
-        "200",
-        usage.input_tokens,
-        out_toks,
-        usage.cache_read_tokens.unwrap_or(0),
-        Some(dur),
-        Some(dur),
-    );
-    state
-        .watchdog
-        .record_turn_outcome(req, emitted_tool_ids, emitted_compaction, true);
-    json_with_headers(
-        completion.response_json,
-        response_headers,
-        close_connection,
-        &state.metrics,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn flush_http_frames(
-    tx: &mpsc::Sender<Result<Frame<Bytes>, io::Error>>,
-    frames: &mut Vec<WireFrame>,
-    pacer: Option<&mut TurnPacer>,
-    semantic_bytes: usize,
-    ttft: Option<&mut TtftTracker<'_>>,
-    wire_poison: &WirePoisonConfig,
-    frame_seq: &mut usize,
-    state: &ServerState,
-) -> bool {
-    flush_http_frames_detailed(
-        tx,
-        frames,
-        pacer,
-        semantic_bytes,
-        ttft,
-        wire_poison,
-        frame_seq,
-        state,
-    )
-    .await
-    .continued
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn flush_http_frames_detailed(
-    tx: &mpsc::Sender<Result<Frame<Bytes>, io::Error>>,
-    frames: &mut Vec<WireFrame>,
-    mut pacer: Option<&mut TurnPacer>,
-    semantic_bytes: usize,
-    mut ttft: Option<&mut TtftTracker<'_>>,
-    wire_poison: &WirePoisonConfig,
-    frame_seq: &mut usize,
-    state: &ServerState,
-) -> FlushStatus {
-    let total_frames = frames.len();
-    let per_frame_sem_bytes = if semantic_bytes > 0 {
-        (semantic_bytes / total_frames.max(1)).max(1)
-    } else {
-        0
-    };
-    let mut sent_frames = 0usize;
-    for frame in frames.drain(..) {
-        let raw_bytes = match frame {
-            WireFrame::Sse(b) | WireFrame::Raw(b) => b,
-            WireFrame::WsText(s) => Bytes::from(format!("data: {s}\n\n")),
-        };
-        let is_delta =
-            semantic_bytes > 0 && is_semantic_delta_frame(&String::from_utf8_lossy(&raw_bytes));
-        let chunks = if wire_poison.is_active() {
-            let s = String::from_utf8_lossy(&raw_bytes).into_owned();
-            poison_sse_frame(s, wire_poison, *frame_seq)
-        } else {
-            vec![raw_bytes]
-        };
-        *frame_seq = frame_seq.wrapping_add(1);
-
-        for chunk in chunks {
-            let len = chunk.len();
-            if tx.send(Ok(Frame::data(chunk))).await.is_err() {
-                return FlushStatus {
-                    all_wire_frames_sent: false,
-                    continued: false,
-                };
-            }
-            state
-                .metrics
-                .bytes_sent
-                .fetch_add(len as u64, Ordering::Relaxed);
-        }
-        sent_frames += 1;
-
-        // Record TTFT right after first actual semantic delta frame is sent, BEFORE pacing sleep.
-        if is_delta && let Some(ref mut tracker) = ttft {
-            tracker.record_once(&state.metrics);
-        }
-
-        if is_delta
-            && let Some(ref mut p) = pacer
-            && per_frame_sem_bytes > 0
-        {
-            let delay = p.next_chunk_delay(per_frame_sem_bytes);
-            if !delay.is_zero() {
-                tokio::select! {
-                    _ = state.shutdown.cancelled() => return FlushStatus {
-                        all_wire_frames_sent: sent_frames == total_frames,
-                        continued: false,
-                    },
-                    _ = tx.closed() => return FlushStatus {
-                        all_wire_frames_sent: sent_frames == total_frames,
-                        continued: false,
-                    },
-                    _ = tokio::time::sleep(delay) => {}
-                }
-            }
-        }
-    }
-    FlushStatus {
-        all_wire_frames_sent: true,
-        continued: true,
-    }
+    attempt.outcome(AttemptOutcome::InjectedFault, Some(spec.status));
+    error_http_response(req.protocol, &enriched, attempt)
 }

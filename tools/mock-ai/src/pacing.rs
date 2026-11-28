@@ -17,6 +17,7 @@
  * under the License.
  */
 
+use crate::plan::FrameKind;
 use crate::ratelimit::RateLimitConfig;
 use crate::workload::ChaosConfig;
 use serde::{Deserialize, Serialize};
@@ -47,9 +48,9 @@ pub struct LatencyProfile {
     pub tps_congestion_factor: f64,
     /// Target streaming generation speed in tokens/sec (approx 4 chars/token). 0 = unlimited/instant.
     pub tokens_per_sec: f64,
-    /// Log-normal coefficient of variation for per-chunk inter-token timing jitter.
+    /// Log-normal coefficient of variation for per-turn decode speed.
     pub tps_jitter_cv: f64,
-    /// Probability [0.0, 1.0] of inserting a mid-stream thinking/network micro-stall before a chunk.
+    /// Probability [0.0, 1.0] of adding a thinking/network micro-stall to a decoding turn.
     pub micro_stall_prob: f64,
     /// Micro-stall duration range (min_ms, max_ms).
     pub micro_stall_ms_range: (u64, u64),
@@ -318,6 +319,12 @@ pub struct TurnPacer {
     in_flight: usize,
     explicit_ttft_ms: Option<u64>,
     explicit_chunk_delay_ms: Option<u64>,
+    ttft: Duration,
+    decode_jitter: f64,
+    decode_stall: Duration,
+    decoded_bytes: usize,
+    decode_started: Option<tokio::time::Instant>,
+    non_streaming_output_bytes: Option<usize>,
 }
 
 impl TurnPacer {
@@ -328,13 +335,64 @@ impl TurnPacer {
         explicit_ttft_ms: Option<u64>,
         explicit_chunk_delay_ms: Option<u64>,
     ) -> Self {
+        let rng = fastrand::Rng::with_seed(seed);
+        let mut decode_rng = rng.clone().fork();
+        let decode_jitter = if profile.tps_jitter_cv > 0.0 && profile.tokens_per_sec > 0.0 {
+            sample_lognormal_multiplier(&mut decode_rng, profile.tps_jitter_cv)
+        } else {
+            1.0
+        };
+        let decode_stall =
+            if profile.micro_stall_prob > 0.0 && decode_rng.f64() < profile.micro_stall_prob {
+                let (lo, hi) = profile.micro_stall_ms_range;
+                Duration::from_millis(decode_rng.u64(lo..=hi.max(lo)))
+            } else {
+                Duration::ZERO
+            };
         Self {
             profile,
-            rng: fastrand::Rng::with_seed(seed),
+            rng,
             in_flight,
             explicit_ttft_ms,
             explicit_chunk_delay_ms,
+            ttft: Duration::ZERO,
+            decode_jitter,
+            decode_stall,
+            decoded_bytes: 0,
+            decode_started: None,
+            non_streaming_output_bytes: None,
         }
+    }
+
+    /// `logical_seed` identifies a scenario lane, step, and attempt without using arrival order.
+    pub fn new_deterministic(
+        profile: LatencyProfile,
+        logical_seed: u64,
+        prompt_bytes: usize,
+        cache_hit_ratio: f64,
+        is_streaming: bool,
+        output_bytes: usize,
+    ) -> Self {
+        let mut pacer = Self::new(profile, logical_seed, 0, None, None);
+        let input_tokens = (prompt_bytes as u64).div_ceil(4);
+        let cached_tokens = ((input_tokens as f64 * cache_hit_ratio.clamp(0.0, 1.0)).round()
+            as u64)
+            .min(input_tokens);
+        pacer.compute_ttft(input_tokens - cached_tokens, cached_tokens);
+        pacer.non_streaming_output_bytes = (!is_streaming).then_some(output_bytes);
+        pacer
+    }
+
+    /// Streaming waits for prefill, while non-streaming waits for prefill and the entire decode.
+    pub fn initial_delay(&self) -> Duration {
+        match self.non_streaming_output_bytes {
+            Some(bytes) => self.non_streaming_total_delay(bytes),
+            None => self.ttft,
+        }
+    }
+
+    pub fn non_streaming_total_delay(&self, output_bytes: usize) -> Duration {
+        self.ttft.saturating_add(self.decode_budget(output_bytes))
     }
 
     pub fn sse_ping_interval(&self) -> Option<Duration> {
@@ -344,6 +402,11 @@ impl TurnPacer {
 
     /// Compute TTFT for this turn taking prompt prefill, cache read, concurrency congestion, and jitter into account.
     pub fn compute_ttft(&mut self, uncached_tokens: u64, cached_tokens: u64) -> Duration {
+        self.ttft = self.sample_ttft(uncached_tokens, cached_tokens);
+        self.ttft
+    }
+
+    fn sample_ttft(&mut self, uncached_tokens: u64, cached_tokens: u64) -> Duration {
         if let Some(ms) = self.explicit_ttft_ms {
             return Duration::from_millis(ms);
         }
@@ -375,41 +438,55 @@ impl TurnPacer {
         Duration::from_millis(clamped)
     }
 
-    /// Compute streaming delay for an emitted chunk of `payload_bytes`, including TPS degradation, jitter, and micro-stalls.
-    pub fn next_chunk_delay(&mut self, payload_bytes: usize) -> Duration {
-        let mut delay_ms = if let Some(ms) = self.explicit_chunk_delay_ms {
-            ms as f64
-        } else if self.profile.tokens_per_sec > 0.0 && payload_bytes > 0 {
-            let mut effective_tps = self.profile.tokens_per_sec;
-            if self.profile.concurrency_knee > 0 && self.in_flight > self.profile.concurrency_knee {
-                let excess = (self.in_flight - self.profile.concurrency_knee) as f64
-                    / self.profile.concurrency_knee as f64;
-                effective_tps /= 1.0 + self.profile.tps_congestion_factor * excess;
-            }
-            // Approximate 4 UTF-8 bytes per token, minimum 0.5 token per delta chunk.
-            let est_tokens = (payload_bytes as f64 / 4.0).max(0.5);
-            let mut ms = (est_tokens / effective_tps.max(0.1)) * 1000.0;
-            if self.profile.tps_jitter_cv > 0.0 {
-                ms *= sample_lognormal_multiplier(&mut self.rng, self.profile.tps_jitter_cv);
-            }
-            ms
-        } else {
-            0.0
-        };
-
-        // Optional mid-stream micro-stall.
-        if self.profile.micro_stall_prob > 0.0 && self.rng.f64() < self.profile.micro_stall_prob {
-            let (lo, hi) = self.profile.micro_stall_ms_range;
-            let hi = hi.max(lo);
-            let stall = if hi > lo { self.rng.u64(lo..=hi) } else { lo };
-            delay_ms += stall as f64;
+    /// Anchor decode after the first wire frame and charge semantic bytes against that clock.
+    pub fn next_frame_deadline(
+        &mut self,
+        kind: FrameKind,
+        semantic_bytes: usize,
+        sent_at: tokio::time::Instant,
+    ) -> Option<tokio::time::Instant> {
+        if kind == FrameKind::Keepalive {
+            return None;
         }
-
-        if delay_ms <= 0.0 {
-            Duration::ZERO
-        } else {
-            Duration::from_millis(delay_ms.round().min(60_000.0) as u64)
+        let started = *self.decode_started.get_or_insert(sent_at);
+        if kind != FrameKind::SemanticDelta || semantic_bytes == 0 {
+            return None;
         }
+        let first_delta = self.decoded_bytes == 0;
+        self.decoded_bytes = self.decoded_bytes.saturating_add(semantic_bytes);
+        if let Some(ms) = self.explicit_chunk_delay_ms {
+            let mut delay = Duration::from_millis(ms);
+            if first_delta {
+                delay = delay.saturating_add(self.decode_stall);
+            }
+            return Some(sent_at + delay);
+        }
+        Some(started + self.decode_budget(self.decoded_bytes))
+    }
+
+    pub fn jitter_ms(&mut self, min_ms: u64, max_ms: u64) -> u64 {
+        let lo = min_ms.min(max_ms);
+        let hi = min_ms.max(max_ms);
+        if lo == hi { lo } else { self.rng.u64(lo..=hi) }
+    }
+
+    fn decode_budget(&self, bytes: usize) -> Duration {
+        if bytes == 0 {
+            return Duration::ZERO;
+        }
+        if self.profile.tokens_per_sec <= 0.0 {
+            return self.decode_stall;
+        }
+        let mut tps = self.profile.tokens_per_sec;
+        if self.profile.concurrency_knee > 0 && self.in_flight > self.profile.concurrency_knee {
+            let excess = (self.in_flight - self.profile.concurrency_knee) as f64
+                / self.profile.concurrency_knee as f64;
+            tps /= 1.0 + self.profile.tps_congestion_factor * excess;
+        }
+        let tokens = bytes as f64 / 4.0;
+        let millis = (tokens / tps) * self.decode_jitter * 1000.0;
+        // Round the cumulative budget once, at the timer's millisecond granularity.
+        Duration::from_millis(millis.round() as u64).saturating_add(self.decode_stall)
     }
 }
 
@@ -426,4 +503,147 @@ fn sample_lognormal_multiplier(rng: &mut fastrand::Rng, cv: f64) -> f64 {
     let u2 = rng.f64();
     let z = (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos();
     (mu + sigma * z).exp().clamp(0.05, 20.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deterministic_delays_follow_logical_attempts_across_interleavings() {
+        fn pacer(seed: u64) -> TurnPacer {
+            TurnPacer::new_deterministic(
+                LatencyProfile::realistic_frontier(),
+                seed,
+                18_000,
+                0.5,
+                true,
+                1_200,
+            )
+        }
+
+        let now = tokio::time::Instant::now();
+        let delta = |pacer: &mut TurnPacer, bytes| {
+            pacer.next_frame_deadline(FrameKind::SemanticDelta, bytes, now)
+        };
+        let mut first = pacer(17);
+        let mut second = pacer(18);
+        let first_delays = (
+            first.initial_delay(),
+            delta(&mut first, 400),
+            first.jitter_ms(10, 800),
+            delta(&mut first, 800),
+        );
+        let second_delays = (
+            second.initial_delay(),
+            delta(&mut second, 400),
+            second.jitter_ms(10, 800),
+            delta(&mut second, 800),
+        );
+        assert_ne!(first_delays, second_delays);
+
+        let mut second = pacer(18);
+        let mut first = pacer(17);
+        let second_chunk = delta(&mut second, 400);
+        let first_chunk = delta(&mut first, 400);
+        assert_eq!(
+            first.next_frame_deadline(FrameKind::Lifecycle, 500, now),
+            None
+        );
+        let second_jitter = second.jitter_ms(10, 800);
+        assert_eq!(
+            first_delays,
+            (
+                first.initial_delay(),
+                first_chunk,
+                first.jitter_ms(10, 800),
+                delta(&mut first, 800),
+            )
+        );
+        assert_eq!(
+            second_delays,
+            (
+                second.initial_delay(),
+                second_chunk,
+                second_jitter,
+                delta(&mut second, 800),
+            )
+        );
+    }
+
+    #[test]
+    fn semantic_bytes_drive_streaming_and_full_decode() {
+        let profile = LatencyProfile {
+            base_ttft_ms: 100,
+            prefill_tokens_per_sec: 100.0,
+            cache_read_tokens_per_sec: 200.0,
+            tokens_per_sec: 10.0,
+            ..Default::default()
+        };
+        let mut streaming = TurnPacer::new_deterministic(profile.clone(), 1, 400, 0.5, true, 80);
+        let first_frame = tokio::time::Instant::now();
+        assert_eq!(streaming.initial_delay(), Duration::from_millis(850));
+        assert_eq!(
+            streaming.next_frame_deadline(FrameKind::Lifecycle, 500, first_frame),
+            None
+        );
+        assert_eq!(
+            streaming.next_frame_deadline(FrameKind::SemanticDelta, 20, first_frame),
+            Some(first_frame + Duration::from_millis(500))
+        );
+        assert_eq!(
+            streaming.next_frame_deadline(
+                FrameKind::SemanticDelta,
+                60,
+                first_frame + Duration::from_millis(510),
+            ),
+            Some(first_frame + Duration::from_millis(2_000))
+        );
+        let json = TurnPacer::new_deterministic(profile, 1, 400, 0.5, false, 80);
+        assert_eq!(json.initial_delay(), Duration::from_millis(2_850));
+        assert_eq!(
+            json.non_streaming_total_delay(160),
+            Duration::from_millis(4_850)
+        );
+    }
+
+    #[test]
+    fn decode_budget_is_the_same_for_single_frame_fragmented_and_json_output() {
+        let bytes = 64 * 1024;
+        let profile = LatencyProfile {
+            base_ttft_ms: 23,
+            tokens_per_sec: 127.0,
+            micro_stall_prob: 1.0,
+            micro_stall_ms_range: (37, 37),
+            ..Default::default()
+        };
+        for jitter in [0.0, 0.2] {
+            let profile = LatencyProfile {
+                tps_jitter_cv: jitter,
+                ..profile.clone()
+            };
+            let pacer =
+                |stream| TurnPacer::new_deterministic(profile.clone(), 17, 0, 0.0, stream, bytes);
+            let mut single = pacer(true);
+            let mut fragmented = pacer(true);
+            let now = tokio::time::Instant::now();
+            let single_decode = single
+                .next_frame_deadline(FrameKind::SemanticDelta, bytes, now)
+                .unwrap()
+                - now;
+            let fragmented_decode = (0..bytes)
+                .filter_map(|_| fragmented.next_frame_deadline(FrameKind::SemanticDelta, 1, now))
+                .last()
+                .unwrap()
+                - now;
+            if jitter == 0.0 {
+                assert_eq!(single_decode, Duration::from_millis(129_045));
+            }
+            assert_eq!(fragmented_decode, single_decode);
+            assert_eq!(
+                pacer(false).initial_delay() - single.initial_delay(),
+                single_decode
+            );
+        }
+    }
 }

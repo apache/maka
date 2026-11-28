@@ -18,10 +18,10 @@
  */
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// Isolation scope for stateful rate-limit token buckets and concurrency caps.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -114,12 +114,11 @@ impl RateLimitHeaders {
     }
 }
 
-/// RAII guard that releases the concurrency slot and debits post-turn output tokens on drop.
+/// RAII guard for a concurrency slot and its output-token accounting.
 pub struct RateLimitLease {
     limiter: Arc<RateLimiter>,
-    bucket_key: String,
+    bucket_key: Arc<str>,
     generation: u64,
-    active_slot_held: bool,
     output_tokens_debited: bool,
 }
 
@@ -139,10 +138,7 @@ impl RateLimitLease {
 
 impl Drop for RateLimitLease {
     fn drop(&mut self) {
-        if self.active_slot_held {
-            self.active_slot_held = false;
-            self.limiter.release_slot(&self.bucket_key, self.generation);
-        }
+        self.limiter.release_slot(&self.bucket_key, self.generation);
     }
 }
 
@@ -234,7 +230,7 @@ struct BucketState {
     itpm: Option<TokenBucket>,
     otpm: Option<TokenBucket>,
     in_flight: usize,
-    last_seen: Instant,
+    evict_at: Option<Instant>,
 }
 
 impl BucketState {
@@ -244,7 +240,7 @@ impl BucketState {
             itpm: cfg.itpm.map(|v| TokenBucket::new(v, None, now)),
             otpm: cfg.otpm.map(|v| TokenBucket::new(v, None, now)),
             in_flight: 0,
-            last_seen: now,
+            evict_at: None,
         }
     }
 
@@ -291,12 +287,48 @@ impl BucketState {
     }
 }
 
+#[derive(Default)]
+struct BucketTable {
+    entries: HashMap<Arc<str>, BucketState>,
+    // One deadline per idle bucket. A bucket is evictable only after all its quotas refill.
+    idle: BTreeSet<(Instant, Arc<str>)>,
+}
+
+impl BucketTable {
+    fn evict_refilled(&mut self, now: Instant) -> bool {
+        if self.idle.first().is_none_or(|(at, _)| *at > now) {
+            return false;
+        }
+        let (_, key) = self.idle.pop_first().expect("eligible deadline exists");
+        self.entries.remove(&key);
+        true
+    }
+
+    fn index_idle(&mut self, key: Arc<str>, now: Instant) {
+        let state = self.entries.get_mut(&key).expect("indexed bucket exists");
+        let mut ready_at = now;
+        for bucket in [&state.rpm, &state.itpm, &state.otpm].into_iter().flatten() {
+            let seconds = (bucket.capacity - bucket.tokens) / bucket.rate_per_sec;
+            let Some(at) = Duration::try_from_secs_f64(seconds)
+                .ok()
+                .and_then(|delay| delay.checked_add(Duration::from_nanos(u64::from(seconds > 0.0))))
+                .and_then(|delay| bucket.last_refill.checked_add(delay))
+            else {
+                return;
+            };
+            ready_at = ready_at.max(at);
+        }
+        state.evict_at = Some(ready_at);
+        self.idle.insert((ready_at, key));
+    }
+}
+
 /// Stateful, runtime-reconfigurable token bucket and concurrency rate limiter.
 pub struct RateLimiter {
     active: AtomicBool,
     generation: AtomicU64,
     config: RwLock<RateLimitConfig>,
-    buckets: Mutex<HashMap<String, BucketState>>,
+    buckets: Mutex<BucketTable>,
 }
 
 impl RateLimiter {
@@ -306,7 +338,7 @@ impl RateLimiter {
             active,
             generation: AtomicU64::new(0),
             config: RwLock::new(config),
-            buckets: Mutex::new(HashMap::new()),
+            buckets: Mutex::new(BucketTable::default()),
         })
     }
 
@@ -318,14 +350,18 @@ impl RateLimiter {
     }
 
     pub fn update_config(&self, config: RateLimitConfig) {
-        self.active.store(config.is_active(), Ordering::Release);
-        *self.config.write().unwrap_or_else(|e| e.into_inner()) = config;
+        let active = config.is_active();
+        let mut guard = self.config.write().unwrap_or_else(|e| e.into_inner());
+        *guard = config;
+        self.active.store(active, Ordering::Release);
     }
 
     pub fn reset(&self) {
         let mut guard = self.buckets.lock().unwrap_or_else(|e| e.into_inner());
-        self.generation.fetch_add(1, Ordering::AcqRel);
-        guard.clear();
+        let old = std::mem::take(&mut *guard);
+        self.generation.fetch_add(1, Ordering::Release);
+        drop(guard);
+        drop(old);
     }
 
     /// Evaluate admission for a single model turn. Optionally uses a phase-level override config.
@@ -354,51 +390,33 @@ impl RateLimiter {
         }
 
         let key = bucket_key(cfg.scope, api_key, model);
-        let now = Instant::now();
         let mut guard = self.buckets.lock().unwrap_or_else(|e| e.into_inner());
-
-        // Bounded eviction when distinct keys exceed max_buckets: only evict idle buckets whose
-        // token buckets have refilled to full capacity (prevents resetting active quota deficits).
-        let max_buckets = cfg.max_buckets.max(1);
-        if !guard.contains_key(&key) && guard.len() >= max_buckets {
-            let mut evict_key: Option<String> = None;
-            let mut oldest = now;
-            for (k, s) in guard.iter_mut() {
-                if s.in_flight != 0 {
-                    continue;
-                }
-                if let Some(ref mut b) = s.rpm {
-                    b.refill(now);
-                }
-                if let Some(ref mut b) = s.itpm {
-                    b.refill(now);
-                }
-                if let Some(ref mut b) = s.otpm {
-                    b.refill(now);
-                }
-                let full = s.rpm.as_ref().is_none_or(|b| b.tokens >= b.capacity)
-                    && s.itpm.as_ref().is_none_or(|b| b.tokens >= b.capacity)
-                    && s.otpm.as_ref().is_none_or(|b| b.tokens >= b.capacity);
-                if full && (evict_key.is_none() || s.last_seen < oldest) {
-                    oldest = s.last_seen;
-                    evict_key = Some(k.clone());
-                }
-            }
-            if let Some(ek) = evict_key {
-                guard.remove(&ek);
-            } else {
+        let now = Instant::now();
+        let key = if let Some((key, _)) = guard.entries.get_key_value(key.as_str()) {
+            key.clone()
+        } else {
+            let max_buckets = cfg.max_buckets.max(1);
+            if guard.entries.len() >= max_buckets
+                && (!guard.evict_refilled(now) || guard.entries.len() >= max_buckets)
+            {
                 return RateLimitDecision::Rejected {
                     retry_after_ms: 250,
                     reason: "rate_limit_table_full",
                     headers: RateLimitHeaders::default(),
                 };
             }
-        }
+            let key: Arc<str> = key.into();
+            guard
+                .entries
+                .insert(key.clone(), BucketState::new(&cfg, now));
+            key
+        };
 
-        let state = guard
-            .entry(key.clone())
-            .or_insert_with(|| BucketState::new(&cfg, now));
-        state.last_seen = now;
+        let BucketTable { entries, idle } = &mut *guard;
+        let state = entries.get_mut(&key).expect("admitted bucket exists");
+        if let Some(at) = state.evict_at.take() {
+            idle.remove(&(at, key.clone()));
+        }
         state.sync_config(&cfg, now);
 
         // 1. Check concurrency cap first.
@@ -406,6 +424,9 @@ impl RateLimiter {
             && state.in_flight >= max_conc
         {
             let headers = state.headers(&cfg);
+            if state.in_flight == 0 {
+                guard.index_idle(key, now);
+            }
             return RateLimitDecision::Rejected {
                 retry_after_ms: 250,
                 reason: "max_concurrent_requests",
@@ -439,6 +460,9 @@ impl RateLimiter {
 
         if let Some((retry_after_ms, reason)) = wait_ms {
             let headers = state.headers(&cfg);
+            if state.in_flight == 0 {
+                guard.index_idle(key, now);
+            }
             return RateLimitDecision::Rejected {
                 retry_after_ms,
                 reason,
@@ -463,33 +487,42 @@ impl RateLimiter {
                 limiter: self.clone(),
                 bucket_key: key,
                 generation,
-                active_slot_held: true,
                 output_tokens_debited: false,
             }),
         }
     }
 
-    fn release_slot(&self, key: &str, generation: u64) {
-        let mut guard = self.buckets.lock().unwrap_or_else(|e| e.into_inner());
-        if self.generation.load(Ordering::Acquire) != generation {
+    fn release_slot(&self, key: &Arc<str>, generation: u64) {
+        let Some(mut guard) = self.buckets_for_generation(generation) else {
             return;
-        }
-        if let Some(state) = guard.get_mut(key) {
-            state.in_flight = state.in_flight.saturating_sub(1);
+        };
+        let state = guard.entries.get_mut(key).expect("leased bucket exists");
+        state.in_flight -= 1;
+        if state.in_flight == 0 {
+            guard.index_idle(key.clone(), Instant::now());
         }
     }
 
-    fn debit_output(&self, key: &str, generation: u64, output_tokens: u64) {
-        let mut guard = self.buckets.lock().unwrap_or_else(|e| e.into_inner());
-        if self.generation.load(Ordering::Acquire) != generation {
+    fn debit_output(&self, key: &Arc<str>, generation: u64, output_tokens: u64) {
+        let Some(mut guard) = self.buckets_for_generation(generation) else {
             return;
-        }
-        if let Some(state) = guard.get_mut(key)
-            && let Some(ref mut otpm) = state.otpm
-        {
+        };
+        let state = guard.entries.get_mut(key).expect("leased bucket exists");
+        if let Some(otpm) = &mut state.otpm {
             otpm.refill(Instant::now());
             otpm.consume(output_tokens as f64);
         }
+    }
+
+    fn buckets_for_generation(
+        &self,
+        generation: u64,
+    ) -> Option<std::sync::MutexGuard<'_, BucketTable>> {
+        if self.generation.load(Ordering::Acquire) != generation {
+            return None;
+        }
+        let guard = self.buckets.lock().unwrap_or_else(|e| e.into_inner());
+        (self.generation.load(Ordering::Relaxed) == generation).then_some(guard)
     }
 }
 
@@ -499,5 +532,77 @@ fn bucket_key(scope: RateLimitScope, api_key: &str, model: &str) -> String {
         RateLimitScope::PerApiKey => format!("key:{api_key}"),
         RateLimitScope::PerModel => format!("model:{model}"),
         RateLimitScope::PerApiKeyAndModel => format!("key:{api_key}|model:{model}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn acquire(limiter: &Arc<RateLimiter>, model: &str) -> RateLimitLease {
+        match limiter.check_and_acquire("", model, 1, None) {
+            RateLimitDecision::Allowed {
+                lease: Some(lease), ..
+            } => lease,
+            _ => panic!("expected a lease for {model}"),
+        }
+    }
+
+    #[test]
+    fn full_table_can_reuse_idle_refilled_buckets_but_keeps_active_slots_and_debt() {
+        let limiter = RateLimiter::new(RateLimitConfig {
+            enabled: true,
+            scope: RateLimitScope::PerModel,
+            max_concurrent: Some(1),
+            max_buckets: 1,
+            ..Default::default()
+        });
+        let first = acquire(&limiter, "first");
+        assert!(matches!(
+            limiter.check_and_acquire("", "second", 1, None),
+            RateLimitDecision::Rejected {
+                reason: "rate_limit_table_full",
+                ..
+            }
+        ));
+        drop(first);
+
+        limiter.update_config(RateLimitConfig {
+            rpm: Some(1),
+            ..limiter.config()
+        });
+        drop(acquire(&limiter, "second"));
+        assert!(matches!(
+            limiter.check_and_acquire("", "third", 1, None),
+            RateLimitDecision::Rejected {
+                reason: "rate_limit_table_full",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn stale_lease_neither_releases_new_slot_nor_debits_new_quota() {
+        let limiter = RateLimiter::new(RateLimitConfig {
+            enabled: true,
+            max_concurrent: Some(1),
+            otpm: Some(1),
+            max_buckets: 1,
+            ..Default::default()
+        });
+        let mut old = acquire(&limiter, "model");
+        limiter.reset();
+        let current = acquire(&limiter, "model");
+        old.debit_output_tokens(10);
+        drop(old);
+        assert!(matches!(
+            limiter.check_and_acquire("", "model", 1, None),
+            RateLimitDecision::Rejected {
+                reason: "max_concurrent_requests",
+                ..
+            }
+        ));
+        drop(current);
+        drop(acquire(&limiter, "model"));
     }
 }

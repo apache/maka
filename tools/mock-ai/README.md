@@ -65,3 +65,49 @@ cargo run -p maka-mock-ai --bin maka-mock-ai -- \
 cargo run -p maka-mock-ai --bin maka-mock-ai -- \
   --replay ./trace.ndjson --replay-speed 10 --replay-match fingerprint
 ```
+
+## Benchmark Mode
+
+Pass a JSON or YAML [scenario spec](src/scenario/mod.rs) to script the same workload across harnesses.
+Scenario mode enables strict session routing and the Admin API. Pass
+`--strict-benchmark` on its own to require session routing with a different workload.
+
+```bash
+cargo run -p maka-mock-ai --bin maka-mock-ai -- \
+  --listen 127.0.0.1:4014 --scenario ./scenario.yaml --strict-benchmark
+```
+
+Register each lane before launching its harness. Give it a unique session ID and a
+logical lane name within the run. In scenario mode, use the scenario name from the spec
+and the absolute path to the lane's fixture workspace.
+
+```bash
+origin=http://127.0.0.1:4014
+curl -fsS "$origin/admin/sessions" -H 'Content-Type: application/json' \
+  -d '{"runId":"run-1","sessionId":"lane-01","logicalLane":"01","harness":"codex","scenario":"tool-chain","workspace":"/absolute/path/to/fixture"}'
+```
+
+Set the harness base URL to `http://127.0.0.1:4014/s/run-1/lane-01/v1`.
+The `/s/<run>/<session>` prefix also works for Responses WebSocket and the
+provider control endpoints. Keep `/admin/` and `/metrics` on the server origin.
+
+| Provider endpoint | Use |
+| --- | --- |
+| `GET /v1/models/{id}` | Fetch metadata for a configured model. |
+| `POST /v1/messages/count_tokens` | Estimate input tokens for an Anthropic Messages payload. |
+| `POST /v1/responses/compact` | Compact Responses input and return a checkpoint for the next turn. |
+| `GET /v1/responses/{id}` and `DELETE /v1/responses/{id}` | Read or delete a stored response from its owning session. A response created with `store: false` is unavailable to GET. |
+
+Export benchmark telemetry through the origin Admin API.
+
+| Admin endpoint | Use |
+| --- | --- |
+| `GET /admin/sessions?run=run-1&limit=100` | List session summaries. Pass the returned `nextCursor` as `cursor` for the next page until it is null. |
+| `POST /admin/sessions/{id}/finalize` | Close the session after its requests finish. For scenario completion verification, send `{"responseId":"…","observedMarkers":["…"]}`. |
+| `GET /admin/sessions/{id}?limit=100&after=0` | Export attempt spans, attribution, and watchdog diagnostics. Resume with `after=nextCursor` until `nextCursor` equals `summary.attempts`, including any reported dropped attempts. |
+| `DELETE /admin/sessions/{id}?cursor=<sessionCursor>&after=<finalAttemptCursor>` | Reclaim a finalized session after export. Use `summary.cursor` for the first value and the final `nextCursor` for the second. |
+
+Attribution reports `mockServiceSumNs` across attempts, `mockUnionNs` for the
+wall time covered by at least one attempt, and `outsideMockWallNs` for the rest
+of the session window. `POST /admin/reset` returns `409` while benchmark sessions
+remain registered.
