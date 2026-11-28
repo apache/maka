@@ -2635,6 +2635,72 @@ mod tests {
         assert!(!app.screen().selected("role:tab[Time]").unwrap());
         assert!(!app.screen().matches("text:Today").unwrap());
     }
+
+    #[test]
+    fn provider_catalog_grouping_flat_search_and_empty_shortlist_navigation() {
+        let mut app = headless_fixture(
+            "tests/fixtures/provider-catalog.tsx",
+            Size::new(px(1120.0), px(900.0)),
+            true,
+        );
+        // Empty Models page renders Recommended shortlist with 1-click setup entry.
+        app.wait_for("text:Recommended").unwrap();
+        app.wait_for("label:Browse all providers").unwrap();
+        app.wait_for("label:Connect ChatGPT Subscription").unwrap();
+        app.wait_for("label:Connect OpenAI").unwrap();
+        assert!(!app.screen().matches("label:Connect Mistral").unwrap());
+
+        // Entering ConnectionForm from empty-state shortlist returns straight to Models on Escape.
+        app.press("label:Connect OpenAI").unwrap();
+        app.wait_for("label:API key").unwrap();
+        app.press_key("escape").unwrap();
+        app.wait_for("label:Browse all providers").unwrap();
+        assert!(!app.screen().matches("label:Search providers").unwrap());
+
+        // Browse all providers opens ProviderPicker with mental-model groups and third-party fallbacks.
+        app.press("label:Browse all providers").unwrap();
+        app.wait_for("label:Search providers").unwrap();
+        app.wait_for("role:header[Recommended]").unwrap();
+        app.wait_for("role:header[Account sign-in]").unwrap();
+        app.wait_for("role:header[Subscription plans]").unwrap();
+        app.wait_for("role:header[API providers]").unwrap();
+        app.wait_for("role:header[Aggregators & custom endpoints]")
+            .unwrap();
+        app.wait_for("role:header[Local]").unwrap();
+        app.wait_for("role:header[Custom endpoints]").unwrap();
+
+        // Typing a query collapses group headings into one flat list.
+        app.type_text("label:Search providers", "ollama").unwrap();
+        app.wait_for("label:Connect Ollama").unwrap();
+        assert!(!app.screen().matches("role:header[Local]").unwrap());
+        assert!(!app.screen().matches("role:header[Recommended]").unwrap());
+
+        // Zero-match query offers Clear search, which clears the query and restores grouped browse mode.
+        app.type_text("label:Search providers", "zzzz-missing")
+            .unwrap();
+        app.wait_for("text:No matching providers.").unwrap();
+        app.wait_for("label:Clear search").unwrap();
+        app.press("label:Clear search").unwrap();
+        app.wait_for("role:header[Recommended]").unwrap();
+        assert!(!app.screen().matches("text:No matching providers.").unwrap());
+        // Clear search restores focus to the search input so its `within` arrow keymap works immediately.
+        assert!(
+            app.screen()
+                .selected("label:Connect ChatGPT Subscription")
+                .unwrap()
+        );
+        app.press_key("down").unwrap();
+        assert!(app.screen().selected("label:Connect OpenAI").unwrap());
+
+        // Entering ConnectionForm via ProviderPicker returns to ProviderPicker on Back (preserving query).
+        app.type_text("label:Search providers", "mistral").unwrap();
+        app.wait_for("label:Connect Mistral").unwrap();
+        app.press("label:Connect Mistral").unwrap();
+        app.wait_for("label:API key").unwrap();
+        app.press("label:Back from connection settings").unwrap();
+        app.wait_for("label:Search providers").unwrap();
+        app.wait_for("label:Connect Mistral").unwrap();
+    }
 }
 
 #[cfg(test)]

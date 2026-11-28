@@ -36,6 +36,7 @@ import type { ModelSettingsOwner } from './settings';
 import { InlineCallout, RegionEmptyError } from './Feedback';
 import { Icon } from './Icon';
 import { tr, currentLocale } from './locale';
+import { compareProvidersByLabel, groupProviders, providerIdentityKey } from './providerCatalog';
 import { providerLabel } from './settingsLabels';
 import {
   C,
@@ -49,19 +50,12 @@ import {
   radius,
   textTooltip,
 } from './ui';
-import { settingsGutter, settingsInset } from './SettingsPage';
+import { SettingsButton, settingsGutter, settingsInset } from './SettingsPage';
 import { sameValue } from '../../../../plugins/shared/value';
 
 type Row =
   | { kind: 'heading'; key: string; label: string }
   | { kind: 'provider'; key: string; provider: SettingsProviderSummary };
-const identityKey = (provider: SettingsProviderSummary) =>
-  JSON.stringify([
-    provider.identity.packageId,
-    provider.identity.entryId,
-    provider.identity.scope,
-    provider.identity.name,
-  ]);
 
 export function ProviderPicker(props: { owner: ModelSettingsOwner }) {
   const owner = props.owner;
@@ -83,41 +77,29 @@ export function ProviderPicker(props: { owner: ModelSettingsOwner }) {
     owner.pending().length > 0 ||
     owner.openingProvider() !== null;
   const rows = computed<Row[]>(() => {
-    const providers = [...owner.filteredProviders()].sort(
-      (a, b) =>
-        providerLabel(a.label).localeCompare(providerLabel(b.label), currentLocale()) ||
-        identityKey(a).localeCompare(identityKey(b)),
-    );
-    const groups = [
-      {
-        key: 'account',
-        label: tr('Account sign-in'),
-        accepts: (p: SettingsProviderSummary) =>
-          !p.customEndpoint && p.authentication.some((a) => a.interactive),
-      },
-      {
-        key: 'custom',
-        label: tr('Custom endpoints'),
-        accepts: (p: SettingsProviderSummary) => p.customEndpoint,
-      },
-      {
-        key: 'api',
-        label: tr('API providers'),
-        accepts: (p: SettingsProviderSummary) =>
-          !p.customEndpoint && !p.authentication.some((a) => a.interactive),
-      },
-    ];
-    return groups.flatMap((group): Row[] => {
-      const items = providers.filter(group.accepts);
-      return items.length
-        ? [
-            { kind: 'heading', key: group.key, label: group.label },
-            ...items.map(
-              (provider): Row => ({ kind: 'provider', key: identityKey(provider), provider }),
-            ),
-          ]
-        : [];
-    });
+    const filtered = owner.filteredProviders();
+    const locale = currentLocale();
+    if (owner.providerQuery().trim()) {
+      return [...filtered]
+        .sort((a, b) => compareProvidersByLabel(a, b, locale))
+        .map(
+          (provider): Row => ({
+            kind: 'provider',
+            key: providerIdentityKey(provider),
+            provider,
+          }),
+        );
+    }
+    return groupProviders(filtered, locale).flatMap((group): Row[] => [
+      { kind: 'heading', key: `group:${group.id}`, label: group.label },
+      ...group.providers.map(
+        (provider): Row => ({
+          kind: 'provider',
+          key: providerIdentityKey(provider),
+          provider,
+        }),
+      ),
+    ]);
   });
   const choices = () =>
     rows().flatMap((row, index) =>
@@ -153,6 +135,10 @@ export function ProviderPicker(props: { owner: ModelSettingsOwner }) {
     owner.searchProviders(text);
     owner.selectedProvider.set(null);
     if (rows().length) list?.scrollToIndex({ index: 0, animated: false });
+  };
+  const clearSearch = () => {
+    search('');
+    input?.focus();
   };
   return (
     <View
@@ -213,10 +199,7 @@ export function ProviderPicker(props: { owner: ModelSettingsOwner }) {
             accessibilityLabel={tr('Clear provider search')}
             tooltip={textTooltip(() => tr('Clear provider search'))}
             disabled={disabled()}
-            onPress={() => {
-              search('');
-              input?.focus();
-            }}
+            onPress={clearSearch}
             style={{ ...controlStyle(), width: 32, paddingHorizontal: 0 }}
             hoverStyle={controlHoverStyle()}
             focusStyle={controlFocusStyle()}
@@ -254,19 +237,40 @@ export function ProviderPicker(props: { owner: ModelSettingsOwner }) {
             when={!owner.loading() && Boolean(owner.error())}
             else={
               <If when={!owner.loading()}>
-                <Text
-                  style={{
-                    ...captionTextStyle,
-                    color: C.muted,
-                    paddingVertical: 16,
-                    // In line with the list's headings and rows.
-                    paddingHorizontal: settingsInset,
-                  }}
+                <If
+                  when={Boolean(owner.providerQuery().trim())}
+                  else={
+                    <Text
+                      style={{
+                        ...captionTextStyle,
+                        color: C.muted,
+                        paddingVertical: 16,
+                        // In line with the list's headings and rows.
+                        paddingHorizontal: settingsInset,
+                      }}
+                    >
+                      {tr('No providers available.')}
+                    </Text>
+                  }
                 >
-                  {owner.providerQuery().trim()
-                    ? tr('No matching providers.')
-                    : tr('No providers available.')}
-                </Text>
+                  <View
+                    style={{
+                      paddingVertical: 16,
+                      paddingHorizontal: settingsInset,
+                      gap: 8,
+                      alignItems: 'flex-start',
+                    }}
+                  >
+                    <Text style={{ ...captionTextStyle, color: C.muted }}>
+                      {tr('No matching providers.')}
+                    </Text>
+                    <SettingsButton
+                      label={tr('Clear search')}
+                      disabled={disabled()}
+                      onPress={clearSearch}
+                    />
+                  </View>
+                </If>
               </If>
             }
           >

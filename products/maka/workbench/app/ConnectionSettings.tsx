@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { inputAction } from 'nsh';
+import { computed, inputAction, Text } from 'nsh';
 import type { ExternalAgentSettingsOwner } from './externalAgentSettingsState';
 import { settingsModelKey, type ModelSettingsOwner } from './settings';
 import { ConnectionAdvanced, ConnectionForm } from './ConnectionForm';
@@ -25,10 +25,17 @@ import { ExternalAgentConfirmation, ExternalAgentSection } from './ExternalAgent
 import { ProviderPicker } from './ProviderPicker';
 import { ConnectionModel } from './ConnectionModel';
 import { SettingsSkeleton } from './Loading';
-import { tr } from './locale';
+import { currentLocale, tr } from './locale';
+import {
+  providerIdentityKey,
+  providerShortlistDescription,
+  recommendedProviders,
+} from './providerCatalog';
+import { providerLabel } from './settingsLabels';
 import { UsageLimits } from './UsageLimits';
 import {
   SettingsBody,
+  SettingsButton,
   SettingsConfirm,
   SettingsDiscard,
   SettingsLede,
@@ -39,6 +46,8 @@ import {
   SettingsSection,
   SettingsSelect,
 } from './SettingsPage';
+import { C, captionTextStyle } from './ui';
+import { sameValue } from '../../../../plugins/shared/value';
 
 export function ConnectionSettings(props: {
   owner: ModelSettingsOwner;
@@ -78,7 +87,11 @@ function ConnectionList(props: {
   externalAgents?: ExternalAgentSettingsOwner;
 }) {
   const owner = props.owner;
-  const unavailable = () => owner.busy() || !owner.pendingKnown() || owner.pending().length > 0;
+  const unavailable = () =>
+    owner.busy() ||
+    !owner.pendingKnown() ||
+    owner.pending().length > 0 ||
+    owner.openingProvider() !== null;
   const current = () => {
     const model = owner.defaultModel();
     return model?.kind === 'ready'
@@ -102,10 +115,53 @@ function ConnectionList(props: {
     !owner.connections().length &&
     !props.externalAgents?.runtimes().some((runtime) => runtime.enabled) &&
     !owner.connectionQuery().trim();
+  const recommended = computed(() => recommendedProviders(owner.providers(), currentLocale()));
   return (
     <SettingsBody>
       <If when={empty()}>
-        <SettingsLede>{tr('Add your first connection, then fetch or add a model.')}</SettingsLede>
+        <SettingsLede>
+          {recommended().length > 0
+            ? tr('Start with a recommended provider below, or browse all providers.')
+            : tr('Add your first connection, then fetch or add a model.')}
+        </SettingsLede>
+      </If>
+      <If when={empty() && recommended().length > 0}>
+        <SettingsSection
+          title={tr('Recommended')}
+          trailing={
+            <SettingsButton
+              label={tr('Browse all providers')}
+              tone="quiet"
+              disabled={unavailable()}
+              onPress={owner.newConnection}
+            />
+          }
+        >
+          <Each of={recommended()} key={(provider) => providerIdentityKey(provider)}>
+            {(provider) => {
+              const opening = () => sameValue(provider().identity, owner.openingProvider());
+              const label = () => providerLabel(provider().label);
+              return (
+                <SettingsRow
+                  label={label()}
+                  accessibilityLabel={tr('Connect {name}', { name: label() })}
+                  description={providerShortlistDescription(provider())}
+                  leading={<SettingsMonogram name={label()} muted={false} />}
+                  trailing={
+                    <If when={opening()}>
+                      <Text style={{ ...captionTextStyle, color: C.secondary }}>
+                        {tr('Opening…')}
+                      </Text>
+                    </If>
+                  }
+                  opens={!opening()}
+                  disabled={unavailable()}
+                  onPress={inputAction(owner.chooseProvider, provider().identity)}
+                />
+              );
+            }}
+          </Each>
+        </SettingsSection>
       </If>
       <If when={owner.connections().length > 0}>
         <SettingsSection>

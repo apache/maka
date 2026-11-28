@@ -54,9 +54,12 @@ import {
 import { createConnectionLogin, type LoginAction } from './connectionLoginState.ts';
 
 type Detail = Extract<SettingsConnectionDetail, { kind: 'ready' }>;
+export type ConnectionOrigin = 'connections' | 'providers';
 export type ConnectionEditor = {
   instance: number;
   baseline: Detail | null;
+  /** Which settings level opened a new-connection draft so Back returns there. */
+  origin?: ConnectionOrigin;
   provider: SettingsProvider;
   name: string;
   slug: string;
@@ -314,6 +317,7 @@ export function createModelSettings(
   });
   let alive = true;
   let read = 0;
+  let shortlistRead = 0;
   let modelRead = 0;
   let editorInstance = restored?.editor?.instance ?? 0;
   let pendingInitialModel = restored?.initialModel ?? (restored ? null : (initialModel ?? null));
@@ -321,6 +325,7 @@ export function createModelSettings(
   cleanup(() => {
     alive = false;
     read += 1;
+    shortlistRead += 1;
     editor.set(null);
   });
   const action = (): ConnectionAction => ({
@@ -343,6 +348,7 @@ export function createModelSettings(
     model()?.originalId === request.originalId;
   const cancelRead = () => {
     read += 1;
+    shortlistRead += 1;
     modelRead += 1;
     loading.set(false);
     modelLoading.set(false);
@@ -393,7 +399,12 @@ export function createModelSettings(
           continue;
         break;
       }
-      if (!more) await loadModelChoices(generation);
+      if (!more) {
+        await Promise.all([
+          loadModelChoices(generation),
+          rows.length === 0 ? loadShortlist() : Promise.resolve(),
+        ]);
+      }
     } catch (reason) {
       if (alive && generation === read) {
         connectionsFailed.set(true);
@@ -410,9 +421,45 @@ export function createModelSettings(
       defaultModel.set(catalog.defaultModel);
     }
   };
+  const loadShortlist = async () => {
+    if (!alive || !active() || page() !== 'connections' || connections().length > 0) return;
+    if (providers().length > 0 && providerNext() === null) return;
+    const generation = ++shortlistRead;
+    try {
+      let rows: SettingsProviderSummary[] = [];
+      let offset = 0;
+      for (;;) {
+        const result: SettingsProvidersPage = await host.query('settings', 'providers', { offset });
+        if (
+          !alive ||
+          !active() ||
+          generation !== shortlistRead ||
+          page() !== 'connections' ||
+          connections().length > 0
+        )
+          return;
+        if (result.next !== null && result.next <= offset) return;
+        rows = [...rows, ...result.providers];
+        if (result.next === null) break;
+        offset = result.next;
+      }
+      providers.set(rows);
+      providerNext.set(null);
+    } catch {
+      // ProviderPicker owns provider-registry errors and Retry.
+    }
+  };
   const loadProviders = async (more = false) => {
     const start = more ? providerNext() : 0;
-    if (!alive || !active() || loading() || start === null || page() !== 'providers') return;
+    if (
+      !alive ||
+      !active() ||
+      loading() ||
+      openingProvider() !== null ||
+      start === null ||
+      page() !== 'providers'
+    )
+      return;
     let offset = start;
     const generation = ++read;
     loading.set(true);
@@ -473,12 +520,27 @@ export function createModelSettings(
     for (let suffix = 2; used.has(slug); suffix++) slug = `${base}-${suffix}`;
     return slug;
   };
-  const chooseProvider = async (identity: SettingsProviderSummary['identity']) => {
-    if (!alive || !active() || busy() || openingProvider() || page() !== 'providers') return;
+  const chooseProvider = async (
+    identity: SettingsProviderSummary['identity'],
+    origin?: ConnectionOrigin,
+  ) => {
+    const currentPage = page();
+    if (
+      !alive ||
+      !active() ||
+      busy() ||
+      openingProvider() ||
+      (currentPage !== 'providers' && currentPage !== 'connections')
+    )
+      return;
+    const fromProviders = currentPage === 'providers';
+    const resolvedOrigin: ConnectionOrigin =
+      origin ?? (fromProviders ? 'providers' : 'connections');
     selectedProvider.set(identity);
     openingProvider.set(identity);
     const generation = ++read;
-    loading.set(true);
+    shortlistRead += 1;
+    if (fromProviders) loading.set(true);
     error.set('');
     failedProvider.set(null);
     try {
@@ -501,6 +563,7 @@ export function createModelSettings(
       editor.set({
         instance: ++editorInstance,
         baseline: null,
+        origin: resolvedOrigin,
         provider,
         name: provider.descriptor.label,
         slug,
@@ -515,12 +578,12 @@ export function createModelSettings(
       page.set('connection');
     } catch (reason) {
       if (generation === read) {
-        failedProvider.set(identity);
+        if (fromProviders) failedProvider.set(identity);
         report(reason);
       }
     } finally {
       if (alive && generation === read) {
-        loading.set(false);
+        if (fromProviders) loading.set(false);
         openingProvider.set(null);
       }
     }
@@ -593,7 +656,7 @@ export function createModelSettings(
     return updated;
   };
   const openConnection = async (target: { connectionId: string; revision?: number }) => {
-    if (!alive || !active() || busy() || page() !== 'connections') return;
+    if (!alive || !active() || busy() || openingProvider() || page() !== 'connections') return;
     const generation = ++read;
     loading.set(true);
     error.set('');
@@ -1310,7 +1373,8 @@ export function createModelSettings(
     void loadConnections();
   };
   const leaveEditor = () => {
-    if (editor()?.baseline) leaveConnection();
+    const current = editor();
+    if (current?.baseline || current?.origin === 'connections') leaveConnection();
     else {
       cancelRead();
       editor.set(null);
@@ -1318,6 +1382,7 @@ export function createModelSettings(
       page.set('providers');
       error.set('');
       notice.set('');
+      if (!providers().length) void loadProviders();
     }
   };
   const connectionEdited = () => {

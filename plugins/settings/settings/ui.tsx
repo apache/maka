@@ -441,7 +441,7 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
                   ? {
                       label: tr('Add connection'),
                       run: connections.newConnection,
-                      disabled: connections.loading(),
+                      disabled: connections.loading() || connections.openingProvider() !== null,
                     }
                   : null,
               nested: () =>
