@@ -473,7 +473,8 @@ pub const MIGRATIONS: &[maka_event_log::migration::Migration] = &[
         68,
         "owner-scoped discovery dossiers, cursors, watches, pending actions and preferences",
         include_str!("../migrations/0068_discovery_dossiers.sql"),
-    ),
+    )
+    .with_configure(relocate_discovery_preview_ledger),
     maka_event_log::migration::Migration::sql(
         69,
         "pending discovery changes and sliding write windows",
@@ -496,8 +497,92 @@ pub const MIGRATIONS: &[maka_event_log::migration::Migration] = &[
     ),
 ];
 
+// Before the Discovery stack joined main, its five SQL files occupied versions 57–61.
+// A move requires the original description and SHA-384. All other rows are validated normally.
+fn relocate_discovery_preview_ledger(
+    db: &rusqlite::Connection,
+) -> Result<(), maka_event_log::StoreError> {
+    let has_dossiers: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='discovery_dossiers')",
+        [], |r| r.get(0),
+    )?;
+    if !has_dossiers {
+        return Ok(());
+    }
+    let current: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM _sqlx_migrations WHERE version=68)",
+        [],
+        |r| r.get(0),
+    )?;
+    if !current {
+        let mut statement = db.prepare(
+            "UPDATE _sqlx_migrations SET version=?1 WHERE version=?2 AND success AND description=?3 AND checksum=?4",
+        )?;
+        for migration in MIGRATIONS.iter().filter(|m| (68..=72).contains(&m.version)) {
+            statement.execute(rusqlite::params![
+                migration.version,
+                57 + (migration.version - 68),
+                migration.description,
+                maka_event_log::migration::checksum(migration.sql),
+            ])?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod migration_tests {
+    #[test]
+    fn discovery_preview_ledger_moves_only_exact_rows_and_rolls_back_on_drift() {
+        use maka_event_log::migration::{checksum, run};
+        let catalog: Vec<_> = maka_event_log::ROOT_MIGRATIONS
+            .iter()
+            .chain(super::MIGRATIONS)
+            .copied()
+            .collect();
+        let preview: Vec<_> = catalog
+            .iter()
+            .filter_map(|m| match m.version {
+                ..=56 => Some(*m),
+                68..=72 => Some(maka_event_log::migration::Migration {
+                    version: m.version - 68 + 57,
+                    configure: None,
+                    ..*m
+                }),
+                _ => None,
+            })
+            .collect();
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        run(&db, &preview).unwrap();
+        db.execute(
+            "INSERT INTO discovery_source_cursors(owner,source_uri,last_explored_at,updated_at)
+            VALUES('owner','maka://session/example',123,124)",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "UPDATE _sqlx_migrations SET checksum=X'00' WHERE version=58",
+            [],
+        )
+        .unwrap();
+        assert!(run(&db, &catalog).is_err());
+        assert_eq!(
+            db.query_row("SELECT max(version) FROM _sqlx_migrations", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            61
+        );
+        let expected = preview.iter().find(|m| m.version == 58).unwrap();
+        db.execute(
+            "UPDATE _sqlx_migrations SET checksum=? WHERE version=58",
+            [checksum(expected.sql)],
+        )
+        .unwrap();
+        run(&db, &catalog).unwrap();
+        run(&db, &catalog).unwrap();
+        assert_eq!(db.query_row("SELECT last_explored_at FROM discovery_source_cursors WHERE owner='owner' AND source_uri='maka://session/example'", [], |r| r.get::<_,i64>(0)).unwrap(), 123);
+    }
+
     #[test]
     fn composed_product_migrations_initialize_upgrade_and_reopen() {
         let catalog: Vec<_> = maka_event_log::ROOT_MIGRATIONS
@@ -521,14 +606,14 @@ mod migration_tests {
                 db.execute(r#"INSERT INTO plugin_data(package_id,scope_id,key,revision,value_json)
                     VALUES ('maka.agent.scheduler','profile','fixture_ready',1,'{"pending":[],"due":{}}')"#, []).unwrap();
             }
-            if through == 70 {
+            if through == 69 {
                 db.execute(r#"INSERT INTO discovery_dossiers(owner,topic_id,title,signal,summary_md,artifacts_json,last_checked_at,last_material_change_at,created_at,updated_at)
                     VALUES ('me','annex','Annex','yellow','Review','[{"path":"draft","purpose":"Review","inputHashes":{"file":"old"}}]',1,1,1,1)"#, []).unwrap();
                 db.execute(r#"INSERT INTO plugin_data(package_id,scope_id,key,revision,value_json)
                     VALUES ('maka.agent.scheduler','profile','instance/discovery/active',1,'{"input":{"text":"existing opening"}}')"#, []).unwrap();
             }
             maka_event_log::migration::run(&db, &catalog).unwrap();
-            if through == 70 {
+            if through == 69 {
                 let artifacts: String = db
                     .query_row(
                         "SELECT artifacts_json FROM discovery_dossiers WHERE topic_id='annex'",

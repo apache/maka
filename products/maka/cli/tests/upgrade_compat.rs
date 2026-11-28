@@ -188,6 +188,19 @@ struct CapsuleManifest {
     remote_relay_configured: bool,
 }
 
+impl CapsuleManifest {
+    fn has_discovery_migration(&self, version: i64) -> bool {
+        self.discovery.is_some()
+            && self
+                .migrations
+                .get(maka_event_log::root::ROOT_DATABASE)
+                .is_some_and(|versions| {
+                    versions.contains(&version)
+                        || (!versions.contains(&68) && versions.contains(&(version - 68 + 57)))
+                })
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DiscoveryCapsule {
@@ -2281,14 +2294,10 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
             "assistantPreferences lost across upgrade: {prefs}"
         );
 
-        let has_discovery_migration = |version| {
-            manifest.migrations.get(maka_event_log::root::ROOT_DATABASE)
-                .is_some_and(|versions| versions.contains(&version))
-        };
-        let staged = has_discovery_migration(70);
+        let staged = manifest.has_discovery_migration(70);
         verify_dossiers(
             &client, manifest.discovery.as_ref(), &manifest.nonce, &post_nonce,
-            staged, has_discovery_migration(71),
+            staged, manifest.has_discovery_migration(71),
         ).await;
         if staged {
             assert_eq!(fs::read_to_string(dirs.root.join("discovery/preferences.md")).unwrap(), COMPAT_RULE);
@@ -3046,7 +3055,7 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
             "SELECT count(*) FROM discovery_source_cursors WHERE source_uri='annex.md' AND delta_kind='modified' AND delta_at=1",
             [], |row| row.get(0),
         ).unwrap();
-        let captured_changes = manifest.migrations.get(maka_event_log::root::ROOT_DATABASE).is_some_and(|versions|versions.contains(&69));
+        let captured_changes = manifest.has_discovery_migration(69);
         assert_eq!(pending, i64::from(manifest.discovery.is_some() && captured_changes));
         let owner = if let Some(dossier) = &manifest.discovery {
             let (cycle, explored, owner): (u8, i64, String) = conn.query_row("SELECT p.broad_cycle,c.last_explored_at,d.owner FROM discovery_dossiers d
