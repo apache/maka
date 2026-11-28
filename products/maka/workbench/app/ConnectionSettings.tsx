@@ -17,22 +17,23 @@
  * under the License.
  */
 
-import { inputAction } from 'nsh';
+import { inputAction, Text } from 'nsh';
 import type { ExternalAgentSettingsOwner } from './externalAgentSettingsState';
 import { settingsModelKey, type ModelSettingsOwner } from './settings';
 import { ConnectionAdvanced, ConnectionForm } from './ConnectionForm';
 import { ExternalAgentConfirmation, ExternalAgentSection } from './ExternalAgentSettings';
+import { ProviderIcon } from './ProviderIcon';
 import { ProviderPicker } from './ProviderPicker';
 import { ConnectionModel } from './ConnectionModel';
 import { SettingsSkeleton } from './Loading';
 import { tr } from './locale';
+import { C, captionTextStyle } from './ui';
 import { UsageLimits } from './UsageLimits';
 import {
   SettingsBody,
   SettingsConfirm,
   SettingsDiscard,
   SettingsLede,
-  SettingsMonogram,
   SettingsProblem,
   SettingsRow,
   SettingsSearch,
@@ -150,7 +151,25 @@ function ConnectionList(props: {
                 status={
                   item().enabled && item().enabledModelCount === 0 ? tr('No models') : undefined
                 }
-                leading={<SettingsMonogram name={item().name} muted={!item().enabled} />}
+                leading={
+                  <ProviderIcon
+                    provider={item().provider}
+                    name={item().name}
+                    muted={!item().enabled}
+                  />
+                }
+                trailing={
+                  <If when={owner.defaultTarget()?.connectionId === item().basis.connectionId}>
+                    <Text
+                      style={[
+                        { ...captionTextStyle, color: item().enabled ? C.secondary : C.muted },
+                        { pointerEvents: 'none' },
+                      ]}
+                    >
+                      {tr('Default')}
+                    </Text>
+                  </If>
+                }
                 detail={
                   <If when={item().enabled && item().usageLimits}>
                     <UsageLimits

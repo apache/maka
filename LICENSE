@@ -491,3 +491,51 @@ SOFTWARE.
 Pierre Trees file icons and filename rules (@pierre/trees, Apache-2.0).
 The icon artwork from @pierre/vscode-icons is used under the MIT License.
 See scripts/rust/licenses/pierre-vscode-icons.txt.
+
+---
+
+Lobe Icons provider brand marks (MIT)
+
+products/maka/workbench/app/providerBrands.ts contains selected vector path
+geometry from @lobehub/icons-static-svg 1.91.0 (and openrouter-color.svg from
+1.92.0) in https://github.com/lobehub/lobe-icons at commits
+32f4083f7a20b67ecdc7b29c0af031ada5a29c52,
+e4302041fbb3039608d25f9f618bd462783b875e, and
+df132de5a0cef315b9a2f155b1949e39f4b89bb5:
+packages/static-svg/icons/{alibabacloud-color,antigravity-color,cerebras-color,
+claude-color,cloudflare-color,cohere-color,deepinfra-color,deepseek-color,
+fireworks,gemini-color,groq,huggingface-color,hunyuan-color,kimi,
+lmstudio,mistral-color,nvidia-color,ollama,openai,opencode,openrouter-color,
+siliconcloud,stepfun-color,tencentcloud-color,together-color,vercel,
+volcengine-color,xai,xiaomimimo,zai,zenmux}.svg.
+Adaptations for NSH <Canvas>: fireworks and openrouter-color render with
+monochrome currentColor to preserve light/dark contrast, and antigravity-color
+replaces SVG <feGaussianBlur> filters with clipped radial gradients on the
+upstream silhouette path.
+
+The brand names and logos remain trademarks of their respective owners and are
+used solely to identify those providers and external agent runtimes in-product.
+LobeHub's MIT license records LobeHub's distribution terms and does not grant
+trademark rights from the brand owners.
+
+MIT License
+
+Copyright (c) 2023 LobeHub
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

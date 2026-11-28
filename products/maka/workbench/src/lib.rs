@@ -2647,4 +2647,7 @@ mod desktop_residency_tests;
 mod preset_settings_tests;
 
 #[cfg(test)]
+mod provider_icons_tests;
+
+#[cfg(test)]
 mod spec_view_tests;

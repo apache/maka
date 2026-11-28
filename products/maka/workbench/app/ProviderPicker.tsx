@@ -36,6 +36,7 @@ import type { ModelSettingsOwner } from './settings';
 import { InlineCallout, RegionEmptyError } from './Feedback';
 import { Icon } from './Icon';
 import { tr, currentLocale } from './locale';
+import { ProviderIcon } from './ProviderIcon';
 import { providerLabel } from './settingsLabels';
 import {
   C,
@@ -358,6 +359,7 @@ function ProviderOption(props: {
       activeStyle={{ backgroundColor: C.pressed }}
       disabledStyle={opening() ? { opacity: 1 } : controlDisabledStyle}
     >
+      <ProviderIcon variant="inline" provider={props.provider.identity} fallbackIcon="globe" />
       <Text
         style={[
           {

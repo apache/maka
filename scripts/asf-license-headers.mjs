@@ -237,6 +237,7 @@ export const exclusionRules = [
       isOneOf(
         'products/maka/workbench/app/Icon.tsx',
         'products/maka/workbench/app/lucide.ts',
+        'products/maka/workbench/app/providerBrands.ts',
         'products/maka/workbench/scripts/lucide.py',
         'products/maka/workbench/tests/fonts/IBMPlexSans-Regular.ttf',
         // Codex Apache-2.0 adaptations; exact origins and modifications in SOURCE.md / LICENSE.
