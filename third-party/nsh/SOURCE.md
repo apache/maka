@@ -104,6 +104,13 @@ terminal surfaces. Desktop window operations take explicit `WindowRef` values.
   against the docked guide when UIKit sends no new keyboard notification.
   A docked keyboard remains visible to the platform even if the resized
   surface temporarily has zero overlap.
+- **iOS image decoding:** ImageIO selects a bounded single-frame raster size
+  and uses a 64 MiB decoded-frame budget. Animations that don't fit show their
+  first frame rather than accumulating all frames in memory. Once a native zoom
+  settles, inline images re-decode from their mounted bytes at the zoomed pixel
+  size, within the same bounds, without another download or app load event.
+  Natural-size decodes keep Canvas crop coordinates intact when the raster
+  fits the byte budget, even past the view-sized long-edge limit.
 
 ## Maintenance and verification
 

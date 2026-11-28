@@ -20,11 +20,14 @@
 import { fontScale, Image, Scroll, Text, View, token } from 'nsh';
 import { Button, MenuButton, type MenuButtonItem } from 'nsh/base';
 import { formatCount, tr } from '../../locale';
+import type { AgentAttachmentImageSource } from '../../state/attachmentPreview';
 import {
+  isPreviewableImage,
   type AttachmentComposer,
   type AttachmentInfo,
   type DraftAttachment,
   type PickerKind,
+  type ReadyAttachment,
 } from '../../state/attachments';
 import { spacing, type } from '../../theme/tokens';
 import { glassSurfaceStyle, Icon } from '../../ui';
@@ -37,7 +40,7 @@ export function attachmentStripReserve() {
   return Math.max(attachmentStripHeight, textHeight + 2 * spacing.hairline) + attachmentStripGap;
 }
 
-function sizeLabel(bytes: number) {
+export function sizeLabel(bytes: number) {
   const rounded = (unit: number) => formatCount(Math.round((bytes / unit) * 10) / 10);
   if (bytes >= 1024 ** 2) return tr('{size} MiB', { size: rounded(1024 ** 2) });
   if (bytes >= 1024) return tr('{size} KiB', { size: rounded(1024) });
@@ -121,13 +124,15 @@ function AttachmentGlyph(props: { mimeType: string; failed?: boolean }) {
 function AttachmentRow(props: {
   item: DraftAttachment;
   composer: AttachmentComposer;
+  onPreview: (item: DraftAttachment) => void;
   sheet?: boolean;
 }) {
   const item = () => props.item;
   const label = () => item().info.name;
   const size = () => sizeLabel(item().info.bytes);
   const detail = () => status(item());
-  const preview = () => (item().info.mimeType.startsWith('image/') ? item().local?.url : undefined);
+  const previewable = () => isPreviewableImage(item().info.mimeType);
+  const preview = () => (previewable() ? item().local?.url : undefined);
   const action = () => {
     const entry = item();
     return entry.kind === 'failed' && entry.action !== 'remove' ? entry.action : null;
@@ -140,6 +145,44 @@ function AttachmentRow(props: {
     borderRadius: 8,
     paddingHorizontal: 4,
   } as const;
+  const canPreview = () => previewable() && (item().local !== undefined || item().kind === 'ready');
+  const summaryStyle = {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  } as const;
+  const summary = () => (
+    <>
+      <If
+        when={preview()}
+        else={<AttachmentGlyph mimeType={item().info.mimeType} failed={item().kind === 'failed'} />}
+      >
+        {(url) => (
+          <Image
+            src={url()}
+            style={{ width: 36, height: 36, borderRadius: 6, objectFit: 'cover' }}
+          />
+        )}
+      </If>
+      <View style={{ flex: 1, minWidth: 0 }}>
+        <Text
+          style={{
+            ...type.footnote,
+            color: token('glass-foreground'),
+            numberOfLines: 1,
+            textOverflow: 'ellipsis',
+          }}
+        >
+          {label()}
+        </Text>
+        <Text style={{ ...type.caption, color: token('glass-foreground'), numberOfLines: 1 }}>
+          {size()} · {detail()}
+        </Text>
+      </View>
+    </>
+  );
   return (
     <View
       testID="chat-draft-attachment"
@@ -156,39 +199,31 @@ function AttachmentRow(props: {
       }}
     >
       <If
-        when={preview()}
-        else={<AttachmentGlyph mimeType={item().info.mimeType} failed={item().kind === 'failed'} />}
+        when={canPreview()}
+        else={
+          <View
+            role="text"
+            accessibilityLabel={tr('{name}, {size}, {status}', {
+              name: label(),
+              size: size(),
+              status: detail(),
+            })}
+            style={summaryStyle}
+          >
+            {summary()}
+          </View>
+        }
       >
-        {(url) => (
-          <Image
-            src={url()}
-            style={{ width: 36, height: 36, borderRadius: 6, objectFit: 'cover' }}
-          />
-        )}
-      </If>
-      <View
-        role="text"
-        accessibilityLabel={tr('{name}, {size}, {status}', {
-          name: label(),
-          size: size(),
-          status: detail(),
-        })}
-        style={{ flex: 1, minWidth: 0 }}
-      >
-        <Text
-          style={{
-            ...type.footnote,
-            color: token('glass-foreground'),
-            numberOfLines: 1,
-            textOverflow: 'ellipsis',
-          }}
+        <Button
+          accessibilityLabel={tr('Preview {name}', { name: label() })}
+          accessibilityHint={size() + ' · ' + detail()}
+          onPress={() => props.onPreview(item())}
+          activeStyle={{ backgroundColor: token('glass-pressed-bg') }}
+          style={{ ...summaryStyle, minHeight: 44, borderRadius: 8 }}
         >
-          {label()}
-        </Text>
-        <Text style={{ ...type.caption, color: token('glass-foreground'), numberOfLines: 1 }}>
-          {size()} · {detail()}
-        </Text>
-      </View>
+          {summary()}
+        </Button>
+      </If>
       <If when={action()}>
         {(action) => (
           <Button
@@ -225,10 +260,21 @@ function AttachmentRow(props: {
   );
 }
 
-export function AttachmentStrip(props: { composer: AttachmentComposer; sheet?: boolean }) {
+export function AttachmentStrip(props: {
+  composer: AttachmentComposer;
+  onPreview: (item: DraftAttachment) => void;
+  sheet?: boolean;
+}) {
   const rows = () => (
     <Each of={props.composer.items()} key={(item) => item.key}>
-      {(item) => <AttachmentRow item={item()} composer={props.composer} sheet={props.sheet} />}
+      {(item) => (
+        <AttachmentRow
+          item={item()}
+          composer={props.composer}
+          onPreview={props.onPreview}
+          sheet={props.sheet}
+        />
+      )}
     </Each>
   );
   return (
@@ -255,49 +301,109 @@ export function AttachmentStrip(props: { composer: AttachmentComposer; sheet?: b
   );
 }
 
-export function HistoryAttachments(props: { items: readonly AttachmentInfo[] }) {
+export type OnAttachmentPreview = (
+  info: AttachmentInfo,
+  source: AgentAttachmentImageSource,
+) => void;
+
+const chipStyle = {
+  flexDirection: 'row',
+  alignItems: 'center',
+  alignSelf: 'flex-start',
+  maxWidth: '100%',
+  gap: 6,
+  borderRadius: 8,
+  padding: 6,
+} as const;
+
+export function HistoryAttachments<T extends AttachmentInfo>(props: {
+  items: readonly T[];
+  source: (item: T, index: number) => AgentAttachmentImageSource | undefined;
+  onPreview: OnAttachmentPreview;
+}) {
   return (
     <If when={props.items.length}>
       <View style={{ gap: 4 }}>
         <Each of={props.items}>
-          {(item) => (
-            <View
-              testID="chat-history-attachment"
-              role="text"
-              accessibilityLabel={tr('{name}, {size}', {
-                name: item().name,
-                size: sizeLabel(item().bytes),
-              })}
-              style={{
-                flexDirection: 'row',
-                alignItems: 'center',
-                alignSelf: 'flex-start',
-                maxWidth: '100%',
-                gap: 6,
-                backgroundColor: token('inline-card'),
-                borderRadius: 8,
-                padding: 6,
-              }}
-            >
-              <AttachmentGlyph mimeType={item().mimeType} />
-              <Text
-                style={{
-                  ...type.footnote,
-                  color: token('glass-foreground'),
-                  flexShrink: 1,
-                  numberOfLines: 1,
-                  textOverflow: 'ellipsis',
-                }}
-              >
-                {item().name}
-              </Text>
-              <Text style={{ ...type.caption, color: token('glass-muted') }}>
-                {sizeLabel(item().bytes)}
-              </Text>
-            </View>
-          )}
+          {(item, index) => {
+            const source = () =>
+              isPreviewableImage(item().mimeType) ? props.source(item(), index()) : undefined;
+            return (
+              <If when={source()} else={<AttachmentChip item={item()} />}>
+                {(image) => (
+                  <AttachmentChip item={item()} onPress={() => props.onPreview(item(), image())} />
+                )}
+              </If>
+            );
+          }}
         </Each>
       </View>
+    </If>
+  );
+}
+
+export function UploadedAttachments(props: {
+  items: readonly ReadyAttachment[];
+  onPreview: OnAttachmentPreview;
+}) {
+  return (
+    <HistoryAttachments
+      items={props.items}
+      source={(item) => ({ kind: 'uploaded', id: item.id })}
+      onPreview={props.onPreview}
+    />
+  );
+}
+
+function AttachmentChip(props: { item: AttachmentInfo; onPress?: () => void }) {
+  const detail = () => sizeLabel(props.item.bytes);
+  const content = () => (
+    <>
+      <AttachmentGlyph mimeType={props.item.mimeType} />
+      <Text
+        style={{
+          ...type.footnote,
+          color: token(props.onPress ? 'glass-accent' : 'glass-foreground'),
+          flexShrink: 1,
+          numberOfLines: 1,
+          textOverflow: 'ellipsis',
+        }}
+      >
+        {props.item.name}
+      </Text>
+      <Text style={{ ...type.caption, color: token('glass-muted') }}>{detail()}</Text>
+    </>
+  );
+  return (
+    <If
+      when={props.onPress}
+      else={
+        <View
+          testID="chat-history-attachment"
+          role="text"
+          accessibilityLabel={tr('{name}, {size}', { name: props.item.name, size: detail() })}
+          style={{ ...chipStyle, backgroundColor: token('inline-card') }}
+        >
+          {content()}
+        </View>
+      }
+    >
+      <Button
+        testID="chat-history-attachment"
+        accessibilityLabel={tr('Preview {name}', { name: props.item.name })}
+        accessibilityHint={detail()}
+        onPress={() => props.onPress?.()}
+        activeStyle={{ backgroundColor: token('glass-action-pressed-bg') }}
+        style={{
+          ...chipStyle,
+          minHeight: 44,
+          minWidth: 44,
+          backgroundColor: token('glass-action-bg'),
+        }}
+      >
+        {content()}
+        <Icon name="chevronRight" size={13} color={token('glass-accent')} />
+      </Button>
     </If>
   );
 }

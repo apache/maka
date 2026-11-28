@@ -173,7 +173,7 @@ async fn room_picker_streams_photo_and_binary_to_the_real_host_in_order() {
             vec![PickedFile::new("photo.png", "image/png", ImageData::new(PHOTO))]
         });
         picker(&mut app, "Photo Library");
-        app.wait_for("label:/^photo.png, .*Uploaded$/").unwrap();
+        app.wait_for("id:chat-draft-attachment >> text:/Uploaded$/").unwrap();
 
         let binary: Vec<u8> = (0..65_537).map(|index| (index + 255) as u8).collect();
         app.answer_picks_myself();
@@ -210,6 +210,10 @@ async fn room_picker_streams_photo_and_binary_to_the_real_host_in_order() {
         app.press("label:Conversation: Media Room").unwrap();
         app.wait_for("id:chat-history-attachment").unwrap();
         assert_eq!(app.screen().count("id:chat-history-attachment").unwrap(), 2);
+        let mut images = preview_images(&mut app);
+        app.press("label:Preview photo.png").unwrap();
+        assert_preview_bytes(&mut app, &mut images, PHOTO).await;
+        app.press(CLOSE_PREVIEW).unwrap();
         drop(app);
         let (driver_engine, mut rpc) = driver(&channel);
         let history = rpc.call("ios.hostQuery", json!({
@@ -787,4 +791,553 @@ async fn attachments_are_root_scoped_even_when_session_ids_match() {
     fx.app.press("label:Conversation: Dock Chat").unwrap();
     fx.app.wait_for("label:/^root-a.bin, .*Uploaded$/").unwrap();
     assert!(!fx.app.shows("label:Remove root-b.bin"));
+}
+
+const PREVIEW_IMAGE: &str = "id:chat-image-preview";
+const CLOSE_PREVIEW: &str = "label:Close image preview";
+const PNG_BASE64: &str =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+const FIRST_CHUNK: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HA==";
+const LAST_CHUNK: &str = "DAIAAAALSURBVHjaY2T4DwABBQEBJxjjZgAAAABJRU5ErkJggg==";
+const SPLIT_OFFSET: u64 = 31;
+
+fn preview_images(app: &mut Headless) -> mpsc::UnboundedReceiver<(nsh_core::NodeId, Vec<u8>)> {
+    let (tx, rx) = mpsc::unbounded_channel();
+    app.observe(move |_, batch| {
+        for item in &batch.items {
+            if let nsh_core::MountItem::Image {
+                id,
+                source: Some(source),
+                ..
+            } = item
+                && let Some(bytes) = &source.data
+            {
+                tx.send((*id, bytes.to_vec())).unwrap();
+            }
+        }
+    });
+    rx
+}
+
+async fn assert_preview_bytes(
+    app: &mut Headless,
+    images: &mut mpsc::UnboundedReceiver<(nsh_core::NodeId, Vec<u8>)>,
+    expected: &[u8],
+) {
+    app.wait_for(PREVIEW_IMAGE).unwrap();
+    let preview = app.screen().id(PREVIEW_IMAGE).unwrap();
+    loop {
+        let (id, bytes) = fixture_recv(images).await;
+        if id == preview {
+            assert_eq!(bytes, expected);
+            break;
+        }
+    }
+}
+
+fn photo_response(input: &Value, data: &str) -> Value {
+    json!({"value":{
+        "kind":"ready", "source":input["source"], "offset":input["offset"], "mimeType":"image/png",
+        "totalBytes":PHOTO.len(), "digest":content_digest(PHOTO), "data":data
+    }})
+}
+
+fn photo_page(call: HostCall, input: &Value, data: &str) {
+    call.resolve(photo_response(input, data));
+}
+
+async fn image_read(fx: &mut ComposerDockFixture, source: Value, offset: u64) -> (Value, HostCall) {
+    let (data, call) = fixture_recv(&mut fx.calls).await;
+    assert_eq!(data["endpoint"], "agent");
+    assert_eq!(data["method"], "attachmentImage");
+    assert_eq!(data["rootId"], "root");
+    assert_eq!(
+        data["input"],
+        json!({"sessionId":"chat", "source":source, "offset":offset})
+    );
+    (data["input"].clone(), call)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn draft_previews_locally_before_and_after_upload_and_pending_uses_the_uploaded_id() {
+    let (send, mut uploads) = mpsc::unbounded_channel();
+    let mut fx = ComposerDockFixture::start_configured(
+        dock_run(),
+        dock_model(),
+        empty_queue(),
+        false,
+        false,
+        |config| native_fixture(config, send),
+    )
+    .await;
+    let mut images = preview_images(&mut fx.app);
+    fx.app.on_pick(|_| {
+        vec![PickedFile::new(
+            "draft.png",
+            "image/png",
+            ImageData::new(PHOTO),
+        )]
+    });
+    picker(&mut fx.app, "Photo Library");
+    let (_, _, _, upload) = fixture_recv(&mut uploads).await;
+    let trigger = "label:Preview draft.png";
+    fx.app.wait_for(trigger).unwrap();
+    fx.app.press(trigger).unwrap();
+    assert_preview_bytes(&mut fx.app, &mut images, PHOTO).await;
+    assert!(
+        fx.calls.try_recv().is_err(),
+        "draft preview made a Host query"
+    );
+    fx.app.press(CLOSE_PREVIEW).unwrap();
+
+    upload.send(json!({"kind":"uploaded","attachment":{
+        "id":"uploaded-image","sessionId":"chat","name":"draft.png","mimeType":"image/png","bytes":PHOTO.len()
+    }})).unwrap();
+    fx.app
+        .wait_for("id:chat-draft-attachment >> text:/Uploaded$/")
+        .unwrap();
+    fx.app.set_viewport(Size::new(px(844.), px(390.))).unwrap();
+    fx.app
+        .set_environment("landscape keyboard", |env| {
+            env.keyboard_height = px(220.);
+            env.safe_area.left = px(47.);
+        })
+        .unwrap();
+    assert!(!fx.app.screen().matches("id:chat-attachment-strip").unwrap());
+    fx.app.press("id:chat-composer-actions").unwrap();
+    fx.app.choose_menu_item("Attachments (1)").unwrap();
+    fx.app.wait_for(trigger).unwrap();
+    fx.app.press(trigger).unwrap();
+    assert_preview_bytes(&mut fx.app, &mut images, PHOTO).await;
+    assert!(
+        fx.calls.try_recv().is_err(),
+        "the compact sheet did not reuse the draft URL"
+    );
+    fx.app.press(CLOSE_PREVIEW).unwrap();
+
+    fx.app.set_viewport(Size::new(px(390.), px(844.))).unwrap();
+    fx.app
+        .set_environment("portrait", |env| {
+            env.keyboard_height = px(0.);
+            env.safe_area.left = px(0.);
+            env.safe_area.top = px(59.);
+        })
+        .unwrap();
+    fx.app.press(trigger).unwrap();
+    let close = fx
+        .app
+        .screen()
+        .layout(CLOSE_PREVIEW)
+        .unwrap()
+        .unwrap()
+        .bounds;
+    assert!(close.origin.y >= px(59.));
+    assert!(close.size.width >= px(44.) && close.size.height >= px(44.));
+    fx.app
+        .press("id:chat-image-preview-body >> label:Remove draft.png")
+        .unwrap();
+    assert!(!fx.app.screen().matches(CLOSE_PREVIEW).unwrap());
+    assert!(!fx.app.screen().matches(trigger).unwrap());
+
+    picker(&mut fx.app, "Photo Library");
+    let (_, _, _, upload) = fixture_recv(&mut uploads).await;
+    upload.send(json!({"kind":"uploaded","attachment":{
+        "id":"next-image","sessionId":"chat","name":"draft.png","mimeType":"image/png","bytes":PHOTO.len()
+    }})).unwrap();
+    fx.app
+        .wait_for("id:chat-draft-attachment >> text:/Uploaded$/")
+        .unwrap();
+    fx.app.press("label:Send message").unwrap();
+    let (send, receipt) = fx.call("send").await;
+    assert_eq!(send["attachments"], json!(["next-image"]));
+    receipt.resolve(queued_result("next", 1));
+    fx.app
+        .wait_for_gone("id:chat-draft-attachment", Duration::from_secs(2))
+        .unwrap();
+    fx.app.press(trigger).unwrap();
+    let (input, call) = image_read(&mut fx, json!({"kind":"uploaded","id":"next-image"}), 0).await;
+    photo_page(call, &input, PNG_BASE64);
+    assert_preview_bytes(&mut fx.app, &mut images, PHOTO).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn draft_previews_only_rasters_and_drops_a_picker_mime_the_host_corrects() {
+    const SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="10" height="10"/></svg>"#;
+    const TEXT: &[u8] = b"This is text, not a PNG.";
+    let (send, mut uploads) = mpsc::unbounded_channel();
+    let (events, mut urls) = mpsc::unbounded_channel();
+    let mut fx = ComposerDockFixture::start_configured(
+        dock_run(),
+        dock_model(),
+        empty_queue(),
+        false,
+        false,
+        |config| {
+            native_fixture(config, send);
+            observe_blob_urls(config, events);
+        },
+    )
+    .await;
+
+    fx.app.on_pick(|_| {
+        vec![PickedFile::new(
+            "vector.svg",
+            "image/svg+xml",
+            ImageData::new(SVG),
+        )]
+    });
+    picker(&mut fx.app, "Choose Files");
+    let (_, _, _, upload) = fixture_recv(&mut uploads).await;
+    let vector_url = fixture_recv(&mut urls).await["created"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    fx.app.wait_for("label:/^vector.svg, /").unwrap();
+    assert!(!fx.app.screen().matches("label:Preview vector.svg").unwrap());
+    upload.send(json!({"kind":"uploaded","attachment":{
+        "id":"uploaded-svg","sessionId":"chat","name":"vector.svg","mimeType":"image/svg+xml","bytes":SVG.len()
+    }})).unwrap();
+    fx.app.wait_for("label:/^vector.svg, .*Uploaded$/").unwrap();
+    assert_eq!(fixture_recv(&mut urls).await["revoked"], vector_url);
+    assert!(!fx.app.screen().matches("label:Preview vector.svg").unwrap());
+    fx.app.press("label:Remove vector.svg").unwrap();
+
+    fx.app.on_pick(|_| {
+        vec![PickedFile::new(
+            "fake.png",
+            "image/png",
+            ImageData::new(TEXT),
+        )]
+    });
+    picker(&mut fx.app, "Choose Files");
+    let (_, _, _, upload) = fixture_recv(&mut uploads).await;
+    let guessed_url = fixture_recv(&mut urls).await["created"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    fx.app.wait_for("label:Preview fake.png").unwrap();
+    fx.app.press("label:Preview fake.png").unwrap();
+    fx.app.wait_for(CLOSE_PREVIEW).unwrap();
+    upload.send(json!({"kind":"uploaded","attachment":{
+        "id":"uploaded-text","sessionId":"chat","name":"fake.png","mimeType":"text/plain","bytes":TEXT.len()
+    }})).unwrap();
+    fx.app
+        .wait_for_gone(CLOSE_PREVIEW, Duration::from_secs(2))
+        .unwrap();
+    fx.app.wait_for("label:/^fake.png, .*Uploaded$/").unwrap();
+    assert_eq!(fixture_recv(&mut urls).await["revoked"], guessed_url);
+    assert!(!fx.app.screen().matches("label:Preview fake.png").unwrap());
+    fx.app.press("label:Remove fake.png").unwrap();
+    assert!(
+        urls.try_recv().is_err(),
+        "removed draft still held a revoked URL"
+    );
+    assert!(
+        fx.calls.try_recv().is_err(),
+        "draft preview reached the Host image endpoint"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn history_preview_preserves_the_row_address_and_index_and_retries_changed_pages() {
+    let mut fx = ComposerDockFixture::start(Value::Null, dock_model(), empty_queue()).await;
+    let mut first = quote_history_row(2, "user", "First ");
+    first["attachments"] = json!([
+        {"kind":"file","name":"README.pdf","mimeType":"application/pdf","bytes":42},
+        {"kind":"image","name":"vector.svg","mimeType":"image/svg+xml","bytes":13},
+        {"kind":"image","name":"history.png","mimeType":"image/png","bytes":PHOTO.len()}
+    ]);
+    first["totalBytes"] = json!(10);
+    let mut continuation = first.clone();
+    continuation.as_object_mut().unwrap().remove("attachments");
+    continuation["offset"] = json!(6);
+    continuation["text"] = json!("part");
+    let source = json!({
+        "kind":"history","through":3,"position":first["position"],"attachmentIndex":2
+    });
+    fx.history.lock().unwrap().extend([
+        first,
+        continuation,
+        quote_history_row(3, "assistant", "Later"),
+    ]);
+    fx.transcript_changed(3, "transcript_changed");
+
+    fx.app.wait_for("text:First part").unwrap();
+    let mut images = preview_images(&mut fx.app);
+    for name in ["README.pdf", "vector.svg"] {
+        let file = format!("label:/^{name}, /");
+        fx.app.wait_for(&file).unwrap();
+        assert!(fx.app.press(&file).is_err());
+        assert!(
+            !fx.app
+                .screen()
+                .matches(&format!("label:Preview {name}"))
+                .unwrap()
+        );
+    }
+    assert!(!fx.app.screen().matches(CLOSE_PREVIEW).unwrap());
+    assert!(fx.calls.try_recv().is_err());
+
+    fx.app.press("label:Preview history.png").unwrap();
+    fx.app.wait_for("text:Loading image…").unwrap();
+    for wrong_source in [true, false] {
+        let (input, call) = image_read(&mut fx, source.clone(), 0).await;
+        photo_page(call, &input, FIRST_CHUNK);
+        let (input, call) = image_read(&mut fx, source.clone(), SPLIT_OFFSET).await;
+        let mut bad = photo_response(&input, LAST_CHUNK);
+        if wrong_source {
+            bad["value"]["source"]["attachmentIndex"] = json!(1);
+        } else {
+            bad["value"]["digest"] = json!(content_digest(b"wrong second page"));
+        }
+        call.resolve(bad);
+        fx.app.wait_for("text:Could not load image").unwrap();
+        assert!(!fx.app.screen().matches(PREVIEW_IMAGE).unwrap());
+        fx.app.press("label:Retry").unwrap();
+    }
+
+    for (field, value) in [
+        ("data", json!("")),
+        ("totalBytes", json!(33 * 1024 * 1024)),
+        ("mimeType", json!("image/svg+xml")),
+        ("digest", json!(content_digest(b"wrong final digest"))),
+    ] {
+        let (input, call) = image_read(&mut fx, source.clone(), 0).await;
+        let mut bad = photo_response(&input, PNG_BASE64);
+        bad["value"][field] = value;
+        call.resolve(bad);
+        fx.app.wait_for("text:Could not load image").unwrap();
+        assert!(!fx.app.screen().matches(PREVIEW_IMAGE).unwrap());
+        assert!(
+            fx.calls.try_recv().is_err(),
+            "invalid image began another read"
+        );
+        fx.app.press("label:Retry").unwrap();
+    }
+
+    let (input, call) = image_read(&mut fx, source.clone(), 0).await;
+    photo_page(call, &input, FIRST_CHUNK);
+    let (input, call) = image_read(&mut fx, source, SPLIT_OFFSET).await;
+    photo_page(call, &input, LAST_CHUNK);
+    assert_preview_bytes(&mut fx.app, &mut images, PHOTO).await;
+    fx.app.press(CLOSE_PREVIEW).unwrap();
+    fx.app.press("label:Preview history.png").unwrap();
+    assert_preview_bytes(&mut fx.app, &mut images, PHOTO).await;
+    assert!(
+        fx.calls.try_recv().is_err(),
+        "a cache hit queried attachmentImage"
+    );
+}
+
+fn room_photo(name: &str) -> Value {
+    json!({"kind":"image","name":name,"mimeType":"image/png","bytes":PHOTO.len(),
+        "storageRef":{"kind":"session_file","sessionId":"chat","relativePath":name}})
+}
+
+fn room_image_source(message_id: &str, index: u64) -> Value {
+    json!({"kind":"room","messageId":message_id,"attachmentIndex":index})
+}
+
+fn observe_preview_runtime(
+    config: &mut EngineConfig,
+    events: mpsc::UnboundedSender<Value>,
+    script: &str,
+) {
+    use nsh_engine::{App, BundleCode};
+    config.host.handle("test.preview", move |mut call| {
+        events.send(call.take_data()).unwrap();
+    });
+    let App::Js(bundle) = &mut config.app else {
+        unreachable!()
+    };
+    let BundleCode::Source(source) = &mut bundle.code else {
+        unreachable!()
+    };
+    bundle.policy.harden = false;
+    bundle
+        .policy
+        .declared
+        .as_mut()
+        .unwrap()
+        .host
+        .push("test.preview".into());
+    source.insert_str(
+        0,
+        &format!("import {{ host as previewTestHost }} from 'nsh';\n{{{script}}}\n"),
+    );
+}
+
+fn observe_blob_urls(config: &mut EngineConfig, tx: mpsc::UnboundedSender<Value>) {
+    observe_preview_runtime(
+        config,
+        tx,
+        r#"
+            const create = URL.createObjectURL.bind(URL);
+            const revoke = URL.revokeObjectURL.bind(URL);
+            URL.createObjectURL = blob => {
+                const url = create(blob);
+                previewTestHost.post('test.preview', { created: url });
+                return url;
+            };
+            URL.revokeObjectURL = url => {
+                revoke(url);
+                previewTestHost.post('test.preview', { revoked: url });
+            };
+        "#,
+    )
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn preview_rejects_a_stream_of_tiny_pages_without_chasing_the_full_image() {
+    let mut fx = ComposerDockFixture::start_room().await;
+    let mut post = room_post(1, "tiny", "Too many pages");
+    post["content"]["attachments"] = json!([room_photo("tiny.png")]);
+    fx.history.lock().unwrap().push(post);
+    fx.deliver(json!({"kind":"room","through":1,"revision":1}));
+
+    let chip = "label:Preview tiny.png";
+    fx.app.wait_for(chip).unwrap();
+    fx.app.press(chip).unwrap();
+    for offset in 0..65 {
+        let (input, call) = image_read(&mut fx, room_image_source("tiny", 0), offset).await;
+        photo_page(call, &input, "AA==");
+    }
+    fx.app.wait_for("text:Could not load image").unwrap();
+    assert!(
+        fx.calls.try_recv().is_err(),
+        "asked for another page after the limit"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn closing_a_room_preview_releases_its_buffer_and_discards_the_late_page() {
+    let (tx, mut detached) = mpsc::unbounded_channel();
+    let mut fx = ComposerDockFixture::start_configured(
+        Value::Null,
+        Value::Null,
+        empty_queue(),
+        false,
+        true,
+        |config| {
+            observe_preview_runtime(
+                config,
+                tx,
+                r#"
+            const transfer = ArrayBuffer.prototype.transfer;
+            ArrayBuffer.prototype.transfer = function (length) {
+                const before = this.byteLength;
+                const next = transfer.call(this, length);
+                previewTestHost.post('test.preview', { before, after: this.byteLength });
+                return next;
+            };
+        "#,
+            )
+        },
+    )
+    .await;
+    let mut post = room_post(1, "room-post", "Two images");
+    post["content"]["attachments"] = json!([room_photo("old.png"), room_photo("new.png")]);
+    fx.history.lock().unwrap().push(post);
+    fx.deliver(json!({"kind":"room","through":1,"revision":1}));
+
+    fx.app.wait_for("label:Preview old.png").unwrap();
+    fx.app.press("label:Preview old.png").unwrap();
+    let (input, first) = image_read(&mut fx, room_image_source("room-post", 0), 0).await;
+    let mut page = photo_response(&input, FIRST_CHUNK);
+    page["value"]["totalBytes"] = json!(32 * 1024 * 1024);
+    first.resolve(page);
+    let (old, pending) = image_read(&mut fx, room_image_source("room-post", 0), SPLIT_OFFSET).await;
+
+    fx.app.press(CLOSE_PREVIEW).unwrap();
+    assert_eq!(
+        fixture_recv(&mut detached).await,
+        json!({"before": 32 * 1024 * 1024, "after": 0})
+    );
+    assert!(!fx.app.screen().matches(CLOSE_PREVIEW).unwrap());
+    fx.app.press("label:Preview new.png").unwrap();
+    let (input, call) = image_read(&mut fx, room_image_source("room-post", 1), 0).await;
+    call.reject("host temporarily offline");
+    fx.app.wait_for("text:Could not load image").unwrap();
+    fx.app.press("label:Retry").unwrap();
+    let (retry, call) = image_read(&mut fx, room_image_source("room-post", 1), 0).await;
+    assert_eq!(retry, input);
+    let mut images = preview_images(&mut fx.app);
+    photo_page(call, &retry, PNG_BASE64);
+    assert_preview_bytes(&mut fx.app, &mut images, PHOTO).await;
+    let opened = fx.app.screen().id(PREVIEW_IMAGE).unwrap();
+
+    photo_page(pending, &old, FIRST_CHUNK);
+    assert!(fx.app.settle());
+    assert_eq!(fx.app.screen().id(PREVIEW_IMAGE).unwrap(), opened);
+    assert!(
+        fx.calls.try_recv().is_err(),
+        "the closed reader continued to the next page"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn preview_cache_revokes_its_least_recently_used_url_and_clears_on_reconnect() {
+    let (tx, mut urls) = mpsc::unbounded_channel();
+    let mut fx = ComposerDockFixture::start_configured(
+        Value::Null,
+        Value::Null,
+        empty_queue(),
+        false,
+        true,
+        |config| observe_blob_urls(config, tx),
+    )
+    .await;
+    let mut first_urls = Vec::new();
+    let show = |fx: &mut ComposerDockFixture, id: usize, seq| {
+        let message_id = format!("image-{id}");
+        let name = format!("{message_id}.png");
+        let mut post = room_post(seq, &message_id, "Room image");
+        post["content"]["attachments"] = json!([room_photo(&name)]);
+        *fx.history.lock().unwrap() = vec![post];
+        fx.deliver(json!({"kind":"room","through":seq,"revision":seq}));
+        let trigger = format!("label:Preview {name}");
+        fx.app.wait_for(&trigger).unwrap();
+        fx.app.press(&trigger).unwrap();
+        room_image_source(&message_id, 0)
+    };
+
+    for id in 0..24 {
+        let source = show(&mut fx, id, id as u64 + 1);
+        let (input, call) = image_read(&mut fx, source, 0).await;
+        photo_page(call, &input, PNG_BASE64);
+        fx.app.wait_for(PREVIEW_IMAGE).unwrap();
+        let event = fixture_recv(&mut urls).await;
+        first_urls.push(event["created"].as_str().unwrap().to_owned());
+        fx.app.press(CLOSE_PREVIEW).unwrap();
+    }
+    show(&mut fx, 0, 25);
+    fx.app.wait_for(PREVIEW_IMAGE).unwrap();
+    assert!(fx.calls.try_recv().is_err());
+    fx.app.press(CLOSE_PREVIEW).unwrap();
+
+    let source = show(&mut fx, 24, 26);
+    let (input, call) = image_read(&mut fx, source, 0).await;
+    photo_page(call, &input, PNG_BASE64);
+    fx.app.wait_for(PREVIEW_IMAGE).unwrap();
+    let added = fixture_recv(&mut urls).await;
+    assert_eq!(fixture_recv(&mut urls).await["revoked"], first_urls[1]);
+    assert!(urls.try_recv().is_err());
+
+    fx.app
+        .send_host_event("ios.hostState", dock_host(2))
+        .unwrap();
+    fx.app.wait_for("text:Could not load image").unwrap();
+    first_urls.remove(1);
+    first_urls.push(added["created"].as_str().unwrap().to_owned());
+    // The currently displayed image and every remaining cached image lose their URL.
+    let mut revoked = std::collections::BTreeSet::new();
+    for _ in 0..first_urls.len() {
+        revoked.insert(
+            fixture_recv(&mut urls).await["revoked"]
+                .as_str()
+                .unwrap()
+                .to_owned(),
+        );
+    }
+    assert_eq!(revoked, first_urls.into_iter().collect());
 }

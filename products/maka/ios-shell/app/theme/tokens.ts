@@ -19,7 +19,18 @@
 
 import { setTheme } from 'nsh';
 
+const imageViewer = {
+  'image-viewer-bg': '#000000',
+  'image-viewer-glass': 'rgba(36, 36, 38, 0.78)',
+  'image-viewer-border': 'rgba(255, 255, 255, 0.12)',
+  'image-viewer-pressed': 'rgba(99, 99, 102, 0.78)',
+  'image-viewer-foreground': '#FAFAFC',
+  'image-viewer-muted': '#C8C8D0',
+  'image-viewer-destructive': '#E99A9B',
+};
+
 const light = {
+  ...imageViewer,
   background: '#F2F2F7',
   'grouped-bg': '#F2F2F7',
   canvas: '#FFFFFF',
@@ -86,6 +97,7 @@ export function installTheme() {
     cssVars: {
       light,
       dark: {
+        ...imageViewer,
         background: '#000000',
         'grouped-bg': '#000000',
         canvas: '#000000',

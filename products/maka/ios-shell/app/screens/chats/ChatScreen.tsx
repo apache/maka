@@ -54,6 +54,7 @@ import {
   type AgentObservation,
   type AgentRoomMessage,
   type AgentSession,
+  type HistoryRowAddress,
 } from '../../bridge';
 import { approvalFeedback } from '../../ui/ApprovalCard';
 import { ConnectionProgress } from '../../ui/ConnectionProgress';
@@ -114,12 +115,16 @@ import {
   StatusDot,
 } from '../../ui';
 
-import { createAttachmentComposer } from '../../state/attachments';
+import { createAttachmentPreview } from '../../state/attachmentPreview';
+import { createAttachmentComposer, type DraftAttachment } from '../../state/attachments';
+import { AttachmentPreviewModal } from './AttachmentPreviewModal';
 import {
   AttachmentMenu,
   AttachmentMenuGlyph,
   AttachmentStrip,
   HistoryAttachments,
+  type OnAttachmentPreview,
+  UploadedAttachments,
   attachmentPickerItems,
   attachmentStripReserve,
 } from './AttachmentStrip';
@@ -149,7 +154,10 @@ interface DisplayTurn {
   folded?: AgentHistoryChunk;
   groups: AgentHistoryChunk[];
   quotes?: AgentHistoryChunk['quotes'];
-  attachments?: AgentHistoryChunk['attachments'];
+  attachments?: {
+    items: NonNullable<AgentHistoryChunk['attachments']>;
+    position: HistoryRowAddress;
+  };
 }
 
 interface RoomTranscriptRow {
@@ -206,7 +214,9 @@ function groupHistoryTurns(chunks: readonly AgentHistoryChunk[]): DisplayTurn[] 
           groups: [],
           bodies: row.text ? [row] : [],
           quotes: ch.quotes,
-          attachments: ch.attachments,
+          attachments: ch.attachments?.length
+            ? { items: ch.attachments, position: ch.position }
+            : undefined,
         });
       }
       continue;
@@ -422,10 +432,7 @@ function CollapsibleActivity(props: {
   );
 }
 
-function UserBubble(props: {
-  children?: JSX.Element;
-  attachments?: readonly { name: string; mimeType: string; bytes: number }[];
-}) {
+function UserBubble(props: { children?: JSX.Element }) {
   return (
     <View style={{ alignItems: 'flex-end' }}>
       <View
@@ -440,13 +447,12 @@ function UserBubble(props: {
         }}
       >
         {props.children}
-        <HistoryAttachments items={props.attachments ?? []} />
       </View>
     </View>
   );
 }
 
-function RoomTranscriptItem(props: { message: AgentRoomMessage }) {
+function RoomTranscriptItem(props: { message: AgentRoomMessage; onPreview: OnAttachmentPreview }) {
   const isHuman = () => props.message.author.kind === 'human';
   return (
     <View
@@ -496,7 +502,15 @@ function RoomTranscriptItem(props: { message: AgentRoomMessage }) {
           </If>
         </If>
         <If when={props.message.deletedAt == null}>
-          <HistoryAttachments items={props.message.content.attachments} />
+          <HistoryAttachments
+            items={props.message.content.attachments}
+            source={(_, attachmentIndex) => ({
+              kind: 'room',
+              messageId: props.message.id,
+              attachmentIndex,
+            })}
+            onPreview={props.onPreview}
+          />
         </If>
       </View>
     </View>
@@ -721,6 +735,36 @@ export function ChatScreen(
   const attachments = sideDraft
     ? undefined
     : createAttachmentComposer(rootId, sessionId, props.active, generation);
+  const preview = createAttachmentPreview(rootId, sessionId, props.active, generation);
+  const openPreview = (request: Parameters<typeof preview.open>[0]) => {
+    inputRef?.blur();
+    composerSheet.set(null);
+    void preview.open(request);
+  };
+  const openRemotePreview: OnAttachmentPreview = (info, source) =>
+    openPreview({ info, location: { kind: 'remote', source } });
+  const openDraftPreview = (item: DraftAttachment) => {
+    const location = item.local
+      ? { kind: 'local' as const, url: item.local.url }
+      : item.kind === 'ready'
+        ? { kind: 'remote' as const, source: { kind: 'uploaded' as const, id: item.info.id } }
+        : undefined;
+    if (location) openPreview({ info: item.info, draftKey: item.key, location });
+  };
+  effect(() => {
+    const image = preview.state()?.request;
+    if (image?.draftKey === undefined) return;
+    const item = attachments?.items().find(({ key }) => key === image.draftKey);
+    if (!item || (image.location.kind === 'local' && item.local?.url !== image.location.url)) {
+      preview.close();
+    }
+  });
+  const removePreviewedDraft = () => {
+    const key = preview.state()?.request.draftKey;
+    if (key === undefined) return;
+    preview.close();
+    attachments?.remove(key);
+  };
   const attachmentCount = () => attachments?.items().length ?? 0;
   const attachmentFailed = () =>
     attachments?.items().some((item) => item.kind === 'failed') ?? false;
@@ -1201,13 +1245,32 @@ export function ChatScreen(
         </View>
       }
     >
-      <UserBubble attachments={props.turn.attachments}>
+      <UserBubble>
         <HistoryQuotes quotes={props.turn.quotes ?? []} />
         <Each of={props.turn.bodies} key={(row) => row.key}>
           {(row) => (
             <MessageBody row={row()} limitReached={quoteLimitReached()} onQuote={quoteMessage} />
           )}
         </Each>
+        <If when={props.turn.attachments}>
+          {(attachmentRow) => (
+            <HistoryAttachments
+              items={attachmentRow().items}
+              source={(_, attachmentIndex) => {
+                const fence = ctrl.historyFence();
+                if (fence) {
+                  return {
+                    kind: 'history',
+                    through: fence.through ?? 0,
+                    position: attachmentRow().position,
+                    attachmentIndex,
+                  };
+                }
+              }}
+              onPreview={openRemotePreview}
+            />
+          )}
+        </If>
       </UserBubble>
     </If>
   );
@@ -1464,6 +1527,7 @@ export function ChatScreen(
         onExpandedChange={queueExpanded.set}
         running={isRunning()}
         generation={generation()}
+        onPreview={openRemotePreview}
         focusComposer={() => {
           composerSheet.set(null);
           inputRef?.focus();
@@ -1620,7 +1684,7 @@ export function ChatScreen(
             <View style={{ gap: 16 }}>
               <Each of={ctrl.optimisticSends()} key={(send) => send.id}>
                 {(send) => (
-                  <UserBubble attachments={send().draft.attachments}>
+                  <UserBubble>
                     <HistoryQuotes
                       quotes={send().draft.quotes.map(({ reference }) => ({
                         ...reference,
@@ -1639,6 +1703,10 @@ export function ChatScreen(
                         </Text>
                       )}
                     </Each>
+                    <UploadedAttachments
+                      items={send().draft.attachments}
+                      onPreview={openRemotePreview}
+                    />
                   </UserBubble>
                 )}
               </Each>
@@ -1702,7 +1770,10 @@ export function ChatScreen(
                   when={row().kind === 'room'}
                   else={<AgentTranscriptItem turn={row() as DisplayTurn} />}
                 >
-                  <RoomTranscriptItem message={(row() as RoomTranscriptRow).message} />
+                  <RoomTranscriptItem
+                    message={(row() as RoomTranscriptRow).message}
+                    onPreview={openRemotePreview}
+                  />
                 </If>
               )}
             </Each>
@@ -1792,7 +1863,7 @@ export function ChatScreen(
           <If when={inlineDock() && hasPendingDock()}>{pendingDock(false)}</If>
           <If when={!compact() && hasReferences()}>{quoteStrip()}</If>
           <If when={attachments && !compact() && attachmentCount()}>
-            <AttachmentStrip composer={attachments!} />
+            <AttachmentStrip composer={attachments!} onPreview={openDraftPreview} />
           </If>
           <View
             style={{
@@ -2114,7 +2185,7 @@ export function ChatScreen(
             scrollId="chat-attachments-sheet-scroll"
             onClose={() => composerSheet.set(null)}
           >
-            <AttachmentStrip composer={attachments!} sheet />
+            <AttachmentStrip composer={attachments!} onPreview={openDraftPreview} sheet />
           </ComposerSheet>
         </If>
 
@@ -2127,6 +2198,14 @@ export function ChatScreen(
           >
             {pendingDock(true)}
           </ComposerSheet>
+        </If>
+        <If when={preview.state() !== null}>
+          <AttachmentPreviewModal
+            preview={preview}
+            onRemove={
+              preview.state()?.request.draftKey === undefined ? undefined : removePreviewedDraft
+            }
+          />
         </If>
       </View>
     );

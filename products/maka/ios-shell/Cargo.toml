@@ -35,7 +35,7 @@ maka-operation-id.workspace = true
 maka-remote-client.workspace = true
 nsh-base.workspace = true
 nsh-core.workspace = true
-nsh-engine = { workspace = true, features = ["js-core"] }
+nsh-engine = { workspace = true, features = ["crypto"] }
 serde = { workspace = true, features = ["rc"] }
 serde_json.workspace = true
 sha2.workspace = true

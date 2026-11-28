@@ -23,3 +23,9 @@ The draft strip briefly fades items in and out without translating the composer.
 Reduce Motion skips the fade. Upload status changes in place; no spinner or
 progress bar guesses at completion. The picker, menu and compact management
 sheet use system presentation and dismissal.
+
+Image attachment buttons change fill on press. The fullscreen viewer fades in
+and out with native modal presentation (immediate under Reduce Motion), and
+loading, error and image share the same viewport. The image follows the native
+scroll view's pinch and pan, without competing with a swipe-to-dismiss gesture;
+Close and the system accessibility escape dismiss the viewer.

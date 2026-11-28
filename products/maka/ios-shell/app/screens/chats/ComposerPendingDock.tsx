@@ -42,6 +42,7 @@ import { showToast } from '../../state/hostPool';
 import { hapticSelection } from '../../state/preferences';
 import { motion, spacing, type } from '../../theme/tokens';
 import { Icon } from '../../ui';
+import { type OnAttachmentPreview, UploadedAttachments } from './AttachmentStrip';
 
 type Controller = ReturnType<typeof createConversationController>;
 type QueuedMessage = NonNullable<Awaited<ReturnType<Controller['readQueuedMessage']>>>;
@@ -51,6 +52,7 @@ export type QueueEdit = {
   text: string;
   latest?: QueuedMessage;
 };
+
 export const pendingDockLimits = { delivery: 152, queue: 220 } as const;
 
 const actions = { flexDirection: 'row', flexWrap: 'wrap', gap: 4 } as const;
@@ -195,6 +197,7 @@ export function ComposerPendingDock(props: {
   onExpandedChange: (expanded: boolean) => void;
   running: boolean;
   generation?: number;
+  onPreview: OnAttachmentPreview;
   focusComposer: () => void;
 }) {
   const ctrl = props.ctrl;
@@ -295,66 +298,72 @@ export function ComposerPendingDock(props: {
                   return 'detail' in item ? item : null;
                 };
                 return (
-                  <If
-                    when={failure()}
-                    else={
-                      <SteeringPill
-                        text={sendPreview(send().draft)}
-                        sending={send().state === 'sending'}
-                        queued={send().delivery === 'queue'}
-                      />
-                    }
-                  >
-                    {(failed) => (
-                      <View
-                        style={{
-                          ...dockSurface(),
-                          paddingHorizontal: 12,
-                          paddingTop: 8,
-                          paddingBottom: 3,
-                          gap: 2,
-                        }}
-                      >
-                        <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 7 }}>
-                          <Icon
-                            name="warning"
-                            size={16}
-                            color={token(
-                              send().state === 'unknown' ? 'glass-muted' : 'glass-destructive',
-                            )}
-                          />
-                          <View style={{ flex: 1, gap: 2 }}>
-                            <Text style={{ ...preview, color: token('glass-foreground') }}>
-                              {sendPreview(send().draft)}
-                            </Text>
-                            <Text style={{ ...type.footnote, color: token('glass-muted') }}>
-                              {failed().detail}
-                            </Text>
+                  <View style={{ gap: 4 }}>
+                    <If
+                      when={failure()}
+                      else={
+                        <SteeringPill
+                          text={sendPreview(send().draft)}
+                          sending={send().state === 'sending'}
+                          queued={send().delivery === 'queue'}
+                        />
+                      }
+                    >
+                      {(failed) => (
+                        <View
+                          style={{
+                            ...dockSurface(),
+                            paddingHorizontal: 12,
+                            paddingTop: 8,
+                            paddingBottom: 3,
+                            gap: 2,
+                          }}
+                        >
+                          <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 7 }}>
+                            <Icon
+                              name="warning"
+                              size={16}
+                              color={token(
+                                send().state === 'unknown' ? 'glass-muted' : 'glass-destructive',
+                              )}
+                            />
+                            <View style={{ flex: 1, gap: 2 }}>
+                              <Text style={{ ...preview, color: token('glass-foreground') }}>
+                                {sendPreview(send().draft)}
+                              </Text>
+                              <Text style={{ ...type.footnote, color: token('glass-muted') }}>
+                                {failed().detail}
+                              </Text>
+                            </View>
+                          </View>
+                          <View style={actions}>
+                            <DockAction
+                              label={tr('Edit')}
+                              disabled={ctrl.sending()}
+                              onPress={() => {
+                                if (ctrl.editPendingSend(send().id)) props.focusComposer();
+                              }}
+                            />
+                            <If when={send().state === 'failed'}>
+                              <DockAction
+                                label={tr('Retry')}
+                                disabled={ctrl.sending() || props.generation === undefined}
+                                onPress={() => void ctrl.retryPendingSend(send().id)}
+                              />
+                            </If>
+                            <DockAction
+                              label={tr('Dismiss')}
+                              onPress={() => ctrl.dismissPendingSend(send().id)}
+                            />
                           </View>
                         </View>
-                        <View style={actions}>
-                          <DockAction
-                            label={tr('Edit')}
-                            disabled={ctrl.sending()}
-                            onPress={() => {
-                              if (ctrl.editPendingSend(send().id)) props.focusComposer();
-                            }}
-                          />
-                          <If when={send().state === 'failed'}>
-                            <DockAction
-                              label={tr('Retry')}
-                              disabled={ctrl.sending() || props.generation === undefined}
-                              onPress={() => void ctrl.retryPendingSend(send().id)}
-                            />
-                          </If>
-                          <DockAction
-                            label={tr('Dismiss')}
-                            onPress={() => ctrl.dismissPendingSend(send().id)}
-                          />
-                        </View>
-                      </View>
-                    )}
-                  </If>
+                      )}
+                    </If>
+                    <UploadedAttachments
+                      items={send().draft.attachments}
+                      onPreview={props.onPreview}
+                    />
+                  </View>
                 );
               }}
             </Each>

@@ -554,13 +554,12 @@ define_class!(
         #[unsafe(method(scrollViewDidEndZooming:withView:atScale:))]
         fn scroll_view_did_end_zooming(
             &self,
-            _scroll: &UIScrollView,
-            view: Option<&UIView>,
+            scroll: &UIScrollView,
+            _view: Option<&UIView>,
             scale: objc2_core_foundation::CGFloat,
         ) {
-            if let Some(view) = view {
-                crate::zoom::sharpen(view, scale);
-            }
+            let id = scroll.tag() as NodeId;
+            self.with_mounter(move |m| m.zoom_ended(id, scale));
         }
 
         #[unsafe(method(scrollViewDidEndDecelerating:))]

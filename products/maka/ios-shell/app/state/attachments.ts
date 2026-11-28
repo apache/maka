@@ -39,6 +39,17 @@ import { showToast } from './hostPool';
 
 export const attachmentLimit = 4;
 const maxBytes = 16 * 1024 * 1024;
+// Raster formats shared by the iOS decoder and agent.attachmentImage.
+const previewImageMimeTypes = new Set([
+  'image/png',
+  'image/jpeg',
+  'image/gif',
+  'image/webp',
+  'image/avif',
+]);
+
+export const isPreviewableImage = (mimeType: string) => previewImageMimeTypes.has(mimeType);
+
 export type AttachmentInfo = Pick<AgentAttachment, 'name' | 'mimeType' | 'bytes'>;
 export type ReadyAttachment = AttachmentInfo & { id: string };
 export type PickerKind = 'photos' | 'files';
@@ -193,7 +204,7 @@ async function upload(
     if (result.kind === 'uploaded') {
       const { sessionId: target, ...record } = result.attachment;
       if (target === sessionId) {
-        const keep = record.mimeType.startsWith('image/') ? preview : undefined;
+        const keep = isPreviewableImage(record.mimeType) ? preview : undefined;
         if (!keep && preview) URL.revokeObjectURL(preview.url);
         return { key, info: record, local: keep, kind: 'ready' };
       }
