@@ -70,6 +70,10 @@ export default localizePackage({
           kind: 'settings',
           title: localizedTitle('Network'),
         },
+        'system-permissions': {
+          kind: 'settings',
+          title: localizedTitle('System permissions'),
+        },
         'remote-access': {
           kind: 'settings',
           title: localizedTitle('Remote Access'),

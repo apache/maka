@@ -87,6 +87,28 @@ pub fn required(command: &Command) -> &'static [SystemPermissionGrant] {
     }
 }
 
+/// Effective state in the serving Host compared with a fresh process of the same identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PermissionState {
+    Missing,
+    Effective,
+    PendingHost,
+}
+
+pub fn states(
+    required: &[SystemPermissionGrant],
+) -> Result<Vec<(SystemPermissionGrant, PermissionState)>, String> {
+    #[cfg(all(feature = "native-desktop", target_os = "macos"))]
+    {
+        process::states(required)
+    }
+    #[cfg(not(all(feature = "native-desktop", target_os = "macos")))]
+    {
+        let _ = required;
+        Ok(Vec::new())
+    }
+}
+
 /// Whether this Host can observe and request macOS privacy grants.
 pub const fn supported() -> bool {
     cfg!(all(feature = "native-desktop", target_os = "macos"))

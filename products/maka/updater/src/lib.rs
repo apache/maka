@@ -40,6 +40,10 @@ pub use nsh_updater::install::Staged as StagedUpdate;
 
 /// Application identifier shared across desktop bundles and `latest.json`.
 pub const APP_ID: &str = "org.apache.maka.desktop";
+/// A clean desktop-shell exit asking its supervising launcher to open another window process.
+pub const RELAUNCH_DESKTOP: u8 = 75;
+/// Advertised only by launchers that understand the desktop relaunch exit code.
+pub const RELAUNCH_SUPPORTED_ENV: &str = "MAKA_DESKTOP_RELAUNCH_SUPPORTED";
 /// Default GitHub repository hosting releases and nightly prereleases.
 pub const DEFAULT_REPO: &str = "apache/maka";
 /// Environment variable carrying a custom State Root across an update restart.

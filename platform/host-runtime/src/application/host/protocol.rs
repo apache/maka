@@ -176,6 +176,9 @@ pub enum Request {
     RevokeAccess {
         credential: String,
     },
+    RequestComputerPermission {
+        grant: maka_agent_facts::interaction::SystemPermissionGrant,
+    },
     RemoteAccessStatus {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         invite_id: Option<String>,
@@ -221,6 +224,7 @@ pub enum Response {
     PeerAccessRevoked,
     Pairing(Result<super::Pairing>),
     Revoked(Result<bool>),
+    ComputerPermissionRequested(Result<()>),
     RemoteAccessStatus(Result<super::remote_access::RemoteAccessStatus>),
     RemoteAccessUpdated(Result<super::remote_access::RemoteAccessConfig>),
     PeerPairingInvite(Result<super::PeerPairingInvite>),

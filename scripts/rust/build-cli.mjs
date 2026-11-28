@@ -155,6 +155,8 @@ export async function compileCli({
       repositoryRoot,
       join(directory, 'maka-desktop-shell'),
       join(directory, 'Maka.app'),
+      [],
+      { development: !isRelease },
     );
   }
   return {
@@ -220,8 +222,13 @@ export async function stageDesktopBundle(
   shell,
   destination,
   resources = [],
-  { executables = [], version: versionOverride } = {},
+  { executables = [], version: versionOverride, development = false } = {},
 ) {
+  // TCC keys the grant by bundle ID and verifies its stored code requirement.
+  // An ad-hoc dev build cannot satisfy the installed release's requirement.
+  const app = development
+    ? { ...desktopApp, id: 'org.apache.maka.desktop.dev', name: 'Maka Preview' }
+    : desktopApp;
   const version =
     versionOverride ?? workspaceVersion(await readFile(join(repositoryRoot, 'Cargo.toml'), 'utf8'));
   const localizations = await readBundleLocalizations(repositoryRoot);
@@ -236,10 +243,7 @@ export async function stageDesktopBundle(
     const contents = join(stage, 'Contents');
     await mkdir(join(contents, 'Resources'), { recursive: true });
     await writeFile(join(contents, 'Resources', 'Maka.icns'), icon);
-    await writeFile(
-      join(contents, 'Info.plist'),
-      infoPlist({ ...desktopApp, version, localizations }),
-    );
+    await writeFile(join(contents, 'Info.plist'), infoPlist({ ...app, version, localizations }));
     await mkdir(join(contents, 'MacOS'));
     const executable = join(contents, 'MacOS', 'maka-desktop-shell');
     for (const resource of resources) {
@@ -254,13 +258,13 @@ export async function stageDesktopBundle(
         const target = join(contents, 'MacOS', basename(extra));
         await copyFile(extra, target, constants.COPYFILE_FICLONE);
         await chmod(target, 0o755);
-        signMachO(target, `${desktopApp.id}.${basename(extra)}`, {
+        signMachO(target, `${app.id}.${basename(extra)}`, {
           entitlements: basename(extra) === 'maka' ? entitlements : undefined,
         });
       }
       await stageHostBundle(join(dirname(shell), 'maka-host-shell'), contents, localizations);
       await chmod(stage, 0o755);
-      signBundle(stage, desktopApp.id, { entitlements });
+      signBundle(stage, app.id, { entitlements });
     } finally {
       await rm(entitlements, { force: true });
     }

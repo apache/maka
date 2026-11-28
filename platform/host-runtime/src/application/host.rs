@@ -658,6 +658,16 @@ impl Host {
                 )
                 .await
             }
+            Request::RequestComputerPermission { grant } => {
+                authority.local()?;
+                let stop = self.accept_closed.clone();
+                let result = tokio::task::spawn_blocking(move || {
+                    maka_computer_use::system_permission::request(&[grant], &|| stop.is_cancelled())
+                })
+                .await
+                .map_err(|error| error.to_string())?;
+                wire::write(&mut output, &Response::ComputerPermissionRequested(result)).await
+            }
             Request::RemoteAccessStatus { invite_id } => {
                 authority.local()?;
                 wire::write(

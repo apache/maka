@@ -21,6 +21,7 @@
 //! belong to that connection and close before a replacement client is loaded.
 
 mod permissions;
+pub(crate) mod relaunch;
 
 use crate::{
     host::{self, Connection, Root},
@@ -66,6 +67,7 @@ pub(crate) fn start(target: crate::Target) -> Result<(), String> {
 }
 
 pub fn run(first: Connection, root: Root, runtime: Runtime) -> Result<(), String> {
+    relaunch::remember_executable();
     let directory = first
         .config
         .data_dir
@@ -109,6 +111,7 @@ pub fn run(first: Connection, root: Root, runtime: Runtime) -> Result<(), String
         )
     };
     carry_out(requests, &runtime);
+    shell.enable_permission_restart(&first.bindings);
     let windows = permission_requests(&first);
     refuse_reloads(
         first
@@ -245,6 +248,12 @@ async fn follow(
                     if let Some(request) = request {
                         let alive = alive.clone();
                         let configuration = configuration.clone();
+                        if let Some(guide)=request.guide.clone() {
+                            tokio::spawn(async move {
+                                guide.closed().await;
+                                with_running_view(move |_|permissions::close_guide(Some(guide.id)));
+                            });
+                        }
                         with_running_view(move |_| {
                             if alive.load(Ordering::Acquire) { permissions::open(request, alive, &configuration); }
                         });
@@ -253,6 +262,9 @@ async fn follow(
             }
         }
         alive.store(false, Ordering::Release);
+        if let Some(current) = bindings.as_ref() {
+            current.close_permission_guide();
+        }
         if wait_while_updating(&mut updating, &mut quit).await {
             break 'connected;
         }
@@ -319,6 +331,7 @@ async fn follow(
                 break 'connected;
             }
         };
+        shell.enable_permission_restart(&next.bindings);
         windows = permission_requests(&next);
         let Connection {
             bindings: admitted,
@@ -354,7 +367,9 @@ async fn follow(
         });
     }
     if let Some(bindings) = bindings {
-        if !*updating.borrow() {
+        if relaunch::RESTARTING.load(Ordering::Acquire) {
+            host::detach(bindings, &endpoint, epoch).await;
+        } else if !*updating.borrow() {
             host::quit(bindings).await;
         }
     }

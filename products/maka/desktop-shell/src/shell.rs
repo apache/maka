@@ -82,6 +82,17 @@ impl Shell {
         self
     }
 
+    #[cfg(target_os = "macos")]
+    pub(crate) fn enable_permission_restart(&self, bindings: &maka_workbench::bindings::Bindings) {
+        if let Some(controller) = self.updater.clone()
+            && crate::appkit::relaunch::supported()
+        {
+            bindings.set_permission_restart(move |reply| {
+                crate::appkit::relaunch::restart(reply, controller.clone())
+            });
+        }
+    }
+
     pub(crate) fn attach(&self, mut config: EngineConfig) -> EngineConfig {
         config.context = config
             .context

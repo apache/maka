@@ -137,6 +137,8 @@ export function SettingsLede(props: { children: string }) {
 /** A group of rows on `card`, optionally named, with an optional note below. */
 export function SettingsSection(props: {
   title?: string;
+  titleTag?: string;
+  description?: JSX.Element;
   trailing?: JSX.Element;
   note?: string;
   /** The note reports something that went wrong, not how the section works. */
@@ -155,21 +157,36 @@ export function SettingsSection(props: {
             paddingLeft: inset,
           }}
         >
-          <Text
-            style={{
-              ...captionTextStyle,
-              lineHeight: terminal ? 16 : 20,
-              fontWeight: '600',
-              color: C.secondary,
-              flex: 1,
-              minWidth: 0,
-            }}
+          <View
+            style={{ flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: 8 }}
           >
-            {props.title ?? ''}
-          </Text>
+            <Text style={{ ...captionTextStyle, fontWeight: '600', color: C.secondary }}>
+              {props.title ?? ''}
+            </Text>
+            <If when={props.titleTag}>
+              <View
+                style={{
+                  backgroundColor: C.raised,
+                  borderRadius: 4,
+                  paddingHorizontal: 6,
+                  flexShrink: 1,
+                }}
+              >
+                <Text
+                  style={[
+                    { ...captionTextStyle, color: C.secondary },
+                    { numberOfLines: 1, textOverflow: 'ellipsis' },
+                  ]}
+                >
+                  {props.titleTag}
+                </Text>
+              </View>
+            </If>
+          </View>
           {props.trailing}
         </View>
       </If>
+      {props.description}
       <View
         style={{
           backgroundColor: terminal ? undefined : C.card,
@@ -219,6 +236,7 @@ export function RowLine() {
 export type SettingsRowProps = {
   label: string;
   description?: string;
+  strongLabel?: boolean;
   detail?: JSX.Element;
   /** Something that needs action, in `warning`. */
   status?: string;
@@ -245,6 +263,7 @@ export function SettingsRow(props: SettingsRowProps) {
           style={[
             {
               ...labelStyle,
+              fontWeight: props.strongLabel ? '600' : undefined,
               color: props.tone === 'danger' ? C.danger : props.tone === 'muted' ? C.muted : C.text,
             },
             { numberOfLines: 1, textOverflow: 'ellipsis' },

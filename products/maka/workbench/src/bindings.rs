@@ -27,6 +27,7 @@ mod file_search;
 mod files;
 mod links;
 mod mutation;
+mod permission_settings;
 mod permission_window;
 mod plugins;
 mod quick_tools;
@@ -39,7 +40,7 @@ mod ui_services;
 mod uploads;
 
 pub use mutation::OriginalMutation;
-pub use permission_window::SystemPermissionWindow;
+pub use permission_window::{PermissionGuide, SystemPermissionWindow};
 
 use maka_app_client::{Client, Subscription, SubscriptionEvent};
 use maka_plugin_core::contract::{Contract, Interface};
@@ -62,13 +63,17 @@ const EDITOR: &str = "composer";
 pub struct Bindings {
     owner: Arc<Owner>,
 }
+type RestartReply = tokio::sync::oneshot::Sender<Result<(), String>>;
+type RestartHandler = Box<dyn Fn(RestartReply) + Send + Sync>;
 struct Owner {
+    restart: std::sync::OnceLock<RestartHandler>,
     client: Client,
     runtime: Handle,
     tasks: StdMutex<Option<TaskTracker>>,
     plugins: plugins::Packages,
     reload: crate::reload::UiReload,
     staged_images: StdMutex<HashMap<Uuid, Arc<maka_ui_support::file::FileSnapshot>>>,
+    guide: StdMutex<Option<PermissionGuide>>,
     permission_windows:
         StdMutex<Option<tokio::sync::mpsc::UnboundedSender<SystemPermissionWindow>>>,
 }
@@ -192,6 +197,8 @@ impl Bindings {
                 plugins: Default::default(),
                 reload: Default::default(),
                 staged_images: Default::default(),
+                restart: Default::default(),
+                guide: Default::default(),
                 permission_windows: Default::default(),
             }),
         }
@@ -208,6 +215,10 @@ impl Bindings {
 
     pub fn reload(&self) -> crate::reload::UiReload {
         self.owner.reload.clone()
+    }
+
+    pub fn set_permission_restart(&self, handler: impl Fn(RestartReply) + Send + Sync + 'static) {
+        let _ = self.owner.restart.set(Box::new(handler));
     }
 
     /// Installs the shell's dedicated system-permission window presenter.
@@ -230,8 +241,15 @@ impl Bindings {
         })
     }
 
+    /// Invalidate file drags before detaching this connection.
+    pub fn close_permission_guide(&self) {
+        if let Some(old) = self.owner.guide.lock().unwrap().take() {
+            old.close();
+        }
+    }
     /// Fence new native tasks, close the original Host session and finish admitted IO.
     pub async fn close(&self) -> Result<(), String> {
+        self.close_permission_guide();
         self.close_with(self.owner.client.close()).await
     }
 
@@ -871,6 +889,171 @@ impl ApplicationHost {
         })
         .await?;
         Ok(Instance::new(original))
+    }
+
+    pub async fn desktop_permission_settings(this: Instance<Self>) -> Result<JsonValue, String> {
+        let owner = this.with(|host| host.owner.clone());
+        drop(this);
+        let can_restart = owner.restart.get().is_some();
+        execute(owner, async move {
+            let mut value = tokio::task::spawn_blocking(permission_settings::desktop)
+                .await
+                .map_err(|e| e.to_string())??;
+            value["canRestart"] = can_restart.into();
+            Ok(value)
+        })
+        .await
+    }
+
+    pub async fn host_permission_settings(this: Instance<Self>) -> Result<JsonValue, String> {
+        let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
+        drop(this);
+        execute(owner.clone(), async move {
+            let client = source.resolve(&owner).await?;
+            let snapshot = permission_settings::host(&client, None).await?;
+            let local = permission_settings::local(&client, &owner.client, &snapshot).await;
+            Ok(serde_json::json!({"local": local, "status": snapshot}))
+        })
+        .await
+    }
+
+    pub async fn perform_permission_setting(
+        this: Instance<Self>,
+        subject: String,
+        action: String,
+        grant: String,
+    ) -> Result<(), String> {
+        let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
+        drop(this);
+        execute(owner.clone(), async move {
+            let ApplicationClient::Ui(services) = &source else {
+                return Err("System permission actions require the Settings page".into());
+            };
+            services.require_settings_page()?;
+            if action == "restart" {
+                if subject != "desktop"
+                    || !matches!(grant.as_str(), "accessibility" | "screen_recording")
+                {
+                    return Err("Invalid restart target".into());
+                }
+                let handler = owner
+                    .restart
+                    .get()
+                    .ok_or("This launcher cannot restart Maka")?;
+                let (send, recv) = tokio::sync::oneshot::channel();
+                handler(send);
+                return recv.await.map_err(|_| "Restart cancelled")?;
+            }
+            if action == "end" {
+                if let Some(g) = owner
+                    .guide
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .filter(|g| g.matches(&subject, &grant))
+                {
+                    g.close();
+                }
+                return Ok(());
+            }
+            let guiding = matches!(grant.as_str(), "accessibility" | "screen_recording")
+                && matches!(action.as_str(), "open" | "request");
+            let guide = if action == "guide" {
+                let lease = owner.guide.lock().unwrap().clone();
+                let Some(lease) = lease.filter(|g| g.matches(&subject, &grant) && g.active())
+                else {
+                    return Ok(());
+                };
+                Some(lease)
+            } else if guiding {
+                Some(PermissionGuide::begin(
+                    &owner.guide,
+                    &subject,
+                    &grant,
+                    services.guide_scope()?,
+                ))
+            } else {
+                None
+            };
+            if guide.is_none() && action != "reveal" {
+                if let Some(old) = owner.guide.lock().unwrap().take() {
+                    old.close();
+                }
+            }
+            let action = if action == "guide" { "open" } else { &action };
+            let application = if subject == "desktop" {
+                permission_settings::desktop_action(action, &grant).await?;
+                permission_settings::desktop_app()
+            } else {
+                if subject != "host" {
+                    return Err("Unknown permission subject".into());
+                }
+                let client = source.resolve(&owner).await?;
+                let snapshot = permission_settings::host(&client, Some(&grant)).await?;
+                if !permission_settings::local(&client, &owner.client, &snapshot).await {
+                    return Err("Computer permission actions require the local Host".into());
+                }
+                let application = (
+                    snapshot.application.clone(),
+                    snapshot.bundle_path.as_ref().map(std::path::PathBuf::from),
+                );
+                permission_settings::host_action(&client, snapshot, action, &grant).await?;
+                application
+            };
+            if let Some(guide) = guide
+                && action == "open"
+            {
+                permission_window::show_guide(&owner, source, guide, application.0, application.1)
+                    .await?;
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    pub async fn observe_permission_setting(
+        this: Instance<Self>,
+        subject: String,
+        grant: String,
+    ) -> Result<JsonValue, String> {
+        let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
+        drop(this);
+        execute(owner.clone(), async move {
+            if let ApplicationClient::Ui(services) = &source {
+                services.require_settings_page()?;
+            } else {
+                return Err("Requires Settings".into());
+            }
+            let guide = owner.guide.lock().unwrap().clone();
+            let Some(guide) = guide.filter(|g| g.active() && g.matches(&subject, &grant)) else {
+                return Ok(JsonValue::Null);
+            };
+            let (effective, pending_host) = if subject == "desktop" {
+                (
+                    tokio::task::spawn_blocking(move || permission_settings::desktop_grant(&grant))
+                        .await
+                        .map_err(|e| e.to_string())??,
+                    false,
+                )
+            } else {
+                let client = source.resolve(&owner).await?;
+                let snapshot = permission_settings::host(&client, Some(&grant)).await?;
+                if !permission_settings::local(&client, &owner.client, &snapshot).await {
+                    guide.close();
+                    return Ok(JsonValue::Null);
+                }
+                let item = snapshot
+                    .grants
+                    .first()
+                    .ok_or("Unsupported Host permission")?;
+                (item.effective, item.pending_host)
+            };
+            if !guide.active() {
+                return Ok(JsonValue::Null);
+            }
+            Ok(serde_json::json!({"effective":effective,"pendingHost":pending_host}))
+        })
+        .await
     }
 
     /// Whether this shell presents system permissions in a dedicated window.

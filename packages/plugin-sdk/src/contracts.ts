@@ -20485,6 +20485,109 @@ export const contracts: {
           },
           resources: {},
         },
+        hostPermissions: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'HostPermissionsRead',
+            type: 'object',
+            properties: {
+              grant: {
+                anyOf: [
+                  {
+                    $ref: '#/$defs/SystemPermissionGrant',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+              },
+            },
+            additionalProperties: false,
+            $defs: {
+              SystemPermissionGrant: {
+                description:
+                  'A macOS privacy grant (TCC) that the Host process itself needs before native\nComputer Use can run. This is operating-system state the user changes in\nSystem Settings, not a Maka grant; the Host observes it and commits the outcome.',
+                oneOf: [
+                  {
+                    description: 'System Settings > Privacy & Security > Accessibility.',
+                    type: 'string',
+                    const: 'accessibility',
+                  },
+                  {
+                    description:
+                      'System Settings > Privacy & Security > Screen & System Audio Recording.',
+                    type: 'string',
+                    const: 'screen_recording',
+                  },
+                ],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'HostPermissions',
+            type: 'object',
+            properties: {
+              stateDomain: {
+                type: 'string',
+              },
+              supported: {
+                type: 'boolean',
+              },
+              application: {
+                type: 'string',
+              },
+              bundlePath: {
+                type: ['string', 'null'],
+              },
+              grants: {
+                type: 'array',
+                items: {
+                  $ref: '#/$defs/HostGrantState',
+                },
+              },
+            },
+            additionalProperties: false,
+            required: ['stateDomain', 'supported', 'application', 'bundlePath', 'grants'],
+            $defs: {
+              HostGrantState: {
+                type: 'object',
+                properties: {
+                  grant: {
+                    $ref: '#/$defs/SystemPermissionGrant',
+                  },
+                  effective: {
+                    type: 'boolean',
+                  },
+                  pendingHost: {
+                    type: 'boolean',
+                  },
+                },
+                additionalProperties: false,
+                required: ['grant', 'effective'],
+              },
+              SystemPermissionGrant: {
+                description:
+                  'A macOS privacy grant (TCC) that the Host process itself needs before native\nComputer Use can run. This is operating-system state the user changes in\nSystem Settings, not a Maka grant; the Host observes it and commits the outcome.',
+                oneOf: [
+                  {
+                    description: 'System Settings > Privacy & Security > Accessibility.',
+                    type: 'string',
+                    const: 'accessibility',
+                  },
+                  {
+                    description:
+                      'System Settings > Privacy & Security > Screen & System Audio Recording.',
+                    type: 'string',
+                    const: 'screen_recording',
+                  },
+                ],
+              },
+            },
+          },
+          resources: {},
+        },
         import: {
           mode: 'mutation',
           input: {

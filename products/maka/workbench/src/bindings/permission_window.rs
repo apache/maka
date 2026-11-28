@@ -27,6 +27,7 @@ pub struct SystemPermissionWindow {
     key: String,
     config: EngineConfig,
     application: Option<PathBuf>,
+    pub guide: Option<PermissionGuide>,
 }
 
 impl SystemPermissionWindow {
@@ -98,6 +99,29 @@ pub(super) async fn open(
     ))
     .map_err(|error| error.to_string())?;
     let source = ApplicationClient::Permission(client);
+    let config = configuration(
+        &owner,
+        source,
+        "systemPermission",
+        serde_json::json!({"sessionId":session_id,"requestId":request_id,"request":record.request}),
+    )
+    .await?;
+    sender
+        .send(SystemPermissionWindow {
+            key,
+            config,
+            application,
+            guide: None,
+        })
+        .map_err(|_| "The system-permission window is unavailable".to_owned())
+}
+
+async fn configuration(
+    owner: &Arc<Owner>,
+    source: ApplicationClient,
+    parameter: &str,
+    value: JsonValue,
+) -> Result<EngineConfig, String> {
     let preferences = owner
         .client
         .query("settings", "assistantPreferences", serde_json::json!({}))
@@ -126,21 +150,121 @@ pub(super) async fn open(
     let mut config = crate::configuration(registry, owner.runtime.clone());
     config.app = crate::system_permission_bundle().into();
     config.assets = Some(Arc::new(assets::HostAssets(owner.clone())));
-    config.host.set_params(serde_json::Map::from_iter([
-        (
-            "systemPermission".into(),
-            serde_json::json!({"sessionId": session_id, "requestId": request_id, "request": record.request}),
-        ),
-        (
-            "languagePreference".into(),
-            serde_json::json!({"preference": language, "revision": revision, "resolvedLanguage": resolved_language}),
-        ),
-    ]));
-    sender
-        .send(SystemPermissionWindow {
-            key,
-            config,
-            application,
-        })
-        .map_err(|_| "The system-permission window is unavailable".to_owned())
+    let mut params = serde_json::Map::new();
+    params.insert("languagePreference".into(), serde_json::json!({"preference": language, "revision":revision,"resolvedLanguage":resolved_language}));
+    params.insert(parameter.into(), value);
+    config.host.set_params(params);
+    Ok(config)
+}
+
+/// A settings guide is scoped to one observation on the admitted connection.
+#[derive(Clone)]
+pub struct PermissionGuide {
+    pub id: Uuid,
+    subject: String,
+    grant: String,
+    live: tokio::sync::watch::Sender<bool>,
+    valid: Arc<dyn Fn() -> bool + Send + Sync>,
+}
+
+impl PermissionGuide {
+    pub fn active(&self) -> bool {
+        if !(self.valid)() {
+            self.close();
+        }
+        *self.live.borrow()
+    }
+    pub fn close(&self) {
+        self.live.send_replace(false);
+    }
+    pub async fn closed(&self) {
+        let _ = self.live.subscribe().wait_for(|live| !*live).await;
+    }
+    pub(super) fn matches(&self, subject: &str, grant: &str) -> bool {
+        self.subject == subject && self.grant == grant
+    }
+    pub(super) fn begin(
+        slot: &StdMutex<Option<Self>>,
+        subject: &str,
+        grant: &str,
+        valid: Arc<dyn Fn() -> bool + Send + Sync>,
+    ) -> Self {
+        let guide = Self {
+            valid,
+            id: Uuid::new_v4(),
+            subject: subject.into(),
+            grant: grant.into(),
+            live: tokio::sync::watch::channel(true).0,
+        };
+        if let Some(old) = slot.lock().unwrap().replace(guide.clone()) {
+            old.close();
+        }
+        guide
+    }
+}
+
+pub(super) async fn show_guide(
+    owner: &Arc<Owner>,
+    source: ApplicationClient,
+    guide: PermissionGuide,
+    name: String,
+    application: Option<PathBuf>,
+) -> Result<(), String> {
+    let sender = owner.permission_windows.lock().unwrap().clone();
+    let sender = sender.ok_or("Desktop permission guide window is unavailable")?;
+    let application = application
+        .filter(|p| p.is_absolute() && p.extension().is_some_and(|ext| ext == "app") && p.is_dir());
+    let config = configuration(
+        owner,
+        source,
+        "settingsGuide",
+        serde_json::json!({"application":name,"grant":guide.grant}),
+    )
+    .await?;
+    if let Some(path) = application.clone() {
+        let alive = guide.clone();
+        config.host.handle("permissionGuide.reveal", move |call| {
+            if !alive.active() {
+                call.reject("Permission guide expired");
+                return;
+            }
+            match std::process::Command::new("/usr/bin/open")
+                .arg("-R")
+                .arg(&path)
+                .status()
+            {
+                Ok(status) if status.success() => call.resolve(JsonValue::Null),
+                _ => call.reject("Finder could not reveal the application"),
+            }
+        });
+    }
+    if guide.active() {
+        sender
+            .send(SystemPermissionWindow {
+                key: guide.id.to_string(),
+                config,
+                application,
+                guide: Some(guide),
+            })
+            .map_err(|_| "Permission guide unavailable")?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test]
+    async fn replacement_and_disconnect_invalidate_previous_drag_source() {
+        let slot = StdMutex::default();
+        let first = PermissionGuide::begin(&slot, "host", "screen_recording", Arc::new(|| true));
+        let second = PermissionGuide::begin(&slot, "desktop", "accessibility", Arc::new(|| true));
+        first.closed().await;
+        assert!(!first.active());
+        assert!(second.active());
+        assert!(!second.matches("host", "accessibility"));
+        slot.lock().unwrap().take().unwrap().close();
+        second.closed().await;
+        assert!(!second.active());
+    }
 }

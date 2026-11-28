@@ -26,13 +26,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// A window as the window server lists it, in global points.
-#[derive(Clone, Copy)]
-pub(super) struct Source {
-    pub pid: i32,
-    pub bounds: CGRect,
-}
-
 /// Points a control must span on each side to be a target.
 const SMALLEST: f64 = 6.0;
 /// Bounds on one window's walk: some apps (browsers) have tens of thousands of nodes.
@@ -66,7 +59,7 @@ pub(super) fn request() {
 
 /// The controls of each of `windows`, in global points; none for a window Accessibility cannot
 /// read. Blocks on the apps' answers, so it runs off the main thread.
-pub(super) fn scan(windows: &[Source]) -> Vec<Vec<CGRect>> {
+pub(super) fn scan(windows: &[crate::window_list::Window]) -> Vec<Vec<CGRect>> {
     let mut found = vec![Vec::new(); windows.len()];
     let deadline = Instant::now() + BUDGET;
     let attributes = Attributes::new();

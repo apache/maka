@@ -229,6 +229,20 @@ export function createHost(application: UiHost) {
     get localFolderPicker() {
       return nativeHost.localFolderPicker;
     },
+    desktopPermissionSettings: () =>
+      nativeHost.desktopPermissionSettings() as Promise<
+        import('./permissionSettingsState').DesktopStatus
+      >,
+    hostPermissionSettings: () =>
+      nativeHost.hostPermissionSettings() as Promise<
+        import('./permissionSettingsState').HostStatus
+      >,
+    observePermissionSetting: (subject: string, grant: string) =>
+      nativeHost.observePermissionSetting(subject, grant) as Promise<
+        import('./permissionSettingsState').Observation | null
+      >,
+    performPermissionSetting: (subject: string, action: string, grant: string) =>
+      nativeHost.performPermissionSetting(subject, action, grant),
     openSystemPermissionSetup: (sessionId: string, requestId: string) =>
       nativeHost.openSystemPermissionSetup(sessionId, requestId),
     systemPermissionStatus: (sessionId: string, requestId: string) =>

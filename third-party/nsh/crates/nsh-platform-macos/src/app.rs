@@ -1168,6 +1168,29 @@ pub fn quit_app() {
     });
 }
 
+fn relaunch_allowed(asks_quit: bool, pending: Option<bool>) -> bool {
+    !asks_quit && pending.is_none()
+}
+
+/// Attempt a synchronous, ordinary quit for an embedding launcher that will relaunch
+/// only after a clean exit. If an application owns asynchronous quit confirmation,
+/// leave it running: that owner must coordinate the relaunch itself.
+pub fn try_quit_for_relaunch(mtm: MainThreadMarker) -> bool {
+    let can_quit = RUNNING.with(|state| {
+        state.borrow().as_ref().is_some_and(|running| {
+            relaunch_allowed(
+                running.view.surface().chrome.asks_quit.get(),
+                running.quit_requests.pending,
+            )
+        })
+    });
+    if !can_quit {
+        return false;
+    }
+    NSApplication::sharedApplication(mtm).terminate(None);
+    RUNNING.with(|state| state.borrow().is_none())
+}
+
 /// Quits the standalone runner as [`quit_app`] does, and starts the app
 /// again once this process has exited ([`nsh_core::restart`]). With no
 /// standalone runner this has no effect.
@@ -1644,6 +1667,15 @@ fn secondary(frames: &[NSRect]) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn relaunch_defers_to_async_or_pending_quit() {
+        assert!(super::relaunch_allowed(false, None));
+        assert!(!super::relaunch_allowed(true, None));
+        for pending in [Some(true), Some(false)] {
+            assert!(!super::relaunch_allowed(false, pending));
+        }
+    }
+
     use objc2_app_kit::NSApplicationActivationPolicy;
     use objc2_foundation::{NSPoint, NSRect, NSSize};
 

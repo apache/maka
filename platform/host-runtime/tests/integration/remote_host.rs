@@ -919,6 +919,9 @@ async fn local_pairing_invite_grants_only_the_redeeming_native_peer_and_can_be_r
             .is_err()
     );
     for request in [
+        Request::RequestComputerPermission {
+            grant: maka_agent_facts::interaction::SystemPermissionGrant::Accessibility,
+        },
         Request::RemoteAccessStatus {
             invite_id: Some("invite".into()),
         },
