@@ -101,6 +101,7 @@ const icons = {
   diff: { custom: 'diff', glyph: '±' },
   minimize: { custom: 'minimize', glyph: '⤡' },
   globe: { custom: 'globe', glyph: '⊕' },
+  eye: { lucide: 'eye', glyph: '◉' },
   eyeOff: { custom: 'eyeOff', glyph: '◌' },
   rooms: { custom: 'rooms', glyph: '◎' },
   smilePlus: { custom: 'smilePlus', glyph: '☺' },

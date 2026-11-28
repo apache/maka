@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { Canvas, platform, Scroll, signal, Text, View, windowSize, type JSX } from 'nsh';
+import { Canvas, effect, platform, Scroll, signal, Text, View, windowSize, type JSX } from 'nsh';
 import type { InputRef, ScrollRef } from 'nsh';
 import { Button, Input, Select, Switch } from 'nsh/base';
 import { Icon } from './Icon';
@@ -34,9 +34,12 @@ import {
   lineWidth,
   menuDetailTextStyle,
   menuRowStyle,
+  quietActiveStyle,
   quietFocusStyle,
+  quietHoverStyle,
   radius,
   raisedShadow,
+  textTooltip,
 } from './ui';
 
 const terminal = platform.idiom === 'terminal';
@@ -675,6 +678,8 @@ export function SettingsInput(props: {
   change(value: string): void;
   /** The value typed is done: Return, or the focus left the field. */
   commit?(): void;
+  /** Return pressed in the field (does not run on blur). */
+  onSubmit?(): void;
   placeholder?: string;
   masked?: boolean;
   readonly?: boolean;
@@ -682,6 +687,25 @@ export function SettingsInput(props: {
   autoFocus?: boolean;
   error?: string;
 }) {
+  const revealed = signal(false);
+  const focused = signal(false);
+  let hadValue = false;
+  effect(() => {
+    const masked = Boolean(props.masked);
+    const value = props.value;
+    if (!masked || props.disabled || (hadValue && !value)) revealed.set(false);
+    hadValue = value.length > 0;
+  });
+  const isMasked = () => Boolean(props.masked) && !revealed();
+  const toggleLabel = () =>
+    revealed()
+      ? tr('Hide {label}', { label: props.label })
+      : tr('Reveal {label}', { label: props.label });
+  const submit = () => {
+    if (props.disabled || props.readonly) return;
+    props.commit?.();
+    props.onSubmit?.();
+  };
   return (
     <View
       style={{
@@ -703,21 +727,117 @@ export function SettingsInput(props: {
         </If>
       </View>
       <View style={{ flex: props.stacked ? undefined : 1, minWidth: 0, gap: 4 }}>
-        <Input
-          accessibilityLabel={props.label}
-          autoFocus={props.autoFocus}
-          value={props.value}
-          placeholder={props.placeholder}
-          onChange={({ value }) => props.change(value)}
-          onSubmit={props.commit && (() => props.commit?.())}
-          onBlur={props.commit && (() => props.commit?.())}
-          masked={props.masked}
-          readonly={props.readonly || props.disabled}
-          autoCapitalize="none"
-          autoCorrect={false}
-          style={{ ...fieldStyle(props.disabled, !!props.error), height: terminal ? 16 : 28 }}
-          focusStyle={{ borderColor: C.accent }}
-        />
+        <If
+          when={props.masked}
+          else={
+            <Input
+              accessibilityLabel={props.label}
+              autoFocus={props.autoFocus}
+              value={props.value}
+              placeholder={props.placeholder}
+              onChange={({ value }) => props.change(value)}
+              onSubmit={props.onSubmit || props.commit ? submit : undefined}
+              onBlur={props.commit && (() => props.commit?.())}
+              readonly={props.readonly || props.disabled}
+              autoCapitalize="none"
+              autoCorrect={false}
+              style={{ ...fieldStyle(props.disabled, !!props.error), height: terminal ? 16 : 28 }}
+              focusStyle={{ borderColor: C.accent }}
+            />
+          }
+        >
+          <View
+            style={
+              terminal
+                ? { flexDirection: 'row', alignItems: 'center', gap: 8 }
+                : {
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    height: 28,
+                    paddingRight: 2,
+                    backgroundColor: C.panel,
+                    borderWidth: lineWidth(),
+                    borderColor: props.error ? C.danger : focused() ? C.accent : C.line,
+                    borderRadius: inputBorderRadius(),
+                    ...raisedShadow(),
+                  }
+            }
+          >
+            <Input
+              accessibilityLabel={props.label}
+              autoFocus={props.autoFocus}
+              value={props.value}
+              placeholder={props.placeholder}
+              onChange={({ value }) => props.change(value)}
+              onSubmit={props.onSubmit || props.commit ? submit : undefined}
+              onFocus={() => focused.set(true)}
+              onBlur={() => {
+                focused.set(false);
+                props.commit?.();
+              }}
+              masked={isMasked()}
+              readonly={props.readonly || props.disabled}
+              autoCapitalize="none"
+              autoCorrect={false}
+              style={
+                terminal
+                  ? {
+                      ...fieldStyle(props.disabled, !!props.error),
+                      flex: 1,
+                      minWidth: 0,
+                      height: 16,
+                    }
+                  : {
+                      ...inputTextStyle,
+                      color: props.disabled ? C.muted : C.text,
+                      placeholderColor: C.muted,
+                      flex: 1,
+                      minWidth: 0,
+                      alignSelf: 'stretch',
+                      paddingLeft: 10,
+                      paddingRight: 4,
+                      paddingVertical: 0,
+                    }
+              }
+              focusStyle={terminal ? { borderColor: C.accent } : undefined}
+            />
+            <Button
+              accessibilityLabel={toggleLabel()}
+              tooltip={textTooltip(toggleLabel)}
+              selected={revealed()}
+              disabled={props.disabled}
+              onPress={() => revealed.set(!revealed())}
+              style={
+                terminal
+                  ? {
+                      height: 16,
+                      paddingHorizontal: 4,
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      flexShrink: 0,
+                    }
+                  : {
+                      width: 24,
+                      height: 22,
+                      borderRadius: radius(6),
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      flexShrink: 0,
+                    }
+              }
+              hoverStyle={terminal ? { backgroundColor: C.raised } : quietHoverStyle()}
+              activeStyle={terminal ? { backgroundColor: C.pressed } : quietActiveStyle()}
+              focusStyle={quietFocusStyle()}
+              disabledStyle={controlDisabledStyle}
+            >
+              <Icon
+                name={revealed() ? 'eyeOff' : 'eye'}
+                color={revealed() ? C.text : C.muted}
+                size={14}
+              />
+            </Button>
+          </View>
+        </If>
         <If when={props.error}>
           <Text style={{ ...captionTextStyle, color: C.danger }}>{props.error}</Text>
         </If>
