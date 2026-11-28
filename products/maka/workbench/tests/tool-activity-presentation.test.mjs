@@ -518,3 +518,81 @@ test('ScheduledTask test_script mode renders its script condition', () => {
     },
   );
 });
+
+test('Discovery builtin tools have localized titles and projected arguments', () => {
+  const cases = [
+    ['ListDossiers', 'List discovery dossiers', {}, []],
+    [
+      'ReadDossier',
+      'Read discovery dossier',
+      { topic_id: 'etf-check' },
+      [['Dossier topic', 'etf-check']],
+    ],
+    [
+      'UpsertDossier',
+      'Update discovery dossier',
+      { title: 'ETF check', change_note: 'Missing 4 CSV files' },
+      [
+        ['Title', 'ETF check'],
+        ['Note', 'Missing 4 CSV files'],
+      ],
+    ],
+    [
+      'FinishNoChange',
+      'Complete discovery check',
+      { note: 'No changes' },
+      [['Note', 'No changes']],
+    ],
+    [
+      'StageArtifact',
+      'Stage discovery draft',
+      { relative_path: 'draft.md', purpose: 'Checklist' },
+      [
+        ['Staged path', 'draft.md'],
+        ['Note', 'Checklist'],
+      ],
+    ],
+    [
+      'RegisterWatch',
+      'Register discovery watch',
+      { request: { kind: 'http_check', target: 'https://example.org/status' } },
+      [['Watch target', 'https://example.org/status']],
+    ],
+    [
+      'StagePendingAction',
+      'Stage discovery action',
+      { connector_tool: 'Write' },
+      [['Action', 'Write']],
+    ],
+    [
+      'UpdateDiscoveryPreferences',
+      'Update discovery preferences',
+      { rule: 'Track quarterly filings' },
+      [['Note', 'Track quarterly filings']],
+    ],
+    [
+      'UpdateWatchScope',
+      'Update discovery watch scope',
+      { request: { action: 'mark_surveyed' } },
+      [['Action', 'mark_surveyed']],
+    ],
+    [
+      'UpdateWorkspaceMap',
+      'Update workspace map',
+      { request: { action: 'mark_verified' } },
+      [['Action', 'mark_verified']],
+    ],
+  ];
+  for (const [name, expectedTitle, input, expectedSections] of cases) {
+    const key = `maka.agent.Builtin@1/${name}`;
+    const card = activityPresentation(key);
+    assert.equal(activityTitle({ name, presentation: key }), expectedTitle);
+    assert.deepEqual(
+      activityProjection(card, 'arguments', input, {}).sections.map(({ label, text }) => [
+        label,
+        text,
+      ]),
+      expectedSections,
+    );
+  }
+});

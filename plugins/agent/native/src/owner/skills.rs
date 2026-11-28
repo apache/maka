@@ -185,7 +185,10 @@ impl Owner {
                 let tools = self
                     .select_catalog_tools(
                         &catalog.tools,
-                        Some(session_id),
+                        Some((
+                            session_id,
+                            DossierThreadMode::from_config(&session.configuration),
+                        )),
                         allowed_tools.as_deref(),
                         editing,
                     )

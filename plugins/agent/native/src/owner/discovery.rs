@@ -23,40 +23,88 @@ use super::send::CaptureError;
 use super::*;
 use maka_agent_facts::{
     durable::{Fact, Terminal, UnixMillis},
+    model::ModelUsage,
     tool_call::ToolRejection,
     tools::*,
 };
 use maka_agent_state::{
     Change, Head,
+    discovery::activity::{ModelCharge, TokenAllowance},
     fold::RunView,
     queue::{MessageResolution, QueueCommand, QueueEdit, RequestId},
 };
 use maka_plugin_core::storage::{Data, Mutation, Store};
 use maka_scheduler::{
-    plan::Fire,
+    plan::{Fire, FireSource},
     task::{Outcome, Run},
 };
 use std::sync::Weak;
 pub(super) const COMPLETE: &str = "DiscoveryComplete";
 pub(super) const MEMORY: &str = "DiscoveryMemory";
-pub(super) const VISIBLE_TOOLS: &[&str] = &[COMPLETE, MEMORY];
+pub(super) const UPSERT: &str = "UpsertDossier";
+pub(super) const FINISH: &str = "FinishNoChange";
+pub(super) const LIST: &str = "ListDossiers";
+pub(super) const READ: &str = "ReadDossier";
+pub(super) const STAGE: &str = "StageArtifact";
+pub(super) const PREFERENCES: &str = "UpdateDiscoveryPreferences";
+pub(super) const WATCH_SCOPE: &str = "UpdateWatchScope";
+pub(super) const WORKSPACE_MAP: &str = "UpdateWorkspaceMap";
+pub(super) const REGISTER: &str = "RegisterWatch";
+pub(super) const PENDING: &str = "StagePendingAction";
+pub(super) const WORKER_TOOLS: &[&str] = &[
+    COMPLETE,
+    UPSERT,
+    FINISH,
+    STAGE,
+    REGISTER,
+    PENDING,
+    WATCH_SCOPE,
+    WORKSPACE_MAP,
+];
+pub(super) const VISIBLE_TOOLS: &[&str] = &[
+    COMPLETE,
+    MEMORY,
+    UPSERT,
+    FINISH,
+    LIST,
+    READ,
+    STAGE,
+    REGISTER,
+    PENDING,
+    PREFERENCES,
+    WATCH_SCOPE,
+    WORKSPACE_MAP,
+];
+mod dossiers;
+pub(super) use dossiers::ScheduleOp;
 pub(super) const MODEL_ROUTE_CHANGED: &str = "background_model_route_changed";
 pub(super) const APPROVED_MODEL_UNAVAILABLE: &str = "background_model_unavailable";
 const RECALL_TOOLS: &[&str] = &["Recall", "RecallMore", "RecallMaterial"];
-const ACTIVE: &str = "discovery/active";
+pub(super) const ACTIVE: &str = "discovery/active";
+mod actions;
+mod admission;
+mod artifacts;
+pub(in crate::owner) mod changes;
 mod context;
+mod preferences;
 mod records;
+mod roots;
+mod sessions;
+mod watch_inputs;
+pub(in crate::owner) mod watch_scope;
+pub(in crate::owner) mod watches;
+mod workspace_map;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum Report {
-    /// Nothing worth notifying; record what was checked without waking the Bot.
+    /// Record a quiet check and its new observations.
     NoReport {
         note: String,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         notes: Vec<records::Note>,
     },
-    /// Actual findings and their source references, not instructions for the Bot.
+    /// Publish verified findings and source references to the plan’s dossier.
     Report {
         text: String,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -67,13 +115,32 @@ enum Report {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum Phase {
-    Investigating { result: Option<Report> },
+    Investigating {
+        result: Option<Report>,
+    },
     Delivering,
+    Converged {
+        reason: driver::discovery::StopReason,
+    },
     Stopping,
 }
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum DiscoveryMode {
+    Onboard,
+    Briefing,
+    FollowUp,
+    Wander { sources: Vec<String> },
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Job {
+    mode: Option<DiscoveryMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    allowance: Option<TokenAllowance>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    model_charge: Option<ModelCharge>,
     fire_id: String,
     task_id: String,
     bot: String,
@@ -85,11 +152,134 @@ struct Job {
     execution: Option<ExecutionIdentity>,
     phase: Phase,
     checkpoint: Option<records::Note>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    upserted_dossiers: bool,
 }
+pub(super) enum Dispatch {
+    Worker(Option<Completed>),
+    Skip,
+    Defer(UnixMillis),
+}
+
+enum WorkerAdmission {
+    Enqueued,
+    SourcesChanged,
+}
+
+pub(super) struct OpeningCommit {
+    active: Mutation,
+    sources: maka_agent_state::discovery::changes::OpeningSources,
+    at: UnixMillis,
+}
+
+impl OpeningCommit {
+    pub(super) async fn enqueue(
+        self,
+        owner: &Owner,
+        enqueue: maka_agent_state::queue::PreparedEnqueue,
+    ) -> Result<(), String> {
+        let acknowledgment = owner.discovery.record_opening(self.sources, self.at);
+        owner
+            .commit_discovery_writes(
+                dossiers::WithStorage(acknowledgment, enqueue),
+                vec![self.active],
+            )
+            .await
+            .map_err(reason)?;
+        Ok(())
+    }
+}
+
+pub(super) fn job_token_budget(
+    active: Option<maka_plugin_core::storage::Record>,
+    fire_id: &str,
+) -> Result<Option<u64>, String> {
+    #[derive(Deserialize)]
+    struct Allocation {
+        fire_id: String,
+        allowance: Option<TokenAllowance>,
+    }
+    let Some(Data::Present(value)) = active.map(|r| r.data) else {
+        return Err("discovery_not_active".into());
+    };
+    let job: Allocation = serde_json::from_value(value).map_err(reason)?;
+    if job.fire_id != fire_id {
+        return Err("scheduler_original_fire_changed".into());
+    }
+    Ok(job.allowance.map(|a| a.tokens))
+}
+
+const RUN_TOKEN_SAFETY_BREAKER: u64 = 1_500_000;
+const UNOBSERVED_WEIGHTED_CHARGE: u64 = 100_000;
+const INEXACT_FALLBACK_CAP: u64 = 200_000;
+const DEFAULT_INEXACT_FLOOR: u64 = 50_000;
+
+fn weighted_usage(usage: &ModelUsage) -> Option<u64> {
+    let input = usage.input_tokens?;
+    let output = usage.output_tokens?;
+    // Cache writes are ordinary input here. Reasoning is already in total output.
+    let read = usage.cache_read_tokens.unwrap_or(0).min(input);
+    Some(
+        (input - read)
+            .saturating_add(read / 10)
+            .saturating_add(output.saturating_mul(4)),
+    )
+}
+
+fn model_charge<'a>(
+    raw_tokens: u64,
+    admitted: impl Iterator<Item = Option<&'a ModelUsage>>,
+) -> Option<ModelCharge> {
+    let mut admitted = admitted.peekable();
+    admitted.peek()?;
+    let mut inexact = false;
+    let mut weighted_sum: u64 = 0;
+    for usage in admitted {
+        match usage.and_then(weighted_usage) {
+            Some(weighted) => weighted_sum = weighted_sum.saturating_add(weighted),
+            None => inexact = true,
+        }
+    }
+    let charged = if inexact {
+        weighted_sum.max(raw_tokens.clamp(DEFAULT_INEXACT_FLOOR, INEXACT_FALLBACK_CAP))
+    } else {
+        weighted_sum
+    };
+    Some(ModelCharge::Admitted(charged))
+}
+
+impl Owner {
+    async fn worker_charge(&self, view: Option<&RunView>) -> Result<Option<ModelCharge>, String> {
+        let Some(view) = view else {
+            return Ok(Some(ModelCharge::Unobserved(UNOBSERVED_WEIGHTED_CHARGE)));
+        };
+        let usages = self
+            .durable
+            .run_admitted_usages(view.run)
+            .await
+            .map_err(reason)?;
+        Ok(model_charge(view.tokens, usages.iter().map(Option::as_ref)))
+    }
+}
+
+impl DiscoveryMode {
+    fn select_worker_tools(&self, names: &mut Vec<String>) {
+        let dossiers = names.iter().any(|name| name == UPSERT);
+        names.retain(|name| match name.as_str() {
+            COMPLETE => !dossiers,
+            WATCH_SCOPE => matches!(self, Self::Onboard),
+            WORKSPACE_MAP => matches!(self, Self::Onboard | Self::Wander { .. }),
+            _ => true,
+        });
+    }
+}
+
 #[derive(Serialize, Deserialize)]
-struct Completed {
+pub(super) struct Completed {
     // Older receipts can also contain a copy of the report.
-    run: Run,
+    pub(super) run: Run,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) incomplete: Option<driver::discovery::StopReason>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     report_generation: Option<uuid::Uuid>,
 }
@@ -99,12 +289,7 @@ fn completed_key(fire: &str) -> String {
         hex::encode(Sha256::digest(fire.as_bytes()))
     )
 }
-pub(super) fn report_identity(fire_id: &str) -> String {
-    hex::encode(Sha256::digest(
-        format!("discovery-report/{fire_id}").as_bytes(),
-    ))
-}
-fn authorization_revoked(authorized: &Result<(), String>) -> bool {
+fn authorization_revoked<T>(authorized: &Result<T, String>) -> bool {
     matches!(authorized, Err(e) if matches!(e.as_str(), "discovery_cancelled" | "scheduler_authorization_changed" | "agent_session_unavailable"))
 }
 fn reason(error: impl std::fmt::Display) -> String {
@@ -148,48 +333,105 @@ impl CaptureError {
     }
 }
 
+fn monitoring_prompt(language: Language) -> &'static str {
+    match language {
+        Language::ZH_CN => {
+            "用 RegisterWatch 监测网页/接口状态、截止时间或文件变化。外发消息或覆写工作区文件时，用 StagePendingAction 暂存具体操作，交由用户确认。"
+        }
+        Language::ZH_TW => {
+            "用 RegisterWatch 監測網頁/介面狀態、截止時間或檔案變更。外發訊息或覆寫工作區檔案時，用 StagePendingAction 暫存具體操作，交由使用者確認。"
+        }
+        _ => {
+            "Use RegisterWatch to monitor web/API conditions, deadlines, or file changes. Use StagePendingAction for external sends and workspace overwrites so the user confirms the exact action."
+        }
+    }
+}
+
 fn investigation_prompt(
     language: Language,
+    mode: &DiscoveryMode,
     direction: &str,
     memory_allowed: bool,
     history_allowed: bool,
 ) -> String {
-    let direction = direction.trim();
-    let focused = maka_agent_facts::i18n::discovery::investigation_focused(language);
-    let broad = maka_agent_facts::i18n::discovery::investigation_broad(language);
-    let memory = maka_agent_facts::i18n::discovery::investigation_memory(language);
-    let history = maka_agent_facts::i18n::discovery::investigation_history(language);
-    let finish = maka_agent_facts::i18n::discovery::investigation_finish(language);
-    let mut prompt = if direction.is_empty() {
-        broad.to_owned()
-    } else {
-        format!("{focused}\n{direction}")
+    use maka_agent_facts::i18n::discovery as copy;
+    let style = match mode {
+        DiscoveryMode::Briefing => copy::investigation_briefing(language),
+        _ => copy::investigation_alert(language),
     };
-    if memory_allowed {
-        prompt.push_str(&format!("\n\n{memory}"));
+    let draft = copy::investigation_finish(language);
+    let sandbox_and_tools = match language {
+        Language::ZH_CN => {
+            "工作区只读，Shell 无网。外部资料使用已授权的 WebSearch 或 WebFetch。在 Code Mode 中，可在 exec 内批量调用已开放的只读工具。UpsertDossier、FinishNoChange、StagePendingAction、RegisterWatch、UpdateWorkspaceMap 和 UpdateWatchScope 可用时，须在 exec 外作为顶层工具调用。"
+        }
+        Language::ZH_TW => {
+            "工作區唯讀，Shell 無網路。外部資料請用已授權的 WebSearch 或 WebFetch。在 Code Mode 中，可在 exec 內批次呼叫已開放的唯讀工具。UpsertDossier、FinishNoChange、StagePendingAction、RegisterWatch、UpdateWorkspaceMap 和 UpdateWatchScope 可用時，須在 exec 外作為頂層工具呼叫。"
+        }
+        _ => {
+            "The workspace is read-only and Shell is offline. Use authorized WebSearch or WebFetch for external sources. In Code Mode, you can batch available read-only tools inside exec. When available, UpsertDossier, FinishNoChange, StagePendingAction, RegisterWatch, UpdateWorkspaceMap and UpdateWatchScope must be called at the top level outside exec."
+        }
+    };
+    let draft = format!(
+        "{style}\n\n{draft} {} {sandbox_and_tools}",
+        monitoring_prompt(language)
+    );
+    if matches!(mode, DiscoveryMode::Onboard) {
+        let onboard = match language {
+            Language::ZH_CN => {
+                "Onboard 只调查当前已授权的工作区，从上次的地图检查点继续。前 2–4 步只梳理顶层和主要活跃目录，用 UpdateWorkspaceMap 的 upsert_sources 保存初步地图，再深入具体分支。不要用 cat 全文读取长文件或递归列出大型目录的全部内容。在 exec 中先筛选、汇总。深层或耗时分支只做一次短探测，用 record_frontier 保存原因和下次探测时间。用 recheck_hint 和 watch_mode 标注来源，watch 来源会自动监听。用 UpdateWatchScope 补充包含或排除项。主要区域查清后调用 mark_ready。将已核实的紧迫事项存入档案，以 FinishNoChange 收尾。"
+            }
+            Language::ZH_TW => {
+                "Onboard 只調查目前已授權的工作區，從上次的地圖檢查點繼續。前 2–4 步只梳理頂層和主要活躍目錄，用 UpdateWorkspaceMap 的 upsert_sources 儲存初步地圖，再深入具體分支。不要用 cat 全文讀取長檔案或遞迴列出大型目錄的全部內容。在 exec 中先篩選、彙整。深層或耗時分支只做一次短探測，用 record_frontier 儲存原因和下次探測時間。以 recheck_hint 和 watch_mode 標註來源，watch 來源會自動監測。用 UpdateWatchScope 補充納入或排除項目。主要區域查清後呼叫 mark_ready。將已查證的緊急事項存入檔案，以 FinishNoChange 收尾。"
+            }
+            _ => {
+                "Onboard the authorized workspace from its last map checkpoint. In the first 2–4 steps, survey the top level and main active directories and save that skeleton with UpdateWorkspaceMap (upsert_sources) before exploring any branch in depth. Avoid full-file cat and large recursive directory dumps. Filter and summarize inside exec. Give deep or slow branches one short probe, then use record_frontier to save the reason and next probe time. Set recheck_hint and watch_mode on mapped sources. Watch sources subscribe automatically. Use UpdateWatchScope for extra includes or exclusions. Call mark_ready once primary areas are covered, save urgent verified findings, and finish with FinishNoChange."
+            }
+        };
+        return format!("{onboard}\n\n{draft}");
     }
-    if history_allowed {
-        prompt.push_str(&format!("\n{history}"));
+    if matches!(mode, DiscoveryMode::Wander { .. }) {
+        let wander = match language {
+            Language::ZH_CN => {
+                "只核查本轮到期的地图来源或待探分支，优先遵循 recheck_hint。核验后用 UpdateWorkspaceMap 的 mark_verified 记录结果，仍受阻时用 record_frontier 保存原因和下次探测时间。提交发现前调用 ListDossiers，按 entity_key 匹配并沿用 topic_id 和 revision。默认 quiet。"
+            }
+            Language::ZH_TW => {
+                "只查核本輪到期的地圖來源或待探分支，優先遵循 recheck_hint。查證後以 UpdateWorkspaceMap 的 mark_verified 記錄結果，仍受阻時以 record_frontier 儲存原因與下次探測時間。提交發現前呼叫 ListDossiers，依 entity_key 比對並沿用 topic_id 和 revision。預設 quiet。"
+            }
+            _ => {
+                "Check the single due source or frontier branch using its recheck_hint. After verification, use UpdateWorkspaceMap mark_verified. If blocked, record the reason and next probe time with record_frontier. Call ListDossiers before committing a finding. Match its entity_key and reuse the topic_id and revision. Default to quiet."
+            }
+        };
+        return format!("{wander}\n\n{draft}");
     }
-    prompt.push_str(&format!("\n\n{finish}"));
-    prompt
-}
-
-fn report_message(
-    language: Language,
-    title: &str,
-    worker: &str,
-    record: &str,
-    text: &str,
-    current_time: Option<&str>,
-) -> String {
-    let intro = maka_agent_facts::i18n::discovery::report_intro(language, title, worker);
-    let review = maka_agent_facts::i18n::discovery::report_review(language);
-    let decision = maka_agent_facts::i18n::discovery::report_decision(language);
-    let time = current_time.map_or_else(String::new, |time| {
-        maka_agent_facts::i18n::discovery::report_current_time(language, time)
-    });
-    format!("{intro}{time}\n{review}\n\n{text}\n\nDiscoveryMemory record: {record}. {decision}")
+    let direction = direction.trim();
+    let mut sections = Vec::new();
+    if !direction.is_empty() {
+        sections.push(format!(
+            "{}\n{direction}",
+            copy::investigation_focused(language)
+        ));
+    }
+    if matches!(mode, DiscoveryMode::Briefing) {
+        if memory_allowed {
+            sections.push(copy::investigation_memory(language).into());
+        }
+        if history_allowed {
+            sections.push(copy::investigation_history(language).into());
+        }
+        sections.push(match language {
+            Language::ZH_CN => "交付本期简报时在对应的 UpsertDossier 中设置 briefing=true。按 entity_key 沿用已有档案，其他主题只在事实发生变化时更新。",
+            Language::ZH_TW => "交付本期簡報時在對應的 UpsertDossier 設定 briefing=true。依 entity_key 沿用既有檔案，其他主題只在事實改變時更新。",
+            _ => "Set briefing=true on the UpsertDossier delivering this edition. Match an existing dossier by entity_key. Update other topics only when their underlying facts change.",
+        }.into());
+    } else {
+        sections.push(match language {
+            Language::ZH_CN => "只核查本次触发涉及的档案、变动或监听项。用 ReadDossier 核对指定主题，按需用 ListDossiers 查找匹配的 entity_key 和当前 revision。以 quiet 为默认，无实质变化时用 FinishNoChange 记录已复核的 topic_id。",
+            Language::ZH_TW => "只查核這次觸發涉及的檔案、變動或監測項目。以 ReadDossier 查證指定主題，視需要用 ListDossiers 尋找符合的 entity_key 與目前的 revision。預設 quiet，沒有實質變化時以 FinishNoChange 記錄已查核的 topic_id。",
+            _ => "Check only the named topic, watch or changed sources. Use ReadDossier for the named topic and ListDossiers when you need its entity_key or current revision. Default to quiet. Use checked_topic_ids in FinishNoChange for topics reviewed without a material change.",
+        }.into());
+    }
+    sections.push(draft);
+    sections.join("\n\n")
 }
 
 impl scheduler::Scheduler {
@@ -209,19 +451,48 @@ impl scheduler::Scheduler {
                     phase: match job.phase {
                         Phase::Investigating { .. } => InvestigationPhase::Investigating,
                         Phase::Delivering => InvestigationPhase::Delivering,
-                        Phase::Stopping => InvestigationPhase::Stopping,
+                        Phase::Stopping | Phase::Converged { .. } => InvestigationPhase::Stopping,
                     },
                 })
             }))
     }
+    pub(super) async fn discovery_progress(
+        &self,
+        view: &RunView,
+    ) -> Result<Option<driver::discovery::Progress>, String> {
+        let maka_agent_facts::durable::Trigger::Schedule { schedule_id } = &view.spec.trigger
+        else {
+            return Ok(None);
+        };
+        let (_, job) = self.investigation().await?;
+        Ok(job
+            .filter(|job| job.worker == view.spec.session_id && job.task_id == *schedule_id)
+            .map(|job| {
+                driver::discovery::Progress::new(match job.mode {
+                    Some(DiscoveryMode::Wander { .. }) => driver::discovery::Mode::Wander,
+                    Some(DiscoveryMode::Onboard) => driver::discovery::Mode::Onboard,
+                    Some(DiscoveryMode::Briefing) => driver::discovery::Mode::Briefing,
+                    _ => driver::discovery::Mode::FollowUp,
+                })
+            }))
+    }
+    // A deleted key still has a revision for the next compare-and-swap write.
+    async fn discovery_record<T: serde::de::DeserializeOwned>(
+        &self,
+        key: String,
+    ) -> Result<(Option<u64>, Option<T>), String> {
+        let Some(record) = self.storage.read(key).await.map_err(reason)? else {
+            return Ok((None, None));
+        };
+        let value = match record.data {
+            Data::Present(value) => Some(serde_json::from_value(value).map_err(reason)?),
+            Data::Deleted => None,
+        };
+        Ok((Some(record.revision), value))
+    }
+
     async fn investigation(&self) -> Result<(Option<u64>, Option<Job>), String> {
-        let record = self.storage.read(ACTIVE.into()).await.map_err(reason)?;
-        let revision = record.as_ref().map(|r| r.revision);
-        let job: Option<Job> = record
-            .and_then(|r| r.data.value().cloned())
-            .map(serde_json::from_value)
-            .transpose()
-            .map_err(reason)?;
+        let (revision, job) = self.discovery_record::<Job>(ACTIVE.into()).await?;
         *self.investigation.write().unwrap() =
             job.as_ref().map(|job| scheduler::ActiveInvestigation {
                 worker: job.worker.clone(),
@@ -266,27 +537,11 @@ impl scheduler::Scheduler {
         }
     }
 
-    pub(super) async fn completed_report_generation(
-        &self,
-        fire: &str,
-    ) -> Result<Option<uuid::Uuid>, String> {
-        let record = self
-            .storage
-            .read(completed_key(fire))
-            .await
-            .map_err(reason)?;
-        record
-            .and_then(|record| record.data.value().cloned())
-            .map(serde_json::from_value::<Completed>)
-            .transpose()
-            .map(|completed| completed.and_then(|receipt| receipt.report_generation))
-            .map_err(reason)
-    }
     pub(super) fn discovery_tool(self: &Arc<Self>) -> ToolRegistration {
         ToolRegistration {
             definition: ToolDefinition {
                 provider: None, name: COMPLETE.into(),
-                description: "Finish this investigation. Both no_report and report accept optional notes, an array of {text, references} objects with concise new observations and source references. Use report for findings worth notifying the user about. This stores the result and ends the Turn.".into(),
+                description: "Finish an investigation captured with the legacy report tool. Record a quiet check or publish its verified report.".into(),
                 input_schema: serde_json::to_value(schemars::schema_for!(Report)).expect("discovery schema"),
                 output_schema: None, freeform: None,
             },
@@ -329,9 +584,11 @@ impl scheduler::Scheduler {
                     }
                     // An observer cannot discard an accepted result write.
                     let captured = owner.clone();
-                    let job = owner
-                        .workers
-                        .spawn(async move { captured.complete_discovery(context, report).await });
+                    let job = owner.workers.spawn(async move {
+                        captured
+                            .complete_discovery(context, COMPLETE, report, vec![])
+                            .await
+                    });
                     job.await
                         .map_err(|e| ToolError::OutcomeUnknown(e.to_string()))??;
                     Ok(serde_json::json!({"recorded":true}).into())
@@ -343,6 +600,10 @@ impl scheduler::Scheduler {
 
 impl Owner {
     pub(super) async fn restore_discovery(&self) -> Result<(), String> {
+        self.discovery
+            .recover_executing_actions(UnixMillis(now() as i64))
+            .await
+            .map_err(reason)?;
         let (revision, job) = self.scheduler.investigation().await?;
         let Some(mut job) = job else {
             return Ok(());
@@ -350,18 +611,26 @@ impl Owner {
         let authorized = self.discovery_authorized(&job).await;
         let pending = self.scheduler.has_active_fire(&job).await?;
         let retired = self.discovery_worker_retired(&job).await?;
-        if matches!(job.phase, Phase::Stopping)
+        let unsafe_worker = self
+            .store
+            .get_session::<StoredSessionConfiguration>(&job.worker)
+            .await
+            .map_err(reason)?
+            .is_some_and(|s| {
+                s.configuration.permissions != permissions()
+                    || job.tools.names.iter().any(|name| {
+                        !WORKER_TOOLS.contains(&name.as_str()) && !self.permits_discovery_tool(name)
+                    })
+            });
+        if unsafe_worker
+            || matches!(job.phase, Phase::Stopping | Phase::Converged { .. })
             || !pending
             || authorization_revoked(&authorized)
             || retired
         {
-            let delivery = self
-                .retract_discovery_request(&job.bot, &report_identity(&job.fire_id))
-                .await?;
-            if matches!(delivery, MessageResolution::Delivered { .. }) {
-                return Ok(());
-            }
-            if !matches!(job.phase, Phase::Stopping) {
+            if !matches!(job.phase, Phase::Stopping)
+                && (unsafe_worker || !pending || authorization_revoked(&authorized) || retired)
+            {
                 job.phase = Phase::Stopping;
                 self.scheduler
                     .save_investigation(revision, &job)
@@ -378,10 +647,25 @@ impl Owner {
                     .session_run(&job.worker, run)
                     .await?
                     .ok_or("discovery_execution_unavailable")?;
-                self.stop_discovery_run(&view).await?;
+                self.stop_discovery_run(&view, &job.phase)
+                    .await
+                    .map_err(reason)?;
             }
         } else {
             authorized?;
+            if job.mode.is_none() && !job.input.has_content() {
+                // No opening was acknowledged. Let the original pending fire pass through admission again.
+                self.scheduler
+                    .storage
+                    .batch(vec![Mutation {
+                        key: ACTIVE.into(),
+                        expected_revision: revision,
+                        data: Data::Deleted,
+                    }])
+                    .await
+                    .map_err(reason)?;
+                *self.scheduler.investigation.write().unwrap() = None;
+            }
         }
         Ok(())
     }
@@ -425,7 +709,59 @@ impl Owner {
         }
         Ok(delivery)
     }
-    async fn stop_discovery_run(&self, view: &RunView) -> Result<bool, String> {
+    pub(super) async fn converge_discovery(
+        &self,
+        view: &RunView,
+        reason: driver::discovery::StopReason,
+    ) -> Result<(), String> {
+        let _gate = self.scheduler.gate.lock().await;
+        let (revision, job) = self.scheduler.investigation().await?;
+        let Some(mut job) = job.filter(|j| j.worker == view.spec.session_id) else {
+            return Err("discovery_execution_changed".into());
+        };
+        let mut current = self
+            .durable
+            .frontier(view.run)
+            .await
+            .map_err(self::reason)?;
+        if current.stopped || current.terminal.is_some() {
+            return Ok(());
+        }
+        if matches!(job.phase, Phase::Investigating { result: None }) {
+            job.phase = Phase::Converged { reason };
+            self.scheduler
+                .save_investigation(revision, &job)
+                .await
+                .map_err(self::reason)?;
+        }
+        loop {
+            match self.stop_discovery_run(&current, &job.phase).await {
+                Err(e)
+                    if matches!(
+                        e.underlying(),
+                        maka_event_log::StoreError::RevisionConflict { .. }
+                    ) =>
+                {
+                    current = self
+                        .durable
+                        .frontier(view.run)
+                        .await
+                        .map_err(self::reason)?;
+                }
+                result => {
+                    result.map_err(self::reason)?;
+                    break;
+                }
+            }
+        }
+        self.scheduler.wake.notify_one();
+        Ok(())
+    }
+    async fn stop_discovery_run(
+        &self,
+        view: &RunView,
+        phase: &Phase,
+    ) -> Result<bool, maka_event_log::StoreError> {
         if view.terminal.is_some() || view.stopped {
             return Ok(false);
         }
@@ -435,15 +771,18 @@ impl Owner {
                 Head::from(view),
                 vec![Change::new(
                     Fact::StopRequested {
-                        diagnostic: "discovery_cancelled".into(),
+                        diagnostic: match phase {
+                            Phase::Converged { reason } => reason.message(),
+                            _ => "discovery_cancelled",
+                        }
+                        .into(),
                         requester: maka_agent_facts::durable::StopRequester::Internal,
                     },
                     UnixMillis(now() as i64),
                 )],
                 vec![],
             )
-            .await
-            .map_err(reason)?;
+            .await?;
         self.wake_notify.notify_one();
         Ok(true)
     }
@@ -479,14 +818,24 @@ impl Owner {
         if profile == DiscoveryWorkerTools::ReadOnly {
             names.retain(|name| self.read_only_discovery_tool(name));
         }
-        if catalog.contains(MEMORY) {
-            names.push(MEMORY.into());
-        }
+        names.extend(
+            [MEMORY, LIST, READ]
+                .into_iter()
+                .filter(|name| catalog.contains(name))
+                .map(str::to_owned),
+        );
+        names.extend(WORKER_TOOLS.iter().map(|name| (*name).to_owned()));
+        names.retain(|name| name != COMPLETE);
         let names =
             self.discovery_worker_tools(&names, source.configuration.tools.as_deref(), selection);
-        // Every requested optional name must still be in the profile, in its displayed
-        // category, and under the parent ceiling. Only the return tool is implicit.
-        if selection.is_some_and(|selected| selected.len() + 1 != names.len()) {
+        // Optional tools must retain their displayed category and parent approval.
+        if selection.is_some_and(|selected| {
+            selected.len()
+                != names
+                    .iter()
+                    .filter(|n| !WORKER_TOOLS.contains(&n.as_str()))
+                    .count()
+        }) {
             return Err("scheduler_discovery_tools_changed".into());
         }
         Ok(scheduler::DiscoveryToolGrant { profile, names })
@@ -496,7 +845,7 @@ impl Owner {
         if let Some(tool) = self.tool_basis.iter().find(|tool| tool.name() == name) {
             return tool.discovery_group;
         }
-        if RECALL_TOOLS.contains(&name) || name == MEMORY {
+        if RECALL_TOOLS.contains(&name) || matches!(name, MEMORY | LIST | READ) {
             return DiscoveryToolGroup::History;
         }
         match name {
@@ -507,11 +856,21 @@ impl Owner {
     }
 
     pub(super) fn read_only_discovery_tool(&self, name: &str) -> bool {
-        name == COMPLETE
+        WORKER_TOOLS.contains(&name)
             || matches!(
                 self.discovery_tool_group(name),
                 DiscoveryToolGroup::ReadFiles | DiscoveryToolGroup::History
             )
+    }
+
+    pub(super) fn permits_discovery_tool(&self, name: &str) -> bool {
+        match self.tool_basis.iter().find(|tool| tool.name() == name) {
+            Some(tool) => tool.discovery_safe,
+            None => {
+                matches!(name, MEMORY | LIST | READ | "ScheduledTask")
+                    || RECALL_TOOLS.contains(&name)
+            }
+        }
     }
 
     fn discovery_worker_tools(
@@ -523,7 +882,8 @@ impl Owner {
         let mut allowed: Vec<_> = names
             .iter()
             .filter(|name| {
-                name.as_str() != COMPLETE
+                !WORKER_TOOLS.contains(&name.as_str())
+                    && self.permits_discovery_tool(name)
                     && (self.settings.recall || !RECALL_TOOLS.contains(&name.as_str()))
                     && configured.is_none_or(|configured| configured.contains(name))
                     && selection.is_none_or(|selected| {
@@ -532,24 +892,37 @@ impl Owner {
             })
             .cloned()
             .collect();
-        // Every worker needs the return tool. Reading shared memory requires an approved grant.
-        allowed.push(COMPLETE.into());
+        let reads_files = self.discovery_reads_files(&allowed);
+        allowed.extend(
+            names
+                .iter()
+                .filter(|name| {
+                    WORKER_TOOLS.contains(&name.as_str())
+                        && (!matches!(name.as_str(), WATCH_SCOPE | WORKSPACE_MAP) || reads_files)
+                })
+                .cloned(),
+        );
         allowed.sort_unstable();
+        allowed.dedup();
         allowed
     }
 
-    async fn discovery_authorized(&self, job: &Job) -> Result<(), String> {
+    async fn discovery_authorized(
+        &self,
+        job: &Job,
+    ) -> Result<SessionRecord<ResolvedConfiguration>, String> {
         if !self.settings.bot || !self.settings.scheduled_tasks || !self.bot.is(&job.bot) {
             return Err("discovery_cancelled".into());
         }
         let source = self.session(&job.bot).await?;
-        check_target(&source, &job.approval.target)
+        check_target(&source, &job.approval.target)?;
+        Ok(source)
     }
     async fn check_discovery_invocation(
         &self,
         context: &ToolCallContext,
         job: &Job,
-    ) -> Result<(), String> {
+    ) -> Result<u64, String> {
         if context.execution.session_id != job.worker
             || !matches!(job.phase, Phase::Investigating { .. })
         {
@@ -567,16 +940,32 @@ impl Owner {
         {
             return Err("discovery_execution_changed".into());
         }
-        self.discovery_authorized(job).await?;
+        let revision = self.discovery_authorized(job).await?.revision;
         if !self.scheduler.has_active_fire(job).await? {
             return Err("discovery_cancelled".into());
         }
-        Ok(())
+        Ok(revision)
+    }
+    /// The active worker and its validated parent Session revision.
+    async fn discovery_tool_job(&self, context: &ToolCallContext) -> Result<(Job, u64), ToolError> {
+        let (_, job) = self
+            .scheduler
+            .investigation()
+            .await
+            .map_err(ToolError::Failed)?;
+        let job = job.ok_or_else(|| ToolError::Failed("discovery_not_active".into()))?;
+        let source_revision = self
+            .check_discovery_invocation(context, &job)
+            .await
+            .map_err(ToolError::Failed)?;
+        Ok((job, source_revision))
     }
     async fn complete_discovery(
         &self,
         context: ToolCallContext,
+        tool: &str,
         report: Report,
+        checked: Vec<TopicId>,
     ) -> Result<(), ToolError> {
         let _gate = self.scheduler.gate.lock().await;
         let (revision, job) = self
@@ -588,6 +977,18 @@ impl Owner {
         self.check_discovery_invocation(&context, &job)
             .await
             .map_err(ToolError::Failed)?;
+        if !job.tools.names.iter().any(|name| name == tool) {
+            return Err(ToolError::Failed(
+                "completion tool outside the worker grant".into(),
+            ));
+        }
+        if matches!(job.mode, Some(DiscoveryMode::Wander { .. }))
+            && matches!(report, Report::Report { .. })
+        {
+            return Err(ToolError::Failed(
+                "Use ListDossiers and UpsertDossier to commit a Wander finding".into(),
+            ));
+        }
         let Phase::Investigating { result } = &mut job.phase else {
             unreachable!()
         };
@@ -600,10 +1001,21 @@ impl Owner {
         }
         *result = Some(report);
         job.execution = Some(context.execution);
-        self.scheduler
-            .save_investigation(revision, &job)
-            .await
-            .map_err(result_write_error)?;
+        if checked.is_empty() {
+            self.scheduler
+                .save_investigation(revision, &job)
+                .await
+                .map_err(result_write_error)?;
+        } else {
+            let state = self
+                .discovery
+                .touch_statement(checked, UnixMillis(now() as i64));
+            let active = mutation(ACTIVE.into(), revision, &job).map_err(ToolError::Failed)?;
+            self.commit_discovery_writes(state, vec![active])
+                .await
+                .map_err(dossiers::write_error)?;
+            self.scheduler.notify_status_changed();
+        }
         self.scheduler.wake.notify_one();
         Ok(())
     }
@@ -611,26 +1023,19 @@ impl Owner {
         self: &Arc<Self>,
         fire: &Fire<ScheduledEffect, scheduler::Approval>,
         enabled: bool,
-        timezone: &str,
-        previous: Option<&Run>,
-    ) -> Result<Option<Run>, String> {
-        if let Some(record) = self
+        plan: &scheduler::Plan,
+        at: UnixMillis,
+    ) -> Result<Dispatch, String> {
+        if let (_, Some(receipt)) = self
             .scheduler
-            .storage
-            .read(completed_key(&fire.id))
-            .await
-            .map_err(reason)?
-            && let Some(value) = record.data.value()
+            .discovery_record::<Completed>(completed_key(&fire.id))
+            .await?
         {
-            return Ok(Some(
-                serde_json::from_value::<Completed>(value.clone())
-                    .map_err(reason)?
-                    .run,
-            ));
+            return Ok(Dispatch::Worker(Some(receipt)));
         }
         let (mut revision, current) = self.scheduler.investigation().await?;
         if current.as_ref().is_some_and(|j| j.fire_id != fire.id) {
-            return Ok(None);
+            return Ok(Dispatch::Worker(None));
         }
         let new_job = current.is_none();
         let mut job = if let Some(job) = current {
@@ -648,6 +1053,9 @@ impl Owner {
             let request = hex::encode(Sha256::digest(fire.id.as_bytes()));
             let worker = format!("{}{}", self.prefix, &request[..32]);
             Job {
+                mode: None,
+                allowance: None,
+                model_charge: None,
                 fire_id: fire.id.clone(),
                 task_id: fire.task_id.clone(),
                 bot: approval.target.session_id.clone(),
@@ -659,27 +1067,41 @@ impl Owner {
                 execution: None,
                 phase: Phase::Investigating { result: None },
                 checkpoint: None,
+                upserted_dossiers: false,
             }
         };
         let authorized = self.discovery_authorized(&job).await;
-        if new_job {
-            if enabled
-                && authorized.is_ok()
+        let revoked = authorization_revoked(&authorized);
+        if !revoked && enabled && !matches!(job.phase, Phase::Stopping) {
+            let source = authorized?;
+            if new_job
                 && matches!(
                     fire.authorization,
                     Some(scheduler::Approval::Discovery { .. })
                 )
             {
-                let source = self.session(&job.bot).await?;
-                let allowed = self.discovery_worker_tools(
-                    &job.tools.names,
-                    source.configuration.tools.as_deref(),
-                    fire.effect.selected_discovery_tools(),
-                );
-                job.input = self
-                    .discovery_input(&job, fire, previous, timezone, &allowed)
-                    .await?;
+                let Some(mode) = self
+                    .discovery_mode(&job, fire, at, source.configuration.tools.as_deref())
+                    .await?
+                else {
+                    return Ok(Dispatch::Skip);
+                };
+                let activity = self
+                    .discovery
+                    .plan_activity(&job.task_id)
+                    .await
+                    .map_err(reason)?;
+                let allowance = match mode.allowance(&activity, fire.source, at) {
+                    Ok(allowance) => allowance,
+                    Err(until) => return Ok(Dispatch::Defer(until)),
+                };
+                // Freeze the actual worker surface before its session or opening exists.
+                mode.select_worker_tools(&mut job.tools.names);
+                job.mode = Some(mode);
+                job.allowance = Some(allowance);
             }
+        }
+        if new_job {
             revision = Some(
                 self.scheduler
                     .save_investigation(revision, &job)
@@ -687,27 +1109,43 @@ impl Owner {
                     .map_err(reason)?,
             );
         }
+        self.dispatch_discovery_job(fire, enabled, plan, revision, job, revoked)
+            .await
+            .map(Dispatch::Worker)
+    }
+
+    async fn dispatch_discovery_job(
+        self: &Arc<Self>,
+        fire: &Fire<ScheduledEffect, scheduler::Approval>,
+        enabled: bool,
+        plan: &scheduler::Plan,
+        mut revision: Option<u64>,
+        mut job: Job,
+        revoked: bool,
+    ) -> Result<Option<Completed>, String> {
         let retired = self.discovery_worker_retired(&job).await?;
         if retired
-            || matches!(job.phase, Phase::Stopping)
             || !enabled
             || matches!(
                 fire.authorization,
                 Some(scheduler::Approval::CancelledDiscovery { .. })
             )
-            || authorization_revoked(&authorized)
+            || revoked
         {
-            if matches!(
-                self.retract_discovery_request(&job.bot, &report_identity(&job.fire_id))
-                    .await?,
-                MessageResolution::Delivered { .. }
-            ) {
-                return self
-                    .settle_discovery(fire, revision, &job, Outcome::Ok, "Report admitted to Bot")
-                    .await
-                    .map(Some);
-            }
             if retired {
+                // Retirement may remove the run before its final usage can be observed.
+                if job.model_charge.is_none() && job.input.has_content() {
+                    let view = match self
+                        .durable
+                        .latest_run(job.worker.clone())
+                        .await
+                        .map_err(reason)?
+                    {
+                        Some(run) => self.durable.find_run(run).await.map_err(reason)?,
+                        None => None,
+                    };
+                    job.model_charge = self.worker_charge(view.as_ref()).await?;
+                }
                 job.phase = Phase::Stopping;
                 return self
                     .settle_discovery(
@@ -729,48 +1167,48 @@ impl Owner {
                         .map_err(reason)?,
                 );
             }
-        } else {
-            authorized?;
         }
         if matches!(job.phase, Phase::Delivering) {
-            return self
-                .deliver_discovery_report(fire, revision, &job, timezone)
-                .await;
+            return self.deliver_discovery_report(fire, revision, &job).await;
         }
         let queue = self.durable.queue();
-        let message = format!("m_{}", job.request);
         let resolution = queue
-            .resolve_message(job.worker.clone(), message.clone())
+            .resolve_message(job.worker.clone(), format!("m_{}", job.request))
             .await
             .map_err(reason)?;
         match resolution {
-            MessageResolution::Missing => {
-                if matches!(job.phase, Phase::Stopping) {
-                    return self
-                        .settle_discovery(
-                            fire,
-                            revision,
-                            &job,
-                            Outcome::Blocked,
-                            "Investigation cancelled before admission",
-                        )
-                        .await
-                        .map(Some);
-                }
-                if let Err(error) = self
-                    .enqueue_discovery_worker(&job, fire, previous, timezone)
+            MessageResolution::Missing if !matches!(job.phase, Phase::Stopping) => {
+                match self
+                    .enqueue_discovery_worker(&mut job, revision, fire, plan)
                     .await
                 {
-                    return self
-                        .settle_discovery(
-                            fire,
-                            revision,
-                            &job,
-                            Outcome::Blocked,
-                            error.discovery_block()?,
-                        )
-                        .await
-                        .map(Some);
+                    Ok(WorkerAdmission::Enqueued) => {}
+                    Ok(WorkerAdmission::SourcesChanged) => {
+                        // Re-evaluate the same pending timer with its original grant, including any due Wander.
+                        self.scheduler
+                            .storage
+                            .batch(vec![Mutation {
+                                key: ACTIVE.into(),
+                                expected_revision: revision,
+                                data: Data::Deleted,
+                            }])
+                            .await
+                            .map_err(reason)?;
+                        *self.scheduler.investigation.write().unwrap() = None;
+                        self.scheduler.wake.notify_one();
+                    }
+                    Err(error) => {
+                        return self
+                            .settle_discovery(
+                                fire,
+                                revision,
+                                &job,
+                                Outcome::Blocked,
+                                error.discovery_block()?,
+                            )
+                            .await
+                            .map(Some);
+                    }
                 }
                 return Ok(None);
             }
@@ -781,7 +1219,7 @@ impl Owner {
                 }
                 return Ok(None);
             }
-            MessageResolution::Cancelled => {
+            MessageResolution::Missing | MessageResolution::Cancelled => {
                 return self
                     .settle_discovery(
                         fire,
@@ -815,10 +1253,15 @@ impl Owner {
                             .map_err(reason)?,
                     );
                 }
-                if matches!(job.phase, Phase::Stopping) && self.stop_discovery_run(&view).await? {
+                if matches!(job.phase, Phase::Stopping | Phase::Converged { .. })
+                    && self
+                        .stop_discovery_run(&view, &job.phase)
+                        .await
+                        .map_err(reason)?
+                {
                     return Ok(None);
                 }
-                let Some(terminal) = view.terminal else {
+                let Some(terminal) = &view.terminal else {
                     return Ok(None);
                 };
                 let runs = self.runs.state().await;
@@ -836,7 +1279,16 @@ impl Owner {
                     return Ok(None);
                 }
                 drop(runs);
-                if terminal != Terminal::Completed || matches!(job.phase, Phase::Stopping) {
+                job.model_charge = self.worker_charge(Some(&view)).await?;
+                if let Phase::Converged { reason } = job.phase
+                    && matches!(terminal, Terminal::Completed | Terminal::Cancelled)
+                {
+                    return self
+                        .settle_discovery(fire, revision, &job, Outcome::Ok, reason.message())
+                        .await
+                        .map(Some);
+                }
+                if terminal != &Terminal::Completed || matches!(job.phase, Phase::Stopping) {
                     return self
                         .settle_discovery(
                             fire,
@@ -854,80 +1306,138 @@ impl Owner {
                 }
             }
         }
-        match &job.phase {
+        let (outcome, message) = match &job.phase {
+            Phase::Investigating { result: Some(_) } if job.upserted_dossiers => {
+                (Outcome::Ok, "Dossiers updated")
+            }
             Phase::Investigating {
                 result: Some(Report::NoReport { .. }),
-            } => self
-                .settle_discovery(fire, revision, &job, Outcome::Ok, "No report")
-                .await
-                .map(Some),
+            } => (Outcome::Ok, "No report"),
             Phase::Investigating {
                 result: Some(Report::Report { .. }),
-            } => {
-                // The Bot can consume as soon as the queue commits. Persist the
-                // approved memory record before making its reference visible.
+            } if job.tools.names.iter().any(|name| name == COMPLETE) => {
+                // The memory record is the durable source for resumed delivery.
                 let mut writes = self.scheduler.outcome_mutations(&job, &Outcome::Ok).await?;
                 job.phase = Phase::Delivering;
                 job.checkpoint = None;
                 writes.insert(0, mutation(ACTIVE.into(), revision, &job)?);
                 let staged = self.scheduler.storage.batch(writes).await.map_err(reason)?;
-                self.deliver_discovery_report(fire, Some(staged[0].revision), &job, timezone)
-                    .await
+                return self
+                    .deliver_discovery_report(fire, Some(staged[0].revision), &job)
+                    .await;
             }
-            _ => self
-                .settle_discovery(
-                    fire,
-                    revision,
-                    &job,
-                    Outcome::Failed,
-                    "Investigation ended without DiscoveryComplete",
-                )
-                .await
-                .map(Some),
-        }
+            _ => (
+                Outcome::Failed,
+                "Investigation ended without a completion tool",
+            ),
+        };
+        self.settle_discovery(fire, revision, &job, outcome, message)
+            .await
+            .map(Some)
     }
     async fn discovery_input(
         &self,
         job: &Job,
         fire: &Fire<ScheduledEffect, scheduler::Approval>,
-        previous: Option<&Run>,
         timezone: &str,
+        mode: &DiscoveryMode,
         allowed_tools: &[String],
-    ) -> Result<MessageInput, String> {
+        at: UnixMillis,
+    ) -> Result<
+        (
+            MessageInput,
+            maka_agent_state::discovery::changes::OpeningSources,
+        ),
+        String,
+    > {
         let history_allowed = fire.effect.selected_discovery_tools().is_none()
             || allowed_tools
                 .iter()
                 .any(|name| self.discovery_tool_group(name) == DiscoveryToolGroup::History);
-        let mut prompt = investigation_prompt(
-            job.approval.language,
-            fire.intent.body(),
-            allowed_tools.iter().any(|name| name == MEMORY),
-            history_allowed,
-        );
+        // Keep the catalog and inventory futures out of the scheduler's dispatch frame.
+        let (mut prompt, sources) =
+            Box::pin(self.discovery_opening(mode, job, fire, allowed_tools, at)).await?;
+        let root = std::path::Path::new(&job.approval.target.workspace.path);
+        if matches!(mode, DiscoveryMode::Onboard)
+            && let Some(survey) =
+                self.watch_scopes
+                    .survey(root, allowed_tools, job.approval.language, now() as i64)
+        {
+            prompt.push_str("\n\n");
+            prompt.push_str(survey);
+        }
+        prompt.push_str("\n\n");
+        if allowed_tools.iter().any(|name| name == COMPLETE)
+            && !allowed_tools.iter().any(|name| name == UPSERT)
+        {
+            prompt.push_str(fire.intent.body());
+            prompt.push_str(match job.approval.language {
+                Language::ZH_CN => "\n核实本次调查的结论后，用 DiscoveryComplete 提交报告或静默结束。",
+                Language::ZH_TW => "\n查證本次調查的結論後，以 DiscoveryComplete 提交報告或靜默結束。",
+                _ => "\nVerify the findings for this investigation. Finish with DiscoveryComplete to record a report or a quiet check.",
+            });
+        } else {
+            prompt.push_str(&investigation_prompt(
+                job.approval.language,
+                mode,
+                fire.intent.body(),
+                allowed_tools.iter().any(|name| name == MEMORY),
+                history_allowed,
+            ));
+        }
+        if matches!(mode, DiscoveryMode::Wander { .. })
+            && !allowed_tools.iter().any(|name| name == LIST)
+        {
+            prompt.push_str(match job.approval.language {
+                Language::ZH_CN => "\n本轮未授权 ListDossiers，无法提交去重后的发现。用 FinishNoChange 静默收尾。",
+                Language::ZH_TW => "\n此輪未授權 ListDossiers，無法提交去重後的發現。請用 FinishNoChange 安靜收尾。",
+                _ => "\nThis plan does not grant ListDossiers. Finish quietly with FinishNoChange when you cannot check for duplicates.",
+            });
+        }
         prompt.push_str(&context::environment(
             job.approval.language,
             &job.approval.target.workspace.path,
             timezone,
         ));
-        if history_allowed {
-            prompt.push_str(&self.discovery_opening(job, previous, allowed_tools).await?);
-        }
-        Ok(prompt.into())
+        Ok((prompt.into(), sources))
     }
 
     async fn enqueue_discovery_worker(
         &self,
-        job: &Job,
+        job: &mut Job,
+        revision: Option<u64>,
         fire: &Fire<ScheduledEffect, scheduler::Approval>,
-        previous: Option<&Run>,
-        timezone: &str,
-    ) -> Result<(), CaptureError> {
+        plan: &scheduler::Plan,
+    ) -> Result<WorkerAdmission, CaptureError> {
         let source = self.session(&job.bot).await?;
         let allowed_tools = self.discovery_worker_tools(
             &job.tools.names,
             source.configuration.tools.as_deref(),
             fire.effect.selected_discovery_tools(),
         );
+        let opening = if !job.input.has_content() || allowed_tools != job.tools.names {
+            use maka_agent_state::discovery::changes::OpeningSources;
+            let at = UnixMillis((now() as i64).max(fire.scheduled_at));
+            let mode = job.mode.as_ref().unwrap_or(&DiscoveryMode::FollowUp);
+            let (input, sources) = self
+                .discovery_input(job, fire, &plan.timezone, mode, &allowed_tools, at)
+                .await?;
+            if fire.source == FireSource::Schedule
+                && matches!(job.mode, Some(DiscoveryMode::FollowUp))
+                && matches!(&sources, OpeningSources::FollowUp { files, sessions } if files.is_empty() && sessions.is_empty())
+            {
+                return Ok(WorkerAdmission::SourcesChanged);
+            }
+            job.input = input;
+            job.tools.names.clone_from(&allowed_tools);
+            Some(OpeningCommit {
+                active: mutation(ACTIVE.into(), revision, job)?,
+                sources,
+                at,
+            })
+        } else {
+            None
+        };
         if self
             .store
             .get_session::<StoredSessionConfiguration>(&job.worker)
@@ -947,6 +1457,9 @@ impl Owner {
                             job.approval.thinking_level,
                         )),
                         compaction_prompt: None,
+                        dossier_seed: None,
+                        dossier_elevated: false,
+                        discovery_worker: true,
                         applied_preset: None,
                         collaboration_mode: CollaborationMode::Agent,
                         tools: Some(allowed_tools.clone()),
@@ -959,11 +1472,7 @@ impl Owner {
                             .as_ref()
                             .ok_or(CaptureError::WorkspaceUnavailable)?
                             .reference(),
-                        permissions: if job.tools.profile == DiscoveryWorkerTools::Session {
-                            job.approval.target.permissions.clone()
-                        } else {
-                            permissions()
-                        },
+                        permissions: permissions(),
                         boundary_revision: 0,
                     },
                     fire.scheduled_at as u64,
@@ -999,14 +1508,8 @@ impl Owner {
         {
             return Err(CaptureError::RouteChanged);
         }
-        // A narrower live ceiling must also narrow the references supplied to the model.
-        let input = if allowed_tools == job.tools.names {
-            job.input.clone()
-        } else {
-            self.discovery_input(job, fire, previous, timezone, &allowed_tools)
-                .await?
-        };
         basis.model = Some(job.approval.accepted_model.clone());
+        let input = job.input.clone();
         basis.allowed_tools = Some(allowed_tools);
         basis.background = Some(job.approval.target.clone());
         basis.background_sandbox_ceiling = job.approval.sandbox_ceiling.clone();
@@ -1025,83 +1528,61 @@ impl Owner {
             disposition: MessageDisposition::TurnStarted,
             submitted_intent: None,
         };
-        self.enqueue_background(
-            &job.worker,
-            source,
-            &basis,
-            &job.request,
-            Default::default(),
-            false,
-        )
-        .await?;
-        Ok(())
+        self.enqueue_discovery_message(&job.worker, source, &basis, &job.request, opening)
+            .await?;
+        Ok(WorkerAdmission::Enqueued)
     }
     async fn deliver_discovery_report(
         &self,
         fire: &Fire<ScheduledEffect, scheduler::Approval>,
         revision: Option<u64>,
         job: &Job,
-        timezone: &str,
-    ) -> Result<Option<Run>, String> {
-        let (record, text) = self.scheduler.report_for_delivery(job).await?;
-        let route = notifications::ReturnRoute::new(
-            job.approval.accepted_model.clone(),
-            job.approval.target.workspace.clone(),
-            job.approval.target.binding,
-        );
-        let at = now();
-        let current_time =
-            context::local_timestamp(at, timezone).or_else(|| context::timestamp(at));
-        let notification = match self
-            .prepare_notification_checked(
-                &job.bot,
-                &route,
-                &report_identity(&job.fire_id),
-                |language| {
-                    report_message(
-                        language,
-                        &fire.title,
-                        &job.worker,
-                        &record,
-                        &text,
-                        current_time.as_deref(),
-                    )
-                },
-                MessageOrigin::DiscoveryReport {
-                    session_id: job.worker.clone(),
-                },
-                maka_agent_state::queue::Placement::Followup,
-                Some(&job.approval.target),
-                UnixMillis(at as i64),
-            )
-            .await
-        {
-            Ok(Some(notification)) => notification,
-            Ok(None) => return Ok(None),
-            Err(error) => {
-                let message = error.discovery_block()?;
-                return self
-                    .settle_discovery(fire, revision, job, Outcome::Blocked, message)
-                    .await
-                    .map(Some);
-            }
-        };
-        let delivery = self
-            .durable
-            .queue()
-            .resolve_message(job.bot.clone(), notification.message_id)
+    ) -> Result<Option<Completed>, String> {
+        let topic = TopicId(job.task_id.clone());
+        let previous = self
+            .discovery
+            .get_dossier(topic.clone())
             .await
             .map_err(reason)?;
-        let (outcome, message) = match delivery {
-            MessageResolution::Pending | MessageResolution::Delivered { .. } => {
-                (Outcome::Ok, "Report admitted to Bot")
-            }
-            MessageResolution::Cancelled => (Outcome::Blocked, "Report was withdrawn"),
-            MessageResolution::Missing => return Err("discovery_report_receipt_missing".into()),
+        if previous.as_ref().is_some_and(|record| {
+            record.unfollowed || record.signal == maka_agent_facts::discovery::DossierSignal::Done
+        }) {
+            return self
+                .settle_discovery(fire, revision, job, Outcome::Ok, "Dossier closed")
+                .await
+                .map(Some);
+        }
+        let text = self.scheduler.report_for_delivery(job).await?;
+        let at = UnixMillis(now() as i64);
+        let dossier = maka_agent_state::discovery::DossierUpsert {
+            topic_id: topic,
+            entity_key: None,
+            reopen: false,
+            expected_revision: Some(previous.as_ref().map_or(0, |record| record.revision)),
+            title: fire.title.clone(),
+            signal: maka_agent_facts::discovery::DossierSignal::Yellow,
+            priority_weight: 0.0,
+            summary_md: text,
+            change_note: None,
+            choices: vec![],
+            window_at: None,
+            fact_state: None,
+            briefing: matches!(job.mode, Some(DiscoveryMode::Briefing)),
+            evidence_md: None,
+            artifacts: vec![],
+            replace_artifacts: false,
+            linked_task_ids: None,
         };
-        self.settle_discovery(fire, revision, job, outcome, message)
-            .await
-            .map(Some)
+        self.settle_discovery_with(
+            fire,
+            revision,
+            job,
+            Outcome::Ok,
+            "Report checked",
+            Some((dossier, fire.title.clone(), at)),
+        )
+        .await
+        .map(Some)
     }
 
     async fn settle_discovery(
@@ -1111,7 +1592,23 @@ impl Owner {
         job: &Job,
         outcome: Outcome,
         message: &str,
-    ) -> Result<Run, String> {
+    ) -> Result<Completed, String> {
+        self.settle_discovery_with(fire, revision, job, outcome, message, None)
+            .await
+    }
+    async fn settle_discovery_with(
+        &self,
+        fire: &Fire<ScheduledEffect, scheduler::Approval>,
+        revision: Option<u64>,
+        job: &Job,
+        outcome: Outcome,
+        message: &str,
+        dossier: Option<(
+            maka_agent_state::discovery::DossierUpsert,
+            String,
+            UnixMillis,
+        )>,
+    ) -> Result<Completed, String> {
         let run = Run {
             id: fire.id.clone(),
             at: (now() as i64).max(fire.scheduled_at),
@@ -1121,33 +1618,53 @@ impl Owner {
             run_id: job.execution.as_ref().map(|e| e.run_id),
         };
         let mut writes = self.scheduler.outcome_mutations(job, &run.outcome).await?;
-        let report_generation =
-            if run.outcome == Outcome::Ok && matches!(job.phase, Phase::Delivering) {
-                fire.authorization
-                    .as_ref()
-                    .and_then(scheduler::Approval::discovery_generation)
-            } else {
-                None
-            };
+        let report_generation = if dossier.is_some() && run.outcome == Outcome::Ok {
+            fire.authorization
+                .as_ref()
+                .and_then(scheduler::Approval::discovery_generation)
+        } else {
+            None
+        };
+        let receipt = Completed {
+            run,
+            report_generation,
+            incomplete: match job.phase {
+                Phase::Converged { reason } => Some(reason),
+                _ => None,
+            },
+        };
         writes.extend([
-            mutation(
-                completed_key(&fire.id),
-                None,
-                &Completed {
-                    run: run.clone(),
-                    report_generation,
-                },
-            )?,
+            mutation(completed_key(&fire.id), None, &receipt)?,
             Mutation {
                 key: ACTIVE.into(),
                 expected_revision: revision,
                 data: Data::Deleted,
             },
         ]);
-        self.scheduler.storage.batch(writes).await.map_err(reason)?;
+        let charge = self.discovery.charge_statement(
+            job.task_id.clone(),
+            job.allowance,
+            UnixMillis(receipt.run.at),
+            job.model_charge,
+        );
+        if let Some((input, reason, at)) = dossier {
+            let state = self.discovery.plan_upsert_statement(
+                Some(job.task_id.clone()),
+                input,
+                Some(reason),
+                at,
+            );
+            self.commit_discovery_writes(dossiers::WithStorage(state, charge), writes)
+                .await
+                .map_err(self::reason)?;
+        } else {
+            self.commit_discovery_writes(charge, writes)
+                .await
+                .map_err(reason)?;
+        }
         *self.scheduler.investigation.write().unwrap() = None;
         self.scheduler.wake.notify_one();
-        Ok(run)
+        Ok(receipt)
     }
 }
 
@@ -1164,5 +1681,93 @@ pub(super) fn check_target(
         Err("scheduler_authorization_changed".into())
     } else {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+pub(super) async fn test_store() -> (
+    tempfile::TempDir,
+    Arc<RootStore>,
+    maka_agent_facts::durable::RunOwner,
+) {
+    use maka_agent_facts::durable::RunOwner;
+    use maka_event_log::root::{RootNamespaces, RootOwner};
+    let dir = tempfile::tempdir().unwrap();
+    let state = RootOwner::create(
+        &dir.path().join("state"),
+        &RootNamespaces {
+            ownership: dir.path().join("own"),
+            control: dir.path().join("ctl"),
+        },
+    )
+    .unwrap();
+    let migrations = maka_event_log::ROOT_MIGRATIONS
+        .iter()
+        .chain(maka_agent_state::MIGRATIONS)
+        .copied()
+        .collect::<Vec<_>>();
+    let root = Arc::new(RootStore::open(Arc::new(state), &migrations).await.unwrap());
+    let owner = RunOwner {
+        deployment: Uuid::new_v4(),
+        namespace: maka_plugin_core::composition::InstanceId(vec![Uuid::new_v4()]),
+    };
+    (dir, root, owner)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn discovery_weighted_usage_and_model_charge_account_for_cache_and_inexact_fallbacks() {
+        let cached = ModelUsage {
+            input_tokens: Some(200_000),
+            cache_read_tokens: Some(180_000),
+            cache_write_tokens: Some(15_000),
+            output_tokens: Some(3_000),
+            reasoning_tokens: Some(2_000),
+        };
+        let no_split = ModelUsage {
+            cache_read_tokens: None,
+            ..cached.clone()
+        };
+        let incomplete = ModelUsage {
+            output_tokens: None,
+            ..cached.clone()
+        };
+        assert_eq!(weighted_usage(&cached), Some(50_000));
+        assert_eq!(weighted_usage(&no_split), Some(212_000));
+        assert_eq!(
+            weighted_usage(&ModelUsage {
+                cache_read_tokens: Some(u64::MAX),
+                ..cached.clone()
+            }),
+            Some(32_000)
+        );
+        assert_eq!(weighted_usage(&incomplete), None);
+        assert_eq!(
+            weighted_usage(&ModelUsage {
+                input_tokens: None,
+                ..cached.clone()
+            }),
+            None
+        );
+        let charge =
+            |raw, usages: &[Option<&ModelUsage>]| match model_charge(raw, usages.iter().copied()) {
+                Some(ModelCharge::Admitted(tokens)) => Some(tokens),
+                None => None,
+                _ => panic!("expected observed worker"),
+            };
+        assert_eq!(charge(203_000, &[Some(&cached)]), Some(50_000));
+        assert_eq!(
+            charge(406_000, &[Some(&cached), Some(&no_split)]),
+            Some(262_000)
+        );
+        assert_eq!(charge(1_500_000, &[]), None);
+        assert_eq!(charge(0, &[None]), Some(50_000));
+        assert_eq!(charge(75_000, &[Some(&incomplete)]), Some(75_000));
+        assert_eq!(charge(1_500_000, &[None, Some(&cached)]), Some(200_000));
+        assert_eq!(charge(1_500_000, &[None, Some(&no_split)]), Some(212_000));
+        assert!(matches!(model_charge(0, std::iter::empty()), None));
     }
 }

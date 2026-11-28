@@ -1177,6 +1177,19 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  discoveryWorker: {
+                    type: 'boolean',
+                  },
+                  discoveryRun: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentDiscoveryRunStatus',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   incognito: {
                     type: 'boolean',
                     default: false,
@@ -1328,6 +1341,32 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AgentDiscoveryRunStatus: {
+                type: 'object',
+                properties: {
+                  startedAt: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  terminal: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/Terminal',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['startedAt'],
+              },
+              Terminal: {
+                type: 'string',
+                enum: ['completed', 'failed', 'cancelled'],
               },
               AgentSessionKind: {
                 type: 'string',
@@ -2884,6 +2923,19 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  discoveryWorker: {
+                    type: 'boolean',
+                  },
+                  discoveryRun: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentDiscoveryRunStatus',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   incognito: {
                     type: 'boolean',
                     default: false,
@@ -3035,6 +3087,32 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AgentDiscoveryRunStatus: {
+                type: 'object',
+                properties: {
+                  startedAt: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  terminal: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/Terminal',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['startedAt'],
+              },
+              Terminal: {
+                type: 'string',
+                enum: ['completed', 'failed', 'cancelled'],
               },
               AgentSessionKind: {
                 type: 'string',
@@ -4411,6 +4489,39 @@ export const contracts: {
                 ],
               },
             },
+          },
+          resources: {},
+        },
+        chooseDossierOption: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'DossierChoose',
+            type: 'object',
+            properties: {
+              topicId: {
+                type: 'string',
+              },
+              revision: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 0,
+              },
+              key: {
+                type: 'string',
+              },
+              resolve: {
+                type: 'boolean',
+                default: false,
+              },
+            },
+            additionalProperties: false,
+            required: ['topicId', 'revision', 'key'],
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'null',
+            type: 'null',
           },
           resources: {},
         },
@@ -5988,6 +6099,85 @@ export const contracts: {
                 enum: ['low', 'high'],
               },
             },
+          },
+          resources: {},
+        },
+        confirmPendingAction: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'PendingActionRequest',
+            type: 'object',
+            properties: {
+              actionId: {
+                type: 'string',
+              },
+            },
+            additionalProperties: false,
+            required: ['actionId'],
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'ConfirmPendingActionResult',
+            oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  outcome: {
+                    type: 'string',
+                    const: 'done',
+                  },
+                  receipt: true,
+                },
+                additionalProperties: false,
+                required: ['outcome', 'receipt'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  outcome: {
+                    type: 'string',
+                    const: 'stale',
+                  },
+                  changedPaths: {
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                },
+                additionalProperties: false,
+                required: ['outcome', 'changedPaths'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  outcome: {
+                    type: 'string',
+                    const: 'failed',
+                  },
+                  error: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['outcome', 'error'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  outcome: {
+                    type: 'string',
+                    const: 'unknown_pending_receipt',
+                  },
+                  error: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['outcome', 'error'],
+              },
+            ],
           },
           resources: {},
         },
@@ -8087,6 +8277,19 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  discoveryWorker: {
+                    type: 'boolean',
+                  },
+                  discoveryRun: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentDiscoveryRunStatus',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   incognito: {
                     type: 'boolean',
                     default: false,
@@ -8238,6 +8441,32 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AgentDiscoveryRunStatus: {
+                type: 'object',
+                properties: {
+                  startedAt: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  terminal: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/Terminal',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['startedAt'],
+              },
+              Terminal: {
+                type: 'string',
+                enum: ['completed', 'failed', 'cancelled'],
               },
               AgentSessionKind: {
                 type: 'string',
@@ -9855,6 +10084,540 @@ export const contracts: {
                 required: ['name', 'path'],
               },
             },
+          },
+          resources: {},
+        },
+        dismissPendingAction: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'PendingActionRequest',
+            type: 'object',
+            properties: {
+              actionId: {
+                type: 'string',
+              },
+            },
+            additionalProperties: false,
+            required: ['actionId'],
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'null',
+            type: 'null',
+          },
+          resources: {},
+        },
+        dossier: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'DossierRead',
+            type: 'object',
+            properties: {
+              topicId: {
+                type: 'string',
+              },
+            },
+            additionalProperties: false,
+            required: ['topicId'],
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'Nullable_DossierDetail',
+            anyOf: [
+              {
+                $ref: '#/$defs/DossierDetail',
+              },
+              {
+                type: 'null',
+              },
+            ],
+            $defs: {
+              DossierDetail: {
+                type: 'object',
+                properties: {
+                  topicId: {
+                    type: 'string',
+                  },
+                  entityKey: {
+                    type: ['string', 'null'],
+                  },
+                  title: {
+                    type: 'string',
+                  },
+                  signal: {
+                    $ref: '#/$defs/DossierSignal',
+                  },
+                  priorityWeight: {
+                    type: 'number',
+                    format: 'double',
+                  },
+                  windowAt: {
+                    type: ['integer', 'null'],
+                    format: 'int64',
+                  },
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  summaryMd: {
+                    type: 'string',
+                  },
+                  artifacts: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/DossierArtifact',
+                    },
+                  },
+                  linkedTaskIds: {
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  threadSessionId: {
+                    type: ['string', 'null'],
+                  },
+                  muted: {
+                    type: 'boolean',
+                  },
+                  unfollowed: {
+                    type: 'boolean',
+                    default: false,
+                  },
+                  lastCheckedAt: {
+                    type: 'integer',
+                    format: 'int64',
+                  },
+                  lastMaterialChangeAt: {
+                    type: 'integer',
+                    format: 'int64',
+                  },
+                  lastNotifiedRevision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  lastInterruptReason: {
+                    type: ['string', 'null'],
+                  },
+                  lastInterruptAt: {
+                    type: ['integer', 'null'],
+                    format: 'int64',
+                  },
+                  createdAt: {
+                    type: 'integer',
+                    format: 'int64',
+                  },
+                  updatedAt: {
+                    type: 'integer',
+                    format: 'int64',
+                  },
+                  watches: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/WatchRecord',
+                    },
+                  },
+                  pendingActions: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/PendingActionRecord',
+                    },
+                  },
+                  revisions: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/DossierRevision',
+                    },
+                    default: [],
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'topicId',
+                  'title',
+                  'signal',
+                  'priorityWeight',
+                  'revision',
+                  'summaryMd',
+                  'artifacts',
+                  'linkedTaskIds',
+                  'muted',
+                  'lastCheckedAt',
+                  'lastMaterialChangeAt',
+                  'lastNotifiedRevision',
+                  'createdAt',
+                  'updatedAt',
+                  'watches',
+                  'pendingActions',
+                ],
+              },
+              DossierSignal: {
+                type: 'string',
+                enum: ['red', 'yellow', 'green', 'done'],
+              },
+              DossierArtifact: {
+                type: 'object',
+                properties: {
+                  path: {
+                    type: 'string',
+                  },
+                  purpose: {
+                    type: 'string',
+                  },
+                  sha256: {
+                    description: 'Historical attachments may predate staged content fingerprints.',
+                    type: ['string', 'null'],
+                  },
+                  inputHashes: {
+                    type: 'object',
+                    additionalProperties: {
+                      type: 'string',
+                    },
+                    default: {},
+                  },
+                },
+                additionalProperties: false,
+                required: ['path', 'purpose'],
+              },
+              WatchRecord: {
+                type: 'object',
+                properties: {
+                  watchId: {
+                    type: 'string',
+                  },
+                  topicId: {
+                    type: 'string',
+                  },
+                  kind: {
+                    $ref: '#/$defs/WatchKind',
+                  },
+                  target: {
+                    type: 'string',
+                  },
+                  predicate: true,
+                  onTrigger: {
+                    $ref: '#/$defs/WatchTrigger',
+                  },
+                  lastStateHash: {
+                    type: ['string', 'null'],
+                  },
+                  expiresAt: {
+                    type: ['integer', 'null'],
+                    format: 'int64',
+                  },
+                  createdAt: {
+                    type: 'integer',
+                    format: 'int64',
+                  },
+                  updatedAt: {
+                    type: 'integer',
+                    format: 'int64',
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'watchId',
+                  'topicId',
+                  'kind',
+                  'target',
+                  'predicate',
+                  'onTrigger',
+                  'createdAt',
+                  'updatedAt',
+                ],
+              },
+              WatchKind: {
+                type: 'string',
+                enum: ['file_hash', 'http_check', 'deadline'],
+              },
+              WatchTrigger: {
+                type: 'string',
+                enum: ['notify_direct', 'invalidate_action', 'enqueue_followup'],
+              },
+              PendingActionRecord: {
+                type: 'object',
+                properties: {
+                  actionId: {
+                    type: 'string',
+                  },
+                  topicId: {
+                    type: 'string',
+                  },
+                  connectorTool: {
+                    type: 'string',
+                  },
+                  params: true,
+                  inputHashes: {
+                    type: 'object',
+                    additionalProperties: {
+                      type: 'string',
+                    },
+                  },
+                  idempotencyKey: {
+                    type: 'string',
+                  },
+                  status: {
+                    $ref: '#/$defs/PendingActionStatus',
+                  },
+                  receipt: true,
+                  expiresAt: {
+                    type: 'integer',
+                    format: 'int64',
+                  },
+                  createdAt: {
+                    type: 'integer',
+                    format: 'int64',
+                  },
+                  updatedAt: {
+                    type: 'integer',
+                    format: 'int64',
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'actionId',
+                  'topicId',
+                  'connectorTool',
+                  'params',
+                  'inputHashes',
+                  'idempotencyKey',
+                  'status',
+                  'expiresAt',
+                  'createdAt',
+                  'updatedAt',
+                ],
+              },
+              PendingActionStatus: {
+                type: 'string',
+                enum: ['awaiting_confirm', 'stale', 'executing', 'done', 'unknown_pending_receipt'],
+              },
+              DossierRevision: {
+                type: 'object',
+                properties: {
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  at: {
+                    type: 'integer',
+                    format: 'int64',
+                  },
+                  title: {
+                    type: 'string',
+                  },
+                  signal: {
+                    $ref: '#/$defs/DossierSignal',
+                  },
+                  summaryMd: {
+                    type: 'string',
+                  },
+                  evidenceMd: {
+                    type: ['string', 'null'],
+                  },
+                  factState: {
+                    type: ['string', 'null'],
+                  },
+                  changeNote: {
+                    type: ['string', 'null'],
+                    default: null,
+                  },
+                  artifacts: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/DossierArtifact',
+                    },
+                    default: [],
+                  },
+                  choices: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/DossierChoice',
+                    },
+                    default: [],
+                  },
+                  chosenKey: {
+                    type: ['string', 'null'],
+                    default: null,
+                  },
+                },
+                additionalProperties: false,
+                required: ['revision', 'at', 'title', 'signal', 'summaryMd'],
+              },
+              DossierChoice: {
+                type: 'object',
+                properties: {
+                  key: {
+                    type: 'string',
+                  },
+                  label: {
+                    type: 'string',
+                  },
+                  detail: {
+                    type: 'string',
+                    default: '',
+                  },
+                  recommended: {
+                    type: 'boolean',
+                    default: false,
+                  },
+                  resolves: {
+                    type: 'boolean',
+                    default: false,
+                  },
+                  instruction: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['key', 'label', 'instruction'],
+              },
+            },
+          },
+          resources: {},
+        },
+        dossiers: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'DossiersRead',
+            type: 'object',
+            additionalProperties: false,
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'Dossiers',
+            type: 'object',
+            properties: {
+              dossiers: {
+                type: 'array',
+                items: {
+                  $ref: '#/$defs/DossierSummary',
+                },
+              },
+              notificationsEnabled: {
+                type: 'boolean',
+              },
+            },
+            additionalProperties: false,
+            required: ['dossiers', 'notificationsEnabled'],
+            $defs: {
+              DossierSummary: {
+                type: 'object',
+                properties: {
+                  topicId: {
+                    type: 'string',
+                  },
+                  entityKey: {
+                    type: ['string', 'null'],
+                  },
+                  title: {
+                    type: 'string',
+                  },
+                  signal: {
+                    $ref: '#/$defs/DossierSignal',
+                  },
+                  windowAt: {
+                    type: ['integer', 'null'],
+                    format: 'int64',
+                  },
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  lastMaterialChangeAt: {
+                    type: 'integer',
+                    format: 'int64',
+                  },
+                  muted: {
+                    type: 'boolean',
+                  },
+                  unfollowed: {
+                    type: 'boolean',
+                    default: false,
+                  },
+                  preview: {
+                    type: 'string',
+                    default: '',
+                  },
+                  artifactCount: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  lastNotifiedRevision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  lastInterruptReason: {
+                    type: ['string', 'null'],
+                  },
+                  lastInterruptAt: {
+                    type: ['integer', 'null'],
+                    format: 'int64',
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'topicId',
+                  'title',
+                  'signal',
+                  'revision',
+                  'lastMaterialChangeAt',
+                  'muted',
+                  'artifactCount',
+                  'lastNotifiedRevision',
+                ],
+              },
+              DossierSignal: {
+                type: 'string',
+                enum: ['red', 'yellow', 'green', 'done'],
+              },
+            },
+          },
+          resources: {},
+        },
+        dropDiscoveryLead: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'DiscoveryLead',
+            type: 'object',
+            properties: {
+              text: {
+                type: 'string',
+              },
+              entityKey: {
+                type: ['string', 'null'],
+              },
+              paths: {
+                type: 'array',
+                items: {
+                  type: 'string',
+                },
+                default: [],
+              },
+            },
+            additionalProperties: false,
+            required: ['text'],
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'DossierRead',
+            type: 'object',
+            properties: {
+              topicId: {
+                type: 'string',
+              },
+            },
+            additionalProperties: false,
+            required: ['topicId'],
           },
           resources: {},
         },
@@ -12115,6 +12878,19 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  discoveryWorker: {
+                    type: 'boolean',
+                  },
+                  discoveryRun: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentDiscoveryRunStatus',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   incognito: {
                     type: 'boolean',
                     default: false,
@@ -12266,6 +13042,32 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AgentDiscoveryRunStatus: {
+                type: 'object',
+                properties: {
+                  startedAt: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  terminal: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/Terminal',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['startedAt'],
+              },
+              Terminal: {
+                type: 'string',
+                enum: ['completed', 'failed', 'cancelled'],
               },
               AgentSessionKind: {
                 type: 'string',
@@ -12932,6 +13734,19 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  discoveryWorker: {
+                    type: 'boolean',
+                  },
+                  discoveryRun: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentDiscoveryRunStatus',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   incognito: {
                     type: 'boolean',
                     default: false,
@@ -13083,6 +13898,32 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AgentDiscoveryRunStatus: {
+                type: 'object',
+                properties: {
+                  startedAt: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  terminal: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/Terminal',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['startedAt'],
+              },
+              Terminal: {
+                type: 'string',
+                enum: ['completed', 'failed', 'cancelled'],
               },
               AgentSessionKind: {
                 type: 'string',
@@ -21031,6 +21872,19 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  discoveryWorker: {
+                    type: 'boolean',
+                  },
+                  discoveryRun: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentDiscoveryRunStatus',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   incognito: {
                     type: 'boolean',
                     default: false,
@@ -21182,6 +22036,32 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AgentDiscoveryRunStatus: {
+                type: 'object',
+                properties: {
+                  startedAt: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  terminal: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/Terminal',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['startedAt'],
+              },
+              Terminal: {
+                type: 'string',
+                enum: ['completed', 'failed', 'cancelled'],
               },
               AgentSessionKind: {
                 type: 'string',
@@ -22265,6 +23145,19 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  discoveryWorker: {
+                    type: 'boolean',
+                  },
+                  discoveryRun: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentDiscoveryRunStatus',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   incognito: {
                     type: 'boolean',
                     default: false,
@@ -22416,6 +23309,32 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AgentDiscoveryRunStatus: {
+                type: 'object',
+                properties: {
+                  startedAt: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  terminal: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/Terminal',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['startedAt'],
+              },
+              Terminal: {
+                type: 'string',
+                enum: ['completed', 'failed', 'cancelled'],
               },
               AgentSessionKind: {
                 type: 'string',
@@ -24551,6 +25470,19 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  discoveryWorker: {
+                    type: 'boolean',
+                  },
+                  discoveryRun: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentDiscoveryRunStatus',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   incognito: {
                     type: 'boolean',
                     default: false,
@@ -24702,6 +25634,32 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AgentDiscoveryRunStatus: {
+                type: 'object',
+                properties: {
+                  startedAt: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  terminal: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/Terminal',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['startedAt'],
+              },
+              Terminal: {
+                type: 'string',
+                enum: ['completed', 'failed', 'cancelled'],
               },
               AgentSessionKind: {
                 type: 'string',
@@ -30091,6 +31049,19 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  discoveryWorker: {
+                    type: 'boolean',
+                  },
+                  discoveryRun: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentDiscoveryRunStatus',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   incognito: {
                     type: 'boolean',
                     default: false,
@@ -30242,6 +31213,32 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AgentDiscoveryRunStatus: {
+                type: 'object',
+                properties: {
+                  startedAt: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  terminal: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/Terminal',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['startedAt'],
+              },
+              Terminal: {
+                type: 'string',
+                enum: ['completed', 'failed', 'cancelled'],
               },
               AgentSessionKind: {
                 type: 'string',
@@ -32058,6 +33055,19 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  discoveryWorker: {
+                    type: 'boolean',
+                  },
+                  discoveryRun: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentDiscoveryRunStatus',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   incognito: {
                     type: 'boolean',
                     default: false,
@@ -32209,6 +33219,32 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AgentDiscoveryRunStatus: {
+                type: 'object',
+                properties: {
+                  startedAt: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  terminal: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/Terminal',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['startedAt'],
+              },
+              Terminal: {
+                type: 'string',
+                enum: ['completed', 'failed', 'cancelled'],
               },
               AgentSessionKind: {
                 type: 'string',
@@ -33425,6 +34461,19 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  discoveryWorker: {
+                    type: 'boolean',
+                  },
+                  discoveryRun: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentDiscoveryRunStatus',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   incognito: {
                     type: 'boolean',
                     default: false,
@@ -33576,6 +34625,32 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AgentDiscoveryRunStatus: {
+                type: 'object',
+                properties: {
+                  startedAt: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  terminal: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/Terminal',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['startedAt'],
+              },
+              Terminal: {
+                type: 'string',
+                enum: ['completed', 'failed', 'cancelled'],
               },
               AgentSessionKind: {
                 type: 'string',
@@ -34385,6 +35460,38 @@ export const contracts: {
                 ],
               },
             },
+          },
+          resources: {},
+        },
+        openDossierThread: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'DossierThreadOpen',
+            type: 'object',
+            properties: {
+              topicId: {
+                type: 'string',
+              },
+              elevate: {
+                type: 'boolean',
+                default: false,
+              },
+            },
+            additionalProperties: false,
+            required: ['topicId'],
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'DossierThread',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId'],
           },
           resources: {},
         },
@@ -36293,6 +37400,30 @@ export const contracts: {
           },
           resources: {},
         },
+        readDossierArtifact: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'DossierArtifactRead',
+            type: 'object',
+            properties: {
+              topicId: {
+                type: 'string',
+              },
+              path: {
+                type: 'string',
+              },
+            },
+            additionalProperties: false,
+            required: ['topicId', 'path'],
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'string',
+            type: 'string',
+          },
+          resources: {},
+        },
         readFile: {
           mode: 'subscription',
           input: {
@@ -37239,6 +38370,19 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  discoveryWorker: {
+                    type: 'boolean',
+                  },
+                  discoveryRun: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentDiscoveryRunStatus',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   incognito: {
                     type: 'boolean',
                     default: false,
@@ -37390,6 +38534,32 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AgentDiscoveryRunStatus: {
+                type: 'object',
+                properties: {
+                  startedAt: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  terminal: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/Terminal',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['startedAt'],
+              },
+              Terminal: {
+                type: 'string',
+                enum: ['completed', 'failed', 'cancelled'],
               },
               AgentSessionKind: {
                 type: 'string',
@@ -45180,6 +46350,19 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  discoveryWorker: {
+                    type: 'boolean',
+                  },
+                  discoveryRun: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentDiscoveryRunStatus',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   incognito: {
                     type: 'boolean',
                     default: false,
@@ -45331,6 +46514,32 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AgentDiscoveryRunStatus: {
+                type: 'object',
+                properties: {
+                  startedAt: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  terminal: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/Terminal',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['startedAt'],
+              },
+              Terminal: {
+                type: 'string',
+                enum: ['completed', 'failed', 'cancelled'],
               },
               AgentSessionKind: {
                 type: 'string',
@@ -47617,6 +48826,19 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  discoveryWorker: {
+                    type: 'boolean',
+                  },
+                  discoveryRun: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentDiscoveryRunStatus',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   incognito: {
                     type: 'boolean',
                     default: false,
@@ -47768,6 +48990,32 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AgentDiscoveryRunStatus: {
+                type: 'object',
+                properties: {
+                  startedAt: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  terminal: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/Terminal',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['startedAt'],
+              },
+              Terminal: {
+                type: 'string',
+                enum: ['completed', 'failed', 'cancelled'],
               },
               AgentSessionKind: {
                 type: 'string',
@@ -53965,6 +55213,19 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  discoveryWorker: {
+                    type: 'boolean',
+                  },
+                  discoveryRun: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentDiscoveryRunStatus',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   incognito: {
                     type: 'boolean',
                     default: false,
@@ -54116,6 +55377,32 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AgentDiscoveryRunStatus: {
+                type: 'object',
+                properties: {
+                  startedAt: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  terminal: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/Terminal',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['startedAt'],
+              },
+              Terminal: {
+                type: 'string',
+                enum: ['completed', 'failed', 'cancelled'],
               },
               AgentSessionKind: {
                 type: 'string',
@@ -54637,6 +55924,99 @@ export const contracts: {
                 ],
               },
             },
+          },
+          resources: {},
+        },
+        setDiscoveryNotifications: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'DiscoveryNotifications',
+            type: 'object',
+            properties: {
+              enabled: {
+                type: 'boolean',
+              },
+            },
+            additionalProperties: false,
+            required: ['enabled'],
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'null',
+            type: 'null',
+          },
+          resources: {},
+        },
+        setDossierMuted: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'DossierMute',
+            type: 'object',
+            properties: {
+              topicId: {
+                type: 'string',
+              },
+              muted: {
+                type: 'boolean',
+              },
+            },
+            additionalProperties: false,
+            required: ['topicId', 'muted'],
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'null',
+            type: 'null',
+          },
+          resources: {},
+        },
+        setDossierResolved: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'DossierResolve',
+            type: 'object',
+            properties: {
+              topicId: {
+                type: 'string',
+              },
+              resolved: {
+                type: 'boolean',
+              },
+            },
+            additionalProperties: false,
+            required: ['topicId', 'resolved'],
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'null',
+            type: 'null',
+          },
+          resources: {},
+        },
+        setDossierUnfollowed: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'DossierUnfollow',
+            type: 'object',
+            properties: {
+              topicId: {
+                type: 'string',
+              },
+              unfollowed: {
+                type: 'boolean',
+              },
+            },
+            additionalProperties: false,
+            required: ['topicId', 'unfollowed'],
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'null',
+            type: 'null',
           },
           resources: {},
         },
@@ -58926,6 +60306,141 @@ export const contracts: {
             },
             additionalProperties: false,
             required: ['revision'],
+          },
+          resources: {},
+        },
+        watchDossiers: {
+          mode: 'subscription',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'DossiersRead',
+            type: 'object',
+            additionalProperties: false,
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'DossiersUpdate',
+            type: 'object',
+            properties: {
+              dossiers: {
+                type: 'array',
+                items: {
+                  $ref: '#/$defs/DossierSummary',
+                },
+              },
+              notificationsEnabled: {
+                type: 'boolean',
+              },
+              latestInterrupt: {
+                anyOf: [
+                  {
+                    $ref: '#/$defs/DiscoveryInterrupt',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+              },
+            },
+            additionalProperties: false,
+            required: ['dossiers', 'notificationsEnabled'],
+            $defs: {
+              DossierSummary: {
+                type: 'object',
+                properties: {
+                  topicId: {
+                    type: 'string',
+                  },
+                  entityKey: {
+                    type: ['string', 'null'],
+                  },
+                  title: {
+                    type: 'string',
+                  },
+                  signal: {
+                    $ref: '#/$defs/DossierSignal',
+                  },
+                  windowAt: {
+                    type: ['integer', 'null'],
+                    format: 'int64',
+                  },
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  lastMaterialChangeAt: {
+                    type: 'integer',
+                    format: 'int64',
+                  },
+                  muted: {
+                    type: 'boolean',
+                  },
+                  unfollowed: {
+                    type: 'boolean',
+                    default: false,
+                  },
+                  preview: {
+                    type: 'string',
+                    default: '',
+                  },
+                  artifactCount: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  lastNotifiedRevision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  lastInterruptReason: {
+                    type: ['string', 'null'],
+                  },
+                  lastInterruptAt: {
+                    type: ['integer', 'null'],
+                    format: 'int64',
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'topicId',
+                  'title',
+                  'signal',
+                  'revision',
+                  'lastMaterialChangeAt',
+                  'muted',
+                  'artifactCount',
+                  'lastNotifiedRevision',
+                ],
+              },
+              DossierSignal: {
+                type: 'string',
+                enum: ['red', 'yellow', 'green', 'done'],
+              },
+              DiscoveryInterrupt: {
+                type: 'object',
+                properties: {
+                  topicId: {
+                    type: 'string',
+                  },
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  reason: {
+                    type: 'string',
+                  },
+                  at: {
+                    type: 'integer',
+                    format: 'int64',
+                  },
+                },
+                additionalProperties: false,
+                required: ['topicId', 'revision', 'reason', 'at'],
+              },
+            },
           },
           resources: {},
         },
@@ -65747,6 +67262,25 @@ export const contracts: {
                 properties: {
                   kind: {
                     type: 'string',
+                    const: 'stale',
+                  },
+                  changedPaths: {
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                },
+                required: ['kind', 'changedPaths'],
+                description:
+                  'A confirmed file mutation observed changed inputs before applying any operation.',
+              },
+              {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  kind: {
+                    type: 'string',
                     const: 'failed',
                   },
                   message: {
@@ -65798,6 +67332,25 @@ export const contracts: {
                   value: true,
                 },
                 required: ['kind', 'value'],
+              },
+              {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'stale',
+                  },
+                  changedPaths: {
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                },
+                required: ['kind', 'changedPaths'],
+                description:
+                  'A confirmed file mutation observed changed inputs before applying any operation.',
               },
               {
                 type: 'object',
@@ -66056,6 +67609,25 @@ export const contracts: {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'stale',
+                      },
+                      changedPaths: {
+                        type: 'array',
+                        items: {
+                          type: 'string',
+                        },
+                      },
+                    },
+                    required: ['kind', 'changedPaths'],
+                    description:
+                      'A confirmed file mutation observed changed inputs before applying any operation.',
+                  },
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'failed',
                       },
                       message: {
@@ -66103,6 +67675,25 @@ export const contracts: {
                   value: true,
                 },
                 required: ['kind', 'value'],
+              },
+              {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'stale',
+                  },
+                  changedPaths: {
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                },
+                required: ['kind', 'changedPaths'],
+                description:
+                  'A confirmed file mutation observed changed inputs before applying any operation.',
               },
               {
                 type: 'object',

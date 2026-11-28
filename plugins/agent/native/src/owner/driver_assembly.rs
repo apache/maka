@@ -156,10 +156,12 @@ impl Owner {
                 .into());
             }
         };
-        let read_only_discovery = self.scheduler.investigation_profile(&view.spec.session_id)
-            == Some(DiscoveryWorkerTools::ReadOnly);
+        let investigation = self
+            .scheduler
+            .investigation_profile(&view.spec.session_id)
+            .is_some();
         let external_bridge = matches!(&view.spec.backend, BackendSpec::Executor { selection, .. } if selection.executor == "external");
-        let host_tools = !read_only_discovery && (model.is_some() || external_bridge);
+        let host_tools = !investigation && (model.is_some() || external_bridge);
         let catalog = if !host_tools {
             self.mcp_projects.base.clone()
         } else {
@@ -209,6 +211,7 @@ impl Owner {
             None => None,
         };
         let basis = CapturedRun {
+            dossier_thread: DossierThreadMode::from_config(&current.configuration),
             memory_admission: view.spec.memory_admission,
             memory,
             mcp_catalog: Some(catalog.clone()),
@@ -406,9 +409,12 @@ impl Owner {
                 let mode = basis.model.as_ref().map(|model| model.tool_mode).unwrap_or_default();
                 let uses_maka_tools = basis.model.is_some() || basis.executor.as_ref().is_some_and(|executor| executor.selection.executor == "external");
                 let cells_enabled = uses_maka_tools && mode == ToolMode::CodeMode;
+                let discovery = if basis.model.is_some() {
+                    self.scheduler.discovery_progress(&view).await.map_err(RunError::InvalidInput)?.map(|p| Arc::new(std::sync::Mutex::new(p)))
+                } else { None };
                 let cells = cells_enabled.then(|| driver_cells::RunCells::new(
                     self.clone(), access.clone(), self.code_executor.clone().with_language(language),
-                    workers.clone(), cleanup.clone(),
+                    workers.clone(), cleanup.clone(), discovery.clone(),
                 )).transpose().map_err(RunError::Tool)?;
                 let backend = match (&basis.model, &basis.executor) {
                     (Some(accepted), None) => {
@@ -423,6 +429,7 @@ impl Owner {
                             source.with_pricing(pricing.clone())
                         } else { source };
                         let model = driver_model::DriverModel {
+                        discovery,
                         memory: basis.memory.clone(),
                         state: state.clone(),
                         history: state.session_history(view.spec.owner.clone(), view.spec.session_id.clone()),

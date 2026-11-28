@@ -128,9 +128,39 @@ pub(crate) fn resolve_session(
         .map_err(|_| "agent_workspace_binding_unavailable".into())
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum DossierThreadMode {
+    None,
+    /// Initial read-only dossier consultation / staging mode.
+    Restricted,
+    /// User-confirmed execution mode on the same thread session (full normal session permissions).
+    Elevated,
+}
+
+impl DossierThreadMode {
+    pub(super) fn from_config(config: &ResolvedConfiguration) -> Self {
+        if config.dossier_seed.is_none() {
+            Self::None
+        } else if config.dossier_elevated {
+            Self::Elevated
+        } else {
+            Self::Restricted
+        }
+    }
+
+    pub(super) fn is_dossier(self) -> bool {
+        !matches!(self, Self::None)
+    }
+
+    pub(super) fn is_restricted(self) -> bool {
+        matches!(self, Self::Restricted)
+    }
+}
+
 /// Live preparation captured by this activation; durable inputs are frozen into RunSpec separately.
 #[derive(Clone)]
 struct CapturedRun {
+    dossier_thread: DossierThreadMode,
     mcp_catalog: Option<Arc<crate::mcp::Catalog>>,
     mcp_revision: Option<String>,
     client_mcp: Option<crate::mcp::ClientGeneration>,
@@ -225,6 +255,21 @@ fn cap_permissions(
     }
 }
 
+fn advance_permission_boundary(
+    configuration: &mut StoredSessionConfiguration,
+) -> Result<(), maka_event_log::StoreError> {
+    configuration.boundary_revision = configuration
+        .boundary_revision
+        .checked_add(1)
+        .filter(|revision| *revision <= maka_agent_facts::interaction::MAX_SAFE_INTEGER)
+        .ok_or_else(|| {
+            maka_event_log::StoreError::InvalidTransition(
+                "permission boundary revision exhausted".into(),
+            )
+        })?;
+    Ok(())
+}
+
 fn intersect_tools(
     requested: Option<Vec<String>>,
     ceiling: Option<Vec<String>>,
@@ -246,7 +291,10 @@ pub(crate) struct Owner {
     helper: std::path::PathBuf,
     pricing: Option<Arc<dyn maka_agent_engine::pricing::Pricing>>,
     pub(super) durable: maka_agent_state::Store,
+    pub(crate) discovery: maka_agent_state::discovery::DiscoveryStore,
     pub(super) services: maka_host_runtime::application::NativeServices,
+    watch_runner: discovery::watches::WatchRunner,
+    watch_scopes: discovery::watch_scope::WatchScopes,
     wake_notify: tokio::sync::Notify,
     physical_changes: tokio::sync::watch::Sender<()>,
     pub(crate) progress: worker_progress::Registry,
@@ -467,14 +515,20 @@ impl Owner {
         let import_specs = settings.import_roots.clone();
         let managed = managed_worktrees.clone();
         let root_path = root.canonical_path().to_owned();
-        let (workspace_roots, import_roots) = tokio::task::spawn_blocking(move || {
-            Ok::<_, String>((
-                workspace::open_projects(workspace_specs, &managed)?,
-                workspace::open(import_specs, &root_path)?,
-            ))
-        })
-        .await
-        .map_err(|_| "agent_workspace_configuration_worker_failed")??;
+        let owned_root = root.clone();
+        let (workspace_roots, import_roots, watch_scopes) =
+            tokio::task::spawn_blocking(move || {
+                let roots = workspace::open_projects(workspace_specs, &managed)?;
+                let watch_scopes = discovery::watch_scope::WatchScopes::open(&roots, &owned_root)
+                    .map_err(|e| e.to_string())?;
+                Ok::<_, String>((
+                    roots,
+                    workspace::open(import_specs, &root_path)?,
+                    watch_scopes,
+                ))
+            })
+            .await
+            .map_err(|_| "agent_workspace_configuration_worker_failed")??;
         let home = std::env::home_dir();
         let workers = TaskTracker::new();
         let stop = persistence
@@ -497,6 +551,7 @@ impl Owner {
             deployment: data_source.deployment,
             namespace: data_source.namespace.clone(),
         };
+        let discovery = durable.discovery(&run_owner).map_err(|e| e.to_string())?;
         let auxiliary = auxiliary::Auxiliary::new(models.clone(), run_owner.clone());
         let code_executor = maka_tools::CodeExecutor::new(maka_code_runtime::CellLimits::default())
             .and_then(|executor| {
@@ -545,9 +600,22 @@ impl Owner {
             persistence.store().clone(),
             prefix.clone(),
         ));
+        watch_scopes.restore(&scheduler).await?;
         if settings.scheduled_tasks {
             additional.extend(scheduler.tools());
         }
+        additional.extend(scheduler.dossier_tools().into_iter().filter(|tool| {
+            settings.scheduled_tasks
+                || matches!(
+                    tool.definition.name.as_str(),
+                    discovery::STAGE
+                        | discovery::REGISTER
+                        | discovery::PENDING
+                        | discovery::WATCH_SCOPE
+                        | discovery::WORKSPACE_MAP
+                        | discovery::PREFERENCES
+                )
+        }));
         let todo = Arc::new(todo::Todo::new(persistence.store().clone(), prefix.clone()));
         if settings.todo {
             additional.extend(todo.tools());
@@ -711,12 +779,15 @@ impl Owner {
             bot,
             progress: Default::default(),
             recap_storage,
+            discovery,
             scheduler,
             recall,
             store: persistence.store().clone(),
             model_reader_process,
             durable,
             services: context.services().clone(),
+            watch_runner: Default::default(),
+            watch_scopes,
             wake_notify: tokio::sync::Notify::new(),
             physical_changes: tokio::sync::watch::channel(()).0,
             prefix,
@@ -1009,6 +1080,24 @@ impl Owner {
         })
         .await
     }
+    async fn default_session_permissions(&self) -> Result<WorkspacePermissions, String> {
+        let defaults = self
+            .configuration
+            .runtime_policy()
+            .await
+            .map_err(|_| "agent_settings_unavailable")?
+            .policy
+            .chat_defaults;
+        Ok(WorkspacePermissions {
+            access: match defaults.sandbox_mode {
+                SandboxMode::ReadOnly => WorkspaceAccess::ReadOnly,
+                SandboxMode::WorkspaceWrite => WorkspaceAccess::WorkspaceWrite,
+                SandboxMode::DangerFullAccess => WorkspaceAccess::DangerFullAccess,
+            },
+            request_permissions: self.settings.permissions.request_permissions,
+        })
+    }
+
     async fn create_inner(
         &self,
         input: Create,
@@ -1087,21 +1176,7 @@ impl Owner {
         let (incognito, parent_session_id, permissions, tool_ceiling, caller_fence) =
             match self.agent_caller(scope).await? {
                 None => {
-                    let defaults = self
-                        .configuration
-                        .runtime_policy()
-                        .await
-                        .map_err(|_| "agent_settings_unavailable")?
-                        .policy
-                        .chat_defaults;
-                    let permissions = WorkspacePermissions {
-                        access: match defaults.sandbox_mode {
-                            SandboxMode::ReadOnly => WorkspaceAccess::ReadOnly,
-                            SandboxMode::WorkspaceWrite => WorkspaceAccess::WorkspaceWrite,
-                            SandboxMode::DangerFullAccess => WorkspaceAccess::DangerFullAccess,
-                        },
-                        request_permissions: self.settings.permissions.request_permissions,
-                    };
+                    let permissions = self.default_session_permissions().await?;
                     (input.incognito, None, permissions, None, None)
                 }
                 Some(caller) => (
@@ -1248,6 +1323,9 @@ impl Owner {
                 backend,
                 applied_preset,
                 compaction_prompt: None,
+                dossier_seed: None,
+                dossier_elevated: false,
+                discovery_worker: false,
                 collaboration_mode: CollaborationMode::Agent,
                 tools,
                 title: input.title,
@@ -1328,23 +1406,11 @@ impl Owner {
             change.settings.request_permissions && !configuration.permissions.request_permissions
         });
         let guard = if invalidate_grants || enabling_requests {
-            let busy = self.runs.state().await.busy(&input.session_id)
-                || self.mcp_projects.has_any_client(&input.session_id);
-            let guard = self
-                .durable
-                .quiescence_guard(self.run_owner(), input.session_id.clone())
-                .map_err(|error| error.to_string())?;
-            if busy
-                || !guard
-                    .observe()
-                    .await
-                    .map_err(|error| error.to_string())?
-                    .is_quiescent()
-            {
+            let Some(guard) = self.quiescent_permission_guard(&input.session_id).await? else {
                 return Ok(NativeMutation::Returned(MetadataResult::Rejected {
                     reason: Rejection::Busy,
                 }));
-            }
+            };
             Some(guard)
         } else {
             None
@@ -1361,15 +1427,7 @@ impl Owner {
                 configuration.pinned = pinned;
             }
             if invalidate_grants {
-                configuration.boundary_revision = configuration
-                    .boundary_revision
-                    .checked_add(1)
-                    .filter(|revision| *revision <= maka_agent_facts::interaction::MAX_SAFE_INTEGER)
-                    .ok_or_else(|| {
-                        maka_event_log::StoreError::InvalidTransition(
-                            "permission boundary revision exhausted".into(),
-                        )
-                    })?;
+                advance_permission_boundary(configuration)?;
             }
             if let Some(change) = input.permissions {
                 configuration.permissions = change.settings;
@@ -1407,7 +1465,7 @@ impl Owner {
         };
         let selected = self.select_catalog_tools(
             &catalog.tools,
-            Some(session),
+            Some((session, basis.dossier_thread)),
             basis.allowed_tools.as_deref(),
             editing,
         );
@@ -1420,20 +1478,43 @@ impl Owner {
     fn select_catalog_tools(
         &self,
         catalog: &crate::tools::Declarations,
-        session: Option<&str>,
+        session: Option<(&str, DossierThreadMode)>,
         allowed_tools: Option<&[String]>,
         editing: Option<maka_agent_facts::execution::EditingTools>,
     ) -> crate::tools::Declarations {
-        let bot = session.is_some_and(|session| self.bot.is(session));
+        let bot = session.is_some_and(|(id, _)| self.bot.is(id));
         let investigation =
-            session.is_some_and(|id| self.scheduler.investigation_profile(id).is_some());
+            session.is_some_and(|(id, _)| self.scheduler.investigation_profile(id).is_some());
+        let dossier_mode = session.map_or(DossierThreadMode::None, |(_, mode)| mode);
+        let dossier_thread = dossier_mode.is_dossier();
+        let dossier_restricted = dossier_mode.is_restricted();
         let excluded: Vec<_> = catalog
             .definitions()
             .map(|definition| definition.name.as_str())
             .filter(|name| {
                 let bot_only = *name == bot::SEND_USER || *name == bot::SLEEP;
                 let memory = *name == discovery::MEMORY;
-                (*name == discovery::COMPLETE && !investigation)
+                (discovery::WORKER_TOOLS.contains(name)
+                    && !investigation
+                    && !(*name == discovery::WATCH_SCOPE && (bot || dossier_thread))
+                    && !(*name == discovery::WORKSPACE_MAP && bot)
+                    && !(matches!(
+                        *name,
+                        discovery::STAGE | discovery::REGISTER | discovery::PENDING
+                    ) && dossier_thread))
+                    || (dossier_restricted
+                        && !matches!(
+                            *name,
+                            discovery::STAGE
+                                | discovery::REGISTER
+                                | discovery::PENDING
+                                | discovery::WATCH_SCOPE
+                                | discovery::PREFERENCES
+                        )
+                        && !self.permits_discovery_tool(name))
+                    || (*name == discovery::PREFERENCES && !(bot || dossier_thread))
+                    || (matches!(*name, discovery::LIST | discovery::READ)
+                        && !(bot || investigation))
                     || (memory && (!self.settings.scheduled_tasks || !(bot || investigation)))
                     || (bot_only && !bot)
                     || (!bot_only

@@ -173,6 +173,109 @@ export function stableRowId(
   throw new Error('Transcript row has neither a source address nor a live message identity.');
 }
 
+export function recentMessages(rows: readonly Row[]) {
+  const merged: { id: string; role: 'user' | 'assistant'; text: string }[] = [];
+  for (const row of rows) {
+    if (
+      (row.role === 'user' || row.role === 'assistant') &&
+      row.field === 'body' &&
+      !row.origin &&
+      row.text.trim().length > 0
+    ) {
+      const prev = merged.at(-1);
+      const id = stableRowId(row);
+      if (prev && prev.id === id) prev.text = row.text;
+      else merged.push({ id, role: row.role, text: row.text });
+    }
+  }
+  return merged.slice(-6);
+}
+
+export type DossierToolStep = {
+  id: string;
+  name: string;
+  title?: Row['tool'] extends infer T
+    ? T extends { call: infer C }
+      ? C extends { title: infer D }
+        ? D
+        : null
+      : null
+    : null;
+  presentation?: string | null;
+  pending: boolean;
+  failed: boolean;
+};
+
+export function dossierThreadActivity(rows: readonly Row[]): {
+  steps: DossierToolStep[];
+  active: boolean;
+} {
+  let start = 0;
+  for (let i = rows.length - 1; i >= 0; i -= 1) {
+    const row = rows[i]!;
+    if (row.role === 'user' && row.field === 'body' && !row.origin && row.text.trim().length > 0) {
+      start = i + 1;
+      break;
+    }
+  }
+  const turnRows = rows.slice(Math.max(0, start - 1));
+  const latest = historyTurnKey(turnRows.findLast((row) => historyTurnKey(row) !== undefined));
+  const inLatestTurn = (row: Row) => latest === undefined || historyTurnKey(row) === latest;
+  const finished = turnRows.some(
+    (row) =>
+      inLatestTurn(row) && (row.timing?.finished != null || row.finalOutput || row.finalAnswer),
+  );
+  const byId = new Map<string, DossierToolStep>();
+  let active = false;
+  for (let i = start; i < rows.length; i += 1) {
+    const row = rows[i]!;
+    if (!inLatestTurn(row)) continue;
+    if (row.work) {
+      const live = row.position === undefined || row.position.kind === 'live';
+      if (!finished && live && (row.timing?.finished === null || row.closedAt === null))
+        active = true;
+      continue;
+    }
+    const call = row.tool?.call;
+    if (!call) continue;
+    const result = row.tool?.result;
+    const pending = !finished && Boolean(call.pending && !result);
+    const failed = Boolean(result?.isError);
+    if (pending) active = true;
+    byId.set(row.tool!.toolUseId, {
+      id: row.tool!.toolUseId,
+      name: call.name,
+      title: call.title,
+      presentation: call.presentation ?? null,
+      pending,
+      failed,
+    });
+  }
+  return { steps: [...byId.values()].slice(-4), active };
+}
+
+export function dossierThreadMessages(rows: readonly Row[]) {
+  const merged: { id: string; role: 'user' | 'assistant'; text: string; at?: number }[] = [];
+  for (const row of rows) {
+    if (
+      (row.role === 'user' || row.role === 'assistant') &&
+      row.field === 'body' &&
+      !row.origin &&
+      row.text.trim().length > 0
+    ) {
+      const prev = merged.at(-1);
+      const id = stableRowId(row);
+      if (prev && prev.id === id) {
+        prev.text = row.text;
+        if (row.timestamp !== undefined) prev.at = row.timestamp;
+      } else {
+        merged.push({ id, role: row.role, text: row.text, at: row.timestamp });
+      }
+    }
+  }
+  return merged.slice(-40);
+}
+
 export function activityMessage(origin: MessageOrigin | null | undefined): boolean {
   return origin?.kind === 'automation' || senderSession(origin) !== null;
 }

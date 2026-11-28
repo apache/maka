@@ -50,6 +50,25 @@ pub enum CallerStatus {
     AuthorizationChanged,
 }
 impl CallerFence {
+    pub fn completed_local_tool(&self, c: &Connection, name: &str) -> Result<bool, StoreError> {
+        Ok(c.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM agent_tools WHERE run=?1 AND pending=0
+                AND json_extract(body,'$.call.name')=?2
+                AND json_extract(body,'$.call.provider_executed')=0
+                AND json_extract(body,'$.accepted.outcome.kind')='succeeded'
+            ) OR EXISTS(
+                SELECT 1 FROM agent_cells, json_each(agent_cells.body, '$.children') AS child
+                WHERE agent_cells.run=?1
+                AND json_extract(child.value, '$.name')=?2
+                AND json_extract(child.value, '$.localResult.settlement')='returned'
+                AND json_extract(child.value, '$.localResult.isError')=0
+            )",
+            rusqlite::params![self.execution.run_id.to_string(), name],
+            |r| r.get(0),
+        )?)
+    }
+
     pub fn status(&self, connection: &Connection) -> Result<CallerStatus, StoreError> {
         if !crate::interactions::sql::active_session(connection, &self.execution.session_id)? {
             return Ok(CallerStatus::Unavailable);
@@ -536,6 +555,12 @@ impl Store {
     pub fn artifacts(&self) -> crate::artifacts::ArtifactStore {
         crate::artifacts::ArtifactStore::new(self.data.clone())
     }
+    pub fn discovery(
+        &self,
+        owner: &RunOwner,
+    ) -> Result<crate::discovery::DiscoveryStore, StoreError> {
+        crate::discovery::DiscoveryStore::new(self.data.clone(), owner)
+    }
     pub fn rooms(&self, owner: RunOwner) -> crate::room::RoomStore {
         crate::room::RoomStore::new(self.data.clone(), owner)
     }
@@ -723,6 +748,15 @@ impl Store {
     }
     pub async fn find_run(&self, run: RunId) -> Result<Option<RunView>, StoreError> {
         self.data.query(FindRun(run)).await
+    }
+    pub async fn find_run_full(&self, run: RunId) -> Result<Option<RunView>, StoreError> {
+        self.data.query(FindRunFull(run)).await
+    }
+    pub async fn run_admitted_usages(
+        &self,
+        run: RunId,
+    ) -> Result<Vec<Option<maka_agent_facts::model::ModelUsage>>, StoreError> {
+        self.data.query(RunAdmittedUsages(run)).await
     }
     pub async fn fact(&self, run: RunId, id: FactId) -> Result<Option<RecordedFact>, StoreError> {
         self.data.query(ReadFact { run, id }).await
@@ -1423,6 +1457,33 @@ impl Query for FindRun {
         } else {
             Ok(None)
         }
+    }
+}
+struct FindRunFull(RunId);
+impl Query for FindRunFull {
+    type Output = Option<RunView>;
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        if sql::exists(c, self.0)? {
+            Ok(Some(sql::load(c, self.0, &[], true)?))
+        } else {
+            Ok(None)
+        }
+    }
+}
+struct RunAdmittedUsages(RunId);
+impl Query for RunAdmittedUsages {
+    type Output = Vec<Option<maka_agent_facts::model::ModelUsage>>;
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        let mut stmt = c.prepare_cached("SELECT body FROM agent_attempts WHERE run=?1")?;
+        let rows = stmt.query_map([self.0.to_string()], |r| r.get::<_, String>(0))?;
+        let mut usages = Vec::new();
+        for row in rows {
+            let attempt: crate::fold::Attempt = serde_json::from_str(&row?)?;
+            if attempt.admission.is_some() {
+                usages.push(attempt.closed.map(|c| c.usage));
+            }
+        }
+        Ok(usages)
     }
 }
 struct ReadFact {

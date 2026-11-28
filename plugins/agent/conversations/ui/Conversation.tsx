@@ -145,6 +145,7 @@ import {
   replayStartCursor,
   groupStepsFollowCursor,
   senderSession,
+  recentMessages,
   stableRowId,
   replaceHistoryMetadata,
 } from '../../../../products/maka/workbench/app/history';
@@ -452,7 +453,9 @@ type ConversationProps = {
   stopAction(): () => void;
   /** Starts the Bot over; offered only on the Bot's own conversation. */
   restartBot?(): Promise<void>;
-  chooseModel?(): void;
+  /** Opens the read-only Discovery Runs view on a discovery worker run ID. */
+  openDiscoveryRun?(runId: string): void;
+  openDiscovery(): void;
   /** Shows only the latest exchange, as tall as its content, with no header. */
   compact?: boolean;
 };
@@ -1245,7 +1248,16 @@ export function Conversation(props: ConversationProps) {
     });
   }
   const canOpenWorker = () => !!(props.openSessionBeside ?? props.openSessionHere);
-  const openWorker = (id: string) => (props.openSessionBeside ?? props.openSessionHere)?.(id);
+  const isDiscoveryWorker = (id: string) =>
+    props.knownSession?.(id)?.discoveryWorker === true ||
+    botWorkers.sessions().some((session) => session.id === id && session.discoveryWorker === true);
+  const openWorker = (id: string) => {
+    if (isDiscoveryWorker(id) && props.openDiscoveryRun) {
+      props.openDiscoveryRun(id);
+      return;
+    }
+    (props.openSessionBeside ?? props.openSessionHere)?.(id);
+  };
   const openFamilySession = (id: string) =>
     (props.openSessionHere ?? props.openSessionBeside)?.(id);
   const stepSibling = (step: -1 | 1) => {
@@ -4555,23 +4567,7 @@ export function Conversation(props: ConversationProps) {
     sessionId,
     prediction,
     title: () => (title() === null ? null : title() || tr('Untitled conversation')),
-    recentMessages() {
-      const merged: { id: string; role: 'user' | 'assistant'; text: string }[] = [];
-      for (const row of [...rows(), ...live()]) {
-        if (
-          (row.role === 'user' || row.role === 'assistant') &&
-          row.field === 'body' &&
-          !row.origin &&
-          row.text.trim().length > 0
-        ) {
-          const prev = merged.at(-1);
-          const id = stableRowId(row);
-          if (prev && prev.id === id) prev.text = row.text;
-          else merged.push({ id, role: row.role, text: row.text });
-        }
-      }
-      return merged.slice(-6);
-    },
+    recentMessages: () => recentMessages([...rows(), ...live()]),
     queue: queueSession,
     interactions,
     executionWaitMessage,
@@ -5466,7 +5462,7 @@ export function Conversation(props: ConversationProps) {
                     ),
                   );
                 }}
-                openInvestigation={openWorker}
+                openInvestigation={props.openDiscoveryRun ?? openWorker}
                 worker={
                   worker() !== undefined && canOpenWorker()
                     ? {
@@ -5787,14 +5783,7 @@ export function Conversation(props: ConversationProps) {
         actions={
           isBotHeader() && props.restartBot ? (
             <View style={{ flexDirection: 'row', gap: 4, alignItems: 'center' }}>
-              <DiscoveryPanel
-                host={host}
-                sessionId={sessionId}
-                control={props.control}
-                selection={() => selection()}
-                openWorker={openWorker}
-                chooseModel={() => props.chooseModel?.()}
-              />
+              <DiscoveryPanel open={props.openDiscovery} />
               <BotRestart restart={props.restartBot} />
             </View>
           ) : platform.idiom !== 'terminal' ? (

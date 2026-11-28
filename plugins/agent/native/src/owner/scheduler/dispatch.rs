@@ -18,6 +18,7 @@
  */
 
 use super::*;
+use crate::owner::discovery::Dispatch;
 use futures_util::{StreamExt, stream::FuturesUnordered};
 use maka_agent_facts::durable::{FactId, UnixMillis};
 use maka_agent_state::queue::{MessageResolution, QueueCommand, QueueEdit, RequestId};
@@ -76,7 +77,7 @@ impl CapturedRun {
             && (session.archived
                 || session.configuration.workspace != boundary.workspace
                 || session.configuration.permissions
-                    != if discovery_profile == Some(DiscoveryWorkerTools::ReadOnly) {
+                    != if discovery_profile.is_some() {
                         super::super::discovery::permissions()
                     } else {
                         boundary.permissions.clone()
@@ -390,7 +391,7 @@ impl Owner {
                     return;
                 };
                 if storage_retry.is_none_or(|retry: Retry| retry.ready(Instant::now())) {
-                    let error = match owner.tick_schedules(recover, &mut retries, &mut scripts).await {
+                    let error = match owner.tick_schedules(at, recover, &mut retries, &mut scripts).await {
                         Ok((next, error)) => {
                             planned_wake = next;
                             recover = false;
@@ -434,14 +435,31 @@ impl Owner {
             }
         });
     }
+    #[cfg(test)]
+    pub(in crate::owner) async fn tick_schedules_at(
+        self: &Arc<Self>,
+        at: i64,
+    ) -> Result<(), String> {
+        let (_, error) = self
+            .tick_schedules(
+                at,
+                false,
+                &mut BTreeMap::new(),
+                &mut ScriptChecks::default(),
+            )
+            .await?;
+        error.map_or(Ok(()), Err)
+    }
+
     async fn tick_schedules(
         self: &Arc<Self>,
+        loaded_at: i64,
         recover: bool,
         retries: &mut BTreeMap<String, FireRetry>,
         scripts: &mut ScriptChecks,
     ) -> Result<(Option<i64>, Option<String>), String> {
         let _gate = self.scheduler.gate.lock().await;
-        let loaded_at = now() as i64;
+        let loaded_at = loaded_at.max(now() as i64);
         let mut catalog = self.scheduler.load_ready(loaded_at).await?;
         let mut dispatch_error = None;
         if let Some(checked) = &scripts.completed {
@@ -505,7 +523,7 @@ impl Owner {
             }
             let mut plan = plan.clone();
             let before = serde_json::to_value(&plan).map_err(reason)?;
-            let at = now() as i64;
+            let at = (now() as i64).max(loaded_at);
             if plan.task.status == Status::Active
                 && let Some(
                     approval @ Approval::Discovery {
@@ -531,13 +549,33 @@ impl Owner {
                     self.require_discovery_approval(&mut plan, at);
                 }
             }
+            if let Some(fire) = &mut plan.pending
+                && fire.deferred_until.is_some_and(|until| until <= at)
+            {
+                fire.deferred_until = None;
+            }
             if recover && self.settings.scheduled_tasks {
                 plan.recover(at).map_err(reason)?;
             }
-            if self.settings.scheduled_tasks && plan.authorization.is_some() {
-                plan.claim(at).map_err(reason)?;
-            }
-            if serde_json::to_value(&plan).map_err(reason)? != before {
+            let watch = if self.settings.scheduled_tasks
+                && plan.authorization.is_some()
+                && plan.pending.is_none()
+                && plan.claim(at).map_err(reason)?.is_some()
+            {
+                self.bind_timer_followup(&mut plan).await?
+            } else {
+                None
+            };
+            if let Some((watch, observed)) = watch {
+                let ack = self.discovery.acknowledge_followup(watch, observed);
+                self.scheduler
+                    .commit_with(&mut catalog, &id, Some(plan.clone()), async |writes| {
+                        self.commit_discovery_writes(ack, writes)
+                            .await
+                            .map_err(reason)
+                    })
+                    .await?;
+            } else if serde_json::to_value(&plan).map_err(reason)? != before {
                 self.scheduler
                     .commit(&mut catalog, &id, Some(plan.clone()), None)
                     .await?;
@@ -547,11 +585,48 @@ impl Owner {
             };
             let expired = plan.task.expires_at.is_some_and(|expires| at >= expires);
             let exhausted = retry.is_some_and(|retry| retry.delay >= Retry::MAX_DELAY);
-            match self
-                .dispatch_scheduled(fire, &plan, expired, exhausted)
-                .await
-            {
-                Ok(Some(run)) => {
+            let result = if matches!(fire.effect, ScheduledEffect::Discovery { .. }) {
+                match self
+                    .dispatch_discovery(
+                        fire,
+                        plan.task.status == Status::Active && !expired,
+                        &plan,
+                        UnixMillis(at),
+                    )
+                    .await
+                {
+                    Ok(Dispatch::Worker(result)) => {
+                        Ok(result.map(|receipt| (receipt.run, receipt.incomplete)))
+                    }
+                    Ok(idle @ (Dispatch::Skip | Dispatch::Defer(_))) => {
+                        let deferred = if let Dispatch::Defer(until) = idle {
+                            plan.pending.as_mut().expect("claimed fire").deferred_until =
+                                Some(until.0);
+                            true
+                        } else {
+                            plan.skip_pending_schedule(at).map_err(reason)?;
+                            false
+                        };
+                        let activity = self.discovery.skip_statement(id.clone(), deferred);
+                        self.scheduler
+                            .commit_with(&mut catalog, &id, Some(plan), async |writes| {
+                                self.commit_discovery_writes(activity, writes)
+                                    .await
+                                    .map_err(reason)
+                            })
+                            .await?;
+                        retries.remove(&id);
+                        continue;
+                    }
+                    Err(error) => Err(error),
+                }
+            } else {
+                self.dispatch_scheduled(fire, expired, exhausted)
+                    .await
+                    .map(|result| result.map(|run| (run, None)))
+            };
+            match result {
+                Ok(Some((run, incomplete))) => {
                     // This receipt also handles a restart between releasing the slot and saving the plan.
                     if matches!(fire.effect, ScheduledEffect::Discovery { .. })
                         && run.outcome == Outcome::Blocked
@@ -568,14 +643,30 @@ impl Owner {
                     let needs_approval = plan.task.last_error.as_deref()
                         == Some("scheduler_authorization_changed")
                         && plan.authorization.is_none();
+                    if incomplete.is_some() {
+                        plan.consecutive_incomplete = plan.consecutive_incomplete.saturating_add(1);
+                    } else if run.outcome == Outcome::Ok {
+                        plan.consecutive_incomplete = 0;
+                    }
                     plan.settle(run).map_err(reason)?;
+                    if incomplete.is_some()
+                        && let Some(until) =
+                            super::super::discovery::changes::incomplete_deadline(&plan)?
+                    {
+                        plan.defer_next(until);
+                    }
                     if needs_approval {
                         plan.task.next_fire_at = None;
                         plan.task.last_error = Some("scheduler_authorization_changed".into());
                     }
+                    let overdue = plan.task.status == Status::Active
+                        && plan.task.next_fire_at.is_some_and(|at| at <= loaded_at);
                     self.scheduler
                         .commit(&mut catalog, &id, Some(plan), None)
                         .await?;
+                    if overdue {
+                        self.scheduler.wake.notify_one();
+                    }
                     retries.remove(&id);
                 }
                 Ok(None) => {
@@ -599,21 +690,9 @@ impl Owner {
     async fn dispatch_scheduled(
         self: &Arc<Self>,
         fire: &maka_scheduler::plan::Fire<ScheduledEffect, Approval>,
-        plan: &Plan,
         expired: bool,
         retries_exhausted: bool,
     ) -> Result<Option<Run>, String> {
-        let active = plan.task.status == Status::Active;
-        if matches!(fire.effect, ScheduledEffect::Discovery { .. }) {
-            return self
-                .dispatch_discovery(
-                    fire,
-                    active && !expired,
-                    &plan.timezone,
-                    plan.task.runs.first(),
-                )
-                .await;
-        }
         let Some(Approval::Execution { approval }) = &fire.authorization else {
             return Ok(Some(settlement(
                 fire,
@@ -767,6 +846,9 @@ impl Owner {
                         parent_session_id: Some(source_session.clone()),
                         backend: None,
                         compaction_prompt: None,
+                        dossier_seed: None,
+                        dossier_elevated: false,
+                        discovery_worker: false,
                         applied_preset: None,
                         collaboration_mode: CollaborationMode::Agent,
                         tools: basis.allowed_tools.clone(),

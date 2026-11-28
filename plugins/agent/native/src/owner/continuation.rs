@@ -89,6 +89,16 @@ impl Owner {
                 ContinuationRejection::SourceChanged,
             ));
         }
+        if self
+            .discovery
+            .is_worker_session(session_id.clone())
+            .await
+            .map_err(|e| e.to_string())?
+        {
+            return Ok(ContinuationReadiness::Rejected(
+                ContinuationRejection::SafetyCheckFailed,
+            ));
+        }
         if actual.terminal.is_none() {
             return Ok(ContinuationReadiness::Rejected(
                 ContinuationRejection::SourceNotTerminal,
@@ -243,6 +253,7 @@ impl Owner {
             };
             let (preview, _) = tokio::sync::watch::channel(None);
             original_model = Some(driver_model::DriverModel {
+                discovery: None,
                 memory: basis.memory.clone(),
                 history: state.session_history(self.run_owner(), session_id.clone()),
                 state,

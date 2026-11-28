@@ -249,3 +249,120 @@ fn editor_saves_the_opened_version_and_rejects_stale_writers() {
     );
     assert_eq!(fs::read_to_string(&file).unwrap(), "agent");
 }
+
+#[tokio::test]
+async fn confirmed_writes_compare_the_held_file_and_preserve_batch_versions() {
+    use maka_agent_facts::artifact::content_digest;
+    use maka_fs_tools::{ConfirmedInputs, WriteOutcome};
+    let temp = tempfile::tempdir().unwrap();
+    let root = dunce::canonicalize(temp.path()).unwrap();
+    let executor = MutationExecutor::new(
+        &root,
+        WriteScope::Restricted {
+            roots: vec![root.clone()],
+        },
+        Arc::default(),
+    )
+    .unwrap();
+    let a = root.join("first");
+    let b = root.join("second");
+    let hashes = || {
+        [(&a, "one\n"), (&b, "two\n")]
+            .into_iter()
+            .map(|(p, s)| {
+                (
+                    p.to_str().unwrap().to_owned(),
+                    content_digest(s.as_bytes())[7..].to_owned(),
+                )
+            })
+            .collect()
+    };
+    let snapshot = || Arc::new(ConfirmedInputs::new(hashes(), |_, _| Ok(vec![])));
+    fs::write(&a, "saved elsewhere\n").unwrap();
+    fs::write(&b, "two\n").unwrap();
+    let write = |guard| {
+        executor.invoke_confirmed(
+            "Write".into(),
+            json!({"path":"first","content":"approved\n"}),
+            CancellationToken::new(),
+            guard,
+        )
+    };
+    assert!(
+        matches!(write(snapshot()).await.unwrap(), WriteOutcome::Stale(paths) if paths == [a.to_str().unwrap()])
+    );
+    assert_eq!(fs::read_to_string(&a).unwrap(), "saved elsewhere\n");
+    let edit = executor
+        .invoke_confirmed(
+            "Edit".into(),
+            json!({"path":"first","old_string":"one","new_string":"new"}),
+            CancellationToken::new(),
+            snapshot(),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(edit, WriteOutcome::Stale(paths) if paths == [a.to_str().unwrap()]));
+    fs::write(&a, "one\n").unwrap();
+    assert!(matches!(
+        write(snapshot()).await.unwrap(),
+        WriteOutcome::Returned(_)
+    ));
+    assert_eq!(fs::read_to_string(&a).unwrap(), "approved\n");
+
+    fs::write(&a, "one\n").unwrap();
+    let patch = "*** Begin Patch
+*** Update File: first
+@@
+-one
++new
+*** Update File: ./first
+@@
+-new
++newer
+*** Delete File: second
+*** End Patch";
+    let batch = |guard| {
+        executor.invoke_confirmed(
+            "apply_patch".into(),
+            json!({"patch":patch}),
+            CancellationToken::new(),
+            guard,
+        )
+    };
+    let changed = b.to_str().unwrap().to_owned();
+    let guard = Arc::new(ConfirmedInputs::new(hashes(), move |_, _| {
+        Ok(vec![changed.clone()])
+    }));
+    assert!(matches!(
+        batch(guard).await.unwrap(),
+        WriteOutcome::Stale(_)
+    ));
+    assert_eq!(fs::read_to_string(&a).unwrap(), "one\n");
+    assert!(
+        matches!(batch(snapshot()).await.unwrap(), WriteOutcome::Returned(value) if value["status"] == "completed")
+    );
+    assert_eq!(fs::read_to_string(&a).unwrap(), "newer\n");
+    assert!(!b.exists());
+    let alias = root.join("FIRST");
+    if alias.is_file() {
+        fs::write(&a, "one\n").unwrap();
+        let mut versions = hashes();
+        versions.insert(
+            alias.to_str().unwrap().to_owned(),
+            versions[a.to_str().unwrap()].clone(),
+        );
+        let guard = Arc::new(ConfirmedInputs::new(versions, |_, _| Ok(vec![])));
+        let two_names = "*** Begin Patch\n*** Update File: first\n@@\n-one\n+two\n*** Update File: FIRST\n@@\n-two\n+three\n*** End Patch";
+        let result = executor
+            .invoke_confirmed(
+                "apply_patch".into(),
+                json!({"patch":two_names}),
+                CancellationToken::new(),
+                guard,
+            )
+            .await
+            .unwrap();
+        assert!(matches!(result, WriteOutcome::Returned(value) if value["status"] == "completed"));
+        assert_eq!(fs::read_to_string(&a).unwrap(), "three\n");
+    }
+}

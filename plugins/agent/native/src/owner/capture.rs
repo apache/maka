@@ -224,7 +224,9 @@ impl Owner {
             }),
             _ => false,
         };
-        if recovery {
+        let inspection_only =
+            recovery || self.scheduler.investigation_profile(session_id).is_some();
+        if inspection_only || basis.dossier_thread.is_restricted() {
             configuration.permissions.access = WorkspaceAccess::ReadOnly;
             configuration.permissions.request_permissions = false;
         }
@@ -258,8 +260,10 @@ impl Owner {
         // Like network, a file grant can reach what the caller holds, including a
         // session grant kept after requests are turned off. A recovery Run only
         // inspects state, so earlier write grants stay out of it.
+        // Dossier threads retain the caller's ceiling for a later desktop confirmation.
+        // RunAccess keeps their live file and process tools below the read-only base.
         let filesystem_approval_ceiling = match &permission_ceiling.sandbox {
-            maka_sandbox::Sandbox::Managed { filesystem, .. } if !recovery => {
+            maka_sandbox::Sandbox::Managed { filesystem, .. } if !inspection_only => {
                 inherited_filesystem.filter(|inherited| inherited != filesystem)
             }
             _ => None,

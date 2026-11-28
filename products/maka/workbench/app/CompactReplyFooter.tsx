@@ -69,7 +69,7 @@ export function CompactReplyFooter(props: {
   );
 }
 
-export function LocalMessageCopy(props: { text(): string; user?: boolean }) {
+export function LocalMessageCopy(props: { text(): string; user?: boolean; label?: string }) {
   const copied = signal(false);
   let alive = true;
   let resetTimer: ReturnType<typeof setTimeout> | null = null;
@@ -102,7 +102,7 @@ export function LocalMessageCopy(props: { text(): string; user?: boolean }) {
   return (
     <IconButton
       compact
-      label={props.user ? tr('Copy user message') : tr('Copy message')}
+      label={props.label ?? (props.user ? tr('Copy user message') : tr('Copy message'))}
       tooltip={copied() ? tr('Copied') : undefined}
       icon={copied() ? 'check' : 'copy'}
       onPress={() => void copy()}

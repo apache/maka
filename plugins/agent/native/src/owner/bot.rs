@@ -41,6 +41,11 @@ pub(super) const SLEEP: &str = "sleep";
 pub(super) const COORDINATION_TOOLS: &[&str] = &[
     "ScheduledTask",
     "DiscoveryMemory",
+    "ListDossiers",
+    "ReadDossier",
+    "UpdateDiscoveryPreferences",
+    "UpdateWatchScope",
+    "UpdateWorkspaceMap",
     "CreateGoal",
     "GetGoal",
     "GoalStatus",
@@ -127,7 +132,10 @@ pub(super) enum Appended {
 /// Written with the claim of every Bot Session, so a replaced Bot is still known as
 /// one. It confers no authority; only the current registration does.
 fn former_key(session: &str) -> String {
-    format!("former/{session}")
+    format!(
+        "{}{session}",
+        maka_agent_state::session_catalog::FORMER_BOT_KEY_PREFIX
+    )
 }
 fn read_key(session: &str) -> String {
     format!("outbox/{session}/read")
@@ -201,7 +209,7 @@ impl Bot {
             .as_deref()
             == Some(session)
     }
-    async fn is_or_was(&self, session: &str) -> Result<bool, String> {
+    pub(super) async fn is_or_was(&self, session: &str) -> Result<bool, String> {
         Ok(self.is(session)
             || self
                 .storage
@@ -833,7 +841,7 @@ impl Owner {
         .await
     }
     /// The Host's first configured workspace root, as a directory selection.
-    async fn default_bot_workspace(&self) -> Result<Option<WorkspaceSelection>, String> {
+    pub(super) async fn default_bot_workspace(&self) -> Result<Option<WorkspaceSelection>, String> {
         let page = maka_workspace_support::query(
             self.workspace_roots.clone(),
             crate::contract::Directories::Roots,
@@ -1053,6 +1061,12 @@ struct Ability {
 
 const ABILITIES: &[Ability] = &[
     Ability {
+        tools: &["ListDossiers", "ReadDossier"],
+        render: |language, members| {
+            maka_agent_facts::i18n::bot::ability_discovery_dossiers(language, members)
+        },
+    },
+    Ability {
         tools: &["DiscoveryMemory"],
         render: |language, _| {
             maka_agent_facts::i18n::bot::ability_discovery_memory(language).to_owned()
@@ -1147,7 +1161,6 @@ pub(super) fn bot_prompt(language: Language, held: &[String]) -> String {
     let sessions = has(&["SessionCreate"]) && has(&["SessionSend"]);
     let schedules = has(&["ScheduledTask"]);
     let skills = has(&["Skill", "SkillSearch"]);
-
     let tools_list = tools.join(maka_agent_facts::i18n::bot::list_separator(language));
     let mut text = maka_agent_facts::i18n::bot::prompt_intro(language, &tools_list);
     if !sessions {
@@ -1163,6 +1176,16 @@ pub(super) fn bot_prompt(language: Language, held: &[String]) -> String {
     }
     if has(&["DiscoveryMemory"]) {
         text.push_str(maka_agent_facts::i18n::bot::prompt_discovery_memory(
+            language,
+        ));
+    }
+    if has(&[
+        "UpdateDiscoveryPreferences",
+        "ListDossiers",
+        "UpdateWatchScope",
+        "UpdateWorkspaceMap",
+    ]) {
+        text.push_str(maka_agent_facts::i18n::bot::prompt_discovery_coordination(
             language,
         ));
     }

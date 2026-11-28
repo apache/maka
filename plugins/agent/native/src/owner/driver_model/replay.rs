@@ -203,6 +203,7 @@ impl<'a, 'source> TailReplay<'a, 'source> {
             messages,
             recorded:
                 RecordedInputs {
+                    discovery_last_results,
                     unfinished_provider_calls,
                     cells: original_cells,
                     restricted_cells,
@@ -222,6 +223,20 @@ impl<'a, 'source> TailReplay<'a, 'source> {
         let prefix_attempt = *prefix_attempt;
         let vision = *vision;
         let after = fact.revision;
+        let project_discovery_output = move |attempt, name: &str, output: &mut ToolOutput| {
+            if let Some(progress) = &driver.discovery {
+                crate::owner::driver::discovery::truncate_tool_output(
+                    name,
+                    output,
+                    view.spec.language,
+                );
+                if view.run == driver.execution.run_id
+                    && discovery_last_results.get(&attempt) == Some(&fact.id)
+                {
+                    progress.lock().unwrap().annotate(fact.id, output);
+                }
+            }
+        };
         let sealed = view.terminal.is_some();
         let work: BoxFuture<'b, Result<(), RunError>> = match &fact.fact {
             Fact::StepPrepared { step, .. } => Box::pin(async move {
@@ -395,7 +410,7 @@ impl<'a, 'source> TailReplay<'a, 'source> {
                                 )
                             })?;
                         if tool.accepted.is_none() {
-                            let output = if restriction.is_some()
+                            let mut output = if restriction.is_some()
                                 || (view.run != driver.execution.run_id
                                     && sensitive_tool(
                                         view,
@@ -417,6 +432,7 @@ impl<'a, 'source> TailReplay<'a, 'source> {
                                 )
                                 .await?
                             };
+                            project_discovery_output(*attempt, &call.name, &mut output);
                             assistant.tool_outputs.push(tool_message(call, output));
                         }
                     }
@@ -447,7 +463,13 @@ impl<'a, 'source> TailReplay<'a, 'source> {
                         {
                             assistant.parts.push(part);
                         }
-                    } else if let Some(part) = preparation::assistant_part(part)? {
+                    } else if let Some(mut part) = preparation::assistant_part(part)? {
+                        if let AssistantPart::ToolResult {
+                            tool_name, output, ..
+                        } = &mut part
+                        {
+                            project_discovery_output(*attempt, tool_name, output);
+                        }
                         assistant.parts.push(part);
                     }
                     Ok(())
@@ -470,7 +492,7 @@ impl<'a, 'source> TailReplay<'a, 'source> {
                 {
                     *compaction_request = Some(tool.clone());
                 }
-                let output = if restriction.is_some()
+                let mut output = if restriction.is_some()
                     || (view.run != driver.execution.run_id
                         && sensitive_tool(
                             view,
@@ -505,6 +527,7 @@ impl<'a, 'source> TailReplay<'a, 'source> {
                         )
                         .await?
                 };
+                project_discovery_output(tool.attempt, &call.name, &mut output);
                 let message = tool_message(&call, output);
                 if assistant.is_attempt(tool.attempt) {
                     // More calls may still arrive from this attempt.

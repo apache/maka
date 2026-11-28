@@ -126,7 +126,8 @@ impl Owner {
                 PreparedSend::Ready {
                     statement,
                     value: SendResult::Queued { message_id, .. },
-                } => Ok((statement, message_id)),
+                    dossier_reply,
+                } => Ok((statement, message_id, dossier_reply)),
                 PreparedSend::Ready { .. } => Err("agent_input_not_queued".to_owned()),
                 PreparedSend::Returned(SendResult::Rejected { reason, .. }) => Err(format!(
                     "agent input rejected: {}",
@@ -136,7 +137,7 @@ impl Owner {
             }
         }
         .await;
-        let (statement, message_id) = match prepare {
+        let (statement, message_id, dossier_reply) = match prepare {
             Ok(statement) => statement,
             Err(error) => {
                 // A concurrent winner may have started the run during preparation.
@@ -148,12 +149,22 @@ impl Owner {
                 };
             }
         };
+        let observed = if dossier_reply {
+            self.discovery
+                .thread_topic(statement.queue.session.clone())
+                .await
+                .map_err(|error| error.to_string())?
+                .map(|topic| self.discovery_outcome_signal(topic, "replied in the dossier thread"))
+        } else {
+            None
+        };
         let change = writer
             .prepare_result(|_| {
                 Ok(Submit {
                     key,
                     message_id,
                     statement: *statement,
+                    observed,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -165,9 +176,18 @@ struct Submit {
     key: Option<SubmissionKey>,
     message_id: String,
     statement: PreparedAgentSend,
+    observed: Option<tokio::sync::oneshot::Sender<()>>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(transparent)]
+struct Submitted {
+    result: MessageSubmissionResult,
+    #[serde(skip)]
+    observed: Option<tokio::sync::oneshot::Sender<()>>,
 }
 impl Statement for Submit {
-    type Value = MessageSubmissionResult;
+    type Value = Submitted;
     type Output = MessageSubmissionResult;
 
     fn retain(&self) -> Vec<Arc<dyn std::marker::Send + Sync>> {
@@ -178,7 +198,10 @@ impl Statement for Submit {
             && let Some(message_id) = key.current(c)?
         {
             return Ok(Prepared {
-                value: MessageSubmissionResult::Duplicate { message_id },
+                value: Submitted {
+                    result: MessageSubmissionResult::Duplicate { message_id },
+                    observed: None,
+                },
                 changed: false,
                 notification: Notification::NONE,
             });
@@ -189,15 +212,21 @@ impl Statement for Submit {
             key.record(c, &self.message_id)?;
         }
         Ok(Prepared {
-            value: MessageSubmissionResult::Queued {
-                message_id: self.message_id,
+            value: Submitted {
+                result: MessageSubmissionResult::Queued {
+                    message_id: self.message_id,
+                },
+                observed: self.observed,
             },
             changed: accepted.changed,
             notification: accepted.notification,
         })
     }
     fn committed(value: Self::Value) -> Self::Output {
-        value
+        if let Some(signal) = value.observed {
+            let _ = signal.send(());
+        }
+        value.result
     }
     fn isolated_rejection(error: &StoreError) -> bool {
         PreparedAgentSend::isolated_rejection(error)

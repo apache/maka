@@ -30,6 +30,7 @@ import {
   reduceMotion,
   windowSize,
 } from 'nsh';
+import { motionEnabled } from './roomMotion';
 import { Icon } from './Icon';
 import {
   controlsLeft,
@@ -439,14 +440,14 @@ export const disclosureTitleStyle = { ...captionTextStyle, flex: 1, minWidth: 0 
  * reveals appear in place at once, so they can be pressed from the first frame.
  */
 export function animateDisclosure() {
-  if (!reduceMotion())
+  if (motionEnabled())
     LayoutAnimation.configureNext({ duration: 200, update: { type: 'easeInEaseOut' } });
 }
 export function DisclosureChevron(props: { open: boolean; size?: number; color?: string }) {
   const color = () => props.color ?? C.secondary;
   return (
     <If
-      when={platform.idiom !== 'terminal'}
+      when={motionEnabled()}
       else={<Icon name={props.open ? 'down' : 'right'} size={props.size} color={color()} />}
     >
       <View

@@ -873,6 +873,14 @@ async fn shell_and_web_network_grants_stay_with_their_tools() -> TestResult<()> 
 
         let web = approved_round(&rig, &mut provider, id, false, "WebFetch", json!({"url":format!("{first}/page")}), "session").await?;
         assert!(web.contains("network-grant-marker"), "{web}");
+        let basis = owner.mutable_session(id).await?.configuration.permission_basis();
+        let destination = |raw: &str| {
+            let url = reqwest::Url::parse(raw).unwrap();
+            maka_sandbox::Destination::new(url.host_str().unwrap(), url.port_or_known_default().unwrap()).unwrap()
+        };
+        let permissions = owner.durable.interactions();
+        assert!(permissions.session_allows_web(id.to_owned(), basis, destination(first)).await?);
+        assert!(!permissions.session_allows_web(id.to_owned(), basis, destination(second)).await?);
         let before = calls.load(Ordering::SeqCst);
         let shell = tool_round(&rig, &mut provider, id, false, "Shell", json!({
             "command":format!("curl -sS {first}/page; echo curl-exit=$?"),"login":false
@@ -899,6 +907,7 @@ async fn shell_and_web_network_grants_stay_with_their_tools() -> TestResult<()> 
         assert_eq!(calls.load(Ordering::SeqCst), before + 2, "{shell}");
         let web = approved_round(&rig, &mut provider, id, false, "WebFetch", json!({"url":format!("{second}/page")}), "session").await?;
         assert!(web.contains("network-grant-marker"), "{web}");
+        assert!(permissions.session_allows_web(id.to_owned(), basis, destination(second)).await?);
         for (access, may_request, expected) in [
             ("workspace_write", false, r#"\"state\":\"unknown\""#),
             ("danger_full_access", false, r#"\"httpStatus\":200"#),
@@ -910,6 +919,7 @@ async fn shell_and_web_network_grants_stay_with_their_tools() -> TestResult<()> 
                 "permissions":{"settings":{"access":access,"requestPermissions":may_request},"revokeGrants":true}
             })).await?;
             assert_eq!(changed["kind"], "committed", "{changed}");
+            assert!(!permissions.session_allows_web(id.to_owned(), basis, destination(second)).await?);
             let before = calls.load(Ordering::SeqCst);
             let probe = tool_round(&rig, &mut provider, id, false, "BackgroundTaskHealth",
                 json!({"ref":reference,"url":format!("{first}/page")})).await?;

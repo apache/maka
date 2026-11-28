@@ -35,7 +35,7 @@ use maka_scheduler::{
 use repository::Saved;
 use std::sync::{OnceLock, Weak};
 use tokio::sync::Notify;
-type Plan = TaskPlan<ScheduledEffect, Approval>;
+pub(super) type Plan = TaskPlan<ScheduledEffect, Approval>;
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub(in crate::owner) enum Approval {
@@ -85,6 +85,30 @@ impl FollowupGrant {
                     ..
                 }) if *generation == self.generation
             )
+    }
+}
+
+pub(in crate::owner) fn file_change_grant(
+    plan: &Plan,
+) -> Option<(
+    &super::notifications::BackgroundApproval,
+    &DiscoveryToolGrant,
+)> {
+    if plan.task.status != Status::Active
+        || matches!(
+            plan.task.schedule,
+            TaskSchedule::Once { .. } | TaskSchedule::Script { .. }
+        )
+    {
+        return None;
+    }
+    match &plan.authorization {
+        Some(Approval::Discovery {
+            approval,
+            tools,
+            authority: DiscoveryAuthority::User { .. },
+        }) => Some((approval, tools)),
+        _ => None,
     }
 }
 
@@ -139,6 +163,7 @@ fn pause_plan(plan: &Plan, at: i64, source: Option<PauseSource>) -> Plan {
     if let Some(fire) = &mut paused.pending
         && matches!(fire.effect, ScheduledEffect::Discovery { .. })
     {
+        fire.deferred_until = None;
         fire.authorization = fire.authorization.take().map(|a| match a {
             Approval::Discovery {
                 approval, tools, ..
@@ -273,7 +298,7 @@ impl Owner {
     fn discovery_tool_groups(&self, names: &[String]) -> DiscoveryToolSelection {
         names
             .iter()
-            .filter(|name| name.as_str() != super::discovery::COMPLETE)
+            .filter(|name| !super::discovery::WORKER_TOOLS.contains(&name.as_str()))
             .map(|name| (name.clone(), self.discovery_tool_group(name)))
             .collect()
     }
@@ -650,8 +675,9 @@ fn schedule_candidate(
             if next.authorization.is_none() {
                 return Err("scheduler_execution_unavailable".into());
             }
+            next.consecutive_incomplete = 0;
             next.task.next_fire_at = Some(at);
-            next.claim(at).map_err(reason)?;
+            next.claim_manual(at).map_err(reason)?;
             next
         }
         ScheduleChange::ClearHistory { .. } => plan()?.clear_history(at),

@@ -22,6 +22,7 @@ import type { InputRef, ScrollRef } from 'nsh';
 import { Button, Input, Select, Switch } from 'nsh/base';
 import { Icon } from './Icon';
 import { tr } from './locale';
+import { motionEnabled } from './roomMotion';
 import {
   C,
   captionTextStyle,
@@ -837,6 +838,7 @@ export function SettingsButton(props: {
   /** Shows only the icon; the label still names the button. */
   iconOnly?: boolean;
   autoFocus?: boolean;
+  tactile?: boolean;
 }) {
   const primary = () => props.tone === 'primary';
   const primaryFill = () => primary() && !(terminal && props.disabled);
@@ -870,13 +872,14 @@ export function SettingsButton(props: {
             ? { backgroundColor: C.cardRaised }
             : cardRaisedHoverStyle()
       }
-      activeStyle={
-        primary()
+      activeStyle={{
+        ...(primary()
           ? { backgroundColor: C.accentHover }
           : quiet()
             ? { backgroundColor: C.pressed }
-            : cardRaisedActiveStyle()
-      }
+            : cardRaisedActiveStyle()),
+        ...(props.tactile && motionEnabled() ? { transform: [{ scale: 0.96 }] } : {}),
+      }}
       focusStyle={
         primary()
           ? { backgroundColor: C.accentHover }

@@ -29,7 +29,7 @@ use serde_json::Value;
 use std::sync::LazyLock;
 
 const BASE: &str = "WITH base AS (
- SELECT s.id,s.revision,s.created_at,max(s.updated_at,COALESCE((SELECT MAX(at) FROM agent_catalog_messages m WHERE m.owner=?1 AND m.session=s.id AND m.sequence>COALESCE(source.sequence,0)),0),COALESCE((SELECT MAX(at) FROM agent_room_messages m WHERE m.owner=?1 AND m.session=s.id),0)) AS updated_at,s.archived,s.configuration,
+ SELECT {LEGACY_WORKER} AS legacy_worker,s.id,s.revision,s.created_at,max(s.updated_at,COALESCE((SELECT MAX(at) FROM agent_catalog_messages m WHERE m.owner=?1 AND m.session=s.id AND m.sequence>COALESCE(source.sequence,0)),0),COALESCE((SELECT MAX(at) FROM agent_room_messages m WHERE m.owner=?1 AND m.session=s.id),0)) AS updated_at,s.archived,s.configuration,
  b.id AS binding_id,b.workspace_json,b.permission_epoch,b.metadata_epoch,
  COALESCE(k.revision,0) AS control_revision,k.read_message,k.lineage,
  CASE WHEN room.session IS NOT NULL THEN COALESCE(a.last_sequence,0)>COALESCE(k.read_through,0)
@@ -54,6 +54,7 @@ const BASE: &str = "WITH base AS (
  s.catalog_unpinned AS unpinned,
  source.run AS source_run,COALESCE(source.sequence,0)>COALESCE(k.read_through,0) AS source_unread,
  room.session IS NOT NULL AS is_room,
+ json_extract(source_summary.summary_json,'$.summary.lastMessage.recordedAt') AS historical_message_at,
  (?14=1 AND COALESCE(json_extract(k.lineage,'$.origin.side'),json_extract(k.lineage,'$.branch.side'),0)=1
   AND EXISTS(SELECT 1 FROM session_control p WHERE p.id=COALESCE(json_extract(k.lineage,'$.origin.parent_session_id'),json_extract(k.lineage,'$.branch.parent_session_id'))
    AND NOT EXISTS(SELECT 1 FROM session_retirements d WHERE d.session_id=p.id AND d.remove_session=1))) AS tucked,
@@ -117,12 +118,14 @@ const ACTIVE_PARENTS_CTE: &str = ", active_parents AS MATERIALIZED (
    AND NOT EXISTS(SELECT 1 FROM session_retirements d WHERE d.session_id=cs.id AND d.remove_session=1)
    AND NOT EXISTS(SELECT 1 FROM agent_interaction_pending p JOIN agent_interaction_requests q ON q.request=p.request WHERE p.session=cs.id AND q.run=w.run)
 )";
-const COLUMNS: &str = "id,revision,created_at,updated_at,archived,configuration,binding_id,workspace_json,permission_epoch,metadata_epoch,control_revision,read_message,lineage,has_unread,tail,message_at,preview,pending_since,run,terminal,stopped,run_blocked,run_unknown,run_cleanup,late_sequence,working,blocked,unknown_effects,cleanup_pending,late_evidence,index_gap,latest_schema,control_schema,source_run,source_unread,is_room,EXISTS(SELECT 1 FROM active_parents ap WHERE ap.parent_id=selected.id) AS has_active_children";
+const COLUMNS: &str = "id,revision,created_at,updated_at,archived,configuration,binding_id,workspace_json,permission_epoch,metadata_epoch,control_revision,read_message,lineage,has_unread,tail,message_at,preview,pending_since,run,terminal,stopped,run_blocked,run_unknown,run_cleanup,late_sequence,working,blocked,unknown_effects,cleanup_pending,late_evidence,index_gap,latest_schema,control_schema,source_run,source_unread,is_room,EXISTS(SELECT 1 FROM active_parents ap WHERE ap.parent_id=selected.id) AS has_active_children,legacy_worker";
 const SELECTION_PARAMS: usize = 15;
 const RECORD_BUCKETS: [usize; 4] = [8, 32, 128, 256];
 
-static BASE_SQL: LazyLock<String> =
-    LazyLock::new(|| BASE.replace("{CANDIDATE_FILTERS}", CANDIDATE_FILTERS));
+static BASE_SQL: LazyLock<String> = LazyLock::new(|| {
+    BASE.replace("{CANDIDATE_FILTERS}", CANDIDATE_FILTERS)
+        .replace("{LEGACY_WORKER}", crate::discovery::LEGACY_WORKER)
+});
 static RECORD_BASE_SQL: LazyLock<String> =
     LazyLock::new(|| format!("{}{ACTIVE_PARENTS_CTE}", *BASE_SQL));
 static KEY_SQL: LazyLock<String> = LazyLock::new(|| {
@@ -184,6 +187,107 @@ static SINGLE_RECORD_SQL: LazyLock<String> = LazyLock::new(|| {
         *RECORD_BASE_SQL, *FILTER_SQL
     )
 });
+
+// The sidebar orders by pins and turn recency. Discovery needs unconsumed messages,
+// including the historical tail of a fork until the first local message replaces it.
+static DISCOVERY_KEYS: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "{}, activity AS (
+             SELECT id,unpinned,recency,coalesce(message_at,historical_message_at) AS activity_at
+             FROM selected WHERE json_extract(configuration,'$.parentSessionId') IS NULL
+               AND NOT working AND NOT legacy_worker
+               AND configuration->>'discoveryWorker' IS NOT 1 AND configuration->>'incognito' IS NOT 1
+               AND configuration->>'dossierSeed' IS NULL)
+         SELECT unpinned,recency,id FROM activity
+         WHERE id=?16 OR (activity_at>?17 AND activity_at<=?18
+           AND NOT EXISTS(SELECT 1 FROM discovery_source_cursors d WHERE d.owner=?1
+               AND d.source_uri=(?19 || activity.id) AND d.last_explored_at>=activity.activity_at)
+           AND NOT EXISTS(SELECT 1 FROM plugin_data p WHERE p.package_id='maka.bot'
+               AND p.scope_id='profile' AND p.key=(?20 || activity.id)))
+         ORDER BY (id IS ?16) DESC,activity_at DESC,id LIMIT ?21",
+        *BASE_SQL
+    )
+});
+
+impl SessionCatalog {
+    /// Reserve a slot for the current Bot. Its human-input clock is resolved separately.
+    pub async fn discovery_activity_page(
+        &self,
+        bot: Option<String>,
+        since: UnixMillis,
+        through: UnixMillis,
+        limit: u32,
+    ) -> Result<Vec<Record>, StoreError> {
+        crate::session_history::snapshot::run_with_snapshot_rebuild(self.stop.as_ref(), || {
+            self.data.query(DiscoveryActivityPage {
+                catalog: self.clone(),
+                bot: bot.clone(),
+                since,
+                through,
+                limit,
+            })
+        })
+        .await
+    }
+}
+
+struct DiscoveryActivityPage {
+    catalog: SessionCatalog,
+    bot: Option<String>,
+    since: UnixMillis,
+    through: UnixMillis,
+    limit: u32,
+}
+
+impl Query for DiscoveryActivityPage {
+    type Output = IndexedRead<Vec<Record>>;
+
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        if !(1..=256).contains(&self.limit) {
+            return Err(invalid("catalog page size must be 1..=256"));
+        }
+        let selected = Selection::new(
+            &self.catalog,
+            &CatalogScope::Profile,
+            &Filter {
+                base: CatalogFilter {
+                    roots_only: true,
+                    archived_only: false,
+                    include_archived: false,
+                },
+                needs_you_only: false,
+                room: None,
+                side: SideQuestions::Hidden,
+            },
+        )?;
+        let stale = selected.stale_catalog_sources(c)?;
+        if !stale.is_empty() {
+            return Ok(IndexedRead::NeedsRebuild(stale));
+        }
+        let mut values = selected.values.clone();
+        values.extend([
+            self.bot.map_or(SqlValue::Null, Into::into),
+            self.since.0.into(),
+            self.through.0.into(),
+            maka_agent_facts::read::SESSION_RESOURCE_PREFIX
+                .to_owned()
+                .into(),
+            format!("{}{FORMER_BOT_KEY_PREFIX}", self.catalog.id_prefix).into(),
+            i64::from(self.limit).into(),
+        ]);
+        let keys = c
+            .prepare_cached(&DISCOVERY_KEYS)?
+            .query_map(params_from_iter(values), |row| {
+                Ok(Key {
+                    unpinned: row.get(0)?,
+                    recency: row.get(1)?,
+                    id: row.get(2)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        IndexedRead::from_result(selected.records(c, &keys))
+    }
+}
 static RECORD_BUCKET_SQL: LazyLock<[String; 4]> = LazyLock::new(|| {
     RECORD_BUCKETS.map(|bucket| {
         let slots = (1..=bucket)
@@ -556,6 +660,7 @@ struct Raw {
     source_run: Option<String>,
     source_unread: bool,
     is_room: bool,
+    legacy_worker: bool,
     has_active_children: bool,
 }
 impl Raw {
@@ -598,6 +703,7 @@ impl Raw {
             source_unread: r.get(34)?,
             is_room: r.get(35)?,
             has_active_children: r.get(36)?,
+            legacy_worker: r.get(37)?,
         })
     }
     fn decode(self) -> Result<Record, StoreError> {
@@ -693,6 +799,7 @@ impl Raw {
             _ => return Err(invalid("catalog message index incomplete")),
         };
         Ok(Record {
+            legacy_discovery_worker: self.legacy_worker,
             is_room: self.is_room,
             has_active_children: self.has_active_children,
             ancestor_ids: Vec::new(),

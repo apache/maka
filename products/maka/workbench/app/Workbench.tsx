@@ -145,17 +145,21 @@ export function Workbench(props: {
   /** A side question's card, in the selected conversation's panel at its right.
    * A stable object, so what it renders is mounted once. */
   card?(): { render(): JSX.Element } | null;
+  cardVisible?(): boolean;
+  sideRoom?(): number;
   children: JSX.Element;
 }) {
   const preferredWidth = signal(32 * CELL);
   const preferredPreviewWidth = signal(platform.idiom === 'terminal' ? 48 * CELL : 62 * CELL);
   const fullscreen = () => props.previewFullscreen?.() ?? false;
   const card = () => (fullscreen() ? null : (props.card?.() ?? null));
-  const cardWidth = () => (card() ? sideCardWidth() : 0);
+  const cardVisible = () => card() !== null && (props.cardVisible?.() ?? true);
+  const cardWidth = () => (cardVisible() ? sideCardWidth() : 0);
   const preview = () => props.previewShown() && canDockPreview(cardWidth());
   const browser = () =>
     props.expanded() && canDockBrowser(props.previewShown() && !fullscreen(), cardWidth());
-  const room = () => (fullscreen() ? 0 : sidePaneRoom(browser(), preview(), cardWidth()));
+  const room = () =>
+    fullscreen() ? 0 : (props.sideRoom?.() ?? sidePaneRoom(browser(), preview(), cardWidth()));
   let unbindFullscreen: (() => void) | undefined;
   cleanup(() => unbindFullscreen?.());
   const panes = () => (
@@ -171,7 +175,8 @@ export function Workbench(props: {
             {(shown) => (
               <View
                 style={{
-                  width: sideCardWidth(),
+                  display: cardVisible() ? 'flex' : 'none',
+                  width: cardWidth(),
                   minHeight: 0,
                   paddingTop: 12,
                   paddingRight: 12,

@@ -38,6 +38,13 @@ export interface ConversationShell {
   blocked(): boolean;
   connectionLost(): boolean;
   openSession(sessionId: string | null): Promise<boolean>;
+  openRooms?(): void;
+  /** The dossiers route in the main conversation pane. */
+  discovery?: {
+    route(): { topicId: string | null; runId?: string | null } | null;
+    open(topicId?: string): Promise<void>;
+    openRun?(runId: string): Promise<void>;
+  };
   openSettings(model?: ModelSelection, page?: string): void;
   sidebarShown(): boolean;
   sidebarHover?(inside: boolean): void;
@@ -75,6 +82,8 @@ export interface SideQuestionRequest {
 
 export interface ConversationSessionHandle {
   title(): string | null;
+  /** Whether the main pane is showing discovery dossiers. */
+  discoveryOpen?(): boolean;
   kind(sessionId: string): Promise<AgentSessionKind>;
   leave(): Promise<boolean>;
   /** Finds or creates the Maka Bot conversation and returns its id. */

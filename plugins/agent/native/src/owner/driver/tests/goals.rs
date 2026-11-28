@@ -19,30 +19,8 @@
 
 use super::*;
 use maka_agent_api::contract::{GoalDetail, GoalView, ScheduledTarget};
-use maka_event_log::{
-    StoreError,
-    writeback::{Notification, Prepared, Statement},
-};
 use maka_goal::goal::{Arm, Meter, Pending, Status};
 use std::sync::atomic::AtomicUsize;
-
-struct Sql(&'static str);
-impl Statement for Sql {
-    type Value = ();
-    type Output = ();
-    fn execute(self, c: &rusqlite::Connection) -> Result<Prepared<()>, StoreError> {
-        c.execute_batch(self.0)?;
-        Ok(Prepared {
-            value: (),
-            changed: true,
-            notification: Notification::NONE,
-        })
-    }
-    fn committed(_: ()) {}
-    fn isolated_rejection(_: &StoreError) -> bool {
-        false
-    }
-}
 
 async fn stop(rig: &Rig, session: &str, run: RunId) -> TestResult<Value> {
     let mut call = rig

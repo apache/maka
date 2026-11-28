@@ -295,7 +295,10 @@ impl super::driver::NativeDriver {
             .await?;
         let target_tools = owner.select_catalog_tools(
             &mcp.tools,
-            Some(session),
+            Some((
+                session,
+                DossierThreadMode::from_config(&metadata.configuration),
+            )),
             view.spec.allowed_tools.as_deref(),
             source.accepted.editing_tools,
         );

@@ -87,3 +87,24 @@ test('the inbox and archive keep Bot workers on desktop and terminal', () => {
     ['worker', 'mine'],
   );
 });
+
+test('discovery workers stay excluded from ordinary conversation lists across all filters', () => {
+  const rows = [
+    session('bot'),
+    { ...session('worker', 'bot'), discoveryWorker: false },
+    { ...session('probe', 'bot'), discoveryWorker: true },
+    session('mine'),
+  ];
+  for (const desktop of [false, true]) {
+    for (const filter of ['all', 'needs_you', 'archived']) {
+      assert.equal(
+        workspaceSessions(rows, 'bot', filter, desktop).some(({ id }) => id === 'probe'),
+        false,
+      );
+    }
+  }
+  assert.deepEqual(
+    workspaceSessions(rows, null, 'all', true).map(({ id }) => id),
+    ['bot', 'worker', 'mine'],
+  );
+});

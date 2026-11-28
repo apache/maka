@@ -50,6 +50,12 @@ fn complete_control(
         None => Ok(HandlerValue::Json(value)),
     }
 }
+fn discovery_desktop(context: &Context) -> Result<(), String> {
+    if context.scope().identity.agent().is_some() {
+        return Err("discovery_use_model_tools".into());
+    }
+    Ok(())
+}
 struct CallArgs {
     method: String,
     owner: Arc<Owner>,
@@ -865,6 +871,180 @@ impl Handler for Agent {
                         result = changes.changed() => result.map_err(|_| "bot_observation_closed")?,
                     }
                 }
+            }),
+            "dossiers" => json_rpc(&mut args, |owner, input, context| async move {
+                discovery_desktop(&context)?;
+                let _: DossiersRead = decode(input)?;
+                encode(
+                    owner
+                        .discovery
+                        .dossiers()
+                        .await
+                        .map_err(|e| e.to_string())?,
+                )
+            }),
+            "dossier" => json_rpc(&mut args, |owner, input, context| async move {
+                discovery_desktop(&context)?;
+                let query: DossierRead = decode(input)?;
+                encode(
+                    owner
+                        .discovery
+                        .detail(query.topic_id)
+                        .await
+                        .map_err(|e| e.to_string())?,
+                )
+            }),
+            "readDossierArtifact" => json_rpc(&mut args, |owner, input, context| async move {
+                discovery_desktop(&context)?;
+                encode(owner.read_dossier_artifact(decode(input)?).await?)
+            }),
+            "watchDossiers" => json_rpc(&mut args, |owner, input, context| async move {
+                discovery_desktop(&context)?;
+                let _: DossiersRead = decode(input)?;
+                let mut changes = owner.discovery.subscribe();
+                let previous = owner
+                    .discovery
+                    .latest_interrupt()
+                    .await
+                    .map_err(|e| e.to_string())?;
+                loop {
+                    let latest_interrupt = changes
+                        .borrow_and_update()
+                        .clone()
+                        .or_else(|| previous.clone());
+                    let state = owner
+                        .discovery
+                        .dossiers()
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    context
+                        .emit(encode(DossiersUpdate {
+                            state,
+                            latest_interrupt,
+                        })?)
+                        .await?;
+                    tokio::select! {
+                        biased;
+                        _=context.scope().cancellation.cancelled()=>return Err("discovery_observation_cancelled".into()),
+                        result=changes.changed()=>result.map_err(|_|"discovery_observation_closed")?,
+                    }
+                }
+            }),
+            "confirmPendingAction" => json_rpc(&mut args, |owner, input, context| async move {
+                discovery_desktop(&context)?;
+                context.operation().ok_or("agent_mutation_required")?;
+                encode(
+                    owner
+                        .confirm_pending_action(decode(input)?, context.scope())
+                        .await?,
+                )
+            }),
+            "dismissPendingAction" => handler_rpc(&mut args, |owner, input, context| async move {
+                discovery_desktop(&context)?;
+                context.operation().ok_or("agent_mutation_required")?;
+                let input: PendingActionRequest = decode(input)?;
+                let change = owner.discovery.dismiss_action_statement(
+                    input.action_id,
+                    maka_agent_facts::durable::UnixMillis(maka_agent_authority::now() as i64),
+                );
+                context.complete_change(
+                    Value::Null,
+                    owner
+                        .store
+                        .data_writer()
+                        .map_err(|e| e.to_string())?
+                        .prepare(change),
+                )
+            }),
+            "setDossierMuted" => handler_rpc(&mut args, |owner, input, context| async move {
+                discovery_desktop(&context)?;
+                context.operation().ok_or("agent_mutation_required")?;
+                let input: DossierMute = decode(input)?;
+                context.complete_change(Value::Null, owner.prepare_dossier_mute(input)?)
+            }),
+            "setDossierResolved" => handler_rpc(&mut args, |owner, input, context| async move {
+                discovery_desktop(&context)?;
+                context.operation().ok_or("agent_mutation_required")?;
+                let input: DossierResolve = decode(input)?;
+                let state = owner.discovery.resolve_statement(
+                    input.topic_id,
+                    input.resolved,
+                    maka_agent_facts::durable::UnixMillis(maka_agent_authority::now() as i64),
+                );
+                context.complete_change(
+                    Value::Null,
+                    owner
+                        .store
+                        .data_writer()
+                        .map_err(|e| e.to_string())?
+                        .prepare(state),
+                )
+            }),
+            "setDossierUnfollowed" => handler_rpc(&mut args, |owner, input, context| async move {
+                discovery_desktop(&context)?;
+                context.operation().ok_or("agent_mutation_required")?;
+                let input: DossierUnfollow = decode(input)?;
+                context.complete_change(Value::Null, owner.prepare_dossier_unfollow(input)?)
+            }),
+            "chooseDossierOption" => handler_rpc(&mut args, |owner, input, context| async move {
+                discovery_desktop(&context)?;
+                context.operation().ok_or("agent_mutation_required")?;
+                let input: DossierChoose = decode(input)?;
+                let state = owner.discovery.choose_statement(
+                    input.topic_id,
+                    input.revision,
+                    input.key,
+                    input.resolve,
+                    maka_agent_facts::durable::UnixMillis(maka_agent_authority::now() as i64),
+                );
+                context.complete_change(
+                    Value::Null,
+                    owner
+                        .store
+                        .data_writer()
+                        .map_err(|e| e.to_string())?
+                        .prepare(state),
+                )
+            }),
+            "setDiscoveryNotifications" => {
+                handler_rpc(&mut args, |owner, input, context| async move {
+                    discovery_desktop(&context)?;
+                    context.operation().ok_or("agent_mutation_required")?;
+                    let input: DiscoveryNotifications = decode(input)?;
+                    let state = owner.discovery.preferences_statement(
+                        input.enabled,
+                        maka_agent_facts::durable::UnixMillis(maka_agent_authority::now() as i64),
+                    );
+                    context.complete_change(
+                        Value::Null,
+                        owner
+                            .store
+                            .data_writer()
+                            .map_err(|e| e.to_string())?
+                            .prepare(state),
+                    )
+                })
+            }
+            "dropDiscoveryLead" => handler_rpc(&mut args, |owner, input, context| async move {
+                discovery_desktop(&context)?;
+                owner
+                    .drop_discovery_lead(
+                        decode(input)?,
+                        context.operation().ok_or("agent_mutation_required")?,
+                        context.scope(),
+                    )?
+                    .complete(&context)
+            }),
+            "openDossierThread" => handler_rpc(&mut args, |owner, input, context| async move {
+                discovery_desktop(&context)?;
+                owner
+                    .open_dossier_thread(
+                        decode(input)?,
+                        context.operation().ok_or("agent_mutation_required")?,
+                        context.scope(),
+                    )
+                    .await?
+                    .complete(&context)
             }),
             "schedules" => json_rpc(&mut args, |owner, input, _context| async move {
                 encode(owner.schedules(decode(input)?).await?)

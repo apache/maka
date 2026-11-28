@@ -130,6 +130,136 @@ mod tests {
     }
 
     #[test]
+    fn discovery_dossiers_keep_the_selected_topic_and_send_to_its_thread() {
+        let mut app = headless_fixture(
+            "tests/fixtures/discovery-dossiers.tsx",
+            Size::new(px(920.0), px(760.0)),
+            true,
+        );
+        app.wait_for("role:button[Proactive discovery]").unwrap();
+        app.press("role:button[Proactive discovery]").unwrap();
+        let evidence = "role:button[Show evidence ▾]";
+        app.wait_for(evidence).unwrap();
+        let discovery = "role:button[Discovery]";
+        app.wait_for("label:Probe running").unwrap();
+        assert!(
+            !app.screen()
+                .matches("role:button[Open conversation Probe fixture]")
+                .unwrap()
+        );
+        app.press("role:button[Runs]").unwrap();
+        app.press("role:button[Probe fixture]").unwrap();
+        app.wait_for("text:Read-only probe evidence").unwrap();
+        assert!(!app.screen().matches("role:button[Continue]").unwrap());
+        app.press("role:button[Close Runs]").unwrap();
+        app.press_key("mod+shift+r").unwrap();
+        app.wait_for("text:Read-only probe evidence").unwrap();
+        app.press("role:button[Back]").unwrap();
+        app.wait_for("role:button[Probe fixture]").unwrap();
+        app.press("role:button[Close Runs]").unwrap();
+        let conversation = "role:button[Open conversation Planning]";
+        assert!(app.screen().selected(discovery).unwrap());
+        assert!(!app.screen().selected(conversation).unwrap());
+        app.press("role:button[Collapse session browser]").unwrap();
+        app.press("role:button[Expand session browser]").unwrap();
+        app.press(conversation).unwrap();
+        app.wait_for("text:planning").unwrap();
+        assert!(app.screen().selected(conversation).unwrap());
+        app.press("role:button[Proactive discovery]").unwrap();
+        app.wait_for(evidence).unwrap();
+        app.press(evidence).unwrap();
+        app.wait_for("text:Review copy").unwrap();
+        assert!(!app.screen().matches("text:/revised clause/").unwrap());
+        app.press("role:button[Preview draft.md]").unwrap();
+        app.wait_for("text:/revised clause/").unwrap();
+        app.set_viewport(Size::new(px(920.0), px(420.0))).unwrap();
+        let send = app.screen().id("role:button[Send]").unwrap();
+        let bounds = app
+            .screen()
+            .layout_nodes()
+            .into_iter()
+            .find(|node| node.id == send)
+            .unwrap()
+            .bounds;
+        assert!(
+            bounds.size.height > px(0.0)
+                && bounds.bottom() <= px(420.0)
+                && bounds.bottom() > px(360.0),
+            "composer send button: {bounds:?}"
+        );
+        app.set_viewport(Size::new(px(920.0), px(760.0))).unwrap();
+        app.press("role:button[Copy]").unwrap();
+        assert_eq!(
+            app.screen().clipboard(),
+            Some(
+                format!(
+                    "Ready to review\n+ revised clause\n{}End of draft",
+                    "line\n".repeat(1100)
+                )
+                .as_str()
+            )
+        );
+        app.press("role:button[Preview draft.md]").unwrap();
+        assert!(!app.screen().matches("text:/revised clause/").unwrap());
+        assert!(!app.screen().matches("role:button[Copy]").unwrap());
+        app.press("label:Discovery desktop notifications: On")
+            .unwrap();
+        app.wait_for("label:Discovery desktop notifications: Off")
+            .unwrap();
+        app.wait_for("text:Source file changed. Execution blocked.")
+            .unwrap();
+        app.wait_for("text:ReviewExport").unwrap();
+        app.press("role:button[Dismiss]").unwrap();
+        app.wait_for("text:Action dismissed.").unwrap();
+        assert!(!app.screen().matches("text:Pending actions").unwrap());
+        assert!(!app.screen().matches("text:/Last material change/").unwrap());
+        app.press("role:button[Watches and activity]").unwrap();
+        app.wait_for("text:1 linked schedule").unwrap();
+        app.wait_for("text:/Last material change/").unwrap();
+        app.wait_for("text:/Signing window/").unwrap();
+        app.press("role:button[Release, New findings]").unwrap();
+        app.wait_for("text:Release summary").unwrap();
+        assert!(!app.screen().matches("text:Artifacts").unwrap());
+        app.press("role:button[Watches and activity]").unwrap();
+        assert!(
+            !app.screen()
+                .matches("role:button[Open full thread]")
+                .unwrap()
+        );
+        app.press("role:button[Watches and activity]").unwrap();
+        app.type_text("label:Reply to this dossier…", "Review this")
+            .unwrap();
+        app.press(discovery).unwrap();
+        app.press_key("mod+u").unwrap();
+        app.wait_for("text:Revised Release").unwrap();
+        app.press("role:button[Send]").unwrap();
+        app.wait_for("text:Review this").unwrap();
+        app.press("role:button[Mute]").unwrap();
+        let failed_mute = "text:Could not update notifications. Temporary write failure";
+        app.wait_for(failed_mute).unwrap();
+        app.press("role:button[Mute]").unwrap();
+        app.wait_for("role:button[Release, New findings, Muted]")
+            .unwrap();
+        assert!(!app.screen().matches(failed_mute).unwrap());
+        app.press("role:button[Drop lead]").unwrap();
+        app.type_text("label:Paste text or drop files here", "New lead")
+            .unwrap();
+        app.press("role:button[Add lead]").unwrap();
+        app.wait_for("text:New lead summary").unwrap();
+        app.press_key("mod+d").unwrap();
+        app.wait_for("text:Review this").unwrap();
+        app.type_text("label:Reply to this dossier…", "Thanks")
+            .unwrap();
+        app.press("role:button[Send]").unwrap();
+        app.wait_for("text:Thanks").unwrap();
+        app.press_key("mod+r").unwrap();
+        app.wait_for("text:Reviewed").unwrap();
+        app.press("role:button[Watches and activity]").unwrap();
+        app.press("role:button[Open full thread]").unwrap();
+        app.wait_for("text:thread-two").unwrap();
+    }
+
+    #[test]
     fn discovery_panel_approves_scope_controls_runs_and_rejects_stale_edits() {
         let mut app = headless_fixture(
             "tests/fixtures/discovery.tsx",

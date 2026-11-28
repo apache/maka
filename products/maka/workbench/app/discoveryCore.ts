@@ -66,8 +66,11 @@ export function approvedDiscoveryNames(
   preview: DiscoveryToolPreview,
   selection: DiscoveryToolSelection,
 ) {
-  return preview.names.filter(
-    (name) => !Object.hasOwn(preview.groups, name) || Object.hasOwn(selection, name),
+  const readsFiles = Object.values(selection).includes('read_files');
+  return preview.names.filter((name) =>
+    name === 'UpdateWatchScope' || name === 'UpdateWorkspaceMap'
+      ? readsFiles
+      : !Object.hasOwn(preview.groups, name) || Object.hasOwn(selection, name),
   );
 }
 

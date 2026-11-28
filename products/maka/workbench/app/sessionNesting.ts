@@ -20,6 +20,7 @@
 type Nestable = {
   id: string;
   parentSessionId: string | null;
+  discoveryWorker?: boolean;
   ancestorIds?: readonly string[];
 };
 
@@ -75,6 +76,7 @@ export function workspaceSessions<T extends Nestable>(
   filter: 'all' | 'archived' | 'needs_you',
   desktop: boolean,
 ): T[] {
+  sessions = sessions.filter((session) => !session.discoveryWorker);
   if (ancestor === null) return [...sessions];
   sessions = sessions.filter((session) => session.id !== ancestor);
   if (!desktop || filter !== 'all') return [...sessions];

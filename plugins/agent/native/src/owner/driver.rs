@@ -18,6 +18,7 @@
  */
 
 use super::{Owner, RunAccess, driver_model::DriverModel, now};
+pub(in crate::owner) mod discovery;
 #[path = "driver_effects.rs"]
 mod effects;
 #[cfg(test)]
@@ -618,6 +619,20 @@ impl NativeDriver {
         self.catalog_for_step(view, attempt.step).await
     }
 
+    async fn discovery_rejection(
+        &self,
+        view: &RunView,
+        tool: &Tool,
+    ) -> Result<Option<ToolRejection>, RunError> {
+        let NativeBackend::Model { model, .. } = &self.backend else {
+            return Ok(None);
+        };
+        Ok(model
+            .discovery_rejection(view, tool)
+            .await?
+            .map(|message| ToolRejection::PolicyDenied { message }))
+    }
+
     async fn advertised_tool(&self, view: &RunView, tool: &Tool) -> Result<bool, RunError> {
         let attempt = view
             .attempts
@@ -719,7 +734,13 @@ impl NativeDriver {
         {
             return Err(ToolRejection::Unavailable);
         }
-        let semantics = catalog.semantics(&tool.call.name)?;
+        let semantics = if tool.call.name == super::discovery::PENDING
+            && matches!(&self.backend, NativeBackend::Model {model,..} if model.discovery.is_some())
+        {
+            ToolSemantics::ExclusiveStep
+        } else {
+            catalog.semantics(&tool.call.name)?
+        };
         PreparedTool::prepare(
             &self.owner,
             &self.access,
@@ -924,7 +945,32 @@ impl DriverPorts for NativeDriver {
             let worker = self.clone();
             let mut handle = AbortOnDrop(self.workers.spawn(async move {
                 worker.access.live_configuration().await?;
-                worker.model()?.prepare_step(&view, mode, &worker).await
+                let model = worker.model()?;
+                let prepared = model.prepare_step(&view, mode, &worker).await?;
+                model.refresh_discovery_progress(&view).await?;
+                let stop = model
+                    .discovery
+                    .as_ref()
+                    .filter(|_| {
+                        prepared.request.accounting.purpose
+                            == maka_agent_facts::context::ModelPurpose::Main
+                    })
+                    .and_then(|guard| guard.lock().unwrap().stop());
+                if let Some(reason) = stop {
+                    worker
+                        .owner
+                        .converge_discovery(&view, reason)
+                        .await
+                        .map_err(RunError::Internal)?;
+                    return Err(RunError::Cancelled);
+                }
+                if let Some(guard) = &model.discovery
+                    && prepared.request.accounting.purpose
+                        == maka_agent_facts::context::ModelPurpose::Main
+                {
+                    guard.lock().unwrap().freeze_next(prepared.request.step);
+                }
+                Ok(prepared)
             }));
             (&mut handle.0).await.map_err(|error| {
                 if error.is_cancelled() {
@@ -1036,6 +1082,15 @@ impl DriverPorts for NativeDriver {
         tool: &'a Tool,
     ) -> BoxFuture<'a, Result<PreparedDecision, RunError>> {
         Box::pin(async move {
+            if let Some(rejection) = self.discovery_rejection(view, tool).await? {
+                return Ok(PreparedDecision {
+                    decision: ToolDecision::Rejected {
+                        rejection,
+                        display: Default::default(),
+                    },
+                    contents: vec![],
+                });
+            }
             if !self.advertised_tool(view, tool).await? {
                 return Ok(PreparedDecision {
                     decision: ToolDecision::Rejected {
@@ -1105,6 +1160,9 @@ impl DriverPorts for NativeDriver {
         tool: &'a Tool,
     ) -> BoxFuture<'a, Result<ToolValidation, RunError>> {
         Box::pin(async move {
+            if let Some(rejection) = self.discovery_rejection(view, tool).await? {
+                return Ok(ToolValidation::Denied { rejection });
+            }
             self.owner
                 .require_execution(&self.access.execution().session_id)
                 .await

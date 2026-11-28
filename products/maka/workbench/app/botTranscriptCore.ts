@@ -373,6 +373,7 @@ export function activeWorkers<
     parentSessionId: string | null;
     activity: string;
     archived: boolean;
+    discoveryWorker?: boolean;
   },
 >(
   sessions: readonly T[],
@@ -382,7 +383,8 @@ export function activeWorkers<
   if (!bot) return [];
   const found: ActiveWorker[] = [];
   for (const session of sessions) {
-    if (session.parentSessionId !== bot || session.archived) continue;
+    if (session.parentSessionId !== bot || session.archived || session.discoveryWorker === true)
+      continue;
     const live = progress?.get(session.id);
     if (session.activity === 'working' || session.activity === 'waiting') {
       const waiting = live && ['approval', 'question', 'permission', 'form'].includes(live.kind);

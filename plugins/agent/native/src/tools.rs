@@ -67,6 +67,7 @@ pub(crate) struct SelectedTool {
     selection: ServiceTool,
     binding: String,
     pub(crate) discovery_group: crate::contract::DiscoveryToolGroup,
+    pub(crate) discovery_safe: bool,
 }
 
 /// The tool selected by the Agent's configuration, resolved through its current
@@ -114,11 +115,9 @@ impl SelectedTool {
     pub(crate) fn name(&self) -> &str {
         &self.selection.name
     }
-    pub(crate) fn reads_session_content(&self) -> bool {
-        use crate::contract::DiscoveryToolGroup;
-        self.discovery_group == DiscoveryToolGroup::ReadFiles
-            || (self.discovery_group == DiscoveryToolGroup::History
-                && self.selection.method == "sessionRead")
+    pub(crate) fn reads_session_transcript(&self) -> bool {
+        self.discovery_group == crate::contract::DiscoveryToolGroup::History
+            && self.selection.method == "sessionRead"
     }
     pub(crate) fn permits_approval(&self, name: &str, method: &str, binding: &str) -> bool {
         self.selection.name == name
@@ -131,6 +130,62 @@ impl SelectedTool {
             history_reader: self.history_reader,
             selection: self.selection.clone(),
         }
+    }
+    /// Resolve the same configured mutation through its live import, never through a model-supplied service address.
+    pub(crate) fn confirmed_connector<'a>(
+        &'a self,
+        services: &NativeServices,
+        input: &Value,
+    ) -> Result<
+        (
+            &'a ServiceTool,
+            NativeServices,
+            String,
+            Option<&'static str>,
+        ),
+        String,
+    > {
+        let selection = &self.selection;
+        let binding = services.binding(&selection.target)?;
+        let Interface::Service { methods } = &binding.contract().interface else {
+            return Err("connector service unavailable".into());
+        };
+        let method = methods
+            .get(&selection.method)
+            .ok_or("connector method unavailable")?;
+        if !matches!(selection.target, ServiceTarget::Import { .. })
+            || binding.contract() == &maka_agent_api::contract::contract()
+            || method.mode != MethodMode::Mutation
+            || selection.input != ToolInput::Json
+            || selection.result != ToolResult::Json
+        {
+            return Err("expected a configured JSON connector mutation".into());
+        }
+        maka_plugin_core::validator(method.input.as_ref())
+            .map_err(|e| e.to_string())?
+            .validate(input)
+            .map_err(|e| e.to_string())?;
+        let file = if binding.contract() == &maka_workspace_api::files::contract() {
+            Some(
+                maka_workspace_api::files::method(&selection.method)
+                    .filter(|(_, mutation)| *mutation)
+                    .ok_or("unsupported file mutation")?
+                    .0,
+            )
+        } else {
+            None
+        };
+        let fingerprint = hex::encode(Sha256::digest(
+            serde_json::to_vec(&(
+                selection,
+                binding.provider().instance(),
+                binding.package(),
+                binding.export(),
+                &self.binding,
+            ))
+            .map_err(|e| e.to_string())?,
+        ));
+        Ok((selection, self.services(services)?, fingerprint, file))
     }
     fn services(&self, services: &NativeServices) -> Result<NativeServices, String> {
         if services.binding(&self.selection.target)?.execution_basis() != self.binding {
@@ -664,6 +719,8 @@ pub(crate) fn catalog(
                 (Projection::Direct, input_schema)
             };
             let selected = SelectedTool {
+                discovery_safe: matches!(discovery_group, Group::ReadFiles | Group::History | Group::Web | Group::Commands)
+                    || (discovery_group == Group::Other && method.mode == MethodMode::Query),
                 discovery_group,
                 history_reader: if contract == &file_contract && selection.method == "read" {
                     Some(HistoryReader::File)
@@ -1212,7 +1269,11 @@ pub(crate) fn operation_uuid(
     operation_id: &str,
 ) -> Uuid {
     let bytes = serde_json::to_vec(&(execution, operation_id)).expect("Host tool identity");
-    let digest = Sha256::digest(bytes);
+    native_operation_uuid(&bytes)
+}
+
+pub(crate) fn native_operation_uuid(identity: &[u8]) -> Uuid {
+    let digest = Sha256::digest(identity);
     let mut bytes = [0; 16];
     bytes.copy_from_slice(&digest[..16]);
     // A deterministic nonnil UUID in the native Agent's actual caller namespace.
@@ -1299,6 +1360,7 @@ mod tests {
             history_reader: None,
             selection: serde_json::from_value(selection).unwrap(),
             discovery_group: crate::contract::DiscoveryToolGroup::Other,
+            discovery_safe: false,
             binding: "sha256:20379da95853ba9498588b280113bf12e6e59301840666f025af97879bb548ee"
                 .into(),
         };

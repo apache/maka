@@ -186,6 +186,9 @@ const SESSION_RELEASES: &[Step] = &[
     Step::OwnerSession("DELETE FROM agent_catalog_sessions WHERE owner=?1 AND session=?2"),
     Step::OwnerSession("DELETE FROM agent_catalog_controls WHERE owner=?1 AND session=?2"),
     Step::OwnerSession(
+        "DELETE FROM discovery_source_cursors WHERE owner=?1 AND source_uri=('maka://session/' || ?2)",
+    ),
+    Step::OwnerSession(
         "DELETE FROM agent_namespaces WHERE owner=?1 AND session=?2
          AND NOT EXISTS(SELECT 1 FROM agent_session_history h WHERE h.namespace_id=agent_namespaces.id)
          AND NOT EXISTS(SELECT 1 FROM agent_recall_messages m WHERE m.namespace_id=agent_namespaces.id)
@@ -532,6 +535,37 @@ mod tests {
         store.frontier(survivor.run()).await.unwrap();
         drop(store);
         root.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn removed_session_releases_its_discovery_watermark_even_if_an_opening_replays() {
+        use crate::discovery::{DiscoveryStore, changes::OpeningSources};
+        let dir = tempfile::tempdir().unwrap();
+        let (_root, store) = open(dir.path(), true).await;
+        let owner = spec().0.owner;
+        let discovery = DiscoveryStore::new(store.data.clone(), &owner).unwrap();
+        let ids = ["removed".to_owned(), "kept".to_owned()];
+        let opening = || {
+            discovery.record_opening(
+                OpeningSources::FollowUp {
+                    files: vec![],
+                    sessions: ids.iter().map(|id| (id.clone(), UnixMillis(2))).collect(),
+                },
+                UnixMillis(3),
+            )
+        };
+        store.data.write(opening()).await.unwrap();
+        assert_eq!(discovery.session_explored_at(&ids).await.unwrap().len(), 2);
+        store.data.write(Fence(ids[0].clone())).await.unwrap();
+        store
+            .release_removed_session(owner, ids[0].clone())
+            .await
+            .unwrap();
+        store.data.write(opening()).await.unwrap();
+        assert_eq!(
+            discovery.session_explored_at(&ids).await.unwrap(),
+            [(ids[1].clone(), 2)].into()
+        );
     }
 
     #[tokio::test]

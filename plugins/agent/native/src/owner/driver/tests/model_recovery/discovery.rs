@@ -18,8 +18,9 @@
  */
 
 use super::*;
-use maka_agent_api::session::StoredSessionConfiguration;
+use maka_agent_api::{contract::WorkspaceAccess, session::StoredSessionConfiguration};
 use maka_agent_facts::configuration::ConnectionCatalogEntryUpdate;
+use maka_agent_facts::execution::SandboxMode;
 struct Fixture {
     rig: Rig,
     boot: Boot,
@@ -31,8 +32,17 @@ impl Fixture {
         Self::with_tools(server, &[]).await
     }
     async fn with_tools(server: &MockAiServer, extra: &[Value]) -> Self {
+        Self::configured(server, extra, "", |_| {}).await
+    }
+    async fn configured(
+        server: &MockAiServer,
+        extra: &[Value],
+        subdirectory: &str,
+        configure: impl FnOnce(&mut Value),
+    ) -> Self {
         let mut rig = Rig::new().unwrap();
         let base = rig.directory.path().to_path_buf();
+        let workspace = base.join("workspace").join(subdirectory);
         let boot = bootstrap_with(&base, server.base_url(), |config| {
             config["bot"] = json!(true);
             config["scheduledTasks"] = json!(true);
@@ -63,15 +73,13 @@ impl Fixture {
                 "input":"shell","result":"json","confirmation":"preapproved",
                 "target":{"kind":"import","name":"processes"},"method":"execute"
             }));
+            configure(config);
         })
         .await
         .unwrap();
         std::fs::create_dir_all(base.join("other-workspace")).unwrap();
-        std::fs::write(
-            base.join("workspace").join("discovery.txt"),
-            "Observed fixture evidence",
-        )
-        .unwrap();
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::write(workspace.join("discovery.txt"), "Observed fixture evidence").unwrap();
         attach(&mut rig, &boot).await.unwrap();
         let client = rig.client.as_ref().unwrap();
         let catalog = call(client, "settings", "connections", json!({"kind":"start"}))
@@ -85,7 +93,7 @@ impl Fixture {
             "agent",
             "openBot",
             json!({
-                "workspace":{"kind":"directory","path":base.join("workspace")}
+                "workspace":{"kind":"directory","path":workspace}
             }),
         )
         .await
@@ -125,6 +133,52 @@ impl Fixture {
             .await
             .unwrap_or_else(|e| panic!("{method}: {e}"))
     }
+    async fn worker_count(&self) -> usize {
+        self.owner()
+            .store
+            .list_sessions::<StoredSessionConfiguration>(None, None, 64)
+            .await
+            .unwrap()
+            .sessions
+            .iter()
+            .filter(|s| s.configuration.discovery_worker)
+            .count()
+    }
+
+    async fn active_token_budget(&self) -> Option<u64> {
+        self.owner()
+            .latest_session_run(&self.active_worker())
+            .await
+            .unwrap()
+            .unwrap()
+            .spec
+            .budget
+            .tokens
+    }
+
+    /// Replay a saved approval from before workers could write individual dossiers.
+    async fn use_legacy_report_grant(&self, task: &str) {
+        let owner = self.owner();
+        let _gate = owner.scheduler.gate.lock().await;
+        let mut catalog = owner.scheduler.load().await.unwrap();
+        let mut plan = catalog.plans[task].plan.clone();
+        let Some(crate::owner::scheduler::Approval::Discovery { tools, .. }) =
+            &mut plan.authorization
+        else {
+            panic!("expected discovery approval");
+        };
+        tools
+            .names
+            .retain(|name| !crate::owner::discovery::WORKER_TOOLS.contains(&name.as_str()));
+        tools.names.push("DiscoveryComplete".into());
+        tools.names.sort();
+        owner
+            .scheduler
+            .commit(&mut catalog, task, Some(plan), None)
+            .await
+            .unwrap();
+    }
+
     async fn create(&self, title: &str) -> String {
         self.create_scheduled(
             title,
@@ -163,7 +217,17 @@ impl Fixture {
                     .iter()
                     .filter(|name| {
                         let name = name.as_str().unwrap();
-                        name == "DiscoveryComplete" || chosen.contains_key(name)
+                        matches!(
+                            name,
+                            "DiscoveryComplete"
+                                | "FinishNoChange"
+                                | "RegisterWatch"
+                                | "StagePendingAction"
+                                | "StageArtifact"
+                                | "UpsertDossier"
+                        ) || (matches!(name, "UpdateWatchScope" | "UpdateWorkspaceMap")
+                            && chosen.values().any(|group| group == "read_files"))
+                            || chosen.contains_key(name)
                     })
                     .collect::<Vec<_>>()
             ),
@@ -244,8 +308,39 @@ impl Fixture {
     async fn send(&self, text: &str, quotes: Value) -> Value {
         self.query("send",json!({"sessionId":self.bot,"message":text,"quotes":quotes,"backend":self.model,"delivery":"queue"})).await
     }
+    async fn conversation(&self, kind: &str, title: &str) -> String {
+        let response = self.query("create", json!({
+            "kind":kind,"title":title,"labels":[],
+            "workspace":{"kind":"directory","path":self.rig.directory.path().join("workspace")}
+        })).await;
+        response["session"]["id"].as_str().unwrap().to_owned()
+    }
     async fn outbox(&self) -> Value {
         self.query("botOutbox", json!({})).await["messages"].clone()
+    }
+    async fn quiet_room(&self, title: &str) -> (String, UnixMillis) {
+        let room = self.conversation("room", title).await;
+        let posted = UnixMillis(at().0 - 300_000);
+        let owner = self.owner();
+        owner
+            .store
+            .data_writer()
+            .unwrap()
+            .write(owner.durable.rooms(owner.run_owner()).post_statement(
+                maka_agent_state::room::Post {
+                    session: room.clone(),
+                    id: "room-note".into(),
+                    at: posted,
+                    author: maka_agent_facts::room::RoomAuthor::Human,
+                    content: "Review the terms".into(),
+                    reply_to: None,
+                    mentions: vec![],
+                    deliveries: vec![],
+                },
+            ))
+            .await
+            .unwrap();
+        (room, posted)
     }
     async fn quiescent(&self, session: &str) {
         let owner = self.owner();
@@ -359,6 +454,14 @@ fn tool(turn: TurnHandle, name: &str, input: Value) {
             .finish(FinishReason::ToolCalls),
     );
 }
+fn finish_with_usage(turn: TurnHandle, usage: Usage) {
+    turn.send_plan(
+        TurnPlan::new()
+            .push_tool_call("finish", "FinishNoChange", json!({"note":"Reviewed"}))
+            .with_usage(usage)
+            .finish(FinishReason::ToolCalls),
+    );
+}
 fn output(body: &Value) -> Value {
     let text = body["messages"]
         .as_array()
@@ -388,11 +491,324 @@ async fn quiet(f: &Fixture, server: &mut MockAiServer, turn: TurnHandle) {
     );
 }
 
+fn session_read_tool() -> Value {
+    json!({"name":"SessionRead","description":"Read a conversation or Room.","input":"json","result":"json",
+        "confirmation":"preapproved","target":{"kind":"export","name":"agent"},"method":"sessionRead"})
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn discovery_schedule_reads_idle_chats_rooms_and_only_human_bot_turns() {
+    use maka_agent_facts::message::MessageOrigin;
+    let mut server = MockAiBuilder::new().interactive(24).start().await.unwrap();
+    let mut f = Fixture::with_tools(&server, &[session_read_tool()]).await;
+    let owner = f.owner();
+    let chat = f.conversation("agent", "Release decisions").await;
+    let room = f.conversation("room", "Release room").await;
+    f.query(
+        "send",
+        json!({"sessionId":chat,"message":"Chat evidence 132","backend":f.model}),
+    )
+    .await;
+    next(&mut server).await.0.reply_text("Recorded.");
+    f.quiescent(&chat).await;
+    f.query(
+        "send",
+        json!({"sessionId":room,"message":"Room evidence 243"}),
+    )
+    .await;
+    f.send("Human Bot evidence 354", json!([])).await;
+    let (bot_turn, _) = next(&mut server).await;
+    let user_run = owner.latest_session_run(&f.bot).await.unwrap().unwrap();
+    let source = ExecutionIdentity {
+        session_id: f.bot.clone(),
+        run_id: user_run.run,
+        turn_id: user_run.spec.turn_id,
+    };
+    let route = owner.return_route(&source).await.unwrap();
+    bot_turn.reply_text("Recorded.");
+    f.quiescent(&f.bot).await;
+    let mut effect = f.effect("read_only").await;
+    effect["selectedTools"] = json!({"SessionRead":"history"});
+    let start = at().0 + 60_000;
+    let task = f
+        .create_effect(
+            "Session changes",
+            "",
+            json!({
+                "kind":"interval","everySeconds":1800,"startAt":start,"cadence":"after_completion"
+            }),
+            effect,
+        )
+        .await;
+    owner.tick_schedules_at(start).await.unwrap();
+    let idle = owner.discovery.plan_activity(&task).await.unwrap();
+    assert_eq!(
+        (idle.skipped, idle.tokens, f.worker_count().await),
+        (1, 0, 0)
+    );
+
+    let due = f.detail(&task).await["task"]["nextFireAt"]
+        .as_i64()
+        .unwrap();
+    owner.tick_schedules_at(due).await.unwrap();
+    let (mut worker, request) = next(&mut server).await;
+    let opening = request["messages"].to_string();
+    assert!(
+        opening.contains("Sessions [kind,session_id,title,ms]")
+            && opening.contains("Check only the named topic"),
+        "{opening}"
+    );
+    let worker_id = f.active_worker();
+    let config = owner.session(&worker_id).await.unwrap().configuration;
+    assert!(config.discovery_worker && config.parent_session_id.as_ref() == Some(&f.bot));
+    let ids = [chat.clone(), room.clone(), f.bot.clone()];
+    let watermarks = owner.discovery.session_explored_at(&ids).await.unwrap();
+    assert_eq!(watermarks.len(), 3);
+    for (id, marker, kind) in [
+        (&chat, "Chat evidence 132", "session"),
+        (&room, "Room evidence 243", "room"),
+        (&f.bot, "Human Bot evidence 354", "bot"),
+    ] {
+        assert!(
+            opening.contains(&format!(r#"[\"{kind}\",\"{id}\""#)),
+            "{opening}"
+        );
+        tool(worker, "SessionRead", json!({"sessionId":id}));
+        let (next_worker, body) = next(&mut server).await;
+        let read = output(&body);
+        assert_eq!(read["session"]["id"], id.as_str(), "{read}");
+        assert!(
+            read["transcript"]["items"].to_string().contains(marker),
+            "{read}"
+        );
+        worker = next_worker;
+    }
+    finish_with_usage(worker, Usage::new(10, 2));
+    f.settled(&task, 1).await;
+
+    let notice = owner
+        .prepare_notification(
+            &source,
+            &route,
+            "discovery-report-test",
+            |_| "Worker finished".into(),
+            MessageOrigin::DiscoveryReport {
+                session_id: worker_id,
+            },
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(owner.admit_notification(&notice).await.unwrap());
+    next(&mut server).await.0.reply_text("Report received.");
+    f.quiescent(&f.bot).await;
+    let next_due = f.detail(&task).await["task"]["nextFireAt"]
+        .as_i64()
+        .unwrap();
+    owner.tick_schedules_at(next_due).await.unwrap();
+    assert_eq!(f.worker_count().await, 1);
+    assert_eq!(
+        owner.discovery.plan_activity(&task).await.unwrap().skipped,
+        2
+    );
+    assert_eq!(
+        owner.discovery.session_explored_at(&ids).await.unwrap(),
+        watermarks
+    );
+
+    f.query(
+        "send",
+        json!({"sessionId":chat,"message":"Change the release date","backend":f.model}),
+    )
+    .await;
+    let (busy_chat, _) = next(&mut server).await;
+    let next_due = f.detail(&task).await["task"]["nextFireAt"]
+        .as_i64()
+        .unwrap();
+    owner.tick_schedules_at(next_due).await.unwrap();
+    assert_eq!(
+        owner.discovery.plan_activity(&task).await.unwrap().skipped,
+        3
+    );
+    f.change(&task, "trigger_now").await;
+    let (manual, request) = next(&mut server).await;
+    assert!(
+        !request["messages"]
+            .to_string()
+            .contains("Sessions [kind,session_id,title,ms]")
+    );
+    finish_with_usage(manual, Usage::new(10, 2));
+    f.settled(&task, 2).await;
+    busy_chat.reply_text("Date changed.");
+    f.quiescent(&chat).await;
+    f.change(&task, "trigger_now").await;
+    let (manual, request) = next(&mut server).await;
+    assert!(
+        request["messages"]
+            .to_string()
+            .contains("Sessions [kind,session_id,title,ms]")
+    );
+    let fresh = owner.discovery.session_explored_at(&ids).await.unwrap();
+    assert!(fresh[&chat] > watermarks[&chat]);
+    assert_eq!(
+        (fresh[&room], fresh[&f.bot]),
+        (watermarks[&room], watermarks[&f.bot])
+    );
+    finish_with_usage(manual, Usage::new(10, 2));
+    f.settled(&task, 3).await;
+    f.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn discovery_failed_enqueue_preserves_watermarks_and_empty_retry_skips_the_model() {
+    use maka_agent_state::discovery::changes::OpeningSources;
+    let mut server = MockAiBuilder::new().interactive(8).start().await.unwrap();
+    let mut f = Fixture::with_tools(&server, &[session_read_tool()]).await;
+    let owner = f.owner();
+    let writer = owner.store.data_writer().unwrap();
+    let (room, posted) = f.quiet_room("Pending review").await;
+    let mut effect = f.effect("read_only").await;
+    effect["selectedTools"] = json!({"SessionRead":"history"});
+    let due = at().0 + 600_000;
+    let plan = f
+        .create_effect(
+            "Room changes",
+            "",
+            json!({"kind":"interval","everySeconds":1800,"startAt":due}),
+            effect,
+        )
+        .await;
+    writer.write(Sql("CREATE TRIGGER reject_discovery_queue BEFORE INSERT ON agent_queue_events
+        WHEN EXISTS(SELECT 1 FROM session_control WHERE id=NEW.session AND json_extract(configuration,'$.discoveryWorker')=1)
+        BEGIN SELECT RAISE(ABORT,'discovery queue unavailable'); END;")).await.unwrap();
+    let failure = owner.tick_schedules_at(due).await.unwrap_err();
+    assert!(failure.contains("discovery queue unavailable"), "{failure}");
+    assert!(
+        owner
+            .discovery
+            .session_explored_at(std::slice::from_ref(&room))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    // Another opening consumes this Room while the failed request is waiting to retry.
+    writer
+        .write(owner.discovery.record_opening(
+            OpeningSources::FollowUp {
+                files: vec![],
+                sessions: vec![(room, posted)],
+            },
+            UnixMillis(due),
+        ))
+        .await
+        .unwrap();
+    writer
+        .write(Sql("DROP TRIGGER reject_discovery_queue"))
+        .await
+        .unwrap();
+    owner.tick_schedules_at(due).await.unwrap();
+    owner.tick_schedules_at(due).await.unwrap();
+    let detail = f.detail(&plan).await;
+    assert!(
+        detail["pendingFire"].is_null() && detail["task"]["runs"].as_array().unwrap().is_empty(),
+        "{detail}"
+    );
+    let activity = owner.discovery.plan_activity(&plan).await.unwrap();
+    assert_eq!(
+        (activity.model_runs, activity.tokens, activity.skipped),
+        (0, 0, 1)
+    );
+    assert!(owner.scheduler.investigation.read().unwrap().is_none());
+    let (fresh, posted) = f.quiet_room("Next review").await;
+    f.change(&plan, "trigger_now").await;
+    let (worker, request) = next(&mut server).await;
+    assert!(request["messages"].to_string().contains(&fresh));
+    assert_eq!(
+        owner
+            .discovery
+            .session_explored_at(std::slice::from_ref(&fresh))
+            .await
+            .unwrap()[&fresh],
+        posted.0
+    );
+    finish_with_usage(worker, Usage::new(10, 2));
+    f.settled(&plan, 1).await;
+    f.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn discovery_without_session_read_skips_session_admission_and_opening() {
+    check_unreadable_sessions(session_read_tool(), json!({"DiscoveryMemory":"history"})).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn discovery_session_list_named_session_read_cannot_consume_conversations() {
+    let mut list = session_read_tool();
+    list["method"] = json!("sessionList");
+    check_unreadable_sessions(list, json!({"SessionRead":"history"})).await;
+}
+
+async fn check_unreadable_sessions(tool: Value, selected: Value) {
+    let mut server = MockAiBuilder::new().interactive(8).start().await.unwrap();
+    let mut f = Fixture::with_tools(&server, &[tool]).await;
+    let room = f.conversation("room", "Release room").await;
+    f.query(
+        "send",
+        json!({"sessionId":room,"message":"Ready for review"}),
+    )
+    .await;
+    let mut effect = f.effect("read_only").await;
+    let named_session_read = selected.get("SessionRead").is_some();
+    effect["selectedTools"] = selected;
+    let start = at().0 + 600_000;
+    let task = f
+        .create_effect(
+            "Memory only",
+            "",
+            json!({
+                "kind":"interval","everySeconds":1800,"startAt":start
+            }),
+            effect,
+        )
+        .await;
+    let owner = f.owner();
+    owner.tick_schedules_at(start).await.unwrap();
+    let idle = owner.discovery.plan_activity(&task).await.unwrap();
+    assert_eq!(
+        (idle.skipped, idle.tokens, f.worker_count().await),
+        (1, 0, 0)
+    );
+    f.change(&task, "trigger_now").await;
+    let (manual, request) = next(&mut server).await;
+    assert_eq!(
+        model_tool_names(&request).contains(&"SessionRead"),
+        named_session_read
+    );
+    assert!(
+        !request["messages"]
+            .to_string()
+            .contains("Sessions [kind,session_id,title,ms]")
+    );
+    assert!(
+        owner
+            .discovery
+            .session_explored_at(&[room])
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    finish_with_usage(manual, Usage::new(10, 2));
+    f.settled(&task, 1).await;
+    f.close().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn discovery_notification_receipt_is_idempotent_across_retry_and_reopen() {
     let mut server = MockAiBuilder::new().interactive(8).start().await.unwrap();
     let mut f = Fixture::new(&server).await;
     let task = f.create("Notification receipt").await;
+    f.use_legacy_report_grant(&task).await;
     f.change(&task, "trigger_now").await;
     let (turn, request) = next(&mut server).await;
     let tools = request["tools"].as_array().unwrap();
@@ -406,6 +822,13 @@ async fn discovery_notification_receipt_is_idempotent_across_retry_and_reopen() 
         "DiscoveryComplete",
         json!({"kind":"report","text":"A useful finding","notes":[observation]}),
     );
+    f.settled(&task, 1).await;
+    assert_bot_untouched(&f).await;
+    f.send(
+        "Read the investigation record and publish my requested notification",
+        json!([]),
+    )
+    .await;
     let (turn, _) = next(&mut server).await;
     let (turn, page) = memory(&mut server, turn, json!({"action":"list"})).await;
     let record = page["records"][0]["id"].clone();
@@ -541,6 +964,7 @@ async fn discovery_late_notification_keeps_the_original_outbox_and_quoted_feedba
     let mut server = MockAiBuilder::new().interactive(8).start().await.unwrap();
     let mut f = Fixture::new(&server).await;
     let task = f.create("Late notification").await;
+    f.use_legacy_report_grant(&task).await;
     let mut records = vec![];
     for subject in ["First finding", "Second finding"] {
         f.change(&task, "trigger_now").await;
@@ -550,6 +974,8 @@ async fn discovery_late_notification_keeps_the_original_outbox_and_quoted_feedba
             "DiscoveryComplete",
             json!({"kind":"report","text":subject}),
         );
+        f.settled(&task, records.len() + 1).await;
+        f.send("Read the saved investigation", json!([])).await;
         let (bot, _) = next(&mut server).await;
         let (bot, page) = memory(&mut server, bot, json!({"action":"list"})).await;
         records.push(page["records"][0]["id"].as_str().unwrap().to_owned());
@@ -719,6 +1145,7 @@ async fn check_removed_credential(at_delivery: bool) {
     effect["model"]["connectionId"] = json!(id);
     let task = f.create_effect("Plan whose authorization will become unavailable","Check a synthetic fixture",
         json!({"kind":"interval","everySeconds":3600,"startAt":maka_agent_authority::now()+3_600_000}), effect).await;
+    f.use_legacy_report_grant(&task).await;
     let worker = if at_delivery {
         f.change(&task, "trigger_now").await;
         Some(next(&mut server).await.0)
@@ -762,17 +1189,17 @@ async fn check_removed_credential(at_delivery: bool) {
         f.change(&task, "trigger_now").await;
     }
     let blocked = f.settled(&task, 1).await;
-    assert_requires_reapproval(&blocked, "agent_authentication_required");
+    if at_delivery {
+        assert_eq!(blocked["task"]["runs"][0]["outcome"], "ok", "{blocked}");
+    } else {
+        assert_requires_reapproval(&blocked, "agent_authentication_required");
+    }
     assert_eq!(blocked["task"]["runs"][0]["runId"].is_string(), at_delivery);
     assert!(blocked["pendingFire"].is_null());
     assert_eq!(f.outbox().await, json!([]));
     f.change(&healthy, "trigger_now").await;
     let (control, _) = next(&mut server).await;
-    tool(
-        control,
-        "DiscoveryComplete",
-        json!({"kind":"no_report","note":"Control ran"}),
-    );
+    tool(control, "FinishNoChange", json!({"note":"Control ran"}));
     assert_eq!(
         f.settled(&healthy, 1).await["task"]["runs"][0]["outcome"],
         "ok"
@@ -801,6 +1228,7 @@ async fn discovery_releases_the_slot_when_its_workspace_disappears() {
     let moved = f.rig.directory.path().join("moved-workspace");
     for reporting in [false, true] {
         let task = f.create("Check the approved workspace").await;
+        f.use_legacy_report_grant(&task).await;
         if reporting {
             f.change(&task, "trigger_now").await;
             let (worker, _) = next(&mut server).await;
@@ -815,7 +1243,11 @@ async fn discovery_releases_the_slot_when_its_workspace_disappears() {
             f.change(&task, "trigger_now").await;
         }
         let blocked = f.settled(&task, 1).await;
-        assert_requires_reapproval(&blocked, "agent_workspace_unavailable");
+        if reporting {
+            assert_eq!(blocked["task"]["runs"][0]["outcome"], "ok", "{blocked}");
+        } else {
+            assert_requires_reapproval(&blocked, "agent_workspace_unavailable");
+        }
         assert_eq!(blocked["task"]["runs"][0]["runId"].is_string(), reporting);
         assert!(blocked["pendingFire"].is_null());
         assert_eq!(f.outbox().await, json!([]));
@@ -824,11 +1256,7 @@ async fn discovery_releases_the_slot_when_its_workspace_disappears() {
     let healthy = f.create("Independent plan").await;
     f.change(&healthy, "trigger_now").await;
     let (control, _) = next(&mut server).await;
-    tool(
-        control,
-        "DiscoveryComplete",
-        json!({"kind":"no_report","note":"Control ran"}),
-    );
+    tool(control, "FinishNoChange", json!({"note":"Control ran"}));
     assert_eq!(
         f.settled(&healthy, 1).await["task"]["runs"][0]["outcome"],
         "ok"
@@ -880,9 +1308,15 @@ async fn discovery_invalidates_changed_model_routes_and_releases_the_slot() {
         json!({"Read":"read_files"})
     );
     let available = f.preview(&f.effect("session").await, Some(&stale)).await;
-    assert!(available.as_array().unwrap().contains(&json!("Write")));
+    assert!(
+        available
+            .as_array()
+            .unwrap()
+            .contains(&json!("StageArtifact"))
+    );
 
     let reporting = f.create("Route changes while investigating").await;
+    f.use_legacy_report_grant(&reporting).await;
     f.change(&reporting, "trigger_now").await;
     let (turn, _) = next(&mut updated).await;
     f.change_model_endpoint(&original).await;
@@ -892,7 +1326,7 @@ async fn discovery_invalidates_changed_model_routes_and_releases_the_slot() {
         json!({"kind":"report","text":"A finding on the previously approved route"}),
     );
     let blocked = f.settled(&reporting, 1).await;
-    assert_requires_reapproval(&blocked, "background_model_route_changed");
+    assert_eq!(blocked["task"]["runs"][0]["outcome"], "ok", "{blocked}");
     assert!(blocked["task"]["runs"][0]["runId"].is_string(), "{blocked}");
     assert_eq!(f.outbox().await, json!([]));
 
@@ -901,8 +1335,8 @@ async fn discovery_invalidates_changed_model_routes_and_releases_the_slot() {
     let (turn, _) = next(&mut original).await;
     tool(
         turn,
-        "DiscoveryComplete",
-        json!({"kind":"no_report","note":"Checked after reapproval"}),
+        "FinishNoChange",
+        json!({"note":"Checked after reapproval"}),
     );
     assert_eq!(
         f.settled(&stale, 2).await["task"]["runs"][0]["outcome"],
@@ -912,11 +1346,12 @@ async fn discovery_invalidates_changed_model_routes_and_releases_the_slot() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn discovery_invalidates_unavailable_models_before_worker_and_report_admission() {
+async fn discovery_checks_model_on_worker_admission_and_settles_locally() {
     let mut server = MockAiBuilder::new().interactive(8).start().await.unwrap();
     let mut f = Fixture::new(&server).await;
     let waiting = f.create("Approved before disabling the connection").await;
     let reporting = f.create("Model removed before report delivery").await;
+    f.use_legacy_report_grant(&reporting).await;
 
     f.update_model_connection(ConnectionCatalogEntryUpdate {
         enabled: Some(false),
@@ -946,7 +1381,7 @@ async fn discovery_invalidates_unavailable_models_before_worker_and_report_admis
         json!({"kind":"report","text":"A finding whose delivery model was removed"}),
     );
     let blocked = f.settled(&reporting, 1).await;
-    assert_requires_reapproval(&blocked, "background_model_unavailable");
+    assert_eq!(blocked["task"]["runs"][0]["outcome"], "ok", "{blocked}");
     assert!(blocked["task"]["runs"][0]["runId"].is_string(), "{blocked}");
     assert_eq!(f.outbox().await, json!([]));
 
@@ -960,8 +1395,8 @@ async fn discovery_invalidates_unavailable_models_before_worker_and_report_admis
     let (turn, _) = next(&mut server).await;
     tool(
         turn,
-        "DiscoveryComplete",
-        json!({"kind":"no_report","note":"Checked after enabling the model again"}),
+        "FinishNoChange",
+        json!({"note":"Checked after enabling the model again"}),
     );
     assert_eq!(
         f.settled(&waiting, 2).await["task"]["runs"][0]["outcome"],
@@ -999,11 +1434,7 @@ async fn discovery_pause_resume_cancels_only_the_original_fire_before_next_worke
     assert!(!body.to_string().contains("cancelled checkpoint"));
     let (turn, page) = memory(&mut server, turn, json!({"action":"list"})).await;
     assert_eq!(page["records"], json!([]));
-    tool(
-        turn,
-        "DiscoveryComplete",
-        json!({"kind":"no_report","note":"B completed"}),
-    );
+    tool(turn, "FinishNoChange", json!({"note":"B completed"}));
     f.settled(&second, 1).await;
     assert_eq!(f.outbox().await, json!([]));
     f.close().await;
@@ -1030,7 +1461,7 @@ async fn discovery_resume_does_not_upgrade_an_existing_read_only_plan() {
     assert!(
         tools
             .iter()
-            .any(|t| t["function"]["name"] == "DiscoveryComplete")
+            .any(|t| t["function"]["name"] == "FinishNoChange")
     );
     assert!(!tools.iter().any(|t| matches!(
         t["function"]["name"].as_str(),
@@ -1050,11 +1481,7 @@ async fn discovery_resume_does_not_upgrade_an_existing_read_only_plan() {
             .contains("Observed fixture evidence"),
         "{body}"
     );
-    tool(
-        worker,
-        "DiscoveryComplete",
-        json!({"kind":"no_report","note":"Read-only check"}),
-    );
+    tool(worker, "FinishNoChange", json!({"note":"Read-only check"}));
     let done = f.settled(&task, 1).await;
     let worker = done["task"]["runs"][0]["sessionId"].as_str().unwrap();
     assert_eq!(
@@ -1077,7 +1504,17 @@ async fn discovery_previews_and_enforces_the_bot_tool_ceiling() {
         .await;
 
     let names = f.preview(&f.effect("session").await, None).await;
-    assert_eq!(names, json!(["DiscoveryComplete", "ScheduledTask"]));
+    assert_eq!(
+        names,
+        json!([
+            "FinishNoChange",
+            "RegisterWatch",
+            "ScheduledTask",
+            "StageArtifact",
+            "StagePendingAction",
+            "UpsertDossier"
+        ])
+    );
     let task = f.create("Investigation under the explicit ceiling").await;
     f.change(&task, "trigger_now").await;
     let (worker, request) = next(&mut server).await;
@@ -1089,8 +1526,8 @@ async fn discovery_previews_and_enforces_the_bot_tool_ceiling() {
     );
     tool(
         worker,
-        "DiscoveryComplete",
-        json!({"kind":"no_report","note":"Finished with approved tools"}),
+        "FinishNoChange",
+        json!({"note":"Finished with approved tools"}),
     );
     assert_eq!(
         f.settled(&task, 1).await["task"]["runs"][0]["outcome"],
@@ -1117,7 +1554,7 @@ async fn discovery_previews_and_enforces_the_bot_tool_ceiling() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn discovery_approves_grouped_aliases_and_rechecks_the_parent_ceiling() {
-    let mut server = MockAiBuilder::new().interactive(8).start().await.unwrap();
+    let mut server = MockAiBuilder::new().interactive(12).start().await.unwrap();
     let mut f = Fixture::with_tools(&server, &[
         json!({"name":"OpenDocument","description":"Read a document.","input":"json","result":"image","confirmation":"preapproved","target":{"kind":"import","name":"files"},"method":"read"}),
         json!({"name":"BrowseConversations","description":"List conversations.","input":"json","result":"json","confirmation":"preapproved","target":{"kind":"export","name":"agent"},"method":"sessionList"}),
@@ -1141,7 +1578,7 @@ async fn discovery_approves_grouped_aliases_and_rechecks_the_parent_ceiling() {
         .await;
     assert_eq!(preview["groups"]["OpenDocument"], "read_files");
     assert_eq!(preview["groups"]["InspectSetup"], "other");
-    assert_eq!(preview["groups"]["ChangeSetup"], "plugin_management");
+    assert!(preview["groups"].get("ChangeSetup").is_none());
     assert_eq!(preview["groups"]["DiscoveryMemory"], "history");
     assert!(preview["groups"].get("DiscoveryComplete").is_none());
     let schedule = json!({"kind":"interval","everySeconds":3600,"startAt":maka_agent_authority::now()+3_600_000});
@@ -1168,19 +1605,35 @@ async fn discovery_approves_grouped_aliases_and_rechecks_the_parent_ceiling() {
         .await;
     assert_eq!(
         preview["approvedNames"],
-        json!(["DiscoveryComplete", "InspectSetup", "OpenDocument"])
+        json!([
+            "FinishNoChange",
+            "InspectSetup",
+            "OpenDocument",
+            "RegisterWatch",
+            "StageArtifact",
+            "StagePendingAction",
+            "UpdateWatchScope",
+            "UpdateWorkspaceMap",
+            "UpsertDossier"
+        ])
     );
     f.change(&task, "trigger_now").await;
     let (worker, request) = next(&mut server).await;
     assert_eq!(
         model_tool_names(&request),
-        ["DiscoveryComplete", "InspectSetup", "OpenDocument"]
+        [
+            "FinishNoChange",
+            "InspectSetup",
+            "OpenDocument",
+            "RegisterWatch",
+            "StageArtifact",
+            "StagePendingAction",
+            "UpdateWatchScope",
+            "UpdateWorkspaceMap",
+            "UpsertDossier"
+        ]
     );
-    let opening = request["messages"].to_string();
-    assert!(
-        !opening.contains("recent_conversations")
-            && !opening.contains("use SessionList to find conversations")
-    );
+    assert!(request["messages"].to_string().contains("Onboard"));
     tool(worker, "OpenDocument", json!({"path":"discovery.txt"}));
     let (worker, response) = next(&mut server).await;
     assert!(
@@ -1189,23 +1642,48 @@ async fn discovery_approves_grouped_aliases_and_rechecks_the_parent_ceiling() {
             .contains("Observed fixture evidence"),
         "{response}"
     );
-    tool(
-        worker,
-        "DiscoveryComplete",
-        json!({"kind":"no_report","note":"Checked"}),
-    );
+    tool(worker, "UpdateWorkspaceMap", json!({"action":"mark_ready"}));
+    let (worker, response) = next(&mut server).await;
+    assert_eq!(output(&response)["updated"], true, "{response}");
+    tool(worker, "FinishNoChange", json!({"note":"Mapped"}));
     f.settled(&task, 1).await;
+    f.change(&task, "trigger_now").await;
+    let (worker, request) = next(&mut server).await;
+    assert_eq!(
+        model_tool_names(&request),
+        [
+            "FinishNoChange",
+            "InspectSetup",
+            "OpenDocument",
+            "RegisterWatch",
+            "StageArtifact",
+            "StagePendingAction",
+            "UpsertDossier"
+        ]
+    );
+    let opening = request["messages"].to_string();
+    assert!(
+        !opening.contains("recent_conversations")
+            && !opening.contains("use SessionList to find conversations")
+    );
+    tool(worker, "FinishNoChange", json!({"note":"Checked"}));
+    f.settled(&task, 2).await;
     f.change_source(|config| config.tools = Some(vec!["Read".into()]))
         .await;
     f.change(&task, "trigger_now").await;
     let (worker, request) = next(&mut server).await;
-    assert_eq!(model_tool_names(&request), ["DiscoveryComplete"]);
-    tool(
-        worker,
-        "DiscoveryComplete",
-        json!({"kind":"no_report","note":"Finished"}),
+    assert_eq!(
+        model_tool_names(&request),
+        [
+            "FinishNoChange",
+            "RegisterWatch",
+            "StageArtifact",
+            "StagePendingAction",
+            "UpsertDossier"
+        ]
     );
-    f.settled(&task, 2).await;
+    tool(worker, "FinishNoChange", json!({"note":"Finished"}));
+    f.settled(&task, 3).await;
     f.close().await;
 }
 
@@ -1290,7 +1768,16 @@ async fn discovery_standard_tools_pin_the_displayed_list_until_reapproved() {
     let effect = f.effect("session").await;
     assert_eq!(
         f.preview(&effect, None).await,
-        json!(["DiscoveryComplete", "Read"])
+        json!([
+            "FinishNoChange",
+            "Read",
+            "RegisterWatch",
+            "StageArtifact",
+            "StagePendingAction",
+            "UpdateWatchScope",
+            "UpdateWorkspaceMap",
+            "UpsertDossier"
+        ])
     );
     let task = f.create("Approved tool ceiling").await;
 
@@ -1311,11 +1798,7 @@ async fn discovery_standard_tools_pin_the_displayed_list_until_reapproved() {
     let original = names(&request);
     assert!(original.iter().any(|name| name == "Read"), "{original:?}");
     assert!(!original.iter().any(|name| name == "Write"), "{original:?}");
-    tool(
-        turn,
-        "DiscoveryComplete",
-        json!({"kind":"no_report","note":"Restricted search"}),
-    );
+    tool(turn, "FinishNoChange", json!({"note":"Restricted search"}));
     assert_eq!(
         f.settled(&task, 1).await["task"]["runs"][0]["outcome"],
         "ok"
@@ -1325,7 +1808,7 @@ async fn discovery_standard_tools_pin_the_displayed_list_until_reapproved() {
     f.change(&task, "trigger_now").await;
     let (turn, request) = next(&mut server).await;
     let expanded = names(&request);
-    assert!(expanded.iter().any(|name| name == "Write"), "{expanded:?}");
+    assert!(!expanded.iter().any(|name| name == "Write"), "{expanded:?}");
     assert!(
         !expanded.iter().any(|name| name == "SendUser"),
         "{expanded:?}"
@@ -1336,18 +1819,20 @@ async fn discovery_standard_tools_pin_the_displayed_list_until_reapproved() {
         tool(
             turn,
             "Shell",
-            json!({"command":"printf approved-shell","login":false}),
+            json!({"command":"printf approved-shell && echo changed > discovery.txt","login":false}),
         );
-        let (turn, body) = next(&mut server).await;
+        let (socket, body) = next(&mut server).await;
         let shell_result = output(&body).to_string();
         assert!(shell_result.contains("approved-shell"), "{shell_result}");
-        turn
+        assert_eq!(
+            tokio::fs::read_to_string(f.rig.directory.path().join("workspace/discovery.txt"))
+                .await
+                .unwrap(),
+            "Observed fixture evidence"
+        );
+        socket
     };
-    tool(
-        turn,
-        "DiscoveryComplete",
-        json!({"kind":"no_report","note":"Updated scope"}),
-    );
+    tool(turn, "FinishNoChange", json!({"note":"Updated scope"}));
     assert_eq!(
         f.settled(&task, 2).await["task"]["runs"][0]["outcome"],
         "ok"
@@ -1360,6 +1845,7 @@ async fn discovery_memory_tool_searches_record_text_and_relationships() {
     let mut server = MockAiBuilder::new().interactive(8).start().await.unwrap();
     let mut f = Fixture::new(&server).await;
     let task = f.create("Older useful record").await;
+    f.use_legacy_report_grant(&task).await;
     f.change(&task, "trigger_now").await;
     let (turn, _) = next(&mut server).await;
     tool(
@@ -1367,6 +1853,8 @@ async fn discovery_memory_tool_searches_record_text_and_relationships() {
         "DiscoveryComplete",
         json!({"kind":"report","text":"Migration original-search-marker"}),
     );
+    f.settled(&task, 1).await;
+    f.send("Look up the investigation history", json!([])).await;
     let (turn, _) = next(&mut server).await;
     let (turn, page) = memory(&mut server, turn, json!({"action":"list"})).await;
     let record = page["records"][0]["id"].clone();
@@ -1528,115 +2016,10 @@ async fn discovery_model_proposals_require_bot_identity_and_human_approval() {
     let (worker, _) = next(&mut server).await;
     tool(
         worker,
-        "DiscoveryComplete",
-        json!({"kind":"no_report","note":"Checked after user approval"}),
+        "FinishNoChange",
+        json!({"note":"Checked after user approval"}),
     );
     assert_eq!(f.settled(id, 1).await["task"]["runs"][0]["outcome"], "ok");
-    f.close().await;
-}
-
-async fn report_to_bot(f: &Fixture, server: &mut MockAiServer, task: &str) -> (TurnHandle, Value) {
-    f.change(task, "trigger_now").await;
-    let (worker, request) = next(server).await;
-    tool(
-        worker,
-        "DiscoveryComplete",
-        json!({"kind":"report","text":"Check the release date again after the update."}),
-    );
-    let (bot, _) = next(server).await;
-    (bot, request)
-}
-
-async fn propose_followup(
-    server: &mut MockAiServer,
-    bot: TurnHandle,
-    title: &str,
-    schedule: Value,
-    worker_tools: Option<&str>,
-) -> (TurnHandle, Value) {
-    let mut request = json!({"mode":"create","title":title,"intentBody":"Check the updated release date","effect":"discovery","schedule":schedule,"timezone":"UTC"});
-    if let Some(worker_tools) = worker_tools {
-        request["workerTools"] = json!(worker_tools);
-    }
-    tool(bot, "ScheduledTask", json!({ "request": request }));
-    let (turn, request) = next(server).await;
-    (turn, output(&request))
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn discovery_report_authorizes_one_time_followup_but_not_a_recurring_or_chained_plan() {
-    let mut server = MockAiBuilder::new().interactive(8).start().await.unwrap();
-    let mut f = Fixture::new(&server).await;
-    let mut effect = f.effect("read_only").await;
-    effect["selectedTools"] = json!({"Read":"read_files"});
-    let parent = f.create_effect(
-        "Approved release watch", "Check the release date",
-        json!({"kind":"interval","everySeconds":3600,"startAt":maka_agent_authority::now()+3_600_000}), effect,
-    ).await;
-    let (bot, parent_request) = report_to_bot(&f, &mut server, &parent).await;
-    assert_eq!(
-        model_tool_names(&parent_request),
-        ["DiscoveryComplete", "Read"]
-    );
-    let at = maka_agent_authority::now() + 3_600_000;
-    let once = json!({"kind":"once","runAt":at});
-    let (bot, recurring) = propose_followup(
-        &mut server,
-        bot,
-        "New recurring watch",
-        json!({"kind":"interval","everySeconds":3600,"startAt":at}),
-        None,
-    )
-    .await;
-    assert_eq!(recurring["approved"], false, "{recurring}");
-    let (bot, wider) = propose_followup(
-        &mut server,
-        bot,
-        "Follow-up requesting Session tools",
-        once.clone(),
-        Some("session"),
-    )
-    .await;
-    assert_eq!(wider["approved"], false, "{wider}");
-    let waiting = f.detail(wider["taskId"].as_str().unwrap()).await;
-    assert_eq!(waiting["task"]["status"], "paused");
-    assert_eq!(waiting["task"]["effect"]["workerTools"], "session");
-
-    let (bot, result) =
-        propose_followup(&mut server, bot, "One-time follow-up", once.clone(), None).await;
-    assert_eq!(result["approved"], true, "{result}");
-    let followup = result["taskId"].as_str().unwrap();
-    let detail = f.detail(followup).await;
-    assert_eq!(detail["task"]["status"], "active");
-    assert_eq!(
-        detail["task"]["effect"],
-        f.detail(&parent).await["task"]["effect"]
-    );
-    let page = f
-        .query("schedules", json!({"kind":"discovery","sessionId":f.bot}))
-        .await;
-    let background = page["tasks"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|task| task["backgroundFollowup"] == true)
-        .map(|task| &task["id"])
-        .collect::<Vec<_>>();
-    assert_eq!(background, vec![&result["taskId"]]);
-    quiet(&f, &mut server, bot).await;
-
-    let (bot, followup_request) = report_to_bot(&f, &mut server, followup).await;
-    assert_eq!(
-        model_tool_names(&followup_request),
-        ["DiscoveryComplete", "Read"]
-    );
-    let (bot, chained) = propose_followup(&mut server, bot, "Chained follow-up", once, None).await;
-    assert_eq!(chained["approved"], false, "{chained}");
-    quiet(&f, &mut server, bot).await;
-    assert_eq!(
-        f.settled(followup, 1).await["task"]["runs"][0]["outcome"],
-        "ok"
-    );
     f.close().await;
 }
 
@@ -1661,8 +2044,8 @@ async fn discovery_schedules_the_next_check_from_the_finished_investigation() {
     let (worker, _) = next(&mut server).await;
     tool(
         worker,
-        "DiscoveryComplete",
-        json!({"kind":"no_report","note":"Finished the manual check"}),
+        "FinishNoChange",
+        json!({"note":"Finished the manual check"}),
     );
     let done = f.settled(&task, 1).await;
     let next_at = done["task"]["runs"][0]["at"].as_u64().unwrap() + delay;
@@ -1751,7 +2134,7 @@ async fn discovery_startup_commits_stop_for_a_paused_worker_before_queue_recover
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn discovery_desktop_lists_only_its_plans_and_tracks_the_original_worker() {
+async fn discovery_catalog_tracks_the_original_worker_and_rejects_continuation() {
     let mut server = MockAiBuilder::new().interactive(8).start().await.unwrap();
     let mut f = Fixture::new(&server).await;
     let task = f.create("Desktop plan").await;
@@ -1799,20 +2182,37 @@ async fn discovery_desktop_lists_only_its_plans_and_tracks_the_original_worker()
     .await
     .unwrap();
     assert_eq!(active["phase"], "investigating");
+    let catalog = f.query("list", json!({"filter":"all","scope":{"kind":"children","sessionId": f.bot}, "position":{"kind":"start"}})).await;
+    let probe = catalog["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["id"] == active["sessionId"])
+        .unwrap();
+    assert_eq!(probe["discoveryWorker"], true);
+
     assert_ne!(active["sessionId"], f.bot);
     assert!(!active["turnId"].as_str().unwrap().is_empty());
-    tool(
-        turn,
-        "DiscoveryComplete",
-        json!({"kind":"no_report","note":"No material change"}),
-    );
+    tool(turn, "FinishNoChange", json!({"note":"No material change"}));
     tokio::time::timeout(Duration::from_secs(45), updates.changed())
         .await
         .unwrap()
         .unwrap();
     let done = f.settled(&task, 1).await;
     assert!(done["investigation"].is_null());
-    assert_eq!(done["task"]["runs"][0]["sessionId"], active["sessionId"]);
+    let run = &done["task"]["runs"][0];
+    assert_eq!(run["sessionId"], active["sessionId"]);
+    let availability = f
+        .query(
+            "continuationAvailability",
+            json!({"sessionId":run["sessionId"],"runId":run["runId"]}),
+        )
+        .await;
+    assert_eq!(
+        availability,
+        json!({"kind":"rejected","reason":"safety_check_failed"})
+    );
+
     assert_eq!(
         f.query(
             "schedules",
@@ -1824,3 +2224,1506 @@ async fn discovery_desktop_lists_only_its_plans_and_tracks_the_original_worker()
     drop(owner);
     f.close().await;
 }
+
+async fn assert_bot_untouched(f: &Fixture) {
+    let owner = f.owner();
+    let queue = owner.durable.queue().read(f.bot.clone()).await.unwrap();
+    assert_eq!(
+        queue.revision, 0,
+        "background activity wrote to the Bot queue"
+    );
+    assert!(
+        owner
+            .durable
+            .latest_run(f.bot.clone())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(f.outbox().await, json!([]));
+}
+
+async fn dossier_update(stream: &mut maka_host_runtime::application::host::LocalCall) -> Value {
+    let reply = tokio::time::timeout(Duration::from_secs(45), stream.pull())
+        .await
+        .unwrap()
+        .unwrap();
+    let Reply::Item { value } = reply else {
+        panic!("dossier subscription: {reply:?}")
+    };
+    value
+}
+
+async fn worker_upsert(
+    server: &mut MockAiServer,
+    turn: TurnHandle,
+    input: Value,
+) -> (TurnHandle, Value) {
+    tool(turn, "UpsertDossier", input);
+    let (turn, request) = next(server).await;
+    (turn, output(&request))
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn discovery_dossiers_commit_linked_once_edits_and_gate_interrupts() {
+    let mut server = MockAiBuilder::new().interactive(16).start().await.unwrap();
+    let mut f = Fixture::new(&server).await;
+    let reminder = f
+        .create_scheduled(
+            "Signing reminder",
+            "Old attachment deadline",
+            json!({"kind":"once","runAt":maka_agent_authority::now()+3_600_000}),
+        )
+        .await;
+    let task = f.create("Review evidence").await;
+    let mut stream = f
+        .rig
+        .client
+        .as_ref()
+        .unwrap()
+        .call(
+            "agent",
+            "watchDossiers".into(),
+            json!({}),
+            Attachments::new(),
+        )
+        .await
+        .unwrap();
+    stream.start().await.unwrap();
+    assert!(matches!(stream.receive().await.unwrap(), Reply::Subscribed));
+    assert_eq!(
+        dossier_update(&mut stream).await,
+        json!({"dossiers":[],"notificationsEnabled":true,"latestInterrupt":null})
+    );
+    f.change(&task, "trigger_now").await;
+    let (worker, _) = next(&mut server).await;
+    let mut input = json!({"topic_id":"contract","expected_revision":0,"title":"Attachments","signal":"red","priority_weight":7.0,"summary_md":"The new annex supersedes the old deadline.","artifacts":[],"linked_task_ids":[reminder],"schedule_ops":[{"kind":"update","task_id":reminder,"intent_body":"Review the new annex"}],"notify_intent":{"kind":"interrupt","reason":"Signature due"}});
+    let (worker, first) = worker_upsert(&mut server, worker, input.clone()).await;
+    assert_eq!(first["revision"], 1, "{first}");
+    assert_eq!(first["notified"], true);
+    let update = dossier_update(&mut stream).await;
+    assert_eq!(update["latestInterrupt"]["reason"], "Signature due");
+    assert_eq!(update["dossiers"][0]["topicId"], "contract");
+    stream.cancel().await.unwrap();
+    stream.close().await.unwrap();
+    let revised = f.detail(&reminder).await;
+    assert_eq!(revised["task"]["intent"]["body"], "Review the new annex");
+    input["schedule_ops"] = json!([]);
+    input["expected_revision"] = json!(1);
+    let (worker, duplicate) = worker_upsert(&mut server, worker, input.clone()).await;
+    assert_eq!(duplicate["notified"], false, "{duplicate}");
+    f.query("setDiscoveryNotifications", json!({"enabled":false}))
+        .await;
+    input["summary_md"] = json!("Confirmed against the signed copy");
+    input["fact_state"] = json!("Annex signed");
+    let (worker, global) = worker_upsert(&mut server, worker, input.clone()).await;
+    assert_eq!(
+        (global["revision"].as_u64(), global["notified"].as_bool()),
+        (Some(2), Some(false)),
+        "{global}"
+    );
+    f.query(
+        "setDossierMuted",
+        json!({"topicId":"contract","muted":true}),
+    )
+    .await;
+    f.query("setDiscoveryNotifications", json!({"enabled":true}))
+        .await;
+    input["expected_revision"] = json!(2);
+    input["summary_md"] = json!("Concluded at review marker 8921");
+    input["fact_state"] = json!("Review concluded");
+    input["change_note"] = json!("Legal approved the annex");
+    input["evidence_md"] = json!("Signed decision 8921");
+    let (worker, muted) = worker_upsert(&mut server, worker, input.clone()).await;
+    assert_eq!(muted["notified"], false, "{muted}");
+    input["expected_revision"] = json!(1);
+    input["schedule_ops"] = json!([{"kind":"cancel","task_id":reminder}]);
+    let (worker, conflict) = worker_upsert(&mut server, worker, input.clone()).await;
+    assert!(conflict.to_string().contains("revision"), "{conflict}");
+    assert_eq!(
+        f.detail(&reminder).await["task"]["intent"],
+        revised["task"]["intent"]
+    );
+    input["expected_revision"] = json!(3);
+    let (worker, cancelled) = worker_upsert(&mut server, worker, input.clone()).await;
+    assert_eq!(cancelled["revision"], 4, "{cancelled}");
+    assert!(f.detail(&reminder).await.is_null());
+    input["topic_id"] = json!("unrelated");
+    input["expected_revision"] = json!(0);
+    input["schedule_ops"] = json!([]);
+    input["linked_task_ids"] = json!([]);
+    input["summary_md"] = json!("Separate evidence");
+    input["notify_intent"] = json!({"kind":"quiet"});
+    let (worker, second) = worker_upsert(&mut server, worker, input).await;
+    assert_eq!(second["revision"], 1, "{second}");
+    tool(
+        worker,
+        "FinishNoChange",
+        json!({"note":"Checked both sources","checked_topic_ids":["contract","unrelated"]}),
+    );
+    assert_eq!(
+        f.settled(&task, 1).await["task"]["runs"][0]["outcome"],
+        "ok"
+    );
+    assert_bot_untouched(&f).await;
+    let page = f.query("dossiers", json!({})).await;
+    assert_eq!(page["notificationsEnabled"], true);
+    assert_eq!(page["dossiers"].as_array().unwrap().len(), 2);
+    let detail = f.query("dossier", json!({"topicId":"contract"})).await;
+    assert_eq!(detail["lastNotifiedRevision"], 1);
+    assert_eq!(detail["lastInterruptReason"], "Signature due");
+    assert_eq!(detail["linkedTaskIds"], json!([]));
+    assert!(
+        detail["lastCheckedAt"].as_i64().unwrap()
+            >= detail["lastMaterialChangeAt"].as_i64().unwrap()
+    );
+    f.send("What changed on the contract?", json!([])).await;
+    let (bot, request) = next(&mut server).await;
+    assert!(!request["messages"].to_string().contains("8921"));
+    assert!(model_tool_names(&request).contains(&"ListDossiers"));
+    tool(bot, "ListDossiers", json!({}));
+    let (bot, list) = next(&mut server).await;
+    assert_eq!(output(&list).as_array().unwrap().len(), 2);
+    assert!(!output(&list).to_string().contains("8921"));
+    tool(bot, "ReadDossier", json!({"topic_id":"contract"}));
+    let (bot, read) = next(&mut server).await;
+    assert_eq!(output(&read)["summary_md"], detail["summaryMd"]);
+    assert_eq!(output(&read)["evidence_md"], "Signed decision 8921");
+    assert_eq!(output(&read)["change_note"], "Legal approved the annex");
+    assert!(!output(&read).to_string().contains("Separate evidence"));
+    quiet(&f, &mut server, bot).await;
+    f.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn discovery_lead_opens_one_isolated_thread_with_its_initial_summary() {
+    let mut server = MockAiBuilder::new().interactive(8).start().await.unwrap();
+    let mut f = Fixture::new(&server).await;
+    f.send("Private Bot history marker 4719", json!([])).await;
+    let (bot, _) = next(&mut server).await;
+    quiet(&f, &mut server, bot).await;
+    let query = f
+        .query(
+            "dropDiscoveryLead",
+            json!({"text":"Review specification marker 8142","paths":["docs/spec.md"]}),
+        )
+        .await;
+    let original = f.query("dossier", query.clone()).await;
+    assert!(original["threadSessionId"].is_null());
+    assert!(original["priorityWeight"].as_f64().unwrap() > 0.);
+    assert!(
+        original["summaryMd"]
+            .as_str()
+            .unwrap()
+            .contains("docs/spec.md")
+    );
+    let (a, b) = tokio::join!(
+        f.query("openDossierThread", query.clone()),
+        f.query("openDossierThread", query.clone())
+    );
+    assert_eq!(a, b);
+    let session = a["sessionId"].as_str().unwrap();
+    assert_ne!(session, f.bot);
+    f.reopen().await;
+    assert_eq!(f.query("openDossierThread", query.clone()).await, a);
+    assert_eq!(f.query("dossier", query).await["threadSessionId"], session);
+    f.query(
+        "send",
+        json!({"sessionId":session,"message":"What should I check?","backend":f.model}),
+    )
+    .await;
+    let (thread, request) = next(&mut server).await;
+    let messages = request["messages"].to_string();
+    assert!(
+        messages.contains("8142") && messages.contains("docs/spec.md"),
+        "{messages}"
+    );
+    assert!(!messages.contains("4719"), "{messages}");
+    thread.reply_text("Check the referenced spec.");
+    f.quiescent(session).await;
+    f.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn elevate_dossier_thread_observes_defaults_quiescence_and_archive() {
+    let mut server = MockAiBuilder::new().interactive(4).start().await.unwrap();
+    let mut f = Fixture::configured(&server, &[], "", |config| {
+        config["permissions"]["access"] = json!("workspace_write");
+    })
+    .await;
+    let owner = f.owner();
+    assert_eq!(
+        owner.settings.permissions.access,
+        WorkspaceAccess::WorkspaceWrite
+    );
+    let policy = owner.configuration.runtime_policy().await.unwrap();
+    let mut defaults = policy.policy.chat_defaults;
+    defaults.sandbox_mode = SandboxMode::ReadOnly;
+    owner
+        .configuration
+        .set_chat_defaults(policy.revision, defaults)
+        .await
+        .unwrap();
+    let lead = f
+        .query(
+            "dropDiscoveryLead",
+            json!({"text":"Check permission elevation policy","paths":[]}),
+        )
+        .await;
+    let opened = f.query("openDossierThread", lead.clone()).await;
+    let session = opened["sessionId"].as_str().unwrap().to_owned();
+    let initial = owner.session(&session).await.unwrap().configuration;
+    let initial_boundary = initial.boundary_revision;
+    assert!(!initial.dossier_elevated);
+
+    assert_eq!(initial.permissions.access, WorkspaceAccess::ReadOnly);
+    f.query("send", json!({"sessionId": session, "message": "Review the current document.", "backend": f.model})).await;
+    let (turn, _) = next(&mut server).await;
+    assert!(
+        matches!(owner.elevate_dossier_thread(&session).await, Err(reason) if reason == "session_busy")
+    );
+    turn.reply_text("Review complete.");
+    f.quiescent(&session).await;
+
+    let elevated = f
+        .query(
+            "openDossierThread",
+            json!({"topicId": lead["topicId"], "elevate": true}),
+        )
+        .await;
+    assert_eq!(elevated["sessionId"], session);
+    let after = owner.session(&session).await.unwrap().configuration;
+    assert!(after.dossier_elevated);
+    assert_eq!(after.permissions, initial.permissions);
+    assert_eq!(after.boundary_revision, initial_boundary + 1);
+    f.query(
+        "openDossierThread",
+        json!({"topicId": lead["topicId"], "elevate": true}),
+    )
+    .await;
+    assert_eq!(
+        owner
+            .session(&session)
+            .await
+            .unwrap()
+            .configuration
+            .boundary_revision,
+        after.boundary_revision
+    );
+
+    let direct = f
+        .query(
+            "dropDiscoveryLead",
+            json!({"text":"Direct execution thread"}),
+        )
+        .await;
+    let opened = f
+        .query(
+            "openDossierThread",
+            json!({"topicId":direct["topicId"],"elevate":true}),
+        )
+        .await;
+    let direct = owner
+        .session(opened["sessionId"].as_str().unwrap())
+        .await
+        .unwrap()
+        .configuration;
+    assert!(direct.dossier_elevated);
+    assert_eq!(direct.permissions, initial.permissions);
+
+    let second = f
+        .query(
+            "dropDiscoveryLead",
+            json!({"text":"Concurrent thread opening","paths":[]}),
+        )
+        .await;
+    let (ordinary, elevated) = tokio::join!(
+        f.query("openDossierThread", second.clone()),
+        f.query(
+            "openDossierThread",
+            json!({"topicId":second["topicId"],"elevate":true})
+        ),
+    );
+    assert_eq!(ordinary, elevated);
+    let winner = owner
+        .session(elevated["sessionId"].as_str().unwrap())
+        .await
+        .unwrap();
+    assert!(winner.configuration.dossier_elevated);
+    assert_eq!(winner.configuration.permissions, initial.permissions);
+
+    // Archiving or referencing a missing session must reject explicit elevation.
+    assert!(
+        owner
+            .elevate_dossier_thread("nonexistent-dossier-session")
+            .await
+            .is_err()
+    );
+    let rev = owner
+        .canonical_catalog()
+        .unwrap()
+        .record(&session)
+        .await
+        .unwrap()
+        .unwrap()
+        .metadata
+        .revision;
+    f.query(
+        "changeSession",
+        json!({"action":"archive","sessionId":session,"expectedRevision":rev}),
+    )
+    .await;
+    assert!(owner.elevate_dossier_thread(&session).await.is_err());
+    f.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn discovery_stalled_worker_settles_quietly_and_releases_the_slot() {
+    let mut server = MockAiBuilder::new().interactive(16).start().await.unwrap();
+    let mut f = Fixture::new(&server).await;
+    let task = f.create("Review terms").await;
+    f.change(&task, "trigger_now").await;
+    let (worker, opening) = next(&mut server).await;
+    assert!(
+        opening["messages"]
+            .to_string()
+            .contains("Deltas [kind,path,ms]")
+    );
+    let mut worker = Some(worker);
+    for step in 1..=6 {
+        let path = if step % 2 == 1 {
+            "discovery.txt"
+        } else {
+            "./discovery.txt"
+        };
+        tool(worker.take().unwrap(), "Read", json!({"path":path}));
+        if step < 6 {
+            let (socket, request) = next(&mut server).await;
+            worker = Some(socket);
+            let message = request["messages"].as_array().unwrap().last().unwrap();
+            assert_eq!(message["role"], "tool");
+            assert_eq!(
+                message["content"]
+                    .to_string()
+                    .contains("Wrap up immediately"),
+                step == 4,
+                "{message}"
+            );
+        }
+    }
+    let result = f.settled(&task, 1).await;
+    assert_eq!(result["task"]["runs"][0]["outcome"], "ok", "{result}");
+    assert!(
+        result["task"]["runs"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("repeated")
+    );
+    assert_bot_untouched(&f).await;
+    let plan = f
+        .owner()
+        .scheduler
+        .change_basis(&task)
+        .await
+        .unwrap()
+        .unwrap()
+        .plan;
+    assert_eq!(plan.consecutive_incomplete, 1);
+    assert!(plan.task.next_fire_at.unwrap() >= plan.task.last_fire_at.unwrap() + 3_600_000);
+    f.change(&task, "trigger_now").await;
+    let (worker, _) = next(&mut server).await;
+    tool(worker, "FinishNoChange", json!({"note":"Done"}));
+    f.settled(&task, 2).await;
+    assert_eq!(
+        f.owner()
+            .scheduler
+            .change_basis(&task)
+            .await
+            .unwrap()
+            .unwrap()
+            .plan
+            .consecutive_incomplete,
+        0
+    );
+    f.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn discovery_checkpoints_reach_the_worker_tool_result_and_skip_bot_chat() {
+    let mut server = MockAiBuilder::new().interactive(64).start().await.unwrap();
+    let mut f = Fixture::new(&server).await;
+    let dir = f.rig.directory.path().join("workspace").join("evidence");
+    tokio::fs::create_dir(&dir).await.unwrap();
+    let large = format!("{}MIDDLE{}END", "源".repeat(2_600), "界".repeat(1_400));
+    for n in 1..=17 {
+        tokio::fs::write(
+            dir.join(format!("{n}.txt")),
+            format!("Verified source {n} {}", if n == 12 { &large } else { "" }),
+        )
+        .await
+        .unwrap();
+    }
+    let due = at().0 + 3_600_000;
+    let task = f
+        .create_scheduled(
+            "Weekly synthesis",
+            "Prepare the weekly evidence briefing",
+            json!({"kind":"interval","everySeconds":3600,"startAt":due}),
+        )
+        .await;
+    f.owner().tick_schedules_at(due).await.unwrap();
+    let (mut worker, frozen_opening) = next(&mut server).await;
+    assert_eq!(f.active_token_budget().await, Some(1_500_000));
+    assert!(
+        frozen_opening["messages"]
+            .to_string()
+            .contains("4–7 natural prose paragraphs")
+    );
+    assert!(
+        !model_tool_names(&frozen_opening)
+            .iter()
+            .any(|name| matches!(
+                *name,
+                "UpdateWorkspaceMap" | "UpdateWatchScope" | "DiscoveryComplete"
+            ))
+    );
+    let tools = model_tool_names(&frozen_opening)
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let mut checkpoint_prefix: Vec<Value> = Vec::new();
+    for step in 1..=17 {
+        tool(
+            worker,
+            "Read",
+            json!({"path":format!("evidence/{step}.txt")}),
+        );
+        let (socket, request) = next(&mut server).await;
+        worker = socket;
+        assert_eq!(model_tool_names(&request), tools);
+        let messages = request["messages"].as_array().unwrap();
+        assert!(
+            messages.starts_with(&checkpoint_prefix),
+            "the replayed prefix changed at step {step}"
+        );
+        let msg = messages.last().unwrap();
+        assert_eq!(msg["role"], "tool");
+        let content = msg["content"].to_string();
+        assert_eq!(
+            content.contains(&format!("Verified source {step}")),
+            step <= 14,
+            "{msg}"
+        );
+        assert_eq!(
+            content.contains("remaining step budget"),
+            step == 12 || step >= 14,
+            "{msg}"
+        );
+        if step == 12 {
+            assert!(content.contains("Output truncated") && content.contains("END"));
+            assert!(!content.contains("MIDDLE"));
+            checkpoint_prefix = messages.clone();
+        }
+    }
+    tool(
+        worker,
+        "FinishNoChange",
+        json!({"note":"Finished all topics"}),
+    );
+    f.settled(&task, 1).await;
+    let client = f.rig.client.as_ref().unwrap();
+    let workspace = f.rig.directory.path().join("workspace");
+    let ordinary = call(
+        client,
+        "agent",
+        "create",
+        json!({
+            "title":"Ordinary session","automaticTitle":false,"labels":[],
+            "workspace":{"kind":"directory","path":workspace}
+        }),
+    )
+    .await
+    .unwrap();
+    let session = ordinary["session"]["id"].as_str().unwrap().to_string();
+    call(
+        client,
+        "agent",
+        "selectBackend",
+        json!({"sessionId":session,"backend":f.model}),
+    )
+    .await
+    .unwrap();
+    let sent = call(
+        client,
+        "agent",
+        "send",
+        json!({"sessionId":session,"message":"Read the large evidence"}),
+    )
+    .await
+    .unwrap();
+    let (ordinary_turn, _) = next(&mut server).await;
+    tool(ordinary_turn, "Read", json!({"path":"evidence/12.txt"}));
+    let (ordinary_turn, request) = next(&mut server).await;
+    let content = request["messages"].as_array().unwrap().last().unwrap()["content"].to_string();
+    assert!(
+        content.contains(&large) && !content.contains("Output truncated"),
+        "ordinary session content (len={}): {}",
+        content.len(),
+        &content[..content.len().min(800)]
+    );
+    ordinary_turn.reply_text("Done.");
+    quiescent_message(client, &session, &sent["messageId"])
+        .await
+        .unwrap();
+
+    f.send("Read the evidence", json!([])).await;
+    let (mut bot, _) = next(&mut server).await;
+    for _ in 1..=17 {
+        tool(bot, "Read", json!({"path":"discovery.txt"}));
+        let (socket, request) = next(&mut server).await;
+        bot = socket;
+        let content =
+            request["messages"].as_array().unwrap().last().unwrap()["content"].to_string();
+        assert!(
+            !content.contains("Wrap up immediately") && !content.contains("remaining step budget"),
+            "{content}"
+        );
+    }
+    quiet(&f, &mut server, bot).await;
+    f.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn discovery_greedy_onboard_wraps_up_softly_and_persists_map() {
+    use maka_agent_facts::durable::{AcceptedResult, ToolDecision};
+    let mut server = MockAiBuilder::new().interactive(32).start().await.unwrap();
+    // Bind Shell to the fixture's file reader so every platform returns deterministic evidence.
+    let mut f = Fixture::configured(&server, &[], "", |config| {
+        let tools = config["tools"].as_array_mut().unwrap();
+        tools.retain(|tool| tool["name"] != "Shell");
+        let mut shell = tools
+            .iter()
+            .find(|tool| tool["name"] == "Read")
+            .unwrap()
+            .clone();
+        shell["name"] = json!("Shell");
+        tools.push(shell);
+    })
+    .await;
+    let dir = f.rig.directory.path().join("workspace/notes");
+    tokio::fs::create_dir(&dir).await.unwrap();
+    for n in 1..=18 {
+        tokio::fs::write(dir.join(format!("{n}.txt")), format!("source {n}"))
+            .await
+            .unwrap();
+    }
+    let task = f
+        .create_scheduled(
+            "Map notes",
+            "",
+            json!({"kind":"interval","everySeconds":3600,"startAt":at().0 + 3_600_000}),
+        )
+        .await;
+    f.change(&task, "trigger_now").await;
+    let mut worker = None;
+    for step in 1..=18 {
+        let (turn, request) = next(&mut server).await;
+        if step == 1 {
+            worker = Some(f.active_worker());
+            let prompt = request["messages"].to_string();
+            assert!(prompt.contains("first 2–4 steps") && prompt.contains("upsert_sources"));
+        }
+        let names = model_tool_names(&request);
+        for name in [
+            "Shell",
+            "UpdateWorkspaceMap",
+            "UpsertDossier",
+            "FinishNoChange",
+        ] {
+            assert!(names.contains(&name));
+        }
+        let mut plan = TurnPlan::new().push_tool_call(
+            format!("shell-{step}"),
+            "Shell",
+            json!({"path":format!("notes/{step}.txt")}),
+        );
+        match step {
+            3 => plan = plan.push_tool_call("checkpoint", "UpdateWorkspaceMap", json!({"action":"upsert_sources","sources":[{"path":"notes","summary":"Project notes"}]})),
+            16 => plan = plan.push_tool_call("save-dossier", "UpsertDossier", json!({"topic_id":"notes","expected_revision":0,"title":"Project notes","signal":"yellow","priority_weight":1,"summary_md":"Review pending","notify_intent":{"kind":"quiet"}})),
+            18 => plan = plan.push_tool_call("map-ready", "UpdateWorkspaceMap", json!({"action":"mark_ready"})),
+            _ => (),
+        }
+        turn.send_plan(
+            plan.with_usage(Usage::new(100, 10))
+                .finish(FinishReason::ToolCalls),
+        );
+    }
+    let detail = f.settled(&task, 1).await;
+    assert_eq!(detail["task"]["runs"][0]["outcome"], "ok");
+    assert_eq!(
+        detail["task"]["runs"][0]["message"],
+        "Discovery reached its step limit"
+    );
+    let run_id = f
+        .owner()
+        .durable
+        .latest_run(worker.unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    let view = f
+        .owner()
+        .durable
+        .find_run_full(run_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(view.steps.len(), 18);
+    for n in 1..=18 {
+        let id = format!("shell-{n}");
+        let call = view.tools.values().find(|t| t.call.id == id).unwrap();
+        let outcome = &call.accepted.as_ref().unwrap().outcome;
+        if n <= 14 {
+            assert_eq!(outcome, &AcceptedResult::Succeeded);
+        } else {
+            assert_eq!(outcome, &AcceptedResult::Rejected);
+            let Some(ToolDecision::Rejected { rejection, .. }) = &call.decision else {
+                panic!("missing Shell rejection at step {n}")
+            };
+            assert!(
+                rejection
+                    .to_string()
+                    .contains(&format!("remaining step budget is {}.", 19 - n))
+            );
+        }
+    }
+    f.reopen().await;
+    assert_eq!(
+        f.query("dossier", json!({"topicId":"notes"})).await["revision"],
+        1
+    );
+    f.send("Inspect the workspace map", json!([])).await;
+    let (bot, _) = next(&mut server).await;
+    tool(bot, "UpdateWorkspaceMap", json!({"action":"inspect"}));
+    let (bot, request) = next(&mut server).await;
+    let map = output(&request);
+    assert_eq!(map["phase"], "ready");
+    assert_eq!(map["sources"][0]["summary"], "Project notes");
+    quiet(&f, &mut server, bot).await;
+    f.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn discovery_file_drop_in_another_authorized_root_wakes_only_an_active_plan() {
+    let mut server = MockAiBuilder::new().interactive(16).start().await.unwrap();
+    let mut f = Fixture::with_tools(&server, &[session_read_tool()]).await;
+    let task = f.create_scheduled("Review new arrivals", "", json!({"kind":"interval","everySeconds":3600,"startAt":maka_agent_authority::now()+3_600_000})).await;
+    f.change(&task, "pause").await;
+    let (room, posted) = f.quiet_room("Contract review").await;
+    let owner = f.owner();
+    tokio::fs::write(
+        f.rig
+            .directory
+            .path()
+            .join("other-workspace")
+            .join("terms.pdf"),
+        b"new terms",
+    )
+    .await
+    .unwrap();
+    let state = &owner.discovery;
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let mut poll = tokio::time::interval(Duration::from_millis(100));
+        loop {
+            poll.tick().await;
+            if state.has_ready_changes(at()).await.unwrap() {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("watcher did not publish a debounced delta");
+    let paused = f.detail(&task).await;
+    assert!(
+        paused["pendingFire"].is_null() && paused["task"]["runs"].as_array().unwrap().is_empty()
+    );
+    let effect = &paused["task"]["effect"];
+    let names = f.preview(effect, Some(&task)).await;
+    let due = at().0 + 8_000;
+    let resumed = f
+        .query(
+            "schedule",
+            json!({"kind":"approve","taskId":task,"revision":paused["revision"],
+                "input":{"task":{"title":"Review new arrivals","intentBody":"","effect":effect,
+                    "schedule":{"kind":"interval","everySeconds":1800,"startAt":due,"cadence":"after_completion"}},
+                    "timezone":"UTC","misfire":"latest","approvedTools":names}}),
+        )
+        .await;
+    assert_eq!(resumed["kind"], "committed", "{resumed}");
+    let (worker, request) = next(&mut server).await;
+    let messages = request["messages"].to_string();
+    assert!(
+        messages.contains("terms.pdf") && messages.contains("created"),
+        "{messages}"
+    );
+    assert!(messages.contains("Sessions [kind,session_id,title,ms]") && messages.contains(&room));
+    assert_eq!(
+        state
+            .session_explored_at(std::slice::from_ref(&room))
+            .await
+            .unwrap()[&room],
+        posted.0
+    );
+
+    let until_due = due.saturating_sub(at().0).max(0) as u64;
+    tokio::time::sleep(Duration::from_millis(until_due)).await;
+    tool(
+        worker,
+        "FinishNoChange",
+        json!({"note":"Reviewed the new file"}),
+    );
+    assert_eq!(
+        f.settled(&task, 1).await["task"]["runs"][0]["outcome"],
+        "ok"
+    );
+    assert!(!state.has_ready_changes(at()).await.unwrap());
+    // The preserved timer can perform the initial onboarding independently of the file fire.
+    let (onboard, request) = next(&mut server).await;
+    assert!(request["messages"].to_string().contains("Onboard"));
+    tool(
+        onboard,
+        "UpdateWorkspaceMap",
+        json!({"action":"mark_ready"}),
+    );
+    let (onboard, _) = next(&mut server).await;
+    tool(onboard, "FinishNoChange", json!({"note":"Ready"}));
+    f.settled(&task, 2).await;
+    assert_bot_untouched(&f).await;
+    drop(owner);
+    f.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn discovery_file_change_waits_for_cooldown_and_drains_only_displayed_rows() {
+    use maka_agent_facts::discovery::SourceUri;
+    use maka_agent_state::discovery::changes::ChangeQuery;
+    use maka_scheduler::plan::FireSource;
+
+    let mut server = MockAiBuilder::new().interactive(16).start().await.unwrap();
+    let project = ".gemini/antigravity/scratch/app";
+    let mut f = Fixture::configured(&server, &[], project, |_| {}).await;
+    let task = f
+        .create_scheduled(
+            "Review incoming files",
+            "Review the changes",
+            json!({"kind":"interval","everySeconds":10,"startAt":at().0 + 3_600_000}),
+        )
+        .await;
+    let home = tokio::fs::canonicalize(f.rig.directory.path().join("workspace"))
+        .await
+        .unwrap();
+    let home = Path::new(maka_fs_tools::workspace::project::host_path(&home).unwrap());
+    let project = home.join(project);
+    let outside = home.join("Downloads/other.txt");
+    let noise = home.join(".gemini/antigravity/brain/state");
+    let files: Vec<_> = (0..25)
+        .map(|i| project.join(format!("busy/section-{i}/spec.md")))
+        .collect();
+    for path in files.iter().chain([&outside, &noise]) {
+        tokio::fs::create_dir_all(path.parent().unwrap())
+            .await
+            .unwrap();
+    }
+    f.reopen().await;
+    f.change(&task, "trigger_now").await;
+    let (first, _) = next(&mut server).await;
+    for path in [&outside, &noise].into_iter().chain(&files) {
+        tokio::fs::write(path, "updated terms").await.unwrap();
+    }
+    let owner = f.owner();
+    let ready = || {
+        owner
+            .discovery
+            .change_snapshot(at(), ChangeQuery::opening(64, home), |_, _| true)
+    };
+    tokio::time::timeout(Duration::from_secs(40), async {
+        let mut poll = tokio::time::interval(Duration::from_millis(100));
+        loop {
+            poll.tick().await;
+            let changes = ready().await.unwrap().into_deltas();
+            if changes
+                .iter()
+                .filter(|d| Path::new(&d.path).starts_with(&project))
+                .count()
+                == 25
+                && changes.iter().any(|d| Path::new(&d.path) == outside)
+            {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("watcher did not debounce the project burst and the separate Downloads change");
+    assert!(
+        owner
+            .discovery
+            .get_source_cursor(SourceUri(noise.to_str().unwrap().into()))
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    tool(
+        first,
+        "FinishNoChange",
+        json!({"note":"First review complete"}),
+    );
+    let last = f.settled(&task, 1).await["task"]["lastFireAt"]
+        .as_i64()
+        .unwrap();
+    let (second, request) = next(&mut server).await;
+    let fire = owner
+        .scheduler
+        .change_basis(&task)
+        .await
+        .unwrap()
+        .unwrap()
+        .plan
+        .pending
+        .unwrap();
+    assert_eq!(fire.source, FireSource::FileChange);
+    assert!(
+        fire.scheduled_at >= last + 5_000,
+        "early file wake after {} ms",
+        fire.scheduled_at - last
+    );
+    let opening = request["messages"].to_string();
+    assert_eq!(opening.matches("spec.md").count(), 2, "{opening}");
+    assert!(
+        opening.contains("busy") && opening.contains("25") && !opening.contains("other.txt"),
+        "{opening}"
+    );
+    tool(
+        second,
+        "FinishNoChange",
+        json!({"note":"Reviewed the project"}),
+    );
+    f.settled(&task, 2).await;
+    let remaining = ready().await.unwrap().into_deltas();
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(Path::new(&remaining[0].path), outside);
+    drop(owner);
+    f.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn discovery_code_mode_counts_new_files_read_inside_cells() {
+    let mut server = MockAiBuilder::new().interactive(16).start().await.unwrap();
+    let mut f=Fixture::with_tools(&server,&[json!({
+        "name":"ReadPart","description":"Read a source file.","nestable":true,
+        "input":"json","result":"image","confirmation":"preapproved","target":{"kind":"import","name":"files"},"method":"read"
+    })]).await;
+    f.update_model_connection(ConnectionCatalogEntryUpdate {
+        model_overrides: serde_json::from_value(
+            json!({"llama3.2":{"codeMode":true,"apiProtocol":"openai-chat-completions"}}),
+        )
+        .unwrap(),
+        ..Default::default()
+    })
+    .await;
+    let dir = f.rig.directory.path().join("workspace");
+    for n in 0..15 {
+        tokio::fs::write(dir.join(format!("part-{n}")), "same text")
+            .await
+            .unwrap();
+    }
+    let task = f.create("Check each part").await;
+    f.change(&task, "trigger_now").await;
+    let (mut worker, _) = next(&mut server).await;
+    for n in 0..15 {
+        tool(
+            worker,
+            "exec",
+            json!({"code":format!("const page = await tools.ReadPart({{path:'part-{n}'}}); text(page.value.content);"),"yield_time_ms":30000}),
+        );
+        let (socket, request) = next(&mut server).await;
+        worker = socket;
+        let last = output(&request).to_string();
+        assert_eq!(
+            last.contains("remaining step budget"),
+            n == 11 || n >= 13,
+            "{last}"
+        );
+        assert!(
+            (last.contains("same text") == (n < 14)) && !last.contains("Wrap up immediately"),
+            "{last}"
+        );
+    }
+    tool(
+        worker,
+        "FinishNoChange",
+        json!({"note":"Checked each part"}),
+    );
+    assert_eq!(
+        f.settled(&task, 1).await["task"]["runs"][0]["outcome"],
+        "ok"
+    );
+    f.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn discovery_staged_receipt_attaches_verbatim_and_preview_checks_the_dossier_and_bytes() {
+    use sha2::{Digest, Sha256};
+    let mut server = MockAiBuilder::new().interactive(16).start().await.unwrap();
+    let mut f = Fixture::new(&server).await;
+    let task = f.create("Prepare a draft").await;
+    f.change(&task, "trigger_now").await;
+    let (worker, request) = next(&mut server).await;
+    assert!(!model_tool_names(&request).contains(&"UpdateDiscoveryPreferences"));
+    let input = json!({"topic_id":"terms","relative_path":"notes/annex.diff","content":"+ 合同\n","purpose":"Review the clause","input_paths":["discovery.txt","missing.txt"]});
+    let mut outside = input.clone();
+    outside["input_paths"] = json!(["../other-workspace/terms"]);
+    tool(worker, "StageArtifact", outside);
+    let (worker, rejected) = next(&mut server).await;
+    assert!(
+        output(&rejected)
+            .to_string()
+            .contains("outside authorized workspace"),
+        "{rejected}"
+    );
+    tool(worker, "StageArtifact", input);
+    let (worker, staged) = next(&mut server).await;
+    let artifact = output(&staged);
+    assert_eq!(artifact["sha256"], hex::encode(Sha256::digest("+ 合同\n")));
+    assert_eq!(
+        artifact["input_hashes"],
+        json!({"discovery.txt":hex::encode(Sha256::digest("Observed fixture evidence"))})
+    );
+    let query = json!({"topicId":"terms","path":"notes/annex.diff"});
+    let client = f.rig.client.as_ref().unwrap();
+    assert!(
+        call(client, "agent", "readDossierArtifact", query.clone())
+            .await
+            .is_err()
+    );
+    let (worker, committed) = worker_upsert(&mut server, worker, json!({
+        "topic_id":"terms","expected_revision":0,"title":"Terms","signal":"yellow","priority_weight":3.0,
+        "summary_md":"Check the draft","artifacts":[artifact],"notify_intent":{"kind":"quiet"}
+    })).await;
+    assert_eq!(committed["revision"], 1, "{committed}");
+    assert_eq!(
+        f.query("readDossierArtifact", query.clone()).await,
+        "+ 合同\n"
+    );
+    for bad in [
+        json!({"topicId":"other","path":"notes/annex.diff"}),
+        json!({"topicId":"terms","path":"draft.md"}),
+        json!({"topicId":"terms","path":"../terms/notes/annex.diff"}),
+        json!({"topicId":"../terms","path":"notes/annex.diff"}),
+    ] {
+        assert!(
+            call(client, "agent", "readDossierArtifact", bad)
+                .await
+                .is_err()
+        );
+    }
+    let state = f.owner().store.owned_root().unwrap();
+    let path = state
+        .canonical_path()
+        .join("discovery/staging/terms/notes/annex.diff");
+    tokio::fs::write(&path, "unattached revision")
+        .await
+        .unwrap();
+    assert!(
+        call(client, "agent", "readDossierArtifact", query.clone())
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("changed")
+    );
+    #[cfg(unix)]
+    {
+        let outside = f.rig.directory.path().join("other-workspace/original.txt");
+        tokio::fs::write(&outside, "+ 合同\n").await.unwrap();
+        tokio::fs::remove_file(&path).await.unwrap();
+        tokio::fs::symlink(&outside, &path).await.unwrap();
+        assert!(
+            call(client, "agent", "readDossierArtifact", query)
+                .await
+                .is_err()
+        );
+    }
+    tool(worker, "FinishNoChange", json!({"note":"Draft attached"}));
+    f.settled(&task, 1).await;
+    drop(state);
+    f.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn discovery_due_frontier_targets_wander_and_manual_followups_keep_dossier_context() {
+    let mut server = MockAiBuilder::new().interactive(32).start().await.unwrap();
+    let mut f = Fixture::with_tools(&server, &[session_read_tool()]).await;
+    let query = f
+        .query(
+            "dropDiscoveryLead",
+            json!({"text":"Existing dossier marker 3819"}),
+        )
+        .await;
+    let topic = query["topicId"].as_str().unwrap();
+    let session = f.query("openDossierThread", query.clone()).await["sessionId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    f.query(
+        "send",
+        json!({"sessionId":session,"message":"周五再提醒","backend":f.model}),
+    )
+    .await;
+    let (thread, req) = next(&mut server).await;
+    assert!(req["messages"].to_string().contains(topic));
+    assert!(model_tool_names(&req).contains(&"UpdateWatchScope"));
+    tool(
+        thread,
+        "UpdateDiscoveryPreferences",
+        json!({"mode":"append","rule":"周五再提醒"}),
+    );
+    let (thread, req) = next(&mut server).await;
+    assert_eq!(output(&req)["updated"], true, "{}", output(&req));
+    let mut draft = json!({"topic_id":"other-topic","relative_path":"draft.md","content":"Dossier draft","purpose":"For review"});
+    tool(thread, "StageArtifact", draft.clone());
+    let (thread, req) = next(&mut server).await;
+    assert!(output(&req).to_string().contains("discovery_wrong_topic"));
+    draft["topic_id"] = json!(topic);
+    tool(thread, "StageArtifact", draft);
+    let (thread, req) = next(&mut server).await;
+    assert_eq!(output(&req)["path"], "draft.md");
+    thread.reply_text("Saved.");
+    f.quiescent(&session).await;
+    assert_eq!(
+        f.query(
+            "readDossierArtifact",
+            json!({"topicId":topic,"path":"draft.md"})
+        )
+        .await,
+        "Dossier draft"
+    );
+    f.query("setDossierMuted", json!({"topicId":topic,"muted":true}))
+        .await;
+
+    f.query("openDossierThread", json!({"topicId":topic,"elevate":true}))
+        .await;
+    f.query(
+        "create",
+        json!({
+            "title":"Shipment timing discussion","automaticTitle":false,"labels":[],
+            "workspace":{"kind":"directory","path":f.rig.directory.path().join("workspace")}
+        }),
+    )
+    .await;
+
+    f.send("Save my discovery preference", json!([])).await;
+    let (bot, req) = next(&mut server).await;
+    let system = |r: &Value| {
+        r["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|m| m["role"] == "system")
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    let prefix = system(&req);
+    assert!(!model_tool_names(&req).contains(&"StageArtifact"));
+    tool(
+        bot,
+        "UpdateWatchScope",
+        json!({"action":"add_exclude","path":"generated","reason":"Build outputs"}),
+    );
+    let (bot, req) = next(&mut server).await;
+    assert_eq!(output(&req)["updated"], true, "{}", output(&req));
+    tool(
+        bot,
+        "UpdateDiscoveryPreferences",
+        json!({"mode":"replace","rule":"Skip subtitle tracking"}),
+    );
+    let (bot, req) = next(&mut server).await;
+    assert_eq!(output(&req)["updated"], true, "{}", output(&req));
+    quiet(&f, &mut server, bot).await;
+    let cold = f.rig.directory.path().join("workspace/cold");
+    tokio::fs::create_dir(&cold).await.unwrap();
+    let hour = 3_600_000;
+    // Exercise the due map frontier after the earlier human Bot turn ages out of discovery.
+    let due = at().0 + 25 * hour;
+    let broad = f
+        .create_scheduled(
+            "Broad discovery",
+            "",
+            json!({"kind":"interval","everySeconds":3600,"startAt":due}),
+        )
+        .await;
+    f.owner().tick_schedules_at(due).await.unwrap();
+    let (onboard, req) = next(&mut server).await;
+    let opening = req["messages"].to_string();
+    assert!(opening.contains("Onboard") && opening.contains("Shipment timing discussion"));
+    assert!(!opening.contains("Existing dossier marker"));
+    tool(
+        onboard,
+        "UpdateWorkspaceMap",
+        json!({"action":"record_frontier","branches":[
+            {"path":"cold","reason":"Check release manifest","next_probe_after":due+2*hour}
+        ]}),
+    );
+    let (onboard, req) = next(&mut server).await;
+    assert_eq!(output(&req)["phase"], "scanning");
+    tool(
+        onboard,
+        "FinishNoChange",
+        json!({"note":"Saved map checkpoint"}),
+    );
+    f.settled(&broad, 1).await;
+    f.reopen().await;
+    f.owner().tick_schedules_at(due + hour).await.unwrap();
+    let (onboard, req) = next(&mut server).await;
+    let resumed = req["messages"].to_string();
+    assert!(resumed.contains("Onboard") && resumed.contains("Check release manifest"));
+    tool(
+        onboard,
+        "UpdateWorkspaceMap",
+        json!({"action":"mark_ready","frontier":[
+            {"path":"discovery.txt","reason":"Check separate release note","next_probe_after":due+2*hour}
+        ]}),
+    );
+    let (onboard, req) = next(&mut server).await;
+    assert_eq!(output(&req)["phase"], "ready");
+    tool(
+        onboard,
+        "FinishNoChange",
+        json!({"note":"Mapped workspace"}),
+    );
+    f.settled(&broad, 2).await;
+    f.owner().tick_schedules_at(due + 2 * hour).await.unwrap();
+    let (worker, req) = next(&mut server).await;
+    let opening = req["messages"].to_string();
+    assert!(
+        opening.contains("Cold starting points") && opening.contains("Check release manifest"),
+        "{opening}"
+    );
+    assert!(
+        !opening.contains("Existing dossier marker")
+            && !opening.contains("Check separate release note")
+    );
+    assert!(opening.contains("Shipment timing discussion"));
+    let names = model_tool_names(&req);
+    assert!(names.contains(&"UpdateWorkspaceMap") && !names.contains(&"UpdateWatchScope"));
+    assert_eq!(f.active_token_budget().await, Some(1_500_000));
+    let finding = json!({"topic_id":"cold-brief","title":"Cold brief","signal":"yellow","priority_weight":1.0,
+        "summary_md":"Cross-checked the cold brief","expected_revision":0,"notify_intent":{"kind":"quiet"}});
+    let (worker, refused) = worker_upsert(&mut server, worker, finding.clone()).await;
+    assert!(
+        refused
+            .to_string()
+            .contains("Call ListDossiers before committing")
+    );
+    tool(worker, "ListDossiers", json!({}));
+    let (worker, list) = next(&mut server).await;
+    assert!(output(&list).to_string().contains(topic));
+    let (worker, saved) = worker_upsert(&mut server, worker, finding).await;
+    assert_eq!(saved["revision"], 1);
+    tool(
+        worker,
+        "UpdateWorkspaceMap",
+        json!({"action":"mark_verified","paths":["cold"],"material_finding":true}),
+    );
+    let (worker, _) = next(&mut server).await;
+    tool(
+        worker,
+        "FinishNoChange",
+        json!({"note":"Checked mapped source"}),
+    );
+    f.settled(&broad, 3).await;
+    f.change(&broad, "trigger_now").await;
+    let (worker, req) = next(&mut server).await;
+    let opening = req["messages"].to_string();
+    assert!(!model_tool_names(&req).iter().any(|name| matches!(
+        *name,
+        "UpdateWorkspaceMap" | "UpdateWatchScope" | "DiscoveryComplete"
+    )));
+    for expected in [
+        topic,
+        "Existing dossier marker",
+        "周五再提醒",
+        "Skip subtitle tracking",
+        "replied in the dossier thread",
+        "opened a staged artifact",
+        "muted the topic",
+    ] {
+        assert!(opening.contains(expected), "{expected}: {opening}");
+    }
+    tool(worker, "FinishNoChange", json!({"note":"Checked"}));
+    f.settled(&broad, 4).await;
+    f.send("Hello again", json!([])).await;
+    let (bot, req) = next(&mut server).await;
+    assert_eq!(prefix, system(&req));
+    quiet(&f, &mut server, bot).await;
+    f.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn discovery_twelve_idle_hours_after_onboarding_create_no_workers_calls_tokens_or_revisions()
+{
+    let mut server = MockAiBuilder::new().interactive(16).start().await.unwrap();
+    let mut f = Fixture::new(&server).await;
+    const HOUR: i64 = 3_600_000;
+    let due = (at().0.div_euclid(24 * HOUR) + 1) * 24 * HOUR + HOUR;
+    let plan = f
+        .create_scheduled(
+            "Hourly discovery",
+            "",
+            json!({"kind":"interval","everySeconds":3600,"startAt":due}),
+        )
+        .await;
+    f.owner().tick_schedules_at(due).await.unwrap();
+    let (onboard, request) = next(&mut server).await;
+    assert!(request["messages"].to_string().contains("Onboard"));
+    assert_eq!(f.active_token_budget().await, Some(1_500_000));
+    finish_with_usage(onboard, Usage::new(0, 1_000_000));
+    f.settled(&plan, 1).await;
+    let first = f.owner().discovery.plan_activity(&plan).await.unwrap();
+    assert_eq!((first.tokens, first.last_run_at), (4_000_000, due));
+
+    let due = due + HOUR;
+    f.owner().tick_schedules_at(due).await.unwrap();
+    let (onboard, request) = next(&mut server).await;
+    assert!(request["messages"].to_string().contains("Onboard"));
+    assert_eq!(f.active_token_budget().await, Some(1_500_000));
+    let mut finding = json!({"topic_id":"release","expected_revision":0,"title":"Release approval","signal":"yellow",
+        "priority_weight":1.0,"fact_state":"Approval pending","summary_md":"Awaiting release approval","notify_intent":{"kind":"quiet"}});
+    let (onboard, saved) = worker_upsert(&mut server, onboard, finding.clone()).await;
+    assert_eq!(saved["revision"], 1);
+    tool(
+        onboard,
+        "UpdateWorkspaceMap",
+        json!({"action":"mark_ready"}),
+    );
+    let (onboard, _) = next(&mut server).await;
+    finish_with_usage(
+        onboard,
+        Usage::new(200_000, 3_000)
+            .with_cache_read(180_000)
+            .with_cache_creation(15_000)
+            .with_reasoning(2_000),
+    );
+    f.settled(&plan, 2).await;
+    let initial = f.owner().discovery.plan_activity(&plan).await.unwrap();
+
+    assert_eq!(initial.tokens, 4_000_000 + 2 * 140 + 50_000);
+    assert_eq!(initial.last_run_at, due);
+    for hour in 1..=12 {
+        if hour == 7 {
+            f.reopen().await;
+        }
+        f.owner()
+            .tick_schedules_at(due + hour * HOUR)
+            .await
+            .unwrap();
+    }
+    let detail = f.detail(&plan).await;
+    assert!(detail["pendingFire"].is_null());
+    assert_eq!(detail["task"]["nextFireAt"], due + 13 * HOUR);
+    assert_eq!(detail["task"]["fireCount"], 2);
+    assert_eq!(f.worker_count().await, 2);
+    let idle = f.owner().discovery.plan_activity(&plan).await.unwrap();
+    assert_eq!(
+        (idle.skipped, idle.model_runs, idle.revised, idle.notified),
+        (12, 2, 1, 0)
+    );
+    assert_eq!(idle.tokens, initial.tokens);
+    assert_eq!(
+        f.query("dossier", json!({"topicId":"release"})).await["revisions"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), server.next_turn())
+            .await
+            .is_err()
+    );
+
+    f.change(&plan, "trigger_now").await;
+    let (manual, _) = next(&mut server).await;
+    assert_eq!(f.active_token_budget().await, Some(1_500_000));
+    finding["expected_revision"] = json!(1);
+    finding["summary_md"] = json!("Release approval is still pending");
+    let (manual, receipt) = worker_upsert(&mut server, manual, finding).await;
+    assert_eq!(receipt["material_change"], false);
+    tool(manual, "FinishNoChange", json!({"note":"Reviewed"}));
+    assert_eq!(
+        f.settled(&plan, 3).await["task"]["runs"][0]["message"],
+        "No report"
+    );
+    let manual = f.owner().discovery.plan_activity(&plan).await.unwrap();
+    assert_eq!(manual.tokens, idle.tokens + 2 * 140);
+    assert_eq!((manual.model_runs, manual.deferred), (3, 0));
+    f.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn discovery_daily_budget_defers_original_fire_without_consuming_deltas() {
+    use maka_agent_state::discovery::changes::{FileWrite, Fingerprint, ProbeResult, WriteKind};
+    let mut server = MockAiBuilder::new().interactive(16).start().await.unwrap();
+    let mut f = Fixture::new(&server).await;
+    const HOUR: i64 = 3_600_000;
+    const DAY: i64 = 24 * HOUR;
+    let due = (at().0.div_euclid(DAY) + 1) * DAY + HOUR;
+    let task = f.create_scheduled("Daily digest", "Prepare a briefing",
+        json!({"kind":"interval","everySeconds":3600,"startAt":due,"cadence":"after_completion"})).await;
+    let state = f.owner().discovery.clone();
+    f.owner().tick_schedules_at(due).await.unwrap();
+    let (worker, _) = next(&mut server).await;
+    assert_eq!(f.active_token_budget().await, Some(1_500_000));
+    finish_with_usage(worker, Usage::new(0, 500_000));
+    f.settled(&task, 1).await;
+
+    for (n, (spent, interval, output_tokens)) in [
+        (2_000_000, 2 * HOUR, 300_000),
+        (3_200_000, 4 * HOUR, 200_000),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let meter = state.plan_activity(&task).await.unwrap();
+        assert_eq!(meter.tokens, spent);
+        let next_due = f.detail(&task).await["task"]["nextFireAt"]
+            .as_i64()
+            .unwrap();
+        let until = meter.last_run_at + interval;
+        assert!(next_due < until);
+        f.owner().tick_schedules_at(next_due).await.unwrap();
+        let pending = f
+            .owner()
+            .scheduler
+            .change_basis(&task)
+            .await
+            .unwrap()
+            .unwrap()
+            .plan
+            .pending
+            .unwrap();
+        assert_eq!(pending.deferred_until, Some(until));
+        f.owner().tick_schedules_at(until - 1).await.unwrap();
+        assert_eq!(f.worker_count().await, n + 1);
+        f.owner().tick_schedules_at(until).await.unwrap();
+        let (worker, _) = next(&mut server).await;
+        // At 80% only 800,000 weighted tokens remain, but the engine still gets its full raw allowance.
+        assert_eq!(f.active_token_budget().await, Some(1_500_000));
+        finish_with_usage(worker, Usage::new(0, output_tokens));
+        let detail = f.settled(&task, n + 2).await;
+        assert_eq!(detail["task"]["runs"][0]["id"], pending.id);
+        assert_eq!(detail["task"]["runs"][0]["outcome"], "ok");
+    }
+    let when = at();
+    let path = f
+        .owner()
+        .session(&f.bot)
+        .await
+        .unwrap()
+        .configuration
+        .workspace
+        .path;
+    state
+        .observe_writes(
+            vec![FileWrite {
+                path: format!("{path}/discovery.txt"),
+                kind: WriteKind::Modified,
+                at: when,
+            }],
+            0,
+            100,
+            100,
+        )
+        .await
+        .unwrap();
+    let probes = state.due_probes(when, 100).await.unwrap();
+    assert!(!probes.is_empty());
+    state
+        .finish_probes(
+            probes
+                .into_iter()
+                .map(|p| {
+                    (
+                        p,
+                        ProbeResult::Stable(Fingerprint {
+                            mtime: when,
+                            hash: "new".into(),
+                        }),
+                    )
+                })
+                .collect(),
+        )
+        .await
+        .unwrap();
+
+    {
+        use maka_scheduler::plan::FireSource;
+        let owner = f.owner();
+        let _gate = owner.scheduler.gate.lock().await;
+        let mut catalog = owner.scheduler.load().await.unwrap();
+        let mut plan = catalog.plans[&task].plan.clone();
+        plan.claim_preserving_schedule(when.0, FireSource::FileChange)
+            .unwrap()
+            .unwrap();
+        owner
+            .scheduler
+            .commit(&mut catalog, &task, Some(plan), None)
+            .await
+            .unwrap();
+    }
+    f.owner().tick_schedules_at(when.0).await.unwrap();
+    let pending = f
+        .owner()
+        .scheduler
+        .change_basis(&task)
+        .await
+        .unwrap()
+        .unwrap()
+        .plan
+        .pending
+        .unwrap();
+    let midnight = (due.div_euclid(DAY) + 1) * DAY;
+    assert_eq!(pending.deferred_until, Some(midnight));
+    let activity = state.plan_activity(&task).await.unwrap();
+    assert_eq!(
+        (activity.model_runs, activity.tokens, activity.deferred),
+        (3, 4_000_000, 3)
+    );
+    assert!(state.has_ready_changes(when).await.unwrap());
+    assert_eq!(f.worker_count().await, 3);
+    drop(state);
+    f.reopen().await;
+    f.owner().tick_schedules_at(midnight - 1).await.unwrap();
+    assert_eq!(f.worker_count().await, 3);
+    f.owner().tick_schedules_at(midnight).await.unwrap();
+    let (worker, request) = next(&mut server).await;
+    assert!(request["messages"].to_string().contains("discovery.txt"));
+    assert_eq!(f.active_token_budget().await, Some(1_500_000));
+    tool(
+        worker,
+        "FinishNoChange",
+        json!({"note":"Reviewed after reset"}),
+    );
+    assert_eq!(
+        f.settled(&task, 4).await["task"]["runs"][0]["id"],
+        pending.id
+    );
+    assert!(!f.owner().discovery.has_ready_changes(when).await.unwrap());
+    let reset = f.owner().discovery.plan_activity(&task).await.unwrap();
+    assert_eq!(
+        (reset.day, reset.tokens, reset.model_runs),
+        (midnight.div_euclid(DAY), 140, 4)
+    );
+    f.close().await;
+}
+
+mod guards;

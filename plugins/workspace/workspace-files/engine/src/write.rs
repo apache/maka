@@ -28,6 +28,7 @@ use maka_agent_facts::tools::ToolFuture;
 use serde_json::Value;
 
 use std::{
+    collections::BTreeMap,
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
@@ -61,6 +62,37 @@ impl WriteCoordinator {
 pub struct MutationExecutor {
     authority: Option<Arc<Authority>>,
     coordinator: Arc<WriteCoordinator>,
+}
+
+type RecheckInputs = dyn Fn(&BTreeMap<String, String>, &CancellationToken) -> Result<Vec<String>, String>
+    + Send
+    + Sync;
+
+/// The original read capability and expected bytes for a confirmed mutation.
+pub struct ConfirmedInputs {
+    pub(crate) hashes: BTreeMap<String, String>,
+    recheck: Box<RecheckInputs>,
+}
+impl ConfirmedInputs {
+    pub fn new(
+        hashes: BTreeMap<String, String>,
+        recheck: impl Fn(&BTreeMap<String, String>, &CancellationToken) -> Result<Vec<String>, String>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        Self {
+            hashes,
+            recheck: Box::new(recheck),
+        }
+    }
+    pub fn changed(&self, cancel: &CancellationToken) -> Result<Vec<String>, String> {
+        (self.recheck)(&self.hashes, cancel)
+    }
+}
+pub enum WriteOutcome {
+    Returned(Value),
+    Stale(Vec<String>),
 }
 
 enum Request {
@@ -186,6 +218,34 @@ impl ToolExecutor for MutationExecutor {
     }
 
     fn invoke(&self, name: String, input: Value, cancellation: CancellationToken) -> ToolFuture {
+        let result = self.invoke_with_inputs(name, input, cancellation, None);
+        Box::pin(async move {
+            match result.await? {
+                WriteOutcome::Returned(value) => Ok(value),
+                WriteOutcome::Stale(_) => Err(failed("Write target changed")),
+            }
+        })
+    }
+}
+
+impl MutationExecutor {
+    pub fn invoke_confirmed(
+        &self,
+        name: String,
+        input: Value,
+        cancellation: CancellationToken,
+        inputs: Arc<ConfirmedInputs>,
+    ) -> ToolFuture<WriteOutcome> {
+        self.invoke_with_inputs(name, input, cancellation, Some(inputs))
+    }
+
+    fn invoke_with_inputs(
+        &self,
+        name: String,
+        input: Value,
+        cancellation: CancellationToken,
+        confirmed: Option<Arc<ConfirmedInputs>>,
+    ) -> ToolFuture<WriteOutcome> {
         let authority = self.authority.clone();
         let coordinator = self.coordinator.clone();
         Box::pin(async move {
@@ -198,25 +258,53 @@ impl ToolExecutor for MutationExecutor {
             let started = Arc::new(AtomicBool::new(false));
             let worker_started = started.clone();
             // The worker owns the lock and must be joined even after cancellation.
-            tokio::task::spawn_blocking(move || match input {
-                Request::File(input) => {
-                    let output_path = authority.write_display_path(Path::new(input.path()))?;
-                    run(
+            tokio::task::spawn_blocking(move || {
+                // A confirmed batch checks every dependency before its first side effect.
+                let _guard = confirmed
+                    .as_ref()
+                    .map(|_| {
+                        coordinator
+                            .mutation
+                            .lock()
+                            .map_err(|_| failed("Write coordinator poisoned"))
+                    })
+                    .transpose()?;
+                if let Some(proof) = &confirmed {
+                    let changed = proof.changed(&cancellation).map_err(failed)?;
+                    if !changed.is_empty() {
+                        return Ok(WriteOutcome::Stale(changed));
+                    }
+                }
+                match input {
+                    Request::File(input) => {
+                        let path = authority.write_display_path(Path::new(input.path()))?;
+                        let expected = if let Some(proof) = &confirmed {
+                            let Some(hash) = proof.hashes.get(&path) else {
+                                return Ok(WriteOutcome::Stale(vec![path]));
+                            };
+                            Some(format!("sha256:{hash}"))
+                        } else {
+                            None
+                        };
+                        run(
+                            &authority,
+                            &coordinator,
+                            input,
+                            &path,
+                            &cancellation,
+                            &worker_started,
+                            expected.as_deref(),
+                        )
+                    }
+                    Request::Patch(input) => crate::patch::run(
                         &authority,
                         &coordinator,
                         input,
-                        &output_path,
                         &cancellation,
                         &worker_started,
-                    )
+                        confirmed.as_deref(),
+                    ),
                 }
-                Request::Patch(input) => crate::patch::run(
-                    &authority,
-                    &coordinator,
-                    input,
-                    &cancellation,
-                    &worker_started,
-                ),
             })
             .await
             .map_err(|error| {
@@ -239,26 +327,38 @@ fn run(
     output_path: &str,
     cancellation: &CancellationToken,
     started: &AtomicBool,
-) -> Result<Value, ToolError> {
+    expected: Option<&str>,
+) -> Result<WriteOutcome, ToolError> {
     check_cancelled(cancellation)?;
     let mut target = crate::write_target::Target::capture(
         authority,
         Path::new(input.path()),
-        if input.needs_read() {
+        if expected.is_some() || input.needs_read() {
             crate::write_target::ReadMode::Required
         } else {
             crate::write_target::ReadMode::Preview
         },
     )?;
 
-    let _guard = coordinator
-        .mutation
-        .lock()
-        .map_err(|_| failed("Write coordinator poisoned"))?;
+    let _guard = expected
+        .is_none()
+        .then(|| {
+            coordinator
+                .mutation
+                .lock()
+                .map_err(|_| failed("Write coordinator poisoned"))
+        })
+        .transpose()?;
     check_cancelled(cancellation)?;
-    let (content, result) = target.prepare(input, output_path, cancellation)?;
+    let prepared = target.prepare(input, output_path, cancellation);
+    if let Some(expected) = expected
+        && !target.matches_digest(Some(expected), cancellation)?
+    {
+        return Ok(WriteOutcome::Stale(vec![output_path.to_owned()]));
+    }
+    let (content, result) = prepared?;
     target.apply(content.as_bytes(), cancellation, started)?;
-    Ok(result)
+    Ok(WriteOutcome::Returned(result))
 }
 
 pub(crate) fn check_cancelled(token: &CancellationToken) -> Result<(), ToolError> {
