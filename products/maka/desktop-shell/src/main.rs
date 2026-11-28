@@ -22,13 +22,13 @@
 //! The Maka desktop: runs the workbench (`maka-workbench`) in a window of
 //! its own through NSH's AppKit backend on macOS, its Direct2D backend on
 //! Windows and GTK on Linux.
-//! `maka desktop` starts it for the Host it admitted, named by
-//! `MAKA_HOST_ROOT`, `MAKA_HOST_ENDPOINT` and
-//! `MAKA_HOST_EPOCH`. Closing the window hides it behind the tray; Quit
-//! detaches this client, and the Host keeps the work it accepted. If that Host
-//! stops, the AppKit or Linux window connects to the Root's next Host, which the launcher named by
-//! `MAKA_LAUNCHER` starts, and loads the workbench again. Opened directly,
-//! from Finder, the Dock or a file manager, it runs `maka desktop` beside it.
+//! `maka desktop` hands it a Root and launcher (`MAKA_HOST_ROOT`,
+//! `MAKA_LAUNCHER`, plus optional `MAKA_HOST_ENDPOINT` / `MAKA_HOST_EPOCH`
+//! when a caller already admitted a Host). Closing the window hides it behind
+//! the tray; Quit detaches this client, and the Host keeps the work it
+//! accepted. Opened directly from Finder, the Dock, a shortcut, or a file
+//! manager, it connects through `maka host ensure` directly without keeping a
+//! `maka desktop` launcher resident.
 
 #[cfg(target_os = "macos")]
 mod appkit;
@@ -100,15 +100,22 @@ mod windows_icon_test {
     }
 }
 
-/// The Host `maka desktop` admitted: its Root, its endpoint and the epoch the
-/// connection must find there, and the launcher that starts the Root's Host.
+/// How the desktop connects to the initial Host for its Root.
 #[derive(Debug, PartialEq)]
-struct Target {
-    root: PathBuf,
-    endpoint: PathBuf,
-    epoch: uuid::Uuid,
-    #[cfg(not(windows))]
-    launcher: PathBuf,
+pub(crate) enum TargetHost {
+    Connected {
+        endpoint: PathBuf,
+        epoch: uuid::Uuid,
+    },
+    Ensure,
+}
+
+/// The Root and launcher the desktop runs against, plus an optional already-admitted Host.
+#[derive(Debug, PartialEq)]
+pub(crate) struct Target {
+    pub(crate) root: PathBuf,
+    pub(crate) host: TargetHost,
+    pub(crate) launcher: PathBuf,
 }
 
 impl Target {
@@ -127,18 +134,36 @@ impl Target {
             }
         };
         let root = absolute(ROOT)?;
-        let endpoint = PathBuf::from(read(ENDPOINT)?);
-        let epoch = read(EPOCH)?;
-        let epoch = epoch
-            .to_str()
-            .and_then(|epoch| epoch.parse().ok())
-            .ok_or_else(|| format!("{EPOCH} is not a UUID: {}", epoch.to_string_lossy()))?;
+        let launcher = absolute(LAUNCHER)?;
+        let endpoint = var(ENDPOINT).filter(|value| !value.is_empty());
+        let epoch = var(EPOCH).filter(|value| !value.is_empty());
+        let host = match (endpoint, epoch) {
+            (None, None) => TargetHost::Ensure,
+            (Some(endpoint), Some(epoch)) => {
+                let epoch = epoch
+                    .to_str()
+                    .and_then(|epoch| epoch.parse().ok())
+                    .ok_or_else(|| format!("{EPOCH} is not a UUID: {}", epoch.to_string_lossy()))?;
+                TargetHost::Connected {
+                    endpoint: PathBuf::from(endpoint),
+                    epoch,
+                }
+            }
+            (Some(_), None) => {
+                return Err(format!(
+                    "{EPOCH} is not set; start the desktop with `maka desktop`"
+                ));
+            }
+            (None, Some(_)) => {
+                return Err(format!(
+                    "{ENDPOINT} is not set; start the desktop with `maka desktop`"
+                ));
+            }
+        };
         Ok(Self {
             root,
-            endpoint,
-            epoch,
-            #[cfg(not(windows))]
-            launcher: absolute(LAUNCHER)?,
+            host,
+            launcher,
         })
     }
 }
@@ -151,9 +176,9 @@ fn answer(arguments: impl IntoIterator<Item = std::ffi::OsString>) -> Option<Str
     for argument in arguments {
         if argument == "--help" || argument == "-h" {
             return Some(format!(
-                "{version}\n\nStarted by `maka desktop --root PATH`, which names the Host in \
-                 {ROOT}, {ENDPOINT} and {EPOCH}, and itself in {LAUNCHER}. Opened \
-                 without them, it runs `maka desktop` beside it.{}",
+                "{version}\n\nStarted by `maka desktop --root PATH`, which names the Root and \
+                 launcher in {ROOT} and {LAUNCHER} (optionally with {ENDPOINT} and {EPOCH}). \
+                 Opened without them, it connects directly via `maka host ensure`.{}",
                 if cfg!(windows) {
                     " Windows shortcuts can pass desktop options such as --root PATH directly."
                 } else {
@@ -197,7 +222,16 @@ fn run() -> Result<(), String> {
         .iter()
         .all(|name| std::env::var_os(name).is_none())
     {
-        return launch();
+        #[cfg(windows)]
+        {
+            let args: Vec<_> = std::env::args_os().skip(1).collect();
+            return match direct_root_arg(&args) {
+                Some(root) => run_direct(root),
+                None => launch(&args),
+            };
+        }
+        #[cfg(not(windows))]
+        return run_direct(None);
     }
     let target = Target::from(|name| std::env::var_os(name))?;
     backend::start(target)
@@ -254,37 +288,88 @@ fn launcher_path(shell: &std::path::Path) -> Result<PathBuf, String> {
         .map(|dir| dir.join(binary))
 }
 
-/// Runs `maka desktop` from the directory the launcher stages the shell in,
-/// forwarding Windows shortcut arguments or defaulting to the restarted Root.
+/// Parses direct-launch arguments when they only select `--root` (or pass no
+/// options); returns `None` for options like `--wsl` that still forward to
+/// `maka desktop`.
+#[cfg(any(windows, test))]
+fn direct_root_arg(args: &[std::ffi::OsString]) -> Option<Option<PathBuf>> {
+    match args {
+        [] => Some(None),
+        [flag, value] if flag == "--root" && !value.is_empty() => Some(Some(PathBuf::from(value))),
+        [single] => {
+            let value = single.to_str()?.strip_prefix("--root=")?;
+            (!value.is_empty()).then(|| Some(PathBuf::from(value)))
+        }
+        _ => None,
+    }
+}
+
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
-fn launch() -> Result<(), String> {
+fn default_root() -> Result<PathBuf, String> {
+    #[cfg(unix)]
+    let home = std::env::var_os("HOME")
+        .filter(|home| !home.is_empty())
+        .map(PathBuf::from)
+        .ok_or_else(|| "home directory unavailable; select --root".to_owned())?;
+    #[cfg(windows)]
+    let home = maka_sandbox::account_home().map_err(|error| error.to_string())?;
+    Ok(home.join(".maka/application/host"))
+}
+
+/// Connects directly through `maka host ensure` without keeping a `maka desktop`
+/// launcher resident.
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+fn run_direct(explicit_root: Option<PathBuf>) -> Result<(), String> {
+    let shell = std::env::current_exe()
+        .and_then(|shell| shell.canonicalize())
+        .map_err(|error| error.to_string())?;
+    let launcher = launcher_path(&shell)?;
+    let root = match explicit_root {
+        Some(root) => root,
+        None => {
+            match std::env::var_os(maka_updater::RESTART_ROOT_ENV).filter(|root| !root.is_empty()) {
+                Some(root) => PathBuf::from(root),
+                None => default_root()?,
+            }
+        }
+    };
+    let root = std::path::absolute(&root).map_err(|error| error.to_string())?;
+    #[cfg(unix)]
+    let login_path = login_path::resolve();
+    // SAFETY: still single-threaded before Tokio or UI backend startup, and
+    // login_path::resolve joins its reader thread before returning.
+    unsafe {
+        std::env::remove_var(maka_updater::RESTART_ROOT_ENV);
+        std::env::remove_var(maka_updater::RESTART_WAIT_PID_ENV);
+        #[cfg(unix)]
+        if let Some(path) = login_path {
+            std::env::set_var("PATH", path);
+        }
+    }
+    backend::start(Target {
+        root,
+        host: TargetHost::Ensure,
+        launcher,
+    })
+}
+
+/// Forwards Windows shortcut options (such as `--wsl`) to `maka.exe desktop`.
+#[cfg(windows)]
+fn launch(args: &[std::ffi::OsString]) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
     let shell = std::env::current_exe()
         .and_then(|shell| shell.canonicalize())
         .map_err(|error| error.to_string())?;
     let launcher = launcher_path(&shell)?;
     let mut command = std::process::Command::new(&launcher);
-    command.arg("desktop");
-    #[cfg(windows)]
-    command.args(std::env::args_os().skip(1));
-    if command.get_args().len() == 1
-        && let Some(root) =
-            std::env::var_os(maka_updater::RESTART_ROOT_ENV).filter(|root| !root.is_empty())
-    {
-        command.arg("--root").arg(root);
-    }
     command
+        .arg("desktop")
+        .args(args)
         .env_remove(maka_updater::RESTART_ROOT_ENV)
-        .env_remove(maka_updater::RESTART_WAIT_PID_ENV);
-    #[cfg(unix)]
-    if let Some(path) = login_path::resolve() {
-        command.env("PATH", path);
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        command.creation_flags(CREATE_NO_WINDOW);
-    }
+        .env_remove(maka_updater::RESTART_WAIT_PID_ENV)
+        .creation_flags(CREATE_NO_WINDOW);
     command
         .spawn()
         .map(drop)
@@ -355,8 +440,18 @@ mod tests {
             target(&complete),
             Ok(Target {
                 root: "/hosts/main".into(),
-                endpoint: "/run/maka/host.sock".into(),
-                epoch: epoch.parse().unwrap(),
+                host: TargetHost::Connected {
+                    endpoint: "/run/maka/host.sock".into(),
+                    epoch: epoch.parse().unwrap(),
+                },
+                launcher: "/opt/maka/maka".into(),
+            })
+        );
+        assert_eq!(
+            target(&[(ROOT, "/hosts/main"), (LAUNCHER, "/opt/maka/maka")]),
+            Ok(Target {
+                root: "/hosts/main".into(),
+                host: TargetHost::Ensure,
                 launcher: "/opt/maka/maka".into(),
             })
         );
@@ -392,5 +487,21 @@ mod tests {
             target(&latest),
             Err(format!("{EPOCH} is not a UUID: latest"))
         );
+    }
+
+    #[test]
+    fn direct_root_arg_handles_default_root_and_forwards_other_flags() {
+        let args = |values: &[&str]| values.iter().map(OsString::from).collect::<Vec<_>>();
+        assert_eq!(direct_root_arg(&args(&[])), Some(None));
+        assert_eq!(
+            direct_root_arg(&args(&["--root", "会话 with spaces"])),
+            Some(Some(PathBuf::from("会话 with spaces")))
+        );
+        assert_eq!(
+            direct_root_arg(&args(&["--root=/hosts/main"])),
+            Some(Some(PathBuf::from("/hosts/main")))
+        );
+        assert_eq!(direct_root_arg(&args(&["--wsl", "Ubuntu"])), None);
+        assert_eq!(direct_root_arg(&args(&["--root"])), None);
     }
 }

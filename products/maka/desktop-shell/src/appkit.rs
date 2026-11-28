@@ -49,19 +49,10 @@ use tokio::{
 };
 
 pub(crate) fn start(target: crate::Target) -> Result<(), String> {
-    use maka_host_runtime::application::host::Client as HostClient;
-    let root = host::Root::find(target.root, target.launcher)?;
     let runtime = tokio::runtime::Runtime::new().map_err(|error| error.to_string())?;
-    let first = runtime.block_on(async {
-        let host = HostClient::connect(&target.endpoint, Some(target.epoch)).await?;
-        Connection::admit(
-            host,
-            target.endpoint,
-            root.path(),
-            tokio::runtime::Handle::current(),
-        )
-        .await
-    })?;
+    let (first, _, _) =
+        runtime.block_on(host::connect_initial(&target, runtime.handle().clone()))?;
+    let root = host::Root::find(target.root, target.launcher)?;
     run(first, root, runtime)
 }
 

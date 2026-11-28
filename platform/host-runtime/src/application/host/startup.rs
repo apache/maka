@@ -232,6 +232,11 @@ async fn launch(executable: &Path, target: Target<'_>) -> Result<(Anchor, Ready)
     if let Target::Root(root) = target {
         command.arg("--root").arg(root);
     }
+    #[cfg(windows)]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
     let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

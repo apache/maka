@@ -20,7 +20,7 @@
 //! The Host the window's client reaches: the one `maka desktop` admitted,
 //! then, after that one stops, whichever Host serves the Root next.
 
-use maka_host_runtime::application::host::Client as HostClient;
+use maka_host_runtime::application::host::{Client as HostClient, discovery, startup};
 use maka_workbench::bindings::Bindings;
 use nsh_engine::EngineConfig;
 use std::{
@@ -120,6 +120,58 @@ pub async fn runs(endpoint: &Path, epoch: Uuid) -> bool {
         Ok(status) => status.is_ok_and(|status| !status.closing && !status.closed),
         Err(_) => true,
     }
+}
+
+/// Connects to the initial Host named by `target`, using the finite startup
+/// helper when the caller handed off only a Root and launcher.
+pub async fn connect_initial(
+    target: &crate::Target,
+    runtime: Handle,
+) -> Result<(Connection, PathBuf, uuid::Uuid), String> {
+    let (host, endpoint, epoch) = match &target.host {
+        crate::TargetHost::Connected { endpoint, epoch } => {
+            let host = HostClient::connect(endpoint, Some(*epoch)).await?;
+            (host, endpoint.clone(), *epoch)
+        }
+        crate::TargetHost::Ensure => {
+            let mut host = startup::connect_root(&target.launcher, &target.root).await?;
+            let epoch = host.epoch();
+            let endpoint = match discovery::read(&target.root) {
+                Ok(registered) if registered.host_epoch == epoch => registered.endpoint,
+                other => {
+                    let error = match other {
+                        Ok(_) => "the Host changed while the desktop connected".to_owned(),
+                        Err(error) => error.to_string(),
+                    };
+                    return Err(match host.close().await {
+                        Ok(()) => error,
+                        Err(cleanup) => format!("{error}; desktop Host cleanup: {cleanup}"),
+                    });
+                }
+            };
+            (host, endpoint, epoch)
+        }
+    };
+    let root = match maka_event_log::root::resolve(&target.root) {
+        Ok(root) => root,
+        Err(error) => {
+            let mut host = host;
+            let error = format!("{}: {error}", target.root.display());
+            return Err(match host.close().await {
+                Ok(()) => error,
+                Err(cleanup) => format!("{error}; desktop Host cleanup: {cleanup}"),
+            });
+        }
+    };
+    let connection = Connection::admit(
+        host,
+        #[cfg(not(windows))]
+        endpoint.clone(),
+        root.canonical_path(),
+        runtime,
+    )
+    .await?;
+    Ok((connection, endpoint, epoch))
 }
 
 /// The explicit desktop quit reaches the exact Host even after a desktop reconnect.

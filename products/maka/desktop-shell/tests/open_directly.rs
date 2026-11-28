@@ -39,7 +39,12 @@ fn direct_windows_launch_forwards_the_root_without_a_console() {
         unsafe extern "system" { fn GetConsoleWindow() -> *mut std::ffi::c_void; }
         fn main() {
             assert!(unsafe { GetConsoleWindow() }.is_null());
-            for arg in std::env::args().skip(1) { println!("{arg}"); }
+            assert!(std::env::var_os("MAKA_RESTART_ROOT").is_none());
+            assert!(std::env::var_os("MAKA_RESTART_WAIT_PID").is_none());
+            let target = std::env::var_os("MAKA_TEST_RECORDED").unwrap();
+            let args: Vec<_> = std::env::args().skip(1).collect();
+            std::fs::write(target, args.join("
+")).unwrap();
         }
     "#,
     )
@@ -51,10 +56,14 @@ fn direct_windows_launch_forwards_the_root_without_a_console() {
         .output()
         .unwrap();
     assert!(built.status.success(), "{built:?}");
-    for (args, expected) in [
+    for (index, (args, expected)) in [
         (vec!["--root", "会话 with spaces"], "会话 with spaces"),
         (vec![], "restart root"),
-    ] {
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let recorded = directory.path().join(format!("recorded-{index}"));
         let mut command = Command::new(&shell);
         for key in [
             "MAKA_HOST_ROOT",
@@ -69,15 +78,15 @@ fn direct_windows_launch_forwards_the_root_without_a_console() {
         let output = command
             .args(args)
             .env(maka_updater::RESTART_ROOT_ENV, "restart root")
+            .env("MAKA_TEST_RECORDED", &recorded)
             .output()
             .unwrap();
-        assert!(output.status.success(), "{output:?}");
+        let expected_abs = std::path::absolute(expected).unwrap();
+        let text = fs::read_to_string(&recorded)
+            .unwrap_or_else(|error| panic!("maka.exe did not run: {error}; {output:?}"));
         assert_eq!(
-            String::from_utf8(output.stdout)
-                .unwrap()
-                .lines()
-                .collect::<Vec<_>>(),
-            ["desktop", "--root", expected]
+            text.lines().collect::<Vec<_>>(),
+            ["host", "ensure", "--root", &expected_abs.to_string_lossy()]
         );
     }
 }

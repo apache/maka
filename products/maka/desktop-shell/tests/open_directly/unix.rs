@@ -62,6 +62,13 @@ impl Staged {
         }
     }
 
+    fn expected_args(&self) -> String {
+        format!(
+            "host ensure --root {}",
+            self.directory.join(".maka/application/host").display()
+        )
+    }
+
     fn command(&self) -> Command {
         let mut command = Command::new(&self.shell);
         command
@@ -69,27 +76,22 @@ impl Staged {
             .env_remove("MAKA_HOST_ENDPOINT")
             .env_remove("MAKA_HOST_EPOCH")
             .env_remove("MAKA_LAUNCHER")
+            .env_remove(maka_updater::RESTART_ROOT_ENV)
+            .env_remove(maka_updater::RESTART_WAIT_PID_ENV)
             .env_remove("TERM")
             .env_remove("COLORTERM")
             .env_remove("MAKA_SKIP_SHELL_ENV")
             .env_remove("MAKA_TEST_LEAKED")
+            .env("HOME", &self.directory)
             .env("PATH", "/usr/bin:/bin");
         command
     }
 
     fn run(&self, mut command: Command) -> (Output, String) {
         let output = command.output().unwrap();
-        assert!(output.status.success(), "{output:?}");
-        let started = Instant::now();
-        let recorded = loop {
-            match std::fs::read_to_string(&self.recorded) {
-                Ok(text) if text.lines().count() >= 3 => break text,
-                _ if started.elapsed() < Duration::from_secs(10) => {
-                    std::thread::sleep(Duration::from_millis(20))
-                }
-                other => panic!("the launcher beside the shell did not run: {other:?}"),
-            }
-        };
+        let recorded = std::fs::read_to_string(&self.recorded).unwrap_or_else(|error| {
+            panic!("the launcher beside the shell did not run: {error}; {output:?}")
+        });
         (output, recorded)
     }
 }
@@ -154,7 +156,10 @@ fn gui_launch_imports_only_login_shell_path_and_cleans_up_descendants() {
     );
     assert_eq!(
         recorded,
-        "desktop\n/resolved/from/login:/usr/bin:/bin\nabsent\n"
+        format!(
+            "{}\n/resolved/from/login:/usr/bin:/bin\nabsent\n",
+            staged.expected_args()
+        )
     );
 
     let pid: libc::pid_t = std::fs::read_to_string(&pid_file)
@@ -185,7 +190,10 @@ fn terminal_and_opted_out_launches_skip_login_shell_probe() {
         let mut command = staged.command();
         command.env("SHELL", &fake_shell).env(key, value);
         let (_, recorded) = staged.run(command);
-        assert_eq!(recorded, "desktop\n/usr/bin:/bin\nabsent\n");
+        assert_eq!(
+            recorded,
+            format!("{}\n/usr/bin:/bin\nabsent\n", staged.expected_args())
+        );
         assert!(!sentinel.exists(), "{case} unexpectedly ran login shell");
     }
 }
@@ -210,7 +218,10 @@ fn failed_or_flooding_login_shell_falls_back_to_inherited_path() {
         let (output, recorded) = staged.run(command);
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(!stderr.contains("secret-startup-token"), "{stderr}");
-        assert_eq!(recorded, "desktop\n/usr/bin:/bin\nabsent\n");
+        assert_eq!(
+            recorded,
+            format!("{}\n/usr/bin:/bin\nabsent\n", staged.expected_args())
+        );
     }
 }
 
@@ -241,6 +252,9 @@ fn csh_login_shell_loads_cshrc_and_login() {
     let (_, recorded) = staged.run(command);
     assert_eq!(
         recorded,
-        "desktop\n/from-login:/from-cshrc:/usr/bin:/bin\nabsent\n"
+        format!(
+            "{}\n/from-login:/from-cshrc:/usr/bin:/bin\nabsent\n",
+            staged.expected_args()
+        )
     );
 }

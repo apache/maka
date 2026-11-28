@@ -40,8 +40,12 @@ pub(super) struct Shell {
 }
 
 impl Shell {
-    /// Starts `executable` with this process's environment plus `variables`.
-    pub(super) fn spawn(executable: &Path, variables: &[(&str, &OsStr)]) -> io::Result<Self> {
+    /// Starts `executable` with this process's environment updated by `variables`
+    /// (`Some` sets or overrides, `None` removes).
+    pub(super) fn spawn(
+        executable: &Path,
+        variables: &[(&str, Option<&OsStr>)],
+    ) -> io::Result<Self> {
         let program = c_string(executable.as_os_str().as_bytes())?;
         let mut environment = Vec::new();
         for (name, value) in std::env::vars_os() {
@@ -52,9 +56,11 @@ impl Shell {
             }
         }
         for (name, value) in variables {
-            environment.push(c_string(
-                &[name.as_bytes(), b"=", value.as_bytes()].concat(),
-            )?);
+            if let Some(value) = value {
+                environment.push(c_string(
+                    &[name.as_bytes(), b"=", value.as_bytes()].concat(),
+                )?);
+            }
         }
         let argv = [program.as_ptr().cast_mut(), std::ptr::null_mut()];
         let mut envp: Vec<*mut libc::c_char> = environment

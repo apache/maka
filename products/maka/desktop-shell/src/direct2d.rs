@@ -149,18 +149,15 @@ fn wsl_reconnect_config(
 }
 
 pub(crate) fn start(target: crate::Target) -> Result<(), String> {
-    use maka_host_runtime::application::host::Client as HostClient;
-    let root = maka_event_log::root::resolve(&target.root).map_err(|error| error.to_string())?;
     let runtime = Runtime::new().map_err(|error| error.to_string())?;
-    let first = runtime.block_on(async {
-        let host = HostClient::connect(&target.endpoint, Some(target.epoch)).await?;
-        host::Connection::admit(host, root.canonical_path(), Handle::current()).await
-    })?;
+    let (first, endpoint, epoch) =
+        runtime.block_on(host::connect_initial(&target, runtime.handle().clone()))?;
+    let root = maka_event_log::root::resolve(&target.root).map_err(|error| error.to_string())?;
     run(
         first,
         root.canonical_path().to_path_buf(),
-        target.endpoint,
-        target.epoch,
+        endpoint,
+        epoch,
         runtime,
     )
 }
