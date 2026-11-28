@@ -17,6 +17,8 @@
  * under the License.
  */
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { formatMessage } from '../../../../packages/plugin-sdk/src/i18n.ts';
 import { registerHooks } from 'node:module';
 import { resolve } from 'node:path';
 import test from 'node:test';
@@ -95,7 +97,13 @@ test('relative time follows the local calendar and all three dossier locales', (
     ['zh-CN', ['刚刚', '14 分钟前', '2 小时前', '昨天']],
     ['zh-TW', ['剛剛', '14 分鐘前', '2 小時前', '昨天']],
   ]) {
-    const format = (at) => formatRelativeTime(at, now, locale);
+    const catalog = JSON.parse(
+      readFileSync(new URL('../locales/' + locale + '.json', import.meta.url), 'utf8'),
+    );
+    const format = (at) =>
+      formatRelativeTime(at, now, locale, (key, values) =>
+        formatMessage(catalog[key], locale, values),
+      );
     assert.deepEqual(
       [now - 59_999, now - 14 * 60_000, now - 7_200_000, previousEvening].map(format),
       labels,

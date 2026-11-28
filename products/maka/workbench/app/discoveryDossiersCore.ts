@@ -265,36 +265,14 @@ type RelativeTimeKey =
   | 'Dossier hours ago'
   | 'Dossier yesterday';
 
-const FALLBACK_RELATIVE_TIME: Record<RelativeTimeKey, readonly [string, string, string]> = {
-  'Dossier just now': ['Just now', '刚刚', '剛剛'],
-  'Dossier minutes ago': ['{count}m', '{count} 分钟前', '{count} 分鐘前'],
-  'Dossier hours ago': ['{count}h', '{count} 小时前', '{count} 小時前'],
-  'Dossier yesterday': ['Yesterday', '昨天', '昨天'],
-};
-
-function fallbackRelativeTime(locale: string, key: RelativeTimeKey, count?: number): string {
-  const lower = locale.toLowerCase();
-  const idx =
-    lower.startsWith('zh') &&
-    (lower.includes('tw') || lower.includes('hk') || lower.includes('hant'))
-      ? 2
-      : lower.startsWith('zh')
-        ? 1
-        : 0;
-  const template = FALLBACK_RELATIVE_TIME[key][idx];
-  return count === undefined ? template : template.replace('{count}', String(count));
-}
-
 export function formatRelativeTime(
   at: number,
   now: number,
   locale: string,
-  translate?: (key: RelativeTimeKey, values?: Readonly<Record<string, string | number>>) => string,
+  translate: (key: RelativeTimeKey, values?: Readonly<Record<string, string | number>>) => string,
 ): string {
   const label = (key: RelativeTimeKey, count?: number) =>
-    translate
-      ? translate(key, count === undefined ? undefined : { count })
-      : fallbackRelativeTime(locale, key, count);
+    translate(key, count === undefined ? undefined : { count });
   const minutes = Math.floor((now - at) / 60_000);
   if (minutes < 1) return label('Dossier just now');
   const today = new Date(now);

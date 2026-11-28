@@ -336,10 +336,14 @@ impl Owner {
     }
 }
 
-struct Observed<S>(S, tokio::sync::oneshot::Sender<()>);
+struct Observed<S, F>(S, F);
 
-impl<S: Statement> Statement for Observed<S> {
-    type Value = (S::Value, tokio::sync::oneshot::Sender<()>);
+impl<S, F> Statement for Observed<S, F>
+where
+    S: Statement,
+    F: FnOnce(&S::Output) + std::marker::Send + 'static,
+{
+    type Value = (S::Value, F);
     type Output = S::Output;
     const PREPARE_OFF_THREAD: bool = S::PREPARE_OFF_THREAD;
     fn retain(&self) -> Vec<Arc<dyn std::marker::Send + Sync>> {
@@ -358,7 +362,7 @@ impl<S: Statement> Statement for Observed<S> {
     }
     fn committed((value, signal): Self::Value) -> Self::Output {
         let value = S::committed(value);
-        let _ = signal.send(());
+        signal(&value);
         value
     }
     fn isolated_rejection(error: &StoreError) -> bool {
@@ -374,10 +378,10 @@ impl Owner {
         topic: TopicId,
         action: &'static str,
     ) -> DataChange {
-        writer.prepare(Observed(
-            state,
-            self.discovery_outcome_signal(topic, action),
-        ))
+        let signal = self.discovery_outcome_signal(topic, action);
+        writer.prepare(Observed(state, move |_: &S::Output| {
+            let _ = signal.send(());
+        }))
     }
     pub(in crate::owner) fn discovery_outcome_signal(
         self: &Arc<Self>,
@@ -445,37 +449,9 @@ impl Owner {
                 tracing::warn!(%error, "Could not record discovery unfollow rule");
             }
         });
-        Ok(writer.prepare(UnfollowObserved(state, committed)))
-    }
-}
-
-struct UnfollowObserved<S>(S, tokio::sync::oneshot::Sender<String>);
-
-impl<S: Statement<Output = String>> Statement for UnfollowObserved<S> {
-    type Value = (S::Value, tokio::sync::oneshot::Sender<String>);
-    type Output = S::Output;
-    const PREPARE_OFF_THREAD: bool = S::PREPARE_OFF_THREAD;
-    fn retain(&self) -> Vec<Arc<dyn std::marker::Send + Sync>> {
-        self.0.retain()
-    }
-    fn prepare(self) -> Result<Self, StoreError> {
-        Ok(Self(self.0.prepare()?, self.1))
-    }
-    fn execute(self, c: &rusqlite::Connection) -> Result<Prepared<Self::Value>, StoreError> {
-        let state = self.0.execute(c)?;
-        Ok(Prepared {
-            value: (state.value, self.1),
-            changed: state.changed,
-            notification: state.notification,
-        })
-    }
-    fn committed((value, signal): Self::Value) -> Self::Output {
-        let title = S::committed(value);
-        let _ = signal.send(title.clone());
-        title
-    }
-    fn isolated_rejection(error: &StoreError) -> bool {
-        S::isolated_rejection(error)
+        Ok(writer.prepare(Observed(state, move |title: &String| {
+            let _ = committed.send(title.clone());
+        })))
     }
 }
 

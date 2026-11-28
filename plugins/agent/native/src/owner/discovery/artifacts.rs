@@ -226,16 +226,7 @@ impl Owner {
                 return Err(ToolError::Failed("discovery_wrong_topic".into()));
             }
         } else {
-            let job = self
-                .scheduler
-                .investigation()
-                .await
-                .map_err(ToolError::Failed)?
-                .1
-                .ok_or_else(|| ToolError::Failed("discovery_not_active".into()))?;
-            self.check_discovery_invocation(context, &job)
-                .await
-                .map_err(ToolError::Failed)?;
+            let (job, _) = self.discovery_tool_job(context).await?;
             if !stage.input_paths.is_empty() && !self.discovery_reads_files(&job.tools.names) {
                 return Err(ToolError::Failed(
                     "workspace read tools required to hash inputs".into(),
@@ -253,15 +244,10 @@ impl Owner {
                 .configuration
                 .workspace;
             let floor = access.workspace_sandbox_floor().await?;
-            let reserved = access::reserved_sandbox_floor(&self.store, &selected)
+            let policy = self
+                .discovery_workspace_policy(&selected, &floor)
                 .await
                 .map_err(ToolError::Failed)?;
-            let maka_sandbox::Sandbox::Managed { filesystem, .. } = reserved
-                .intersect(&floor)
-                .map_err(|e| ToolError::Failed(reason(e)))?
-            else {
-                return Err(ToolError::Failed("workspace read access required".into()));
-            };
             let (root, directory, _) = workspace::open_workspace_observation(
                 &self.workspace_roots,
                 &selected,
@@ -272,9 +258,7 @@ impl Owner {
             Some(Inputs {
                 root,
                 directory,
-                policy: filesystem
-                    .compile()
-                    .map_err(|e| ToolError::Failed(reason(e)))?,
+                policy,
             })
         };
         let receipt = tokio::task::spawn_blocking(move || stage.stage(&root, inputs, &cancel))

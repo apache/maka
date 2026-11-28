@@ -937,6 +937,20 @@ impl Owner {
         }
         Ok(revision)
     }
+    /// The active worker and its validated parent Session revision.
+    async fn discovery_tool_job(&self, context: &ToolCallContext) -> Result<(Job, u64), ToolError> {
+        let (_, job) = self
+            .scheduler
+            .investigation()
+            .await
+            .map_err(ToolError::Failed)?;
+        let job = job.ok_or_else(|| ToolError::Failed("discovery_not_active".into()))?;
+        let source_revision = self
+            .check_discovery_invocation(context, &job)
+            .await
+            .map_err(ToolError::Failed)?;
+        Ok((job, source_revision))
+    }
     async fn complete_discovery(
         &self,
         context: ToolCallContext,

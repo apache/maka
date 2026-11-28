@@ -556,17 +556,7 @@ impl Owner {
                 .await
                 .map_err(ToolError::Failed)?;
         } else {
-            let (_, job) = self
-                .scheduler
-                .investigation()
-                .await
-                .map_err(ToolError::Failed)?;
-            self.check_discovery_invocation(
-                context,
-                &job.ok_or_else(|| ToolError::Failed("discovery_not_active".into()))?,
-            )
-            .await
-            .map_err(ToolError::Failed)?;
+            self.discovery_tool_job(context).await?;
         }
         let session = self.session(id).await.map_err(ToolError::Failed)?;
         let selected = &session.configuration.workspace;

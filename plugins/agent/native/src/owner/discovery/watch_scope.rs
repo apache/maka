@@ -493,16 +493,7 @@ impl Owner {
             .map_err(dossiers::write_error)?
             .is_none()
         {
-            let job = self
-                .scheduler
-                .investigation()
-                .await
-                .map_err(ToolError::Failed)?
-                .1
-                .ok_or_else(|| ToolError::Failed("discovery_not_active".into()))?;
-            self.check_discovery_invocation(context, &job)
-                .await
-                .map_err(ToolError::Failed)?;
+            let (job, _) = self.discovery_tool_job(context).await?;
             if !self.discovery_reads_files(&job.tools.names) {
                 return Err(ToolError::Failed("workspace read tools required".into()));
             }
@@ -530,22 +521,15 @@ impl Owner {
             return Err(ToolError::Failed("configured workspace required".into()));
         }
         let floor = access.workspace_sandbox_floor().await?;
-        let reserved = access::reserved_sandbox_floor(&self.store, &selected)
+        let policy = self
+            .discovery_workspace_policy(&selected, &floor)
             .await
             .map_err(ToolError::Failed)?;
-        let maka_sandbox::Sandbox::Managed { filesystem, .. } = reserved
-            .intersect(&floor)
-            .map_err(|e| ToolError::Failed(reason(e)))?
-        else {
-            return Err(ToolError::Failed("workspace read access required".into()));
-        };
         let workspace = WorkspaceScope {
             root: root.clone(),
             dir,
             home: self.watch_scopes.home.clone(),
-            policy: filesystem
-                .compile()
-                .map_err(|e| ToolError::Failed(reason(e)))?,
+            policy,
         };
 
         if matches!(update, Update::Inspect) {
