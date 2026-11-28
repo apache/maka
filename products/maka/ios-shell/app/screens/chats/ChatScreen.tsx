@@ -126,6 +126,8 @@ import {
 import { ChatDetails } from './ChatDetails';
 import { ThinkingSlider } from './ThinkingSlider';
 import { DraftQuoteStrip, HistoryQuotes, MessageBody, ReplyActions } from './ChatQuotes';
+import { ChatSheet } from './ChatSheet';
+import { ChatContextLabel, GoalContinuation, GoalSheet } from './GoalSheet';
 import { SideQuestionList } from './ChatSideQuestions';
 import { ComposerPendingDock, pendingDockLimits, type QueueEdit } from './ComposerPendingDock';
 
@@ -146,6 +148,7 @@ interface DisplayTurn {
   folded?: AgentHistoryChunk;
   groups: AgentHistoryChunk[];
   quotes?: AgentHistoryChunk['quotes'];
+  goalObjective?: string;
 }
 
 interface RoomTranscriptRow {
@@ -191,7 +194,9 @@ function groupHistoryTurns(chunks: readonly AgentHistoryChunk[]): DisplayTurn[] 
   for (const row of assembleHistoryRows(chunks)) {
     const ch = row.first;
     if (ch.role === 'user' && !ch.work) {
-      if (row.text || ch.quotes?.length) {
+      const origin = row.first.origin;
+      const goal = origin?.kind === 'goal' ? origin : null;
+      if (goal || row.text || ch.quotes?.length) {
         turns.push({
           kind: 'agent',
           key: row.key,
@@ -200,8 +205,9 @@ function groupHistoryTurns(chunks: readonly AgentHistoryChunk[]): DisplayTurn[] 
           thinking: '',
           tools: new Map(),
           groups: [],
-          bodies: row.text ? [row] : [],
-          quotes: ch.quotes,
+          bodies: !goal && row.text ? [row] : [],
+          quotes: goal ? undefined : ch.quotes,
+          goalObjective: goal?.objective,
         });
       }
       continue;
@@ -606,6 +612,7 @@ export function ChatScreen(
     return rows;
   };
 
+  const goalOpen = signal(false);
   const atBottom = signal(true);
   const queueExpanded = signal(false);
   const pendingSheetOpen = signal(false);
@@ -1323,6 +1330,15 @@ export function ChatScreen(
       const actions = runActions();
       return [
         { id: 'files', label: tr('Files & Changes'), icon: 'folder' },
+        ...(ctrl.goal.showEntry()
+          ? [
+              {
+                id: 'goal',
+                label: ctrl.goal.hasRecord() ? tr('Goal Details…') : tr('New Goal…'),
+                icon: 'scope',
+              },
+            ]
+          : []),
         ...(canAskSide()
           ? [{ id: 'sides', label: tr('All Side Questions'), icon: 'bubble.left.and.bubble.right' }]
           : []),
@@ -1362,8 +1378,16 @@ export function ChatScreen(
         return openThinking();
       case 'usage':
         return openDetails();
+      case 'goal':
+        if (ctrl.goal.showEntry()) {
+          hapticSelection();
+          goalOpen.set(true);
+        }
+        return;
       case 'refresh':
-        return void ctrl.refreshAll();
+        void ctrl.refreshAll();
+        void ctrl.goal.refresh();
+        return;
       default:
         selectRunAction(id);
     }
@@ -1969,7 +1993,14 @@ export function ChatScreen(
               {(row) => (
                 <If
                   when={row().kind === 'room'}
-                  else={<AgentTranscriptItem turn={row() as DisplayTurn} />}
+                  else={
+                    <If
+                      when={(row() as DisplayTurn).goalObjective !== undefined}
+                      else={<AgentTranscriptItem turn={row() as DisplayTurn} />}
+                    >
+                      <GoalContinuation objective={(row() as DisplayTurn).goalObjective!} />
+                    </If>
+                  }
                 >
                   <RoomTranscriptItem message={(row() as RoomTranscriptRow).message} />
                 </If>
@@ -2004,18 +2035,7 @@ export function ChatScreen(
               }}
             >
               <StatusDot kind={hostStatusKind(rootId)} size={7} />
-              <Text
-                style={{
-                  ...type.footnote,
-                  color: token('glass-muted'),
-                  minWidth: 0,
-                  flexShrink: 1,
-                  numberOfLines: 1,
-                  textOverflow: 'ellipsis',
-                }}
-              >
-                {subtitleLine()}
-              </Text>
+              <ChatContextLabel subtitle={subtitleLine()} goal={ctrl.goal.current()} />
             </View>
           </View>
         </If>
@@ -2458,25 +2478,29 @@ export function ChatScreen(
           </ComposerSheet>
         </If>
 
+        <If when={goalOpen()}>
+          <GoalSheet goal={ctrl.goal} onClose={() => goalOpen.set(false)} />
+        </If>
+
         <If when={quoteSheetOpen()}>
-          <ComposerSheet
+          <ChatSheet
             title={tr('Quote')}
             scrollId="chat-quote-sheet-scroll"
             onClose={() => quoteSheetOpen.set(false)}
           >
             {quoteStrip()}
-          </ComposerSheet>
+          </ChatSheet>
         </If>
 
         <If when={pendingSheetOpen()}>
-          <ComposerSheet
+          <ChatSheet
             title={tr('Pending')}
             scrollId="chat-pending-sheet-scroll"
             editing={!!queueEditor()}
             onClose={() => pendingSheetOpen.set(false)}
           >
             {pendingDock(true)}
-          </ComposerSheet>
+          </ChatSheet>
         </If>
       </View>
     );

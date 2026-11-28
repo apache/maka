@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { trimHostWhitespace } from '../../hostText';
 import { Clipboard, computed, openUrl, Scroll, signal, Text, token, View, type ViewRef } from 'nsh';
 import { Button, ContextMenu, TextView } from 'nsh/base';
 import type { AgentHistoryChunk } from '../../bridge';
@@ -24,7 +25,6 @@ import { tr } from '../../locale';
 import {
   isCompleteHistoryRow,
   quoteLimit,
-  trimHostWhitespace,
   type DraftLink,
   type DraftQuote,
   type HistoryRow,

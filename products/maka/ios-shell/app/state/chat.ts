@@ -18,6 +18,7 @@
  */
 
 import { approvalOutcome, approvalRejectionError } from '../approval';
+import { trimHostWhitespace } from '../hostText';
 import { batch, cleanup, computed, effect, signal, untracked } from 'nsh';
 import {
   hostMutate,
@@ -54,6 +55,7 @@ import {
 } from '../bridge';
 import { LivePreviewAccumulator, type LivePreviewSnapshot } from '../streaming';
 import { activeHostInfo, hostById, showToast } from './hostPool';
+import { createGoalController } from './goal';
 import { dismissInboxRequest, refreshHostInbox } from './inbox';
 import { hapticNotification, hapticSelection } from './preferences';
 import { listHostModels, refreshHostSessions } from './sessions';
@@ -447,11 +449,6 @@ function sessionInvocation({ id, title }: DraftLink): string {
   // Same inline session reference as Desktop's sessionInvocation.
   const label = (title || id).replace(/[\p{Cc}\p{Zl}\p{Zp}]/gu, ' ').replace(/[\\\]/]/g, '\\$&');
   return `[@${label}](maka://session/${id})`;
-}
-
-// Rust str::trim uses Unicode White_Space, not JavaScript's trim set.
-export function trimHostWhitespace(text: string): string {
-  return text.replace(/^\p{White_Space}+|\p{White_Space}+$/gu, '');
 }
 
 export function draftQuote(
@@ -848,7 +845,10 @@ export function createConversationController(
   const visibleQueue = computed(
     () =>
       queue()?.entries.filter(
-        (entry) => entry.kind !== 'in_flight' && entry.origin?.kind !== 'session_completion',
+        (entry) =>
+          entry.kind !== 'in_flight' &&
+          entry.origin?.kind !== 'session_completion' &&
+          entry.origin?.kind !== 'goal',
       ) ?? [],
   );
   const queuedMessages = computed(() =>
@@ -2411,7 +2411,38 @@ export function createConversationController(
     stopWatch();
   });
 
+  const goal = createGoalController({
+    rootId,
+    sessionId,
+    active: () => enabled && !isRoom() && active(),
+    approval: async (connection) => {
+      const selection = selectingModel();
+      if (selection && !(await selection.done)) return null;
+      if (!observation()) await loadObserve(false);
+      const observed = observation();
+      if (!isCurrent(connection.generation) || !observed || observed.session.kind === 'room')
+        return null;
+      const { id, workspace, permissions, boundaryRevision, binding } = observed.session;
+      if (id !== sessionId || !workspace || !permissions || boundaryRevision == null || !binding)
+        return null;
+      const selectionAtApproval = selectedBackend();
+      const backend = await sendBackend(rootId, connection, selectionAtApproval);
+      const selected = selectedBackend();
+      if (
+        !isCurrent(connection.generation) ||
+        observation()?.session.revision !== observed.session.revision ||
+        JSON.stringify(selected) !== JSON.stringify(selectionAtApproval)
+      )
+        return null;
+      return {
+        target: { sessionId, workspace, permissions, boundaryRevision, binding },
+        backend,
+      };
+    },
+  });
+
   return {
+    goal,
     observation,
     lastObservation,
     refreshDetails,

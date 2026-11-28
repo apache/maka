@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { trimHostWhitespace } from '../hostText';
 import { effect, signal, untracked } from 'nsh';
 import {
   hostMutate,
@@ -27,7 +28,7 @@ import {
   type AgentSession,
 } from '../bridge';
 import { tr } from '../locale';
-import { compareHistoryRows, trimHostWhitespace, type DraftQuote, type SideAnchor } from './chat';
+import { compareHistoryRows, type DraftQuote, type SideAnchor } from './chat';
 import { activeHostInfo } from './hostPool';
 import type { ScopedSession, watchSideQuestions } from './sessions';
 

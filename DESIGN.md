@@ -157,3 +157,18 @@ keyboard toolbar use the same material without pulling focus from the draft.
 | Model and More | UIKit presents the menu. Telemetry refreshes do not replace menu actions. The model checkmark stays on the confirmed selection until save completes. | System setting |
 | Thinking capsule | Opens above the measured composer, without moving the draft or transcript. The thumb and tick follow each step immediately, including Default; failure restores the confirmed step. Changing model or connection ends the drag. Compact layout dismisses the capsule. | Same |
 | Usage & Details | Opens only from More, at one visible sheet height. Usage and speed update in place. | System setting |
+
+### iOS chat: Session Goal
+
+Inspect and manage the Goal from the navigation menu. The portrait context
+pill may show its status, but never adds a row or takes a tap. The sheet keeps
+the objective and next action ahead of meter details and secondary actions.
+Its fields are separate from the chat draft, and the entire panel scrolls
+above the keyboard.
+
+| Change | Motion |
+| --- | --- |
+| Menu, sheet, swipe and destructive confirmation | Shared bottom sheet and platform menu/alert motion; honor Reduce Motion. |
+| Press and focus | Shared opaque button fill changes immediately, without dimming the text. No selection indicator. |
+| Form → details / budget editor → details | Replace in place and return to the top of the same scroll; no second sheet or focus grab. |
+| Saving, live status and meter updates | Keep controls in place while saving; update text without animating elapsed time or auto-scrolling. Confirm successful changes with a haptic. |

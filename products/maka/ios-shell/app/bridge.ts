@@ -130,12 +130,22 @@ interface SubscriptionEndedPayload {
 
 import type {
   AgentModelChoice,
+  AgentGoalChange,
+  AgentGoalRead,
+  AgentGoalResult,
+  AgentGoalView,
   AgentBackendPreference,
 } from '../../../../packages/plugin-sdk/src/generated/runtime';
 export type { AgentModelChoice, AgentBackendPreference };
 
 export type {
   AgentProject,
+  AgentGoalApproval,
+  AgentGoalChange,
+  AgentGoalDetail,
+  AgentGoalView,
+  GoalControl,
+  GoalStatus,
   AgentFork,
   AgentForkResult,
   AgentInteractionResult,
@@ -272,10 +282,12 @@ export async function hostQuery<T = unknown>(
   input: Record<string, unknown> = {},
   targetAnchor = hostState?.active?.session,
   rootId?: string,
+  generation?: number,
 ): Promise<T> {
   const res = (await host.call('ios.hostQuery', {
     anchorSession: rootId ? undefined : targetAnchor,
     rootId,
+    generation,
     endpoint,
     method,
     input,
@@ -528,3 +540,28 @@ export function onHostPath(
     listener(event as unknown as Parameters<typeof listener>[0]),
   );
 }
+
+let goalWatchSeq = 0;
+
+export const goalHost = {
+  read: (rootId: string, generation: number, input: AgentGoalRead) =>
+    hostQuery<AgentGoalView>('agent', 'goal', { ...input }, undefined, rootId, generation),
+  watch: (
+    rootId: string,
+    generation: number,
+    input: AgentGoalRead,
+    onItem: (view: AgentGoalView) => void,
+    onError: (cause: unknown) => void,
+  ) =>
+    watchHost(
+      rootId,
+      generation,
+      'goal:' + ++goalWatchSeq,
+      'watchGoal',
+      { ...input },
+      onItem,
+      onError,
+    ),
+  change: (rootId: string, generation: number, input: AgentGoalChange) =>
+    hostMutate<AgentGoalResult>('agent', 'changeGoal', input, { rootId, generation }),
+};

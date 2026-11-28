@@ -161,6 +161,17 @@ async fn changing_language_updates_tabs_settings_inbox_recovery_and_pairing() {
                 "before": null,
                 "after": null
             }),
+            "observe" => json!({"session":session,"through":1,"run":null}),
+            "queue" => json!({"revision":0,"entries":[]}),
+            "models" => json!({"kind":"ready","choices":[]}),
+            "history" => json!({
+                "kind":"ready","through":1,"before":null,"chunks":[{
+                    "field":"body","role":"user","text":"Internal Goal prompt","totalBytes":20,"offset":0,
+                    "position":{"kind":"live","sequence":1,"fact":"00000000-0000-4000-8000-000000000001","itemIndex":0},
+                    "order":{"path":[1],"itemIndex":0},"messageId":"goal-turn",
+                    "origin":{"kind":"goal","goalId":"goal","objective":"API の確認"}
+                }]
+            }),
             "pendingInteractions" => json!({
                 "revision": 1,
                 "entries": [
@@ -210,11 +221,21 @@ async fn changing_language_updates_tabs_settings_inbox_recovery_and_pairing() {
     });
     channel.handle("ios.subscribe", |mut call| {
         let data = call.take_data();
-        call.reply(Ok(json!({
-            "subscriptionId": data["subscriptionId"],
-            "rootId": "root",
-            "generation": 1
-        })));
+        let handle = json!({
+            "subscriptionId":data["subscriptionId"],"rootId":"root","generation":1,
+        });
+        let sender = call.sender();
+        call.resolve(handle.clone());
+        if data["method"] == "watchGoal" {
+            let mut frame = handle;
+            frame["item"] = json!({"enabled":true,"current":{
+                "id":"goal","revision":1,"status":"blocked","objective":"API の確認",
+                "iterations":2,"consumed":{"known":1234,"missing":1},"tokenBudget":5000,
+                "remainingTokens":null,"elapsedSeconds":11,"pending":false,"dismissed":false,
+                "note":"作業環境を確認してください。"
+            }});
+            sender.send("ios.subscriptionItem", frame).unwrap();
+        }
     });
     channel.handle("ios.unsubscribe", |call| {
         call.reply(Ok(json!({ "cancelled": true })));
@@ -284,6 +305,16 @@ async fn changing_language_updates_tabs_settings_inbox_recovery_and_pairing() {
     )
     .unwrap();
     app.wait_for("text:/結果.*取得しました/").unwrap();
+
+    app.press("label:会話：Locale conversation").unwrap();
+    app.wait_for("label:目標を続行：API の確認").unwrap();
+    app.wait_for("text:work · 目標が進められません").unwrap();
+    app.press("label:その他").unwrap();
+    app.choose_menu_item("目標の詳細…").unwrap();
+    app.wait_for("text:目標の詳細").unwrap();
+    app.wait_for("text:少なくとも 1,234 トークン").unwrap();
+    app.wait_for("text:不明 · 使用量の一部が未集計").unwrap();
+    app.press("id:goal-close").unwrap();
 
     app.send_url_scheme("maka://pair/v1?payload=fixture");
     app.wait_for("text:リンクでペアリング").unwrap();
