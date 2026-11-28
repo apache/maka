@@ -824,123 +824,184 @@ mod tests {
     #[test]
     fn replay_and_archive_use_the_captured_history_reader() {
         for initial in [50, 51, 52, 53] {
-            check_captured_readers(initial);
+            let services = [
+                ("GetRecap", ("export", "agent", "recap"), None),
+                ("SessionRead", ("import", "web", "search"), Some("other")),
+                (
+                    "FindMessages",
+                    ("export", "agent", "search"),
+                    Some("session"),
+                ),
+                ("ReadNotes", ("import", "files", "read"), Some("file")),
+                ("Read", ("export", "agent", "generateRecap"), Some("other")),
+                ("PeerRecap", ("import", "peer", "recap"), None),
+                ("UnrelatedRecap", ("import", "calendar", "recap"), None),
+            ]
+            .map(|(name, target, reader)| {
+                service_selection(name, target, if initial == 50 { None } else { reader })
+            });
+            let expected: &[&str] = if initial == 50 {
+                &[
+                    "GetRecap",
+                    "PeerRecap",
+                    "Read",
+                    "SessionRead",
+                    "UnrelatedRecap",
+                ]
+            } else {
+                &[
+                    "FindMessages",
+                    "GetRecap",
+                    "PeerRecap",
+                    "Read",
+                    "ReadNotes",
+                    "UnrelatedRecap",
+                ]
+            };
+            check_captured_readers(initial, &services, expected);
         }
     }
 
-    fn check_captured_readers(initial: i64) {
+    #[test]
+    fn replay_and_archive_use_the_captured_history_reader_for_non_agent_recap() {
+        let services = [
+            service_selection("GetRecap", ("export", "agent", "recap"), Some("session")),
+            service_selection(
+                "UnrelatedRecap",
+                ("import", "calendar", "recap"),
+                Some("non_agent"),
+            ),
+        ];
+        check_captured_readers(57, &services, &["GetRecap"]);
+    }
+
+    fn service_selection(
+        name: &str,
+        (kind, target, method): (&str, &str, &str),
+        reader: Option<&str>,
+    ) -> Value {
+        let mut service = json!({
+            "selection": {"name":name,"description":name,"method":method,"target":{"kind":kind,"name":target},
+                "input":"json","result":"json","confirmation":"preapproved"}
+        });
+        if let Some(reader) = reader {
+            service["history_reader"] = json!(reader);
+        }
+        service
+    }
+
+    fn check_captured_readers(initial: i64, services: &[Value], expected: &[&str]) {
         let db = Connection::open_in_memory().unwrap();
         let migrations: Vec<_> = maka_event_log::ROOT_MIGRATIONS
             .iter()
             .chain(maka_agent_state::MIGRATIONS)
             .copied()
             .collect();
-        let original: Vec<_> = migrations
-            .iter()
-            .copied()
-            .filter(|m| m.version <= initial)
-            .collect();
-        maka_event_log::migration::run(&db, &original).unwrap();
+        let migrate_to = |version| {
+            let through_version: Vec<_> = migrations
+                .iter()
+                .copied()
+                .filter(|m| m.version <= version)
+                .collect();
+            maka_event_log::migration::run(&db, &through_version).unwrap();
+        };
+        migrate_to(initial);
         db.execute("INSERT INTO session_control(id,fingerprint,revision,created_at,updated_at,archived,configuration) VALUES('chat','test',1,0,0,0,'{}')", []).unwrap();
         let blob = |value: &Value| {
             let bytes = serde_json::to_vec(value).unwrap();
             let digest = maka_agent_facts::artifact::content_digest(&bytes);
-            let id = maka_event_log::content::put(&db, &digest, &bytes).unwrap();
+            db.execute(
+                "INSERT INTO contents(content_sha256,payload) VALUES(?1,?2)
+                 ON CONFLICT(content_sha256) DO NOTHING",
+                params![digest, bytes],
+            )
+            .unwrap();
+            let id: i64 = db
+                .query_row(
+                    "SELECT id FROM contents WHERE content_sha256=?1",
+                    [&digest],
+                    |r| r.get(0),
+                )
+                .unwrap();
             (id, digest)
         };
-        let services = [
-            ("GetRecap", "agent", "export", "recap", "json", ""),
-            ("SessionRead", "web", "import", "search", "web", "other"),
-            ("FindMessages", "agent", "export", "search", "json", "session"),
-            ("ReadNotes", "files", "import", "read", "json", "file"),
-            ("Read", "agent", "export", "generateRecap", "json", "other"),
-            ("PeerRecap", "peer", "import", "recap", "json", ""),
-            ("UnrelatedRecap", "calendar", "import", "recap", "json", "non_agent"),
-        ].map(|(name, target, kind, method, input, reader)| json!({
-            "history_reader": (!reader.is_empty()).then_some(reader),
-            "selection": {"name":name,"description":name,"method":method,"target":{"kind":kind,"name":target},
-                "input":input,"result":"json","confirmation":"preapproved"}
-        }));
         let input = json!({"query":"notes", "path":"maka://session/test"});
         let (_, selection) = blob(&json!({"services":services}));
         let (spec, _) = blob(&json!({"toolSelection":{"digest":selection}}));
-        let run = "run";
-        db.execute("INSERT INTO agent_run_specs(run,schema_version,owner,session,spec_content_id) VALUES(?,1,'owner','chat',?)", params![run,spec]).unwrap();
-        for (i, service) in services.iter().enumerate() {
-            let name = service["selection"]["name"].as_str().unwrap();
-            let call = json!({"fact":{"part":{"call":{"name":name,"input":{"data":input}}}}});
-            for (seq, kind, payload, is_call) in [
-                (1 + 2 * i as i64, "model_observed", call, true),
-                (
-                    1 + 2 * i as i64 + 1,
-                    "local_tool_returned",
-                    json!({"fact":{}}),
-                    false,
-                ),
-            ] {
-                let fact = format!("fact-{seq}");
-                let (id, _) = blob(&payload);
-                db.execute(
-                    "INSERT INTO agent_facts VALUES(?,?,?,?,1,1,?)",
-                    params![seq, fact, run, seq, id],
-                )
-                .unwrap();
-                db.execute(
-                    "INSERT OR IGNORE INTO agent_namespaces(owner,session) VALUES('owner','chat')",
-                    [],
-                )
-                .unwrap();
-                let ns_id: i64 = db
-                    .query_row(
-                        "SELECT id FROM agent_namespaces WHERE owner='owner' AND session='chat'",
-                        [],
-                        |r| r.get(0),
+        let names: Vec<_> = services
+            .iter()
+            .map(|service| service["selection"]["name"].as_str().unwrap())
+            .collect();
+        let record_run = |run: &str, first_sequence: i64, names: &[&str]| {
+            db.execute("INSERT INTO agent_run_specs(run,schema_version,owner,session,spec_content_id) VALUES(?,1,'owner','chat',?)", params![run,spec]).unwrap();
+            for (i, name) in names.iter().enumerate() {
+                let call = json!({"fact":{"part":{"call":{"name":name,"input":{"data":input}}}}});
+                let revision = 1 + 2 * i as i64;
+                for (revision, kind, payload, is_call) in [
+                    (revision, "model_observed", call, true),
+                    (
+                        revision + 1,
+                        "local_tool_returned",
+                        json!({"fact":{}}),
+                        false,
+                    ),
+                ] {
+                    let seq = first_sequence + revision - 1;
+                    let fact = format!("fact-{seq}");
+                    let (id, _) = blob(&payload);
+                    db.execute(
+                        "INSERT INTO agent_facts VALUES(?,?,?,?,1,1,?)",
+                        params![seq, fact, run, revision, id],
                     )
                     .unwrap();
-                db.execute("INSERT INTO agent_session_history(namespace_id,sequence,run,admission_sequence,kind,prefix_digest,tool_start,opening_message,fact_id,result_source,tool_use_id)
-                    VALUES(?,?,?,1,?,'prefix',?,0,?,?,?)",params![ns_id,seq,run,kind,is_call,fact,!is_call,name]).unwrap();
+                    db.execute(
+                        "INSERT INTO agent_session_history(owner,session,sequence,run,admission_sequence,kind,prefix_digest,tool_start,opening_message,fact_id,result_source,tool_use_id)
+                         VALUES('owner','chat',?,?,?,?,'prefix',?,0,?,?,?)",
+                        params![seq, run, first_sequence, kind, is_call, fact, !is_call, name],
+                    )
+                    .unwrap();
+                }
             }
+        };
+        record_run("run", 1, &names);
+        if initial == 51 {
+            // A v51 queued request can first insert its frozen selection after v57 installs.
+            migrate_to(57);
+            record_run(
+                "queued",
+                2 * names.len() as i64 + 1,
+                &["GetRecap", "SessionRead"],
+            );
         }
         maka_event_log::migration::run(&db, &migrations).unwrap();
-        // A v51 queued request may first insert its frozen selection after v53 installs.
-        db.execute("INSERT INTO agent_run_specs(run,schema_version,owner,session,spec_content_id) VALUES('queued',1,'owner','chat',?)",[spec]).unwrap();
-        assert_eq!(
-            db.query_row(
-                "SELECT kind FROM agent_memory_read_aliases WHERE run='queued' AND name='GetRecap'",
-                [],
-                |r| r.get::<_, String>(0)
-            )
-            .unwrap(),
-            "session"
-        );
-        let restricted = db
-            .prepare(
+        let restricted = |run: &str| {
+            db.prepare(
                 "SELECT h.tool_use_id FROM agent_memory_recall_outputs r
                  JOIN agent_session_history h ON h.fact_id=r.fact
                  JOIN agent_namespaces ns ON ns.id=h.namespace_id AND ns.owner=r.owner
-                 ORDER BY h.tool_use_id",
+                 WHERE h.run=?1 ORDER BY h.tool_use_id",
             )
             .unwrap()
-            .query_map([], |r| r.get::<_, String>(0))
+            .query_map([run], |r| r.get::<_, String>(0))
             .unwrap()
             .collect::<Result<Vec<_>, _>>()
-            .unwrap();
+            .unwrap()
+        };
         let aliases = services
             .iter()
             .cloned()
             .map(|value| serde_json::from_value::<ServiceSelection>(value).unwrap())
             .filter_map(ServiceSelection::history_alias)
             .collect();
-        let mut replay: Vec<_> = services
-            .iter()
-            .map(|service| service["selection"]["name"].as_str().unwrap())
+        let mut replay: Vec<_> = names
+            .into_iter()
             .filter(|name| sensitive_call(reader_kind(name, &aliases), Some(&input)))
             .collect();
         replay.sort_unstable();
-        assert_eq!(
-            replay,
-            ["FindMessages", "GetRecap", "PeerRecap", "Read", "ReadNotes"]
-        );
-        assert_eq!(restricted, replay);
+        assert_eq!(replay, expected, "v{initial} replay");
+        assert_eq!(restricted("run"), expected, "v{initial} archive");
+        if initial == 51 {
+            assert_eq!(restricted("queued"), ["GetRecap"], "v51 queued archive");
+        }
     }
 }
