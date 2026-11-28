@@ -379,28 +379,6 @@ struct MapValidator {
     policy: Compiled,
 }
 
-fn is_broad_system_root(path: &Path, home: Option<&Path>) -> bool {
-    path.parent().is_none()
-        || home.is_some_and(|home| {
-            path.strip_prefix(home).is_ok_and(|rel| {
-                let lower = rel.as_os_str().to_ascii_lowercase();
-                [
-                    "",
-                    "library",
-                    "library/containers",
-                    "library/application support",
-                    "library/group containers",
-                    "library/caches",
-                    "appdata",
-                    "appdata/local",
-                    "appdata/roaming",
-                ]
-                .iter()
-                .any(|b| Path::new(&lower) == Path::new(b))
-            })
-        })
-}
-
 impl MapValidator {
     fn resolve(&self, supplied: &Path, must_exist: bool) -> Result<PathBuf, String> {
         let supplied = host_path(supplied).map_err(reason)?;
@@ -453,7 +431,7 @@ impl MapValidator {
         at: i64,
     ) -> Result<(), String> {
         let path = self.resolve(&input.path, true)?;
-        if is_broad_system_root(&path, self.home.as_deref()) {
+        if watch_scope::broad_root(&path, self.home.as_deref()) {
             return Err("map a concrete content directory below the system root".into());
         }
         let summary = input.summary.trim();
@@ -614,47 +592,21 @@ impl scheduler::Scheduler {
         &self,
         workspace: &Path,
     ) -> Result<(Option<u64>, WorkspaceMap), String> {
-        let Some(record) = self
-            .storage
-            .read(map_key(workspace))
-            .await
-            .map_err(reason)?
-        else {
-            return Ok((None, WorkspaceMap::default()));
-        };
-        let Data::Present(value) = record.data else {
-            return Ok((Some(record.revision), WorkspaceMap::default()));
-        };
-        let map = serde_json::from_value(value).map_err(reason)?;
-        Ok((Some(record.revision), map))
+        let (revision, map) = self.discovery_record(map_key(workspace)).await?;
+        Ok((revision, map.unwrap_or_default()))
     }
 
     pub(super) async fn all_mapped_watch_roots(
         &self,
     ) -> Result<BTreeMap<String, Vec<PathBuf>>, String> {
-        let mut after = None;
         let mut by_key = BTreeMap::new();
-        loop {
-            let page = self
-                .storage
-                .scan(maka_plugin_core::storage::Scan {
-                    prefix: PREFIX.into(),
-                    after,
-                })
-                .await
-                .map_err(reason)?;
-            for entry in page.entries {
-                if let Data::Present(data) = entry.record.data
-                    && let Ok(map) = serde_json::from_value::<WorkspaceMap>(data)
-                {
-                    by_key.insert(entry.key, map.watch_roots());
-                }
+        self.visit_workspace_records(PREFIX, |key, value| {
+            if let Ok(map) = serde_json::from_value::<WorkspaceMap>(value) {
+                by_key.insert(key, map.watch_roots());
             }
-            after = page.next_after;
-            if after.is_none() {
-                break;
-            }
-        }
+            Ok(())
+        })
+        .await?;
         Ok(by_key)
     }
 }

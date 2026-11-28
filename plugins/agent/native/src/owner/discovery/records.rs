@@ -304,28 +304,12 @@ impl scheduler::Scheduler {
         })
     }
     async fn memory_entry(&self, scope: &str, id: &str) -> Result<Entry, String> {
-        self.storage
-            .read(entry_key(scope, id)?)
-            .await
-            .map_err(reason)?
-            .and_then(|r| r.data.value().cloned())
-            .ok_or("discovery_record_unavailable".into())
-            .and_then(|v| serde_json::from_value(v).map_err(reason))
+        let (_, entry) = self.discovery_record(entry_key(scope, id)?).await?;
+        entry.ok_or_else(|| "discovery_record_unavailable".into())
     }
     async fn memory_head(&self, scope: &str) -> Result<(Option<u64>, u64), String> {
-        let r = self
-            .storage
-            .read(key(scope, "head"))
-            .await
-            .map_err(reason)?;
-        Ok((
-            r.as_ref().map(|r| r.revision),
-            r.and_then(|r| r.data.value().cloned())
-                .map(serde_json::from_value)
-                .transpose()
-                .map_err(reason)?
-                .unwrap_or(0),
-        ))
+        let (revision, head) = self.discovery_record(key(scope, "head")).await?;
+        Ok((revision, head.unwrap_or(0)))
     }
     async fn memory_append(
         &self,
