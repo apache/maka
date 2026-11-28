@@ -34,12 +34,23 @@ import {
   type ListRef,
 } from 'nsh';
 import { Button, Input, Popover } from 'nsh/base';
-import type { AgentModelsPage } from '../../../../packages/plugin-sdk/src/generated/runtime';
+import type {
+  AgentModelsPage,
+  SettingsConnectionsPage,
+  SettingsConnectionsRead,
+} from '../../../../packages/plugin-sdk/src/generated/runtime';
 import type { ConversationHandle } from '../../../../plugins/agent/conversations/ui/Conversation';
 import { delayed } from './delayed';
 import { useHost } from './host';
 import { Icon } from './Icon';
 import { tr } from './locale';
+import {
+  resolveExternalAgentBrand,
+  resolveProviderBrand,
+  type ProviderBrandId,
+  type ProviderBrandIdentity,
+} from './providerBrands';
+import { ProviderIcon } from './ProviderIcon';
 import {
   availableSpeeds,
   effectiveThinkingLevel,
@@ -248,6 +259,7 @@ function ModelMenu(props: {
   const owner = props.owner;
   const query = signal('');
   const page = signal<ModelsPage | null>(null);
+  const connectionProviders = signal<Map<string, ProviderBrandIdentity>>(new Map());
   const choices = () => page()?.choices ?? [];
   const selected = signal(0);
   const loading = signal(false);
@@ -432,6 +444,51 @@ function ModelMenu(props: {
     }
   };
 
+  let providerGeneration = 0;
+  const loadConnectionProviders = async () => {
+    const reading = ++providerGeneration;
+    try {
+      const providers = new Map<string, ProviderBrandIdentity>();
+      let cursor: number | null = null;
+      let revision: number | null = null;
+      const MAX_PAGES = 16;
+      for (let pages = 0, restarts = 0; pages < MAX_PAGES; pages += 1) {
+        const request: SettingsConnectionsRead =
+          cursor !== null && revision !== null
+            ? { kind: 'continue', revision, offset: cursor }
+            : { kind: 'start' };
+        const result: SettingsConnectionsPage = await host.query(
+          'settings',
+          'connections',
+          request,
+        );
+        if (!active() || reading !== providerGeneration) return;
+        if (result.kind === 'changed') {
+          if (++restarts > 2) return;
+          providers.clear();
+          cursor = null;
+          revision = null;
+          continue;
+        }
+        for (const item of result.connections) {
+          providers.set(item.basis.connectionId, item.provider);
+        }
+        if (result.next == null || (cursor !== null && result.next <= cursor)) break;
+        cursor = result.next;
+        revision = result.revision;
+      }
+      if (active() && reading === providerGeneration) connectionProviders.set(providers);
+    } catch {
+      // Optional brand enrichment; fallback icon remains shown when unavailable.
+    }
+  };
+  void loadConnectionProviders();
+
+  const choiceBrand = (choice: ModelChoice): ProviderBrandId | null =>
+    choice.selection.kind === 'executor'
+      ? resolveExternalAgentBrand(choice.selection.selection.settings.runtime)
+      : resolveProviderBrand(connectionProviders().get(choice.selection.connectionId));
+
   void (async () => {
     try {
       const opened = await host.subscribe('agent', 'watchModels', {});
@@ -447,6 +504,7 @@ function ModelMenu(props: {
         refreshing.set(result.refreshing);
         if (page()?.revision !== result.revision) {
           void loadModels(true);
+          void loadConnectionProviders();
           void owner.refreshModel();
         }
       }
@@ -579,7 +637,12 @@ function ModelMenu(props: {
                     focusStyle={menuRowHoverStyle()}
                     disabledStyle={saving() ? controlDisabledStyle : undefined}
                   >
-                    <Icon name="bot" color={C.secondary} />
+                    <ProviderIcon
+                      variant="inline"
+                      brand={choiceBrand(choice())}
+                      color={C.secondary}
+                      fallbackIcon="bot"
+                    />
                     <View
                       style={[
                         {

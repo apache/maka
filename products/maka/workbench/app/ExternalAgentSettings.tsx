@@ -22,12 +22,12 @@ import type { AgentExternalRuntime } from '../../../../packages/plugin-sdk/src/g
 import type { ExternalAgentSettingsOwner } from './externalAgentSettingsState';
 import { InlineSkeletonLine, SettingsSkeleton } from './Loading';
 import { tr } from './locale';
+import { ProviderIcon } from './ProviderIcon';
 import { UsageLimits } from './UsageLimits';
 import {
   SettingsBody,
   SettingsButton,
   SettingsLede,
-  SettingsMonogram,
   SettingsProblem,
   SettingsSection,
   SettingsSwitch,
@@ -118,7 +118,13 @@ export function ExternalAgentSection(props: { owner: ExternalAgentSettingsOwner;
               <SettingsSwitch
                 label={runtime().name}
                 tone={runtime().enabled ? undefined : 'muted'}
-                leading={<SettingsMonogram name={runtime().name} muted={!runtime().enabled} />}
+                leading={
+                  <ProviderIcon
+                    runtime={runtime().id}
+                    name={runtime().name}
+                    muted={!runtime().enabled}
+                  />
+                }
                 description={runtimeDescription(owner, runtime().id, runtime().enabled)}
                 status={
                   runtime().enabled && owner.status(runtime().id)
