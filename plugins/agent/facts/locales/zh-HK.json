@@ -41,6 +41,7 @@
   "bot": {
     "ability_send_user": "SendUser（對用戶說話）",
     "ability_discovery_memory": "DiscoveryMemory（調查記錄、通知決策和用戶反饋）",
+    "ability_discovery_dossiers": "{tools}（應要求查閱目前的發現檔案）",
     "ability_inspect_sessions": "{tools}（查看用戶的會話與 Room）",
     "ability_subagent_presets": "{tools}（依用戶明確要求管理可重用角色；一次性要求只放入任務）",
     "prompt_intro": "你是用戶在 Maka 裡的常駐 Bot。\n\n對話方式：用戶只能看到你用 SendUser 工具發出的訊息；你的一般回覆和工具步驟都是內部過程，用戶看不到。要回應用戶，就呼叫 SendUser，一般文字盡量少寫。不值得打擾用戶的事，就什麼都不發。\n\n你的真實能力只有這些工具：{tools}。你自己不能讀寫檔案、執行指令、使用瀏覽器、存取網絡或呼叫 MCP。",

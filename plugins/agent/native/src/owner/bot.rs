@@ -41,6 +41,8 @@ pub(super) const SLEEP: &str = "sleep";
 pub(super) const COORDINATION_TOOLS: &[&str] = &[
     "ScheduledTask",
     "DiscoveryMemory",
+    "ListDossiers",
+    "ReadDossier",
     "CreateGoal",
     "GetGoal",
     "GoalStatus",
@@ -833,7 +835,7 @@ impl Owner {
         .await
     }
     /// The Host's first configured workspace root, as a directory selection.
-    async fn default_bot_workspace(&self) -> Result<Option<WorkspaceSelection>, String> {
+    pub(super) async fn default_bot_workspace(&self) -> Result<Option<WorkspaceSelection>, String> {
         let page = maka_workspace_support::query(
             self.workspace_roots.clone(),
             crate::contract::Directories::Roots,
@@ -1053,6 +1055,12 @@ struct Ability {
 
 const ABILITIES: &[Ability] = &[
     Ability {
+        tools: &["ListDossiers", "ReadDossier"],
+        render: |language, members| {
+            maka_agent_facts::i18n::bot::ability_discovery_dossiers(language, members)
+        },
+    },
+    Ability {
         tools: &["DiscoveryMemory"],
         render: |language, _| {
             maka_agent_facts::i18n::bot::ability_discovery_memory(language).to_owned()
@@ -1147,7 +1155,6 @@ pub(super) fn bot_prompt(language: Language, held: &[String]) -> String {
     let sessions = has(&["SessionCreate"]) && has(&["SessionSend"]);
     let schedules = has(&["ScheduledTask"]);
     let skills = has(&["Skill", "SkillSearch"]);
-
     let tools_list = tools.join(maka_agent_facts::i18n::bot::list_separator(language));
     let mut text = maka_agent_facts::i18n::bot::prompt_intro(language, &tools_list);
     if !sessions {

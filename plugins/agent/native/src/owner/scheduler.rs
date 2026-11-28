@@ -273,7 +273,7 @@ impl Owner {
     fn discovery_tool_groups(&self, names: &[String]) -> DiscoveryToolSelection {
         names
             .iter()
-            .filter(|name| name.as_str() != super::discovery::COMPLETE)
+            .filter(|name| !super::discovery::WORKER_TOOLS.contains(&name.as_str()))
             .map(|name| (name.clone(), self.discovery_tool_group(name)))
             .collect()
     }

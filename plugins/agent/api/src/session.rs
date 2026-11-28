@@ -38,6 +38,10 @@ pub struct StoredSessionConfiguration {
     pub tools: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compaction_prompt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dossier_seed: Option<String>,
+    #[serde(default)]
+    pub dossier_elevated: bool,
     pub title: String,
     pub title_is_manual: bool,
     #[serde(default)]
@@ -69,6 +73,10 @@ pub struct ResolvedConfiguration {
     pub tools: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compaction_prompt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dossier_seed: Option<String>,
+    #[serde(default)]
+    pub dossier_elevated: bool,
     pub title: String,
     pub title_is_manual: bool,
     #[serde(default)]
@@ -98,6 +106,8 @@ impl StoredSessionConfiguration {
             collaboration_mode: self.collaboration_mode,
             tools: self.tools,
             compaction_prompt: self.compaction_prompt,
+            dossier_seed: self.dossier_seed,
+            dossier_elevated: self.dossier_elevated,
             title: self.title,
             title_is_manual: self.title_is_manual,
             pinned: self.pinned,
@@ -116,5 +126,12 @@ impl ResolvedConfiguration {
             boundary_revision: self.boundary_revision,
             binding: self.binding,
         }
+    }
+
+    /// True while a dossier thread remains in its default read-only consultation mode.
+    /// Once the user explicitly confirms an action choice, `dossier_elevated` becomes true
+    /// and the same thread session seamlessly operates with normal session permissions.
+    pub fn is_restricted_dossier_thread(&self) -> bool {
+        self.dossier_seed.is_some() && !self.dossier_elevated
     }
 }
